@@ -1,0 +1,107 @@
+"""Core runtime schemas for Phase 1."""
+
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+from pydantic import BaseModel, Field
+
+
+class Envelope(BaseModel):
+    request_id: str
+    raw_input: str
+    normalized_input: str
+    user_goal: str | None = None
+
+    input_type: str
+    intents: list[str] = Field(default_factory=list)
+    domains: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    context_needed: list[str] = Field(default_factory=list)
+    execution_hints: list[str] = Field(default_factory=list)
+
+    planner_hint: str | None = None
+    planner_confidence: float = 0.0
+    planner_alternatives: list[str] = Field(default_factory=list)
+
+    budget_hint: str = "medium"
+    confidence: float = 0.0
+
+    ambiguity: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanStep(BaseModel):
+    step_id: str
+    worker_type: str
+
+    instruction: str
+
+    input_artifacts: list[str] = Field(default_factory=list)
+    output_artifacts: list[str] = Field(default_factory=list)
+
+    max_tool_calls: int = 3
+    max_model_calls: int = 1
+
+    permissions: dict[str, Any] = Field(default_factory=dict)
+
+
+class Plan(BaseModel):
+    plan_id: str
+    request_id: str
+
+    planner: str
+    objective: str
+    strategy: str
+
+    steps: list[PlanStep]
+    budget: dict[str, Any] = Field(default_factory=dict)
+
+    success_criteria: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Task(BaseModel):
+    task_id: str
+    run_id: str
+    step_id: str
+
+    worker_type: str
+    instruction: str
+
+    input_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    expected_outputs: list[str] = Field(default_factory=list)
+
+    max_tool_calls: int = 3
+    max_model_calls: int = 1
+
+    permissions: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Result(BaseModel):
+    run_id: str
+    producer: str
+
+    status: str
+    summary: str
+
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+
+    usage: dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeState(TypedDict, total=False):
+    user_input: str
+    envelope: dict[str, Any]
+    plan: dict[str, Any]
+    result: dict[str, Any]
+    errors: list[str]
