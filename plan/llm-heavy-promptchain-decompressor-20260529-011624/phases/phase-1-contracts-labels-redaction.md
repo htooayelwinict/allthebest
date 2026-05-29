@@ -14,6 +14,8 @@ Completed. Added the internal Pydantic structured-output contract, provider-agno
 
 2026-05-29 coalesced update: The static label taxonomy was removed from runtime semantics. The active contract is `DecompressedEnvelope`, a coalesced structured-output model; `RequestClassification` remains only as a compatibility alias/class for older tests/imports.
 
+2026-05-29 specificity update: `DecompressedEnvelope.input_type` now rejects generic placeholders and requires a specific open-ended descriptor while preserving LLM-owned semantics.
+
 ## Files
 
 - Add `app/decompressor/contracts.py`

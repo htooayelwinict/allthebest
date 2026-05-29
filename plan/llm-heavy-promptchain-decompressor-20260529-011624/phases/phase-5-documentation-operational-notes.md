@@ -12,6 +12,10 @@ Completed. Added operational docstrings covering the LLM-only runtime, the injec
 
 2026-05-29 coalesced update: Plan documentation now records the LLM-only, coalesced structured-output runtime, the optional one-call repair path, and boundary cleanup that preserves open-ended model semantics instead of using static label clamping.
 
+2026-05-29 specificity/latency update: Documented the new research note and operational behavior for specific `input_type` validation, compact prompts, cached schema, and `DECOMPRESSOR_LLM_MAX_TOKENS`.
+
+2026-05-29 runtime safety update: documented that implicit token caps are disabled by default (`max_tokens=None`) to avoid truncated JSON envelopes, and that OpenRouter env aliases are accepted for decompressor configuration.
+
 ## Files
 
 - Update docstrings in `app/decompressor/runtime.py`, `contracts.py`, or `prompt_chain.py`

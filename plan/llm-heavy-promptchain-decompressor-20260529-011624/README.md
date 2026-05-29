@@ -21,6 +21,10 @@ Completed. The runtime now requires explicit model-client or prompt-chain inject
 
 2026-05-29 coalesced LLM refactor completed from `research/llm-only-coalesced-decompressor-runtime-20260529.md`: normal decompression is one `decompress_request` structured-output call, with one `repair_decompressed_envelope` retry only after validation failure. Boundary cleanup no longer clamps semantic strings through a static label taxonomy; it strips planner/kernel leaks, deduplicates text, removes unsafe assumptions, clamps confidence/complexity, and guards pronoun-only requests.
 
+2026-05-29 specificity/latency follow-up completed from `research/input-type-specificity-and-latency-20260529.md`: generic `input_type` placeholders now fail validation and use the existing repair path, prompts are compact and schema is cached, and `DECOMPRESSOR_LLM_MAX_TOKENS` bounds live model output. Verification: `uv run pytest tests/test_decompressor.py tests/test_planner.py tests/test_graph.py -q` and `uv run pytest -q` pass.
+
+2026-05-29 OpenRouter SDK follow-up: decompressor model calls now use the official `openrouter` SDK (`OpenRouter(...).chat.send(...)`) instead of raw `urllib` HTTP calls. Also removed implicit default token capping so long envelopes are not truncated unless explicitly configured. Added env alias support for `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, and `OPENROUTER_BASE_URL`. Verification: `uv run pytest -q` passes and the previous long-prompt repro now completes in one model call.
+
 ## Plan source
 
 This plan implements the recommendation from:

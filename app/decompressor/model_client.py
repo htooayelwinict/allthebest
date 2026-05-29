@@ -1,15 +1,14 @@
-"""OpenAI-compatible JSON model client for decompressor prompt-chain mode."""
+"""OpenRouter SDK-backed JSON model client for decompressor prompt-chain mode."""
 
 from __future__ import annotations
 
-import json
-import urllib.error
-import urllib.request
 from typing import Any
+
+from openrouter import OpenRouter
 
 
 class OpenAICompatibleJSONClient:
-    """HTTP client for Chat Completions APIs that support JSON responses."""
+    """Client wrapper for OpenRouter chat completions with JSON responses."""
 
     def __init__(
         self,
@@ -21,6 +20,7 @@ class OpenAICompatibleJSONClient:
         temperature: float = 0.0,
         response_format: str = "json_schema",
         provider_sort: str | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
@@ -29,44 +29,38 @@ class OpenAICompatibleJSONClient:
         self._temperature = temperature
         self._response_format = response_format
         self._provider_sort = provider_sort
+        self._max_tokens = max_tokens
 
     def complete_json(self, *, stage: str, prompt: str, schema: dict[str, Any]) -> str:
-        payload = {
+        kwargs: dict[str, Any] = {
             "model": self._model,
             "temperature": self._temperature,
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You run one decompressor stage. Return only valid JSON matching "
-                        "the requested schema and allowed-label instructions."
-                    ),
+                    "content": "Return only JSON matching the schema. Be specific and concise.",
                 },
                 {"role": "user", "content": prompt},
             ],
             "response_format": self._response_format_payload(stage, schema),
+            "stream": False,
         }
+        if self._max_tokens is not None:
+            kwargs["max_tokens"] = self._max_tokens
         if self._provider_sort:
-            payload["provider"] = {"sort": self._provider_sort}
-        request = urllib.request.Request(
-            f"{self._base_url}/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+            kwargs["provider"] = {"sort": self._provider_sort}
 
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-                body = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"Model request for stage {stage} failed with HTTP {exc.code}.") from exc
-        except urllib.error.URLError as exc:
+            with OpenRouter(
+                api_key=self._api_key,
+                server_url=self._base_url,
+                timeout_ms=int(self._timeout_seconds * 1000),
+            ) as client:
+                response = client.chat.send(**kwargs)
+        except Exception as exc:  # pragma: no cover - SDK/network variability
             raise RuntimeError(f"Model request for stage {stage} failed before receiving a response.") from exc
 
-        return self._extract_content(stage, body)
+        return self._extract_content(stage, response)
 
     def _response_format_payload(self, stage: str, schema: dict[str, Any]) -> dict[str, Any]:
         if self._response_format == "json_object":
@@ -80,13 +74,26 @@ class OpenAICompatibleJSONClient:
             },
         }
 
-    def _extract_content(self, stage: str, body: str) -> str:
+    def _extract_content(self, stage: str, response: Any) -> str:
         try:
-            payload = json.loads(body)
-            content = payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            content = response.choices[0].message.content
+        except Exception as exc:
             raise RuntimeError(f"Model response for stage {stage} did not contain JSON content.") from exc
 
         if isinstance(content, str):
             return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                    continue
+                text = getattr(part, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+            combined = "".join(parts).strip()
+            if combined:
+                return combined
         raise RuntimeError(f"Model response for stage {stage} returned non-text content.")

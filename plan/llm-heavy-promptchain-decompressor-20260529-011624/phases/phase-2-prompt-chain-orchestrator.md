@@ -14,6 +14,10 @@ Completed. Added the prompt-chain orchestrator with a coalesced `complete_json(.
 
 2026-05-29 coalesced update: Replaced the staged prompt chain with one `decompress_request` structured-output call. Validation failure triggers one `repair_decompressed_envelope` call, then raises `PromptChainError` if repair is invalid. Boundary cleanup preserves LLM semantic strings and no longer clamps intents/domains/risks/context/constraints to static label sets. Verification: `uv run pytest tests/test_decompressor.py tests/test_planner.py tests/test_graph.py -q` and `uv run pytest -q` pass.
 
+2026-05-29 latency update: The orchestrator now reuses a cached `DecompressedEnvelope` schema and sends a compact stable prompt instead of a verbose JSON instruction payload. Generic `input_type` validation failures reuse the existing repair stage.
+
+2026-05-29 transport update: model-client transport now uses the official OpenRouter SDK call pattern (`OpenRouter(...).chat.send(...)`). This removed custom raw HTTP plumbing and improved compatibility with provider response handling.
+
 ## Files
 
 - Add `app/decompressor/prompt_chain.py`

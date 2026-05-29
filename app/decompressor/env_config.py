@@ -19,6 +19,10 @@ CONFIG_KEYS = (
     "DECOMPRESSOR_LLM_TEMPERATURE",
     "DECOMPRESSOR_LLM_RESPONSE_FORMAT",
     "DECOMPRESSOR_LLM_PROVIDER_SORT",
+    "DECOMPRESSOR_LLM_MAX_TOKENS",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MODEL",
+    "OPENROUTER_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
 )
@@ -62,21 +66,42 @@ def build_decompressor_model_client(
     if not enabled:
         return None
 
-    api_key = config.get("DECOMPRESSOR_LLM_API_KEY") or config.get("OPENAI_API_KEY")
-    model = config.get("DECOMPRESSOR_LLM_MODEL") or config.get("OPENAI_MODEL")
+    api_key = (
+        config.get("DECOMPRESSOR_LLM_API_KEY")
+        or config.get("OPENROUTER_API_KEY")
+        or config.get("OPENAI_API_KEY")
+    )
+    model = (
+        config.get("DECOMPRESSOR_LLM_MODEL")
+        or config.get("OPENROUTER_MODEL")
+        or config.get("OPENAI_MODEL")
+    )
     if not api_key:
-        raise ValueError("DECOMPRESSOR_LLM_ENABLED=true requires DECOMPRESSOR_LLM_API_KEY or OPENAI_API_KEY.")
+        raise ValueError(
+            "DECOMPRESSOR_LLM_ENABLED=true requires DECOMPRESSOR_LLM_API_KEY, "
+            "OPENROUTER_API_KEY, or OPENAI_API_KEY."
+        )
     if not model:
-        raise ValueError("DECOMPRESSOR_LLM_ENABLED=true requires DECOMPRESSOR_LLM_MODEL or OPENAI_MODEL.")
+        raise ValueError(
+            "DECOMPRESSOR_LLM_ENABLED=true requires DECOMPRESSOR_LLM_MODEL, "
+            "OPENROUTER_MODEL, or OPENAI_MODEL."
+        )
+
+    base_url = (
+        config.get("DECOMPRESSOR_LLM_BASE_URL")
+        or config.get("OPENROUTER_BASE_URL")
+        or "https://api.openai.com/v1"
+    )
 
     return client_factory(
         api_key=api_key,
         model=model,
-        base_url=config.get("DECOMPRESSOR_LLM_BASE_URL", "https://api.openai.com/v1"),
+        base_url=base_url,
         timeout_seconds=float(config.get("DECOMPRESSOR_LLM_TIMEOUT_SECONDS", "30")),
         temperature=float(config.get("DECOMPRESSOR_LLM_TEMPERATURE", "0")),
         response_format=config.get("DECOMPRESSOR_LLM_RESPONSE_FORMAT", "json_schema"),
         provider_sort=config.get("DECOMPRESSOR_LLM_PROVIDER_SORT") or None,
+        max_tokens=_optional_int(config.get("DECOMPRESSOR_LLM_MAX_TOKENS"), default=None),
     )
 
 
@@ -88,3 +113,14 @@ def _strip_inline_comment(value: str) -> str:
         if char == "#" and quote is None and index > 0 and value[index - 1].isspace():
             return value[:index].strip()
     return value
+
+
+def _optional_int(value: str | None, *, default: int | None) -> int | None:
+    if value is None or value == "":
+        return default
+    if value.lower() in {"none", "null"}:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError("DECOMPRESSOR_LLM_MAX_TOKENS must be a positive integer or null.")
+    return parsed

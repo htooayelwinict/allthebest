@@ -24,7 +24,7 @@ def _llm_responses_for(text: str) -> dict[str, Any]:
             "decompress_request": {
                 "normalized_input": "what is docker",
                 "user_goal": "Answer the user's question.",
-                "input_type": "question",
+                "input_type": "docker_concept_question",
                 "intents": ["question.answer"],
                 "domains": ["infra"],
                 "risks": [],
@@ -40,7 +40,7 @@ def _llm_responses_for(text: str) -> dict[str, Any]:
     if text == "fix the app":
         responses = _llm_code_fix_responses(intents=["code.fix"], domains=["code"])
         responses["decompress_request"].update({
-            "input_type": "ambiguous_request",
+            "input_type": "ambiguous_app_fix_request",
             "intents": ["code.fix"],
             "domains": ["code"],
             "risks": ["ambiguous_scope", "ambiguous_mutation"],
@@ -62,7 +62,7 @@ def _llm_code_fix_responses(*, intents: list[str] | None = None, domains: list[s
         "decompress_request": {
             "normalized_input": "fix service.py",
             "user_goal": "Repair the service.",
-            "input_type": "mutation_request",
+            "input_type": "python_file_fix_request",
             "intents": intents or ["code.fix"],
             "domains": domains or ["code"],
             "risks": ["mutation_requested", "file_mutation", "needs_verification"],
@@ -91,7 +91,7 @@ def test_planner_observes_for_pronoun_only_request() -> None:
     responses["decompress_request"] = {
         "normalized_input": "it",
         "user_goal": "Answer the user's question.",
-        "input_type": "question",
+        "input_type": "docker_concept_question",
         "intents": ["question.answer"],
         "domains": ["general"],
         "risks": [],
@@ -172,7 +172,7 @@ def test_planner_prefers_descriptive_ambiguity_over_code_semantics() -> None:
                 **_llm_code_fix_responses(intents=["code.fix"], domains=["code"]),
                 "decompress_request": {
                     **_llm_code_fix_responses(intents=["code.fix"], domains=["code"])["decompress_request"],
-                    "input_type": "ambiguous_request",
+                    "input_type": "ambiguous_app_fix_request",
                     "intents": ["code.fix"],
                     "domains": ["code"],
                     "risks": ["ambiguous_scope", "ambiguous_mutation"],

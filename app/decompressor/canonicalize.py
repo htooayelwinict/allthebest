@@ -26,6 +26,7 @@ FORBIDDEN_ENVELOPE_FIELDS = frozenset(
 
 PLANNER_LEAK_INTENTS = frozenset({"observe_first"})
 COMPLEXITY_HINTS = frozenset({"low", "medium", "high"})
+UNDERSPECIFIED_INPUT_TYPE = "ambiguous_pronoun_reference_request"
 
 
 def canonicalize_envelope(envelope: Envelope) -> Envelope:
@@ -38,7 +39,7 @@ def canonicalize_envelope(envelope: Envelope) -> Envelope:
     """
 
     data = _strip_forbidden_keys(envelope.model_dump())
-    data["input_type"] = _clean_text(data.get("input_type")) or "request"
+    data["input_type"] = _clean_text(data.get("input_type")) or "unspecified_input"
     data["normalized_input"] = _clean_text(data.get("normalized_input"))
     data["user_goal"] = _clean_nullable_text(data.get("user_goal"))
     data["intents"] = [
@@ -146,7 +147,7 @@ def _apply_underspecified_input_guard(data: dict[str, Any]) -> dict[str, Any]:
     if text not in {"", "it", "this", "that", "these", "those"}:
         return data
 
-    data["input_type"] = "ambiguous_request"
+    data["input_type"] = UNDERSPECIFIED_INPUT_TYPE
     data["confidence"] = min(float(data.get("confidence") or 0.0), 0.5)
     data["risks"] = _merge_ordered(data.get("risks", []), ["ambiguous_scope"])
     data["context_needed"] = _merge_ordered(data.get("context_needed", []), ["scope_clarification"])

@@ -13,7 +13,7 @@ class FakeConfiguredClient:
             "decompress_request": {
                 "normalized_input": "what is docker",
                 "user_goal": "Answer the user's question.",
-                "input_type": "question",
+                "input_type": "docker_concept_question",
                 "intents": ["question.answer"],
                 "domains": ["infra"],
                 "risks": [],

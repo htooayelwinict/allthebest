@@ -20,6 +20,8 @@ Implement an injectable LLM-only `DecompressorRuntime` that preserves the existi
 
 2026-05-29 coalesced update: The multi-stage prompt chain has been replaced by a single `decompress_request` structured-output call plus one optional `repair_decompressed_envelope` call after validation failure. Static label taxonomy code was removed from runtime semantics. Verification: `uv run pytest tests/test_decompressor.py tests/test_planner.py tests/test_graph.py -q` and `uv run pytest -q` pass.
 
+2026-05-29 specificity/latency update: `input_type` is now required to be a specific open-ended descriptor instead of generic labels like `request`, `question`, `mutation_request`, or `ambiguous_request`. Generic placeholders fail Pydantic validation and are corrected through the existing one-call repair path. Decompressor latency was reduced by caching the schema, replacing the verbose JSON prompt with a compact stable prompt, shortening the model-client system message, and adding `DECOMPRESSOR_LLM_MAX_TOKENS`. Verification: focused tests pass with `32 passed`; full suite passes with `38 passed`.
+
 ## Existing patterns
 
 - `app/decompressor/runtime.py` now owns only LLM prompt-chain wiring and request ID creation.

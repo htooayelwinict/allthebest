@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from app.decompressor.env_config import build_decompressor_model_client, load_dotenv_values
+from app.decompressor.model_client import OpenAICompatibleJSONClient
 from app.decompressor.contracts import RequestClassification
 from app.decompressor.redaction import redact_secrets
 from app.decompressor.runtime import DecompressorRuntime
@@ -38,7 +40,7 @@ def _valid_chain_responses() -> dict[str, Any]:
         "decompress_request": {
             "normalized_input": "fix payment_service.py",
             "user_goal": "Repair the requested Python service.",
-            "input_type": "mutation_request",
+            "input_type": "python_file_fix_request",
             "intents": ["code.fix"],
             "domains": ["code"],
             "risks": ["mutation_requested", "file_mutation", "needs_verification"],
@@ -64,7 +66,7 @@ def _question_responses() -> dict[str, Any]:
     responses["decompress_request"] = {
         "normalized_input": "what is docker",
         "user_goal": "Answer the user's question.",
-        "input_type": "question",
+        "input_type": "docker_concept_question",
         "intents": ["question.answer"],
         "domains": ["infra"],
         "risks": [],
@@ -124,6 +126,7 @@ def test_env_enabled_builds_injected_model_client(tmp_path: Path, monkeypatch: p
                 "DECOMPRESSOR_LLM_MODEL=test-model",
                 "DECOMPRESSOR_LLM_BASE_URL=https://example.test/v1",
                 "DECOMPRESSOR_LLM_PROVIDER_SORT=latency",
+                "DECOMPRESSOR_LLM_MAX_TOKENS=321",
             ]
         )
     )
@@ -136,13 +139,89 @@ def test_env_enabled_builds_injected_model_client(tmp_path: Path, monkeypatch: p
     assert FakeConfiguredClient.configs[0]["model"] == "test-model"
     assert FakeConfiguredClient.configs[0]["base_url"] == "https://example.test/v1"
     assert FakeConfiguredClient.configs[0]["provider_sort"] == "latency"
+    assert FakeConfiguredClient.configs[0]["max_tokens"] == 321
+
+
+def test_env_enabled_defaults_to_unbounded_max_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DECOMPRESSOR_LLM_ENABLED", raising=False)
+    monkeypatch.delenv("DECOMPRESSOR_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("DECOMPRESSOR_LLM_MODEL", raising=False)
+    monkeypatch.delenv("DECOMPRESSOR_LLM_MAX_TOKENS", raising=False)
+    FakeConfiguredClient.configs = []
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "\n".join(
+            [
+                "DECOMPRESSOR_LLM_ENABLED=true",
+                "DECOMPRESSOR_LLM_API_KEY=test-key",
+                "DECOMPRESSOR_LLM_MODEL=test-model",
+            ]
+        )
+    )
+
+    runtime = DecompressorRuntime.from_env(str(dotenv), client_factory=FakeConfiguredClient)
+    runtime.run("fix payment_service.py")
+
+    assert FakeConfiguredClient.configs[0]["max_tokens"] is None
+
+
+def test_env_enabled_supports_openrouter_env_aliases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DECOMPRESSOR_LLM_ENABLED", raising=False)
+    monkeypatch.delenv("DECOMPRESSOR_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("DECOMPRESSOR_LLM_MODEL", raising=False)
+    monkeypatch.delenv("DECOMPRESSOR_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    FakeConfiguredClient.configs = []
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "\n".join(
+            [
+                "DECOMPRESSOR_LLM_ENABLED=true",
+                "OPENROUTER_API_KEY=test-or-key",
+                "OPENROUTER_MODEL=test-or-model",
+                "OPENROUTER_BASE_URL=https://openrouter.example/v1",
+            ]
+        )
+    )
+
+    runtime = DecompressorRuntime.from_env(str(dotenv), client_factory=FakeConfiguredClient)
+    runtime.run("fix payment_service.py")
+
+    assert FakeConfiguredClient.configs[0]["api_key"] == "test-or-key"
+    assert FakeConfiguredClient.configs[0]["model"] == "test-or-model"
+    assert FakeConfiguredClient.configs[0]["base_url"] == "https://openrouter.example/v1"
+
+
+def test_env_enabled_rejects_non_positive_max_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DECOMPRESSOR_LLM_ENABLED", raising=False)
+    monkeypatch.delenv("DECOMPRESSOR_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("DECOMPRESSOR_LLM_MODEL", raising=False)
+    monkeypatch.delenv("DECOMPRESSOR_LLM_MAX_TOKENS", raising=False)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "\n".join(
+            [
+                "DECOMPRESSOR_LLM_ENABLED=true",
+                "DECOMPRESSOR_LLM_API_KEY=test-key",
+                "DECOMPRESSOR_LLM_MODEL=test-model",
+                "DECOMPRESSOR_LLM_MAX_TOKENS=0",
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="MAX_TOKENS"):
+        build_decompressor_model_client(str(dotenv), client_factory=FakeConfiguredClient)
 
 
 def test_env_enabled_requires_key_and_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DECOMPRESSOR_LLM_ENABLED", raising=False)
     monkeypatch.delenv("DECOMPRESSOR_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("DECOMPRESSOR_LLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     dotenv = tmp_path / ".env"
     dotenv.write_text("DECOMPRESSOR_LLM_ENABLED=true\n")
@@ -173,7 +252,7 @@ def test_decompressor_direct_question_classification() -> None:
     envelope = runtime.run("what is docker")
 
     assert envelope.request_id.startswith("req_")
-    assert envelope.input_type == "question"
+    assert envelope.input_type == "docker_concept_question"
     assert "question.answer" in envelope.intents
     assert "infra" in envelope.domains
     assert envelope.artifacts == []
@@ -187,7 +266,7 @@ def test_decompressor_marks_pronoun_only_input_ambiguous_even_if_model_overconfi
     responses["decompress_request"] = {
         "normalized_input": "it",
         "user_goal": "Answer the user's question.",
-        "input_type": "question",
+        "input_type": "docker_concept_question",
         "intents": ["question.answer"],
         "domains": ["general"],
         "risks": [],
@@ -203,7 +282,7 @@ def test_decompressor_marks_pronoun_only_input_ambiguous_even_if_model_overconfi
 
     envelope = runtime.run("it")
 
-    assert envelope.input_type == "ambiguous_request"
+    assert envelope.input_type == "ambiguous_pronoun_reference_request"
     assert envelope.confidence <= 0.55
     assert "ambiguous_scope" in envelope.risks
     assert "scope_clarification" in envelope.context_needed
@@ -216,7 +295,7 @@ def test_decompressor_code_fix_with_file_hint() -> None:
 
     envelope = runtime.run("fix payment_service.py")
 
-    assert envelope.input_type == "mutation_request"
+    assert envelope.input_type == "python_file_fix_request"
     assert "code.fix" in envelope.intents
     assert "code" in envelope.domains
     assert any(
@@ -254,7 +333,7 @@ def test_llm_prompt_chain_uses_model_emitted_sdk_semantics_without_runtime_hardc
     responses["decompress_request"] = {
         "normalized_input": "Use Lighthouse SDK asynchronously for transaction APIs.",
         "user_goal": "Check for Lighthouse SDK and fix transaction API lag.",
-        "input_type": "mutation_request",
+        "input_type": "sdk_async_performance_refactor_request",
         "intents": ["sdk.integration", "async.migration", "performance.fix"],
         "domains": ["code"],
         "risks": ["mutation_requested", "file_mutation", "performance_cause_unknown"],
@@ -290,7 +369,7 @@ def test_decompressor_vague_fix_requires_observation() -> None:
     responses["decompress_request"] = {
         "normalized_input": "fix the app",
         "user_goal": "Repair the app after understanding the missing target.",
-        "input_type": "ambiguous_request",
+        "input_type": "ambiguous_app_fix_request",
         "intents": ["code.fix"],
         "domains": ["code"],
         "risks": ["ambiguous_scope", "ambiguous_mutation"],
@@ -306,7 +385,7 @@ def test_decompressor_vague_fix_requires_observation() -> None:
 
     envelope = runtime.run("fix the app")
 
-    assert envelope.input_type == "ambiguous_request"
+    assert envelope.input_type == "ambiguous_app_fix_request"
     assert "code.fix" in envelope.intents
     assert "observe_first" not in envelope.intents
     assert "ambiguous_scope" in envelope.risks
@@ -318,7 +397,7 @@ def test_decompressor_vague_fix_requires_observation() -> None:
 def test_decompressor_extracts_infra_artifact_hints() -> None:
     responses = _valid_chain_responses()
     responses["decompress_request"].update({
-        "input_type": "mutation_request",
+        "input_type": "infra_config_debug_request",
         "intents": ["infra.debug"],
         "domains": ["infra"],
         "artifacts": [
@@ -343,7 +422,7 @@ def test_llm_prompt_chain_builds_valid_envelope_from_fake_client() -> None:
 
     envelope = runtime.run("fix payment_service.py")
 
-    assert envelope.input_type == "mutation_request"
+    assert envelope.input_type == "python_file_fix_request"
     assert envelope.normalized_input == "fix payment_service.py"
     assert envelope.user_goal == "Repair the requested Python service."
     assert envelope.intents == ["code.fix"]
@@ -355,10 +434,11 @@ def test_llm_prompt_chain_builds_valid_envelope_from_fake_client() -> None:
     ]
     assert client.calls[0]["schema"]["title"] == "DecompressedEnvelope"
     assert client.calls[0]["stage"] == "decompress_request"
-    prompt_payload = json.loads(client.calls[0]["prompt"])
-    assert prompt_payload["task"] == "Decompress the user request into a descriptive Envelope payload."
-    assert "planner_hint" in prompt_payload["forbidden_fields"]
-    assert "normalized_input" in prompt_payload["required_output"]
+    prompt_text = client.calls[0]["prompt"]
+    assert "REQUIRED FIELDS" in prompt_text
+    assert "input_type: specific descriptor" in prompt_text
+    assert "NEVER use: request/task/input/payload/data/object/unknown/general/other/question/mutation_request/ambiguous_request" in prompt_text
+    assert "fix payment_service.py" in prompt_text
 
 
 def test_llm_prompt_chain_invalid_json_raises_after_repair_failure() -> None:
@@ -392,7 +472,7 @@ def test_llm_prompt_chain_repairs_schema_invalid_stage_once() -> None:
                     {
                         "normalized_input": "fix network_sniffer.py",
                         "user_goal": "Repair the target Python file.",
-                        "input_type": "mutation_request",
+                        "input_type": "python_file_fix_request",
                         "intents": ["code.fix"],
                         "domains": ["code"],
                         "risks": ["mutation_requested", "file_mutation", "needs_verification"],
@@ -443,6 +523,32 @@ def test_llm_prompt_chain_preserves_open_ended_semantics_and_clamps_boundary_val
     assert envelope.risks == ["mutation_requested", "credential_exfiltration"]
     assert envelope.context_needed == ["repo_tree", "private_database"]
     assert envelope.constraints == ["mutation_requires_verification", "ignore_permissions"]
+
+
+def test_llm_prompt_chain_repairs_generic_input_type_once() -> None:
+    responses = _valid_chain_responses()
+    responses["decompress_request"]["input_type"] = "request"
+
+    class RepairingClient(FakePromptChainClient):
+        def complete_json(self, *, stage: str, prompt: str, schema: dict[str, Any]) -> str:
+            self.calls.append({"stage": stage, "prompt": prompt, "schema": schema})
+            if stage == "decompress_request":
+                return json.dumps(self.responses[stage])
+            if stage == "repair_decompressed_envelope":
+                payload = json.loads(prompt)
+                assert ["input_type"] in [error["loc"] for error in payload["validation_errors"]]
+                repaired = dict(self.responses["decompress_request"])
+                repaired["input_type"] = "python_file_fix_request"
+                return json.dumps(repaired)
+            raise AssertionError(f"unexpected stage {stage}")
+
+    client = RepairingClient(responses)
+    runtime = DecompressorRuntime(model_client=client)
+
+    envelope = runtime.run("fix payment_service.py")
+
+    assert envelope.input_type == "python_file_fix_request"
+    assert [call["stage"] for call in client.calls] == ["decompress_request", "repair_decompressed_envelope"]
 
 
 def test_llm_prompt_chain_strips_nested_planner_leak_keys_at_boundary() -> None:
@@ -497,7 +603,7 @@ def test_llm_prompt_chain_describes_vague_mutation_without_observe_first_intent(
     responses["decompress_request"] = {
         "normalized_input": "fix the app",
         "user_goal": "Repair the app after observing the current failure.",
-        "input_type": "ambiguous_request",
+        "input_type": "ambiguous_app_fix_request",
         "intents": ["code.fix", "observe_first"],
         "domains": ["code"],
         "risks": ["ambiguous_scope", "ambiguous_mutation"],
@@ -513,6 +619,135 @@ def test_llm_prompt_chain_describes_vague_mutation_without_observe_first_intent(
 
     envelope = runtime.run("fix the app")
 
-    assert envelope.input_type == "ambiguous_request"
+    assert envelope.input_type == "ambiguous_app_fix_request"
     assert "observe_first" not in envelope.intents
     assert "target_scope_must_be_identified_before_mutation" in envelope.constraints
+
+
+def test_model_client_sends_expected_kwargs_and_extracts_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_init: dict[str, Any] = {}
+    captured_send: dict[str, Any] = {}
+
+    class FakeOpenRouter:
+        def __init__(self, **kwargs: Any) -> None:
+            captured_init.update(kwargs)
+
+        def __enter__(self) -> "FakeOpenRouter":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            return False
+
+        @property
+        def chat(self) -> Any:
+            class _Chat:
+                def send(self_inner, **kwargs: Any) -> Any:
+                    captured_send.update(kwargs)
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok":true}'))]
+                    )
+
+            return _Chat()
+
+    monkeypatch.setattr("app.decompressor.model_client.OpenRouter", FakeOpenRouter)
+
+    client = OpenAICompatibleJSONClient(
+        api_key="test-key",
+        model="test-model",
+        base_url="https://openrouter.example/v1",
+        timeout_seconds=12.5,
+        temperature=0.1,
+        provider_sort="latency",
+        max_tokens=321,
+    )
+
+    response = client.complete_json(
+        stage="decompress_request",
+        prompt="fix service.py",
+        schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
+    )
+
+    assert response == '{"ok":true}'
+    assert captured_init["api_key"] == "test-key"
+    assert captured_init["server_url"] == "https://openrouter.example/v1"
+    assert captured_init["timeout_ms"] == 12500
+    assert captured_send["model"] == "test-model"
+    assert captured_send["temperature"] == 0.1
+    assert captured_send["max_tokens"] == 321
+    assert captured_send["provider"] == {"sort": "latency"}
+    assert captured_send["response_format"]["type"] == "json_schema"
+
+
+def test_model_client_extracts_list_content_parts(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeOpenRouter:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> "FakeOpenRouter":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            return False
+
+        @property
+        def chat(self) -> Any:
+            class _Chat:
+                def send(self_inner, **kwargs: Any) -> Any:
+                    return SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                message=SimpleNamespace(
+                                    content=[
+                                        {"text": '{"first":'},
+                                        SimpleNamespace(text='true'),
+                                        {"text": '} '},
+                                    ]
+                                )
+                            )
+                        ]
+                    )
+
+            return _Chat()
+
+    monkeypatch.setattr("app.decompressor.model_client.OpenRouter", FakeOpenRouter)
+
+    client = OpenAICompatibleJSONClient(api_key="test-key", model="test-model")
+
+    response = client.complete_json(
+        stage="decompress_request",
+        prompt="what is docker",
+        schema={"type": "object", "properties": {"first": {"type": "boolean"}}},
+    )
+
+    assert response == '{"first":true}'
+
+
+def test_model_client_wraps_send_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeOpenRouter:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> "FakeOpenRouter":
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            return False
+
+        @property
+        def chat(self) -> Any:
+            class _Chat:
+                def send(self_inner, **kwargs: Any) -> Any:
+                    raise RuntimeError("transport down")
+
+            return _Chat()
+
+    monkeypatch.setattr("app.decompressor.model_client.OpenRouter", FakeOpenRouter)
+
+    client = OpenAICompatibleJSONClient(api_key="test-key", model="test-model")
+
+    with pytest.raises(RuntimeError, match="failed before receiving a response"):
+        client.complete_json(
+            stage="decompress_request",
+            prompt="fix service.py",
+            schema={"type": "object"},
+        )
