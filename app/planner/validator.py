@@ -28,6 +28,18 @@ VERIFY_EVIDENCE_ARTIFACT_SIGNALS = {
     "root_cause_hypotheses",
     "analysis_evidence",
 }
+MUTATION_CONTEXT_ARTIFACT_SIGNALS = {
+    "root_cause",
+    "evidence",
+    "fix_design",
+    "patch_design",
+    "change_design",
+    "analysis_evidence",
+}
+DESIGN_VERIFICATION_ARTIFACTS = {
+    "verification_plan",
+    "test_plan",
+}
 PHASE_ORDER = (
     "DISCOVER",
     "ANALYZE",
@@ -62,6 +74,9 @@ class PlannerPlanValidator:
 
         if not (plan.plan_id or "").strip():
             errors.append("plan.plan_id must be non-empty")
+
+        if plan.planner in ALLOWED_WORKER_TYPES:
+            errors.append("plan.planner must not be a worker_type")
 
         if not plan.steps:
             errors.append("plan.steps must contain at least one step")
@@ -214,6 +229,8 @@ class PlannerPlanValidator:
                 errors.append("mutation requires prior DESIGN step output mutation_scope")
             if "rollback_plan" not in design_outputs:
                 errors.append("mutation requires prior DESIGN step output rollback_plan")
+            if not (design_outputs & DESIGN_VERIFICATION_ARTIFACTS):
+                errors.append("mutation requires prior DESIGN step output verification_plan or test_plan")
 
             mutation_output_artifacts = {
                 artifact_id for index in write_step_indexes for artifact_id in plan.steps[index].output_artifacts
@@ -312,10 +329,20 @@ class PlannerPlanValidator:
         errors: list[str] = []
         if step.mode != "bounded_mutation":
             errors.append(f"step {step.step_id} phase MUTATE must use mode bounded_mutation")
+        if step.permissions.get("read_files") is not True:
+            errors.append(f"step {step.step_id} phase MUTATE must set permissions.read_files=true")
 
         write_scope_inputs = [artifact_id for artifact_id in step.input_artifacts if artifact_id in WRITE_SCOPE_ARTIFACTS]
         if not write_scope_inputs:
             errors.append(f"step {step.step_id} phase MUTATE must consume a write-scope artifact")
+
+        context_inputs = [
+            artifact_id
+            for artifact_id in step.input_artifacts
+            if self._artifact_matches(artifact_id, tuple(MUTATION_CONTEXT_ARTIFACT_SIGNALS))
+        ]
+        if not context_inputs:
+            errors.append(f"step {step.step_id} phase MUTATE must consume root-cause, evidence, or fix-design context")
 
         write_scope_refs = step.permissions.get("write_paths_from_artifacts")
         if not isinstance(write_scope_refs, list) or not (set(write_scope_refs) & WRITE_SCOPE_ARTIFACT_SIGNALS):

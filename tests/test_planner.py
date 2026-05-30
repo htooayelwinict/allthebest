@@ -185,7 +185,7 @@ def _complex_multi_intent_plan(request_id: str = "req_123") -> dict[str, Any]:
                 "task_id": "task_main",
                 "instruction": "Design the async integration patch and narrow discovered target files into writable mutation scope.",
                 "input_artifacts": ["target_files", "performance_evidence", "sdk_dependency_notes"],
-                "output_artifacts": ["mutation_scope", "patch_design", "rollback_plan"],
+                "output_artifacts": ["mutation_scope", "patch_design", "rollback_plan", "verification_plan"],
                 "max_tool_calls": 3,
                 "max_model_calls": 1,
                 "permissions": {"read_files": True, "write_files": False, "run_commands": False},
@@ -288,6 +288,15 @@ def test_validator_rejects_unknown_worker_type() -> None:
         PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
 
 
+def test_validator_rejects_planner_name_that_is_worker_type() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["planner"] = "research_worker"
+
+    with pytest.raises(ValueError, match="planner must not be a worker_type"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
 def test_validator_rejects_missing_input_artifact() -> None:
     envelope = _envelope()
     payload = _complex_multi_intent_plan()
@@ -350,6 +359,24 @@ def test_validator_rejects_phase_mode_mismatch() -> None:
     payload["steps"][4]["mode"] = "observe_only"
 
     with pytest.raises(ValueError, match="phase MUTATE must use mode"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_mutation_without_read_permission() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][4]["permissions"]["read_files"] = False
+
+    with pytest.raises(ValueError, match="MUTATE must set permissions.read_files=true"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_mutation_without_root_cause_or_design_context() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][4]["input_artifacts"] = ["mutation_scope", "rollback_plan"]
+
+    with pytest.raises(ValueError, match="root-cause, evidence, or fix-design context"):
         PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
 
 
@@ -430,6 +457,15 @@ def test_validator_rejects_mutation_without_design_rollback_plan() -> None:
     payload["steps"][3]["output_artifacts"] = ["mutation_scope", "patch_design"]
 
     with pytest.raises(ValueError, match="DESIGN step output rollback_plan"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_mutation_without_design_verification_plan() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][3]["output_artifacts"] = ["mutation_scope", "patch_design", "rollback_plan"]
+
+    with pytest.raises(ValueError, match="DESIGN step output verification_plan or test_plan"):
         PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
 
 
@@ -553,6 +589,25 @@ def test_prompt_chain_repairs_invalid_semantic_mode_name() -> None:
     assert plan.steps[1].mode == "observe_only"
 
 
+def test_prompt_chain_repairs_mutation_contract_hygiene() -> None:
+    envelope = _envelope()
+    invalid_contract = _complex_multi_intent_plan()
+    invalid_contract["planner"] = "code_worker"
+    invalid_contract["steps"][3]["output_artifacts"] = ["mutation_scope", "patch_design", "rollback_plan"]
+    invalid_contract["steps"][4]["input_artifacts"] = ["mutation_scope", "rollback_plan"]
+    invalid_contract["steps"][4]["permissions"]["read_files"] = False
+    repaired = _complex_multi_intent_plan()
+    client = FakePlannerClient({"draft_plan": invalid_contract, "repair_plan_1": repaired})
+
+    plan = LLMPlanCompiler(model_client=client).run(envelope)
+
+    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan_1"]
+    assert plan.planner == "llm_planner"
+    assert "verification_plan" in plan.steps[3].output_artifacts
+    assert plan.steps[4].permissions["read_files"] is True
+    assert "patch_design" in plan.steps[4].input_artifacts
+
+
 def test_prompt_chain_repairs_invalid_plan_once() -> None:
     envelope = _envelope()
     invalid_draft = _complex_multi_intent_plan()
@@ -600,6 +655,20 @@ def test_prompt_chain_repair_prompt_contains_validation_errors() -> None:
     repair_prompt = client.calls[1]["prompt"]
     assert "validation_errors" in repair_prompt
     assert "unknown worker_type" in repair_prompt
+
+
+def test_prompt_chain_repair_prompt_emphasizes_execution_pattern_when_missing() -> None:
+    envelope = _envelope()
+    invalid_draft = _complex_multi_intent_plan()
+    invalid_draft["execution_pattern"] = None
+    repaired = _complex_multi_intent_plan()
+    client = FakePlannerClient({"draft_plan": invalid_draft, "repair_plan_1": repaired})
+
+    LLMPlanCompiler(model_client=client).run(envelope)
+
+    repair_prompt = client.calls[1]["prompt"]
+    assert "plan.execution_pattern" in repair_prompt
+    assert "do not leave it null" in repair_prompt
 
 
 def test_prompt_chain_fails_after_invalid_repair() -> None:

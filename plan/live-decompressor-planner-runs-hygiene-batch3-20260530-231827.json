@@ -1,0 +1,254 @@
+{
+  "failure_count": 0,
+  "generated_at": "2026-05-30T16:48:27.362666+00:00",
+  "run_count": 1,
+  "runs": [
+    {
+      "attempts": 3,
+      "envelope": {
+        "ambiguity": [],
+        "artifacts": [
+          {
+            "name": "list_of_integers",
+            "type": "parameter"
+          },
+          {
+            "name": "even_numbers",
+            "type": "filter"
+          },
+          {
+            "name": "sum_of_squares",
+            "type": "return_value"
+          }
+        ],
+        "assumptions": [],
+        "complexity_hint": "low",
+        "confidence": 0.95,
+        "constraints": [],
+        "context_needed": [],
+        "domains": [
+          "code"
+        ],
+        "input_type": "python_function_implementation",
+        "intents": [
+          "code.implement"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 9485.844,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 9485.844,
+            "latency_ms_p95": 9485.844,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "Write a Python function that takes a list of integers and returns the sum of the squares of the even numbers in the list.",
+        "raw_input": "Write a Python function that takes a list of integers and returns the sum of the squares of the even numbers in the list.",
+        "request_id": "req_003",
+        "risks": [],
+        "user_goal": "Create a Python function computing sum of squares of even numbers from integer list"
+      },
+      "index": 1,
+      "plan": {
+        "budget": {
+          "max_model_calls": 5,
+          "max_retries": 2,
+          "max_tool_calls": 9,
+          "max_workers": 5
+        },
+        "execution_pattern": "discover_design_mutate_verify_finalize",
+        "global_invariants": [
+          "No mutation without prior DESIGN scope and rollback_plan",
+          "Verify after every write"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": true,
+            "envelope_complexity_hint": "low",
+            "envelope_input_type": "python_function_implementation",
+            "mode": "repaired",
+            "model_calls": 3,
+            "repair_attempted": true,
+            "resolved_validation_errors": [
+              {
+                "msg": "step design_2 input_artifact 'list_of_integers' is not produced by an earlier step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "step design_2 input_artifact 'even_numbers' is not produced by an earlier step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "step design_2 input_artifact 'sum_of_squares' is not produced by an earlier step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "step mutate_3 phase MUTATE must consume root-cause, evidence, or fix-design context",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "verification after mutation must consume evidence/root-cause artifacts",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "verification after mutation must consume evidence/root-cause artifacts",
+                "type": "planner_validation"
+              }
+            ],
+            "stages": [
+              "draft_plan",
+              "validate_plan",
+              "repair_plan_1",
+              "validate_plan",
+              "repair_plan_2",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          }
+        },
+        "objective": "Implement Python function computing sum of squares of even numbers from integer list",
+        "plan_id": "plan_req_003_001",
+        "planner": "code_planner",
+        "request_id": "req_003",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Identify candidate file locations for new function implementation",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "candidate_paths"
+            ],
+            "permissions": {
+              "read_files": false,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "discover_1",
+            "task_id": "implement_sum_squares",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths"
+            ],
+            "instruction": "Convert candidates to mutation_scope, produce rollback_plan and verification_plan using list_of_integers, even_numbers, sum_of_squares",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "rollback_plan",
+              "root_cause_evidence",
+              "verification_plan"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "design_2",
+            "task_id": "implement_sum_squares",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "rollback_plan",
+              "root_cause_evidence"
+            ],
+            "instruction": "Implement function in scoped file using bounded mutation",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "change_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "mutation_scope"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "mutate_3",
+            "task_id": "implement_sum_squares",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "mutation_scope",
+              "root_cause_evidence"
+            ],
+            "instruction": "Verify change_summary against mutation_scope and requirements",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "verification_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "verify_4",
+            "task_id": "implement_sum_squares",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report"
+            ],
+            "instruction": "Produce final_report summarizing implementation",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "final_report"
+            ],
+            "permissions": {
+              "read_files": false,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "finalize_5",
+            "task_id": "implement_sum_squares",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "Phase-aware sequencing with discovery, design, bounded mutation, verification and finalize for safe code creation",
+        "success_criteria": [
+          "Function correctly returns sum of squares of even numbers",
+          "All phases completed in order"
+        ]
+      },
+      "prompt": "Write a Python function that takes a list of integers and returns the sum of the squares of the even numbers in the list.",
+      "status": "success"
+    }
+  ],
+  "success_count": 1
+}

@@ -33,3 +33,4 @@ Planner contract discipline pass complete. Current contract validation and promp
 Latest QA artifact:
 
 - `research/planner-contract-discipline-qa.md`
+- `research/planner-contract-hygiene-qa-2.md`
