@@ -6,15 +6,25 @@ from langgraph.graph import END, START, StateGraph
 
 from app.decompressor.runtime import DecompressorRuntime
 from app.planner.runtime import PlannerRuntime
-from app.schemas import Envelope, Plan, Result, RuntimeState
+from app.schemas import Envelope, Plan, RuntimeState
 from app.worker_kernel.runtime import WorkerKernelRuntime
 
 
-def build_graph(*, decompressor_runtime=None, client_factory=None):
+def build_graph(
+    *,
+    decompressor_runtime=None,
+    planner_runtime=None,
+    client_factory=None,
+    planner_client_factory=None,
+):
     if decompressor_runtime is None:
         client_options = {"client_factory": client_factory} if client_factory is not None else {}
         decompressor_runtime = DecompressorRuntime.from_env(**client_options)
-    planner_runtime = PlannerRuntime()
+    if planner_runtime is None:
+        planner_options = (
+            {"client_factory": planner_client_factory} if planner_client_factory is not None else {}
+        )
+        planner_runtime = PlannerRuntime.from_env(**planner_options)
     worker_kernel_runtime = WorkerKernelRuntime()
 
     def decompressor_node(state: RuntimeState) -> RuntimeState:

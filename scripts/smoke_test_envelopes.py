@@ -27,6 +27,10 @@ TEST_PROMPTS = [
 
 def run_smoke_test() -> None:
     """Run all test prompts and print Envelope quality."""
+    runtime = DecompressorRuntime.from_env()
+    success_count = 0
+    failure_count = 0
+
     print("=" * 80)
     print("DECOMPRESSOR ENVELOPE QUALITY SMOKE TEST")
     print("=" * 80)
@@ -38,10 +42,10 @@ def run_smoke_test() -> None:
         sys.stdout.flush()
 
         try:
-            runtime = DecompressorRuntime.from_env()
             start_time = time.time()
             envelope = runtime.run(prompt)
             elapsed = time.time() - start_time
+            success_count += 1
 
             print(f"✓ Envelope generated successfully in {elapsed:.2f}s")
             print()
@@ -63,12 +67,19 @@ def run_smoke_test() -> None:
             print(f"  metadata: {json.dumps(envelope.metadata, indent=4)}")
 
         except Exception as e:
+            failure_count += 1
             print(f"✗ Failed to generate Envelope: {type(e).__name__}: {e}")
 
         print()
         print("=" * 80)
         print()
         sys.stdout.flush()
+
+    print("SMOKE TEST SUMMARY")
+    print("-" * 80)
+    print(f"successful_prompts: {success_count}")
+    print(f"failed_prompts: {failure_count}")
+    print(f"runtime_metrics: {json.dumps(runtime.metrics_snapshot(), indent=4)}")
 
 
 if __name__ == "__main__":

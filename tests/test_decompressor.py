@@ -10,6 +10,7 @@ from app.decompressor.model_client import OpenAICompatibleJSONClient
 from app.decompressor.contracts import RequestClassification
 from app.decompressor.redaction import redact_secrets
 from app.decompressor.runtime import DecompressorRuntime
+from app.schemas import Envelope
 
 
 class FakePromptChainClient:
@@ -33,6 +34,45 @@ class FakeConfiguredClient(FakePromptChainClient):
     def __init__(self, **config: Any) -> None:
         self.configs.append(config)
         super().__init__(_valid_chain_responses())
+
+
+class FakePromptChain:
+    def __init__(self, outcomes: list[int | Exception]) -> None:
+        self._outcomes = list(outcomes)
+
+    def run(self, raw_input: str, request_id: str) -> Envelope:
+        if not self._outcomes:
+            raise RuntimeError("no configured outcomes")
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return Envelope(
+            request_id=request_id,
+            raw_input=raw_input,
+            normalized_input=raw_input,
+            user_goal="Test goal",
+            input_type="test_request",
+            intents=["test.intent"],
+            domains=["test"],
+            risks=[],
+            artifacts=[],
+            context_needed=[],
+            constraints=[],
+            complexity_hint="low",
+            confidence=0.9,
+            ambiguity=[],
+            assumptions=[],
+            metadata={
+                "decompressor_mode": "llm_prompt_chain",
+                "llm_prompt_chain": {
+                    "mode": "completed",
+                    "stages": ["decompress_request", "validate_envelope"],
+                    "fallback": None,
+                    "redacted_prompt_input": False,
+                    "model_calls": outcome,
+                },
+            },
+        )
 
 
 def _valid_chain_responses() -> dict[str, Any]:
@@ -751,3 +791,38 @@ def test_model_client_wraps_send_failures(monkeypatch: pytest.MonkeyPatch) -> No
             prompt="fix service.py",
             schema={"type": "object"},
         )
+
+
+def test_runtime_adds_decompressor_runtime_metadata_on_success() -> None:
+    runtime = DecompressorRuntime(prompt_chain=FakePromptChain([1]))
+
+    envelope = runtime.run("what is docker")
+
+    runtime_meta = envelope.metadata["decompressor_runtime"]
+    assert runtime_meta["elapsed_ms"] >= 0.0
+    assert runtime_meta["failure_rate"] == 0.0
+    assert runtime_meta["repair_rate"] == 0.0
+    assert runtime_meta["latency_ms_p50"] is not None
+    assert runtime_meta["latency_ms_p95"] is not None
+
+
+def test_runtime_metrics_snapshot_tracks_success_repair_and_failure_rates() -> None:
+    runtime = DecompressorRuntime(
+        prompt_chain=FakePromptChain([2, RuntimeError("prompt chain failed"), 1])
+    )
+
+    runtime.run("first")
+    with pytest.raises(RuntimeError, match="prompt chain failed"):
+        runtime.run("second")
+    runtime.run("third")
+
+    snapshot = runtime.metrics_snapshot()
+    assert snapshot["total_runs"] == 3
+    assert snapshot["successful_runs"] == 2
+    assert snapshot["failed_runs"] == 1
+    assert snapshot["repair_runs"] == 1
+    assert snapshot["failure_rate"] == pytest.approx(1 / 3)
+    assert snapshot["repair_rate"] == pytest.approx(1 / 2)
+    assert snapshot["latency_window_size"] == 3
+    assert snapshot["latency_ms_p50"] is not None
+    assert snapshot["latency_ms_p95"] is not None
