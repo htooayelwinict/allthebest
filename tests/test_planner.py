@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 
+from app.planner.env_config import build_planner_model_client
 from app.planner.prompt_chain import LLMPlanCompiler, PlannerPromptChainError
 from app.planner.runtime import PlannerRuntime
 from app.planner.validator import PlannerPlanValidator
@@ -20,6 +21,14 @@ class FakePlannerClient:
         if isinstance(response, str):
             return response
         return json.dumps(response)
+
+
+class FakeConfiguredPlannerClient(FakePlannerClient):
+    configs: list[dict[str, Any]] = []
+
+    def __init__(self, **config: Any) -> None:
+        self.configs.append(config)
+        super().__init__({"draft_plan": _complex_multi_intent_plan()})
 
 
 def _envelope(**overrides: Any) -> Envelope:
@@ -51,6 +60,41 @@ def _envelope(**overrides: Any) -> Envelope:
     }
     payload.update(overrides)
     return Envelope.model_validate(payload)
+
+
+def test_planner_env_uses_openrouter_aliases_and_latency_sort(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "PLANNER_LLM_ENABLED",
+        "PLANNER_LLM_API_KEY",
+        "PLANNER_LLM_MODEL",
+        "PLANNER_LLM_BASE_URL",
+        "PLANNER_LLM_PROVIDER_SORT",
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_MODEL",
+        "OPENROUTER_BASE_URL",
+        "OPENROUTER_PROVIDER_SORT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    FakeConfiguredPlannerClient.configs = []
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "\n".join(
+            [
+                "PLANNER_LLM_ENABLED=true",
+                "OPENROUTER_API_KEY=test-key",
+                "OPENROUTER_MODEL=test-model",
+                "OPENROUTER_BASE_URL=https://openrouter.example/api/v1",
+            ]
+        )
+    )
+
+    client = build_planner_model_client(str(dotenv), client_factory=FakeConfiguredPlannerClient)
+
+    assert client is not None
+    assert FakeConfiguredPlannerClient.configs[0]["api_key"] == "test-key"
+    assert FakeConfiguredPlannerClient.configs[0]["model"] == "test-model"
+    assert FakeConfiguredPlannerClient.configs[0]["base_url"] == "https://openrouter.example/api/v1"
+    assert FakeConfiguredPlannerClient.configs[0]["provider_sort"] == "latency"
 
 
 def _observe_only_plan(request_id: str = "req_123") -> Plan:
@@ -141,7 +185,7 @@ def _complex_multi_intent_plan(request_id: str = "req_123") -> dict[str, Any]:
                 "task_id": "task_main",
                 "instruction": "Design the async integration patch and narrow discovered target files into writable mutation scope.",
                 "input_artifacts": ["target_files", "performance_evidence", "sdk_dependency_notes"],
-                "output_artifacts": ["mutation_scope", "patch_design"],
+                "output_artifacts": ["mutation_scope", "patch_design", "rollback_plan"],
                 "max_tool_calls": 3,
                 "max_model_calls": 1,
                 "permissions": {"read_files": True, "write_files": False, "run_commands": False},
@@ -153,8 +197,8 @@ def _complex_multi_intent_plan(request_id: str = "req_123") -> dict[str, Any]:
                 "mode": "bounded_mutation",
                 "task_id": "task_main",
                 "instruction": "Patch async integration only within the approved mutation scope.",
-                "input_artifacts": ["mutation_scope", "patch_design", "performance_evidence", "sdk_dependency_notes"],
-                "output_artifacts": ["patch_result", "rollback_plan"],
+                "input_artifacts": ["mutation_scope", "patch_design", "rollback_plan", "performance_evidence", "sdk_dependency_notes"],
+                "output_artifacts": ["patch_result", "rollback_patch"],
                 "max_tool_calls": 6,
                 "max_model_calls": 1,
                 "permissions": {
@@ -171,7 +215,7 @@ def _complex_multi_intent_plan(request_id: str = "req_123") -> dict[str, Any]:
                 "mode": "verify_only",
                 "task_id": "task_main",
                 "instruction": "Run focused verification checks for patched transaction integration.",
-                "input_artifacts": ["patch_result"],
+                "input_artifacts": ["patch_result", "mutation_scope", "performance_evidence"],
                 "output_artifacts": ["verification_result"],
                 "max_tool_calls": 3,
                 "max_model_calls": 0,
@@ -341,6 +385,40 @@ def test_validator_rejects_mutation_without_rollback_artifact() -> None:
         PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
 
 
+def test_validator_rejects_mutation_without_pre_write_rollback_artifact() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][3]["output_artifacts"] = ["mutation_scope", "patch_design"]
+    payload["steps"][4]["input_artifacts"] = [
+        "mutation_scope",
+        "patch_design",
+        "performance_evidence",
+        "sdk_dependency_notes",
+    ]
+    payload["steps"][5]["input_artifacts"] = ["patch_result", "mutation_scope", "performance_evidence"]
+
+    with pytest.raises(ValueError, match="rollback/revert artifact before write"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_verify_without_mutation_context_inputs() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][5]["input_artifacts"] = ["patch_result"]
+
+    with pytest.raises(ValueError, match="consume write-scope artifacts"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_finalize_without_output_artifact() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][6]["output_artifacts"] = []
+
+    with pytest.raises(ValueError, match="FINALIZE must output"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
 def test_validator_rejects_mutation_without_stop_and_replan_metadata() -> None:
     envelope = _envelope()
     payload = _complex_multi_intent_plan()
@@ -361,7 +439,6 @@ def test_prompt_chain_draft_valid_plan_succeeds() -> None:
     assert plan.metadata["llm_planner"]["validation_errors"] == []
     assert plan.metadata["llm_planner"]["resolved_validation_errors"] == []
     assert plan.metadata["llm_planner"]["budget_auto_aligned"] is False
-    assert plan.metadata["llm_planner"]["phase_contract_auto_aligned"] is False
     assert plan.steps[0].worker_type == "repo_worker"
 
 
@@ -376,31 +453,85 @@ def test_prompt_chain_auto_aligns_budget_without_repair_when_only_budget_is_inva
     assert [call["stage"] for call in client.calls] == ["draft_plan"]
     assert plan.metadata["llm_planner"]["mode"] == "completed"
     assert plan.metadata["llm_planner"]["budget_auto_aligned"] is True
-    assert plan.metadata["llm_planner"]["phase_contract_auto_aligned"] is False
     assert plan.budget["max_tool_calls"] >= sum(step.max_tool_calls for step in plan.steps)
     assert plan.budget["max_model_calls"] >= sum(step.max_model_calls for step in plan.steps)
     assert plan.budget["max_workers"] >= len(plan.steps)
     assert plan.budget["max_retries"] == 0
 
 
-def test_prompt_chain_auto_aligns_missing_phase_contract_fields_without_repair() -> None:
+def test_prompt_chain_repairs_missing_phase_contract_fields() -> None:
     envelope = _envelope()
     draft_missing_phase_contract = _complex_multi_intent_plan()
     for step in draft_missing_phase_contract["steps"]:
         step.pop("phase", None)
         step.pop("mode", None)
         step.pop("task_id", None)
+    repaired = _complex_multi_intent_plan()
 
-    client = FakePlannerClient({"draft_plan": draft_missing_phase_contract})
+    client = FakePlannerClient({"draft_plan": draft_missing_phase_contract, "repair_plan_1": repaired})
 
     plan = LLMPlanCompiler(model_client=client).run(envelope)
 
-    assert [call["stage"] for call in client.calls] == ["draft_plan"]
-    assert plan.metadata["llm_planner"]["mode"] == "completed"
-    assert plan.metadata["llm_planner"]["phase_contract_auto_aligned"] is True
+    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan_1"]
+    assert plan.metadata["llm_planner"]["mode"] == "repaired"
     assert all(step.phase for step in plan.steps)
     assert all(step.mode for step in plan.steps)
     assert all(step.task_id for step in plan.steps)
+
+
+def test_prompt_chain_repairs_missing_execution_pattern() -> None:
+    envelope = _envelope()
+    missing_execution_pattern = _complex_multi_intent_plan()
+    missing_execution_pattern["execution_pattern"] = None
+    repaired = _complex_multi_intent_plan()
+    client = FakePlannerClient({"draft_plan": missing_execution_pattern, "repair_plan_1": repaired})
+
+    plan = LLMPlanCompiler(model_client=client).run(envelope)
+
+    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan_1"]
+    assert plan.execution_pattern == "discover_analyze_research_design_mutate_verify_finalize"
+
+
+def test_prompt_chain_repairs_scope_producer_phase() -> None:
+    envelope = _envelope()
+    misclassified_scope_producer = _complex_multi_intent_plan()
+    misclassified_scope_producer["steps"][3]["phase"] = "RESEARCH"
+    misclassified_scope_producer["steps"][3]["mode"] = "observe_only"
+    repaired = _complex_multi_intent_plan()
+    client = FakePlannerClient({"draft_plan": misclassified_scope_producer, "repair_plan_1": repaired})
+
+    plan = LLMPlanCompiler(model_client=client).run(envelope)
+
+    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan_1"]
+    assert plan.steps[3].phase == "DESIGN"
+    assert plan.steps[3].mode == "plan_only"
+
+
+def test_prompt_chain_repairs_pre_mutation_phase_inversion() -> None:
+    envelope = _envelope()
+    inverted_phases = _complex_multi_intent_plan()
+    inverted_phases["steps"][1]["phase"] = "RESEARCH"
+    inverted_phases["steps"][2]["phase"] = "ANALYZE"
+    repaired = _complex_multi_intent_plan()
+    client = FakePlannerClient({"draft_plan": inverted_phases, "repair_plan_1": repaired})
+
+    plan = LLMPlanCompiler(model_client=client).run(envelope)
+
+    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan_1"]
+    assert [step.phase for step in plan.steps[:5]] == ["DISCOVER", "ANALYZE", "RESEARCH", "DESIGN", "MUTATE"]
+
+
+def test_prompt_chain_repairs_missing_write_scope_from_design() -> None:
+    envelope = _envelope()
+    missing_write_scope = _complex_multi_intent_plan()
+    missing_write_scope["steps"][4]["permissions"].pop("write_paths_from_artifacts")
+    repaired = _complex_multi_intent_plan()
+    client = FakePlannerClient({"draft_plan": missing_write_scope, "repair_plan_1": repaired})
+
+    plan = LLMPlanCompiler(model_client=client).run(envelope)
+
+    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan_1"]
+    assert plan.steps[4].permissions["write_paths_from_artifacts"] == ["mutation_scope"]
 
 
 def test_prompt_chain_repairs_invalid_plan_once() -> None:
@@ -408,38 +539,34 @@ def test_prompt_chain_repairs_invalid_plan_once() -> None:
     invalid_draft = _complex_multi_intent_plan()
     invalid_draft["steps"][0]["worker_type"] = "unknown_worker"
     repaired = _complex_multi_intent_plan()
-    client = FakePlannerClient({"draft_plan": invalid_draft, "repair_plan": repaired})
+    client = FakePlannerClient({"draft_plan": invalid_draft, "repair_plan_1": repaired})
 
     plan = LLMPlanCompiler(model_client=client).run(envelope)
 
-    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan"]
+    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan_1"]
     assert plan.metadata["llm_planner"]["mode"] == "repaired"
     assert plan.metadata["llm_planner"]["repair_attempted"] is True
     assert plan.metadata["llm_planner"]["validation_errors"] == []
     assert plan.metadata["llm_planner"]["resolved_validation_errors"]
 
 
-def test_prompt_chain_repair_can_auto_align_missing_phase_contract_fields() -> None:
+def test_prompt_chain_second_repair_attempts_remaining_validation_errors() -> None:
     envelope = _envelope()
     invalid_draft = _complex_multi_intent_plan()
     invalid_draft["steps"][0]["worker_type"] = "unknown_worker"
 
-    repaired_missing_phase_contract = _complex_multi_intent_plan()
-    for step in repaired_missing_phase_contract["steps"]:
-        step.pop("phase", None)
-        step.pop("mode", None)
-        step.pop("task_id", None)
+    still_invalid = _complex_multi_intent_plan()
+    still_invalid["steps"][4]["permissions"].pop("write_paths_from_artifacts")
+    final_repaired = _complex_multi_intent_plan()
 
-    client = FakePlannerClient({"draft_plan": invalid_draft, "repair_plan": repaired_missing_phase_contract})
+    client = FakePlannerClient({"draft_plan": invalid_draft, "repair_plan_1": still_invalid, "repair_plan_2": final_repaired})
 
     plan = LLMPlanCompiler(model_client=client).run(envelope)
 
-    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan"]
+    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan_1", "repair_plan_2"]
     assert plan.metadata["llm_planner"]["mode"] == "repaired"
-    assert plan.metadata["llm_planner"]["phase_contract_auto_aligned"] is True
-    assert all(step.phase for step in plan.steps)
-    assert all(step.mode for step in plan.steps)
-    assert all(step.task_id for step in plan.steps)
+    assert plan.metadata["llm_planner"]["model_calls"] == 3
+    assert plan.metadata["llm_planner"]["validation_errors"] == []
 
 
 def test_prompt_chain_repair_prompt_contains_validation_errors() -> None:
@@ -447,7 +574,7 @@ def test_prompt_chain_repair_prompt_contains_validation_errors() -> None:
     invalid_draft = _complex_multi_intent_plan()
     invalid_draft["steps"][0]["worker_type"] = "unknown_worker"
     repaired = _complex_multi_intent_plan()
-    client = FakePlannerClient({"draft_plan": invalid_draft, "repair_plan": repaired})
+    client = FakePlannerClient({"draft_plan": invalid_draft, "repair_plan_1": repaired})
 
     LLMPlanCompiler(model_client=client).run(envelope)
 
@@ -459,7 +586,7 @@ def test_prompt_chain_repair_prompt_contains_validation_errors() -> None:
 def test_prompt_chain_fails_after_invalid_repair() -> None:
     envelope = _envelope()
     bad_payload = {"not": "a plan"}
-    client = FakePlannerClient({"draft_plan": bad_payload, "repair_plan": bad_payload})
+    client = FakePlannerClient({"draft_plan": bad_payload, "repair_plan_1": bad_payload, "repair_plan_2": bad_payload})
 
     with pytest.raises(PlannerPromptChainError):
         LLMPlanCompiler(model_client=client).run(envelope)

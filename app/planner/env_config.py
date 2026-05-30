@@ -19,6 +19,10 @@ CONFIG_KEYS = (
     "PLANNER_LLM_RESPONSE_FORMAT",
     "PLANNER_LLM_PROVIDER_SORT",
     "PLANNER_LLM_MAX_TOKENS",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MODEL",
+    "OPENROUTER_BASE_URL",
+    "OPENROUTER_PROVIDER_SORT",
 )
 
 
@@ -56,14 +60,14 @@ def build_planner_model_client(
     if not enabled:
         return None
 
-    api_key = config.get("PLANNER_LLM_API_KEY")
-    model = config.get("PLANNER_LLM_MODEL")
+    api_key = config.get("PLANNER_LLM_API_KEY") or config.get("OPENROUTER_API_KEY")
+    model = config.get("PLANNER_LLM_MODEL") or config.get("OPENROUTER_MODEL")
     if not api_key:
-        raise ValueError("PLANNER_LLM_ENABLED=true requires PLANNER_LLM_API_KEY.")
+        raise ValueError("PLANNER_LLM_ENABLED=true requires PLANNER_LLM_API_KEY or OPENROUTER_API_KEY.")
     if not model:
-        raise ValueError("PLANNER_LLM_ENABLED=true requires PLANNER_LLM_MODEL.")
+        raise ValueError("PLANNER_LLM_ENABLED=true requires PLANNER_LLM_MODEL or OPENROUTER_MODEL.")
 
-    base_url = config.get("PLANNER_LLM_BASE_URL") or "https://api.openai.com/v1"
+    base_url = config.get("PLANNER_LLM_BASE_URL") or config.get("OPENROUTER_BASE_URL") or "https://api.openai.com/v1"
     return client_factory(
         api_key=api_key,
         model=model,
@@ -71,7 +75,7 @@ def build_planner_model_client(
         timeout_seconds=float(config.get("PLANNER_LLM_TIMEOUT_SECONDS", "30")),
         temperature=float(config.get("PLANNER_LLM_TEMPERATURE", "0")),
         response_format=config.get("PLANNER_LLM_RESPONSE_FORMAT", "json_schema"),
-        provider_sort=config.get("PLANNER_LLM_PROVIDER_SORT") or None,
+        provider_sort=config.get("PLANNER_LLM_PROVIDER_SORT") or config.get("OPENROUTER_PROVIDER_SORT") or "latency",
         max_tokens=_optional_int(config.get("PLANNER_LLM_MAX_TOKENS"), default=None),
     )
 

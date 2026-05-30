@@ -1,0 +1,1267 @@
+{
+  "failure_count": 0,
+  "generated_at": "2026-05-30T15:46:20.036910+00:00",
+  "run_count": 4,
+  "runs": [
+    {
+      "attempts": 1,
+      "envelope": {
+        "ambiguity": [
+          "root cause unknown.",
+          "no specific files or code provided.",
+          "scope of fix unclear."
+        ],
+        "artifacts": [
+          {
+            "name": "tenant billing usage rollup",
+            "type": "component"
+          },
+          {
+            "name": "partitioned event replay",
+            "type": "process"
+          },
+          {
+            "name": "API calls",
+            "type": "metric"
+          }
+        ],
+        "assumptions": [
+          "issue occurs in production billing system."
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.65,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification",
+          "rollback_plan_required"
+        ],
+        "context_needed": [
+          "billing_rollup_implementation",
+          "event_replay_mechanism",
+          "billing_consistency_check_details"
+        ],
+        "domains": [
+          "infra",
+          "billing",
+          "data"
+        ],
+        "input_type": "billing_rollup_debug_request",
+        "intents": [
+          "infra.debug",
+          "code.fix",
+          "data.consistency_verify"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 10335.773,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 10335.773,
+            "latency_ms_p95": 10335.773,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "tenant billing usage rollup double-counts API calls after partitioned event replay; find root cause, apply safe fix, include rollback plan, and verify with focused billing consistency checks",
+        "raw_input": "tenant billing usage rollup double-counts API calls after partitioned event replay; find root cause, apply safe fix, include rollback plan, and verify with focused billing consistency checks",
+        "request_id": "req_001",
+        "risks": [
+          "mutation_requested",
+          "needs_verification",
+          "ambiguous_scope"
+        ],
+        "user_goal": "identify root cause of double-counting in tenant billing usage rollup after partitioned event replay, apply safe fix with rollback plan, and verify via focused billing consistency checks"
+      },
+      "index": 1,
+      "plan": {
+        "budget": {
+          "max_model_calls": 7,
+          "max_retries": 3,
+          "max_tool_calls": 17,
+          "max_workers": 7
+        },
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no_mutation_without_rollback_plan",
+          "evidence_before_mutation",
+          "verify_after_mutation",
+          "write_paths_scoped"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": false,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "billing_rollup_debug_request",
+            "mode": "repaired",
+            "model_calls": 2,
+            "repair_attempted": true,
+            "resolved_validation_errors": [
+              {
+                "msg": "phase-aware plans must populate step.phase for every step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "phase-aware plans must populate step.mode for every step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "phase-aware plans must populate non-empty step.task_id for every step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "step step_mutate_5 write_paths_from_artifacts must reference DESIGN-produced write-scope artifacts: writable_targets",
+                "type": "planner_validation"
+              }
+            ],
+            "stages": [
+              "draft_plan",
+              "validate_plan",
+              "repair_plan_1",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "mutation_risk_high",
+            "verification_fail"
+          ],
+          "stop_conditions": [
+            "evidence_gap",
+            "dependency_failure"
+          ]
+        },
+        "objective": "tenant billing usage rollup double-counts API calls after partitioned event replay; find root cause, apply safe fix, include rollback plan, and verify with focused billing consistency checks",
+        "plan_id": "plan_billing_rollup_debug_001",
+        "planner": "infra_planner",
+        "request_id": "req_001",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover candidate locations and files for tenant billing usage rollup, partitioned event replay, and API call handling",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "discovery",
+            "output_artifacts": [
+              "candidate_locations",
+              "repo_inventory"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step_discover_1",
+            "task_id": "discover_001",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_locations",
+              "repo_inventory"
+            ],
+            "instruction": "Analyze discovered locations for double-counting root cause in billing rollup after event replay; collect evidence",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "analysis",
+            "output_artifacts": [
+              "root_cause_hypotheses",
+              "evidence_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "ANALYZE",
+            "step_id": "step_analyze_2",
+            "task_id": "analyze_002",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "evidence_artifacts",
+              "root_cause_hypotheses"
+            ],
+            "instruction": "Research billing_consistency_check_details and event_replay_mechanism using evidence",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "research",
+            "output_artifacts": [
+              "billing_consistency_check_details"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "step_research_3",
+            "task_id": "research_003",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_locations",
+              "root_cause_hypotheses",
+              "evidence_artifacts",
+              "billing_consistency_check_details"
+            ],
+            "instruction": "Design narrow mutation_scope, writable_targets, and rollback_plan from candidates and evidence",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "design",
+            "output_artifacts": [
+              "mutation_scope",
+              "writable_targets",
+              "rollback_plan"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "step_design_4",
+            "task_id": "design_004",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "writable_targets",
+              "rollback_plan",
+              "evidence_artifacts"
+            ],
+            "instruction": "Apply safe fix using mutation_scope and rollback_plan; output rollback_patch and change_summary",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "mutate",
+            "output_artifacts": [
+              "change_summary",
+              "rollback_patch"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "writable_targets"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "step_mutate_5",
+            "task_id": "mutate_005",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "mutation_scope",
+              "writable_targets",
+              "evidence_artifacts",
+              "rollback_patch"
+            ],
+            "instruction": "Verify fix using mutation output, write-scope, evidence, and focused billing consistency checks",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "verify",
+            "output_artifacts": [
+              "verification_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "step_verify_6",
+            "task_id": "verify_006",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "change_summary",
+              "rollback_patch",
+              "root_cause_hypotheses"
+            ],
+            "instruction": "Produce final_report summarizing root cause, fix, verification results, and rollback",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "finalize",
+            "output_artifacts": [
+              "final_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "step_finalize_7",
+            "task_id": "finalize_007",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "discovery-first phase-aware plan due to high ambiguity and complexity; separate discovery, evidence, design, mutation, and verification steps with explicit safety gates",
+        "success_criteria": [
+          "root_cause_identified",
+          "safe_fix_applied",
+          "consistency_verified",
+          "rollback_available",
+          "final_report_produced"
+        ]
+      },
+      "prompt": "tenant billing usage rollup double-counts API calls after partitioned event replay; find root cause, apply safe fix, include rollback plan, and verify with focused billing consistency checks",
+      "status": "success"
+    },
+    {
+      "attempts": 3,
+      "envelope": {
+        "ambiguity": [
+          "specific identity provider implementation not named.",
+          "exact code location and language unknown.",
+          "no reproduction steps or logs provided."
+        ],
+        "artifacts": [
+          {
+            "name": "identity provider sync",
+            "type": "process"
+          },
+          {
+            "name": "SCIM pagination",
+            "type": "feature"
+          },
+          {
+            "name": "cursor expiry",
+            "type": "event"
+          },
+          {
+            "name": "group memberships",
+            "type": "data"
+          },
+          {
+            "name": "authorization checks",
+            "type": "mechanism"
+          }
+        ],
+        "assumptions": [
+          "issue occurs in SCIM sync logic handling pagination state."
+        ],
+        "complexity_hint": "medium",
+        "confidence": 0.65,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification",
+          "performance_claims_require_evidence"
+        ],
+        "context_needed": [
+          "scim_implementation_details",
+          "sync_logic_source",
+          "pagination_resume_code"
+        ],
+        "domains": [
+          "infra",
+          "code"
+        ],
+        "input_type": "infra_config_debug_request",
+        "intents": [
+          "infra.debug",
+          "code.fix"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 6131.39,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 6131.39,
+            "latency_ms_p95": 6131.39,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "Identity provider sync removes active group memberships when SCIM pagination resumes after cursor expiry; identify root cause, implement safe fix, include rollback plan, and verify with focused authorization checks",
+        "raw_input": "identity provider sync removes active group memberships when SCIM pagination resumes after cursor expiry; identify root cause, implement safe fix, include rollback plan, and verify with focused authorization checks",
+        "request_id": "req_004",
+        "risks": [
+          "mutation_requested",
+          "file_mutation",
+          "needs_verification",
+          "ambiguous_scope"
+        ],
+        "user_goal": "Identify root cause of group membership removal during SCIM pagination resume after cursor expiry, implement safe fix with rollback plan, and verify using focused authorization checks"
+      },
+      "index": 2,
+      "plan": {
+        "budget": {
+          "max_model_calls": 7,
+          "max_retries": 2,
+          "max_tool_calls": 18,
+          "max_workers": 7
+        },
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no mutation without prior DESIGN rollback_plan",
+          "VERIFY consumes mutation outputs and evidence",
+          "stop on evidence_gap",
+          "single responsibility per step"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": true,
+            "envelope_complexity_hint": "medium",
+            "envelope_input_type": "infra_config_debug_request",
+            "mode": "completed",
+            "model_calls": 1,
+            "repair_attempted": false,
+            "resolved_validation_errors": [],
+            "stages": [
+              "draft_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "mutation produces unexpected side effects",
+            "verification fails authorization checks"
+          ],
+          "stop_conditions": [
+            "evidence_gap detected",
+            "dependency verification fails"
+          ]
+        },
+        "objective": "Identify root cause of group membership removal during SCIM pagination resume after cursor expiry, implement safe fix with rollback plan, and verify using focused authorization checks",
+        "plan_id": "plan_req_004_scim_fix",
+        "planner": "system_planner",
+        "request_id": "req_004",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover SCIM sync implementation files, pagination handling code, cursor expiry logic, and group membership sync paths. Output candidate_paths and repo_inventory.",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "candidate_paths",
+              "repo_inventory"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step_discover_1",
+            "task_id": "scim_pagination_fix",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "repo_inventory"
+            ],
+            "instruction": "Analyze sync process, cursor expiry events, and authorization checks for membership removal patterns. Output evidence_artifacts and root_cause_hypotheses.",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "evidence_artifacts",
+              "root_cause_hypotheses"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "ANALYZE",
+            "step_id": "step_analyze_2",
+            "task_id": "scim_pagination_fix",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "evidence_artifacts",
+              "root_cause_hypotheses"
+            ],
+            "instruction": "Research SCIM pagination resume after expiry and group membership side-effects. Output research_findings.",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "research_findings"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "step_research_3",
+            "task_id": "scim_pagination_fix",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "evidence_artifacts",
+              "research_findings"
+            ],
+            "instruction": "Narrow candidates to mutation_scope and patch_scope. Produce rollback_plan and revert_instructions. Output mutation_scope, rollback_plan.",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "rollback_plan"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "step_design_4",
+            "task_id": "scim_pagination_fix",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "rollback_plan",
+              "evidence_artifacts"
+            ],
+            "instruction": "Apply safe fix for pagination state handling using mutation_scope and rollback_plan. Output change_summary and rollback_patch.",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "change_summary",
+              "rollback_patch"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "mutation_scope"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "step_mutate_5",
+            "task_id": "scim_pagination_fix",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "mutation_scope",
+              "evidence_artifacts"
+            ],
+            "instruction": "Verify fix using authorization checks, consume mutation outputs and evidence. Output verification_report.",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "verification_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "step_verify_6",
+            "task_id": "scim_pagination_fix",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "rollback_patch",
+              "change_summary"
+            ],
+            "instruction": "Produce final_report summarizing root cause, fix, rollback, and verification results.",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "final_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "step_finalize_7",
+            "task_id": "scim_pagination_fix",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "discovery-first sequencing due to low confidence and ambiguity: observe repo and infra, analyze evidence, research root cause, design scoped mutation with rollback, mutate safely, verify, finalize",
+        "success_criteria": [
+          "root cause identified in evidence_artifacts",
+          "safe fix applied with rollback_patch",
+          "verification_report confirms no membership removal",
+          "final_report complete"
+        ]
+      },
+      "prompt": "identity provider sync removes active group memberships when SCIM pagination resumes after cursor expiry; identify root cause, implement safe fix, include rollback plan, and verify with focused authorization checks",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "envelope": {
+        "ambiguity": [
+          "specific implementation details and code locations unknown.",
+          "no logs or reproduction steps provided."
+        ],
+        "artifacts": [
+          {
+            "name": "notification preference service",
+            "type": "service"
+          },
+          {
+            "name": "cache warmup",
+            "type": "process"
+          },
+          {
+            "name": "profile migration",
+            "type": "process"
+          },
+          {
+            "name": "opt-outs",
+            "type": "feature"
+          }
+        ],
+        "assumptions": [
+          "service contains cache warmup and profile migration components."
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.65,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification"
+        ],
+        "context_needed": [
+          "service_implementation_details",
+          "cache_and_migration_code",
+          "consent_check_mechanisms"
+        ],
+        "domains": [
+          "services",
+          "code",
+          "infra"
+        ],
+        "input_type": "ambiguous_app_fix_request",
+        "intents": [
+          "service.debug",
+          "race_condition.investigate",
+          "fix.apply",
+          "verify.consent"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 13562.759,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 13562.759,
+            "latency_ms_p95": 13562.759,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "notification preference service ignores opt-outs after cache warmup races with profile migration; find root cause, apply safe fix, include rollback plan, and verify with focused consent checks",
+        "raw_input": "notification preference service ignores opt-outs after cache warmup races with profile migration; find root cause, apply safe fix, include rollback plan, and verify with focused consent checks",
+        "request_id": "req_005",
+        "risks": [
+          "mutation_requested",
+          "ambiguous_scope",
+          "needs_verification"
+        ],
+        "user_goal": "Identify root cause of ignored opt-outs in notification preference service due to cache warmup racing profile migration, apply safe fix with rollback plan, verify using focused consent checks"
+      },
+      "index": 3,
+      "plan": {
+        "budget": {
+          "max_model_calls": 8,
+          "max_retries": 2,
+          "max_tool_calls": 18,
+          "max_workers": 6
+        },
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no_mutation_without_prior_discovery_and_design",
+          "rollback_plan_required_before_write",
+          "evidence_required_before_mutation",
+          "write_paths_scoped_to_design_artifacts"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": false,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "ambiguous_app_fix_request",
+            "mode": "repaired",
+            "model_calls": 2,
+            "repair_attempted": true,
+            "resolved_validation_errors": [
+              {
+                "msg": "phase-aware plans must populate step.phase for every step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "phase-aware plans must populate step.mode for every step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "phase-aware plans must populate non-empty step.task_id for every step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "step step_004 with write_files must restrict writes by write_paths or write_paths_from_artifacts",
+                "type": "planner_validation"
+              }
+            ],
+            "stages": [
+              "draft_plan",
+              "validate_plan",
+              "repair_plan_1",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "verification_failed",
+            "new_race_condition_found",
+            "write_out_of_scope"
+          ],
+          "stop_conditions": [
+            "evidence_gap_detected",
+            "dependency_verification_failed",
+            "mutation_scope_empty"
+          ]
+        },
+        "objective": "Identify root cause of ignored opt-outs in notification preference service due to cache warmup racing profile migration, apply safe fix with rollback plan, verify using focused consent checks",
+        "plan_id": "plan_req_005",
+        "planner": "research_worker",
+        "request_id": "req_005",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover candidate file paths and locations for notification preference service, cache warmup, profile migration, and opt-out/consent logic.",
+            "max_model_calls": 1,
+            "max_tool_calls": 5,
+            "mode": "standard",
+            "output_artifacts": [
+              "candidate_paths",
+              "repo_inventory"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step_001",
+            "task_id": "task_001",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "repo_inventory"
+            ],
+            "instruction": "Research and collect evidence on race condition between cache warmup and profile migration affecting opt-outs; produce root_cause_evidence.",
+            "max_model_calls": 2,
+            "max_tool_calls": 3,
+            "mode": "standard",
+            "output_artifacts": [
+              "root_cause_evidence"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "step_002",
+            "task_id": "task_002",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "root_cause_evidence"
+            ],
+            "instruction": "Design narrow mutation_scope, patch_scope, allowed_write_paths, rollback_plan, and revert_instructions from evidence and candidates.",
+            "max_model_calls": 2,
+            "max_tool_calls": 2,
+            "mode": "standard",
+            "output_artifacts": [
+              "mutation_scope",
+              "rollback_plan"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "step_003",
+            "task_id": "task_003",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "rollback_plan",
+              "root_cause_evidence"
+            ],
+            "instruction": "Apply bounded fix using mutation_scope and rollback_plan; output change_summary and rollback_patch.",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "standard",
+            "output_artifacts": [
+              "change_summary",
+              "rollback_patch"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "mutation_scope"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "step_004",
+            "task_id": "task_004",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "mutation_scope",
+              "root_cause_evidence"
+            ],
+            "instruction": "Verify fix with focused consent checks; consume mutation outputs and evidence; produce verification_report.",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "standard",
+            "output_artifacts": [
+              "verification_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "step_005",
+            "task_id": "task_005",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "change_summary",
+              "rollback_patch"
+            ],
+            "instruction": "Finalize with summary report including rollback instructions and verification results.",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "standard",
+            "output_artifacts": [
+              "final_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "step_006",
+            "task_id": "task_006",
+            "worker_type": "research_worker"
+          }
+        ],
+        "strategy": "Low-confidence high-ambiguity envelope requires observe-first discovery, evidence collection, scoped design, bounded mutation, verification, and finalize with explicit safety invariants and stop conditions.",
+        "success_criteria": [
+          "root_cause_evidence produced",
+          "mutation_scope and rollback_plan produced",
+          "fix applied with rollback_patch",
+          "verification_report confirms consent checks pass",
+          "final_report delivered"
+        ]
+      },
+      "prompt": "notification preference service ignores opt-outs after cache warmup races with profile migration; find root cause, apply safe fix, include rollback plan, and verify with focused consent checks",
+      "status": "success"
+    },
+    {
+      "attempts": 2,
+      "envelope": {
+        "ambiguity": [
+          "specific code location unknown.",
+          "implementation language and framework unknown.",
+          "no provided logs or reproduction steps."
+        ],
+        "artifacts": [
+          {
+            "name": "warehouse inventory reservation service",
+            "type": "service"
+          },
+          {
+            "name": "checkout retries",
+            "type": "process"
+          },
+          {
+            "name": "stale reservation cleanup",
+            "type": "process"
+          }
+        ],
+        "assumptions": [
+          "service manages inventory reservations.",
+          "negative stock allocation is unintended."
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.65,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification"
+        ],
+        "context_needed": [
+          "target_file",
+          "source_code",
+          "concurrency_evidence"
+        ],
+        "domains": [
+          "code",
+          "infra"
+        ],
+        "input_type": "ambiguous_app_fix_request",
+        "intents": [
+          "code.fix",
+          "infra.debug"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 6803.348,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 6803.348,
+            "latency_ms_p95": 6803.348,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "Warehouse inventory reservation service allocates negative stock when checkout retries overlap stale reservation cleanup; identify root cause, implement safe fix, include rollback plan, and verify with focused concurrency checks",
+        "raw_input": "warehouse inventory reservation service allocates negative stock when checkout retries overlap stale reservation cleanup; identify root cause, implement safe fix, include rollback plan, and verify with focused concurrency checks",
+        "request_id": "req_007",
+        "risks": [
+          "mutation_requested",
+          "needs_verification",
+          "ambiguous_scope"
+        ],
+        "user_goal": "Identify root cause of negative stock allocation and implement safe fix with rollback plan and concurrency verification"
+      },
+      "index": 4,
+      "plan": {
+        "budget": {
+          "max_model_calls": 8,
+          "max_retries": 3,
+          "max_tool_calls": 25,
+          "max_workers": 7
+        },
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no_negative_stock_allocation",
+          "atomic_reservation_updates",
+          "data_integrity_preserved"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": false,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "ambiguous_app_fix_request",
+            "mode": "repaired",
+            "model_calls": 3,
+            "repair_attempted": true,
+            "resolved_validation_errors": [
+              {
+                "msg": "phase-aware plans must populate step.phase for every step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "phase-aware plans must populate step.mode for every step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "phase-aware plans must populate non-empty step.task_id for every step",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "step step_5 with write_files must restrict writes by write_paths or write_paths_from_artifacts",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "step step_5 with write_files must restrict writes by write_paths or write_paths_from_artifacts",
+                "type": "planner_validation"
+              }
+            ],
+            "stages": [
+              "draft_plan",
+              "validate_plan",
+              "repair_plan_1",
+              "validate_plan",
+              "repair_plan_2",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "mutation_failure",
+            "verification_failure"
+          ],
+          "stop_conditions": [
+            "evidence_gap_detected",
+            "dependency_verification_failed"
+          ]
+        },
+        "objective": "Identify root cause of negative stock allocation and implement safe fix with rollback plan and concurrency verification",
+        "plan_id": "plan_req_007",
+        "planner": "research_worker",
+        "request_id": "req_007",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover candidate source locations and files for warehouse inventory reservation service, checkout retries, and stale reservation cleanup processes",
+            "max_model_calls": 1,
+            "max_tool_calls": 5,
+            "mode": "discovery",
+            "output_artifacts": [
+              "candidate_paths"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step_1",
+            "task_id": "discover_candidates",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths"
+            ],
+            "instruction": "Collect concurrency evidence and identify root cause hypotheses for negative stock allocation from overlapping processes",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "evidence_collection",
+            "output_artifacts": [
+              "concurrency_evidence",
+              "root_cause_hypotheses"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "ANALYZE",
+            "step_id": "step_2",
+            "task_id": "collect_concurrency",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "root_cause_hypotheses",
+              "concurrency_evidence"
+            ],
+            "instruction": "Research safe inventory reservation patterns and verify dependencies for proposed fixes",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "pattern_research",
+            "output_artifacts": [
+              "research_findings",
+              "dependency_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "step_3",
+            "task_id": "research_patterns",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "concurrency_evidence",
+              "research_findings",
+              "dependency_artifacts"
+            ],
+            "instruction": "Design fix, narrow to mutation_scope and allowed_write_paths, produce rollback_plan",
+            "max_model_calls": 2,
+            "max_tool_calls": 3,
+            "mode": "scope_design",
+            "output_artifacts": [
+              "mutation_scope",
+              "allowed_write_paths",
+              "rollback_plan"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "step_4",
+            "task_id": "design_fix",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "allowed_write_paths",
+              "rollback_plan",
+              "concurrency_evidence"
+            ],
+            "instruction": "Apply bounded mutation using mutation_scope and rollback_plan, output rollback_patch and change_summary",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "apply_patch",
+            "output_artifacts": [
+              "rollback_patch",
+              "change_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "allowed_write_paths"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "step_5",
+            "task_id": "mutate_code",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "mutation_scope",
+              "concurrency_evidence",
+              "rollback_patch"
+            ],
+            "instruction": "Verify mutation with focused concurrency checks using change_summary, mutation_scope, and evidence artifacts",
+            "max_model_calls": 1,
+            "max_tool_calls": 5,
+            "mode": "concurrency_check",
+            "output_artifacts": [
+              "verification_report",
+              "test_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "step_6",
+            "task_id": "verify_mutation",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "test_artifacts",
+              "root_cause_hypotheses"
+            ],
+            "instruction": "Produce final_report summarizing root cause, fix, rollback, and verification results",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "report",
+            "output_artifacts": [
+              "final_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "step_7",
+            "task_id": "finalize_report",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "discovery-first sequencing with separate evidence collection, scoped design, rollback production, bounded mutation, and post-mutation verification due to high ambiguity and complexity",
+        "success_criteria": [
+          "root_cause_identified_with_evidence",
+          "safe_fix_applied_with_rollback",
+          "concurrency_verification_passed"
+        ]
+      },
+      "prompt": "warehouse inventory reservation service allocates negative stock when checkout retries overlap stale reservation cleanup; identify root cause, implement safe fix, include rollback plan, and verify with focused concurrency checks",
+      "status": "success"
+    }
+  ],
+  "success_count": 4
+}

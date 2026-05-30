@@ -104,6 +104,8 @@ class PlannerPlanValidator:
                     errors.append(f"step {step.step_id} has mode but no phase")
                 elif not step.mode.strip():
                     errors.append(f"step {step.step_id} mode must be a non-empty string")
+            if step.phase == "FINALIZE" and not step.output_artifacts:
+                errors.append(f"step {step.step_id} phase FINALIZE must output a final artifact")
             missing_permission_keys = [
                 key for key in ("read_files", "write_files", "run_commands") if key not in step.permissions
             ]
@@ -166,13 +168,57 @@ class PlannerPlanValidator:
 
         if write_step_indexes:
             first_write = min(write_step_indexes)
+            last_write = max(write_step_indexes)
+            post_mutation_verify_steps = [
+                step for step in plan.steps[last_write + 1 :] if step.worker_type == "verify_worker" and step.phase != "FINALIZE"
+            ]
+
+            pre_write_rollback_artifacts = {
+                artifact_id
+                for artifact_id, producer_index in produced_by.items()
+                if producer_index < first_write and self._artifact_matches(artifact_id, ("rollback", "revert"))
+            }
+            if not pre_write_rollback_artifacts:
+                errors.append("mutation requires a rollback/revert artifact before write")
+            elif not self._write_steps_consume_any_artifact(
+                plan=plan,
+                write_step_indexes=write_step_indexes,
+                artifacts=pre_write_rollback_artifacts,
+            ):
+                errors.append("mutation must consume pre-write rollback/revert artifact")
+
             if self._requires_discovery_before_mutation(envelope):
                 if not any(self._is_discovery_step(plan.steps[i].worker_type, plan.steps[i].permissions) for i in range(first_write)):
                     errors.append("mutation requires a prior read-only discovery step")
 
-            last_write = max(write_step_indexes)
-            if not any(step.worker_type == "verify_worker" for step in plan.steps[last_write + 1 :]):
+            if not post_mutation_verify_steps:
                 errors.append("mutation requires a later verify_worker step")
+
+            mutation_output_artifacts = {
+                artifact_id for index in write_step_indexes for artifact_id in plan.steps[index].output_artifacts
+            }
+            mutation_write_scope_artifacts = {
+                artifact_id
+                for index in write_step_indexes
+                for artifact_id in plan.steps[index].input_artifacts
+                if self._artifact_matches(artifact_id, tuple(WRITE_SCOPE_ARTIFACT_SIGNALS))
+            }
+            mutation_evidence_artifacts = {
+                artifact_id
+                for index in write_step_indexes
+                for artifact_id in plan.steps[index].input_artifacts
+                if self._artifact_matches(artifact_id, ("evidence", "root_cause"))
+            }
+            verify_input_artifacts = {
+                artifact_id for step in post_mutation_verify_steps for artifact_id in step.input_artifacts
+            }
+
+            if mutation_output_artifacts and not (verify_input_artifacts & mutation_output_artifacts):
+                errors.append("verification after mutation must consume mutation output artifacts")
+            if mutation_write_scope_artifacts and not (verify_input_artifacts & mutation_write_scope_artifacts):
+                errors.append("verification after mutation must consume write-scope artifacts used by mutation")
+            if mutation_evidence_artifacts and not (verify_input_artifacts & mutation_evidence_artifacts):
+                errors.append("verification after mutation must consume evidence/root-cause artifacts used by mutation")
 
             evidence_groups = self._required_evidence_groups(envelope)
             evidence_steps_by_group: dict[str, set[int]] = {}
@@ -234,7 +280,7 @@ class PlannerPlanValidator:
             if not any(
                 step.worker_type == "verify_worker"
                 and any(self._artifact_matches(artifact_id, ("verification", "test")) for artifact_id in step.output_artifacts)
-                for step in plan.steps[last_write + 1 :]
+                for step in post_mutation_verify_steps
             ):
                 errors.append("verification after mutation must output verification/test artifacts")
 
@@ -361,6 +407,19 @@ class PlannerPlanValidator:
     ) -> bool:
         return any(
             self._artifact_matches(artifact_id, needles)
+            for index in write_step_indexes
+            for artifact_id in plan.steps[index].input_artifacts
+        )
+
+    def _write_steps_consume_any_artifact(
+        self,
+        *,
+        plan: Plan,
+        write_step_indexes: list[int],
+        artifacts: set[str],
+    ) -> bool:
+        return any(
+            artifact_id in artifacts
             for index in write_step_indexes
             for artifact_id in plan.steps[index].input_artifacts
         )

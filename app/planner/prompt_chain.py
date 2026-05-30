@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from pydantic import ValidationError
@@ -19,45 +18,6 @@ class PlannerPromptChainError(RuntimeError):
 
 class LLMPlanCompiler:
     """Compile a validated plan from an envelope using draft+repair stages."""
-
-    _CANONICAL_PHASE_ORDER: tuple[str, ...] = (
-        "DISCOVER",
-        "ANALYZE",
-        "RESEARCH",
-        "DESIGN",
-        "MUTATE",
-        "VERIFY",
-        "FINALIZE",
-    )
-    _PHASE_TOKEN_MAP: dict[str, str] = {
-        "discover": "DISCOVER",
-        "discovery": "DISCOVER",
-        "analyze": "ANALYZE",
-        "analysis": "ANALYZE",
-        "research": "RESEARCH",
-        "design": "DESIGN",
-        "mutate": "MUTATE",
-        "patch": "MUTATE",
-        "fix": "MUTATE",
-        "implement": "MUTATE",
-        "verify": "VERIFY",
-        "validation": "VERIFY",
-        "validate": "VERIFY",
-        "test": "VERIFY",
-        "finalize": "FINALIZE",
-        "summary": "FINALIZE",
-        "summarize": "FINALIZE",
-        "report": "FINALIZE",
-    }
-    _DEFAULT_MODE_BY_PHASE: dict[str, str] = {
-        "DISCOVER": "observe_only",
-        "ANALYZE": "observe_only",
-        "RESEARCH": "observe_only",
-        "DESIGN": "plan_only",
-        "MUTATE": "bounded_mutation",
-        "VERIFY": "verify_only",
-        "FINALIZE": "summarize_only",
-    }
 
     def __init__(
         self,
@@ -78,7 +38,7 @@ class LLMPlanCompiler:
         )
 
         try:
-            plan, budget_auto_aligned, phase_contract_auto_aligned = self._parse_and_validate(
+            plan, budget_auto_aligned = self._parse_and_validate(
                 envelope=envelope,
                 response=draft_response,
             )
@@ -90,7 +50,6 @@ class LLMPlanCompiler:
                 validation_errors=[],
                 resolved_validation_errors=[],
                 budget_auto_aligned=budget_auto_aligned,
-                phase_contract_auto_aligned=phase_contract_auto_aligned,
                 envelope=envelope,
             )
             return self._with_metadata(plan, diagnostics)
@@ -98,7 +57,7 @@ class LLMPlanCompiler:
             validation_errors = self._serialize_validation_errors(draft_exc)
 
         repair_response = self._model_client.complete_json(
-            stage="repair_plan",
+            stage="repair_plan_1",
             prompt=self._repair_prompt(
                 envelope=envelope,
                 schema=schema,
@@ -109,45 +68,72 @@ class LLMPlanCompiler:
         )
 
         try:
-            repaired_plan, budget_auto_aligned, phase_contract_auto_aligned = self._parse_and_validate(
+            repaired_plan, budget_auto_aligned = self._parse_and_validate(
                 envelope=envelope,
                 response=repair_response,
             )
             diagnostics = self._build_diagnostics(
                 mode="repaired",
-                stages=["draft_plan", "validate_plan", "repair_plan", "validate_plan"],
+                stages=["draft_plan", "validate_plan", "repair_plan_1", "validate_plan"],
                 model_calls=2,
                 repair_attempted=True,
                 validation_errors=[],
                 resolved_validation_errors=validation_errors,
                 budget_auto_aligned=budget_auto_aligned,
-                phase_contract_auto_aligned=phase_contract_auto_aligned,
                 envelope=envelope,
             )
             return self._with_metadata(repaired_plan, diagnostics)
         except (ValidationError, PlannerValidationError) as repair_exc:
             repair_errors = self._serialize_validation_errors(repair_exc)
+
+        final_repair_response = self._model_client.complete_json(
+            stage="repair_plan_2",
+            prompt=self._repair_prompt(
+                envelope=envelope,
+                schema=schema,
+                draft_response=repair_response,
+                validation_errors=repair_errors,
+            ),
+            schema=schema,
+        )
+
+        try:
+            final_repaired_plan, budget_auto_aligned = self._parse_and_validate(
+                envelope=envelope,
+                response=final_repair_response,
+            )
+            diagnostics = self._build_diagnostics(
+                mode="repaired",
+                stages=["draft_plan", "validate_plan", "repair_plan_1", "validate_plan", "repair_plan_2", "validate_plan"],
+                model_calls=3,
+                repair_attempted=True,
+                validation_errors=[],
+                resolved_validation_errors=[*validation_errors, *repair_errors],
+                budget_auto_aligned=budget_auto_aligned,
+                envelope=envelope,
+            )
+            return self._with_metadata(final_repaired_plan, diagnostics)
+        except (ValidationError, PlannerValidationError) as final_repair_exc:
+            final_repair_errors = self._serialize_validation_errors(final_repair_exc)
             diagnostics = self._build_diagnostics(
                 mode="failed",
-                stages=["draft_plan", "validate_plan", "repair_plan", "validate_plan"],
-                model_calls=2,
+                stages=["draft_plan", "validate_plan", "repair_plan_1", "validate_plan", "repair_plan_2", "validate_plan"],
+                model_calls=3,
                 repair_attempted=True,
-                validation_errors=repair_errors,
-                resolved_validation_errors=validation_errors,
+                validation_errors=final_repair_errors,
+                resolved_validation_errors=[*validation_errors, *repair_errors],
                 budget_auto_aligned=False,
-                phase_contract_auto_aligned=False,
                 envelope=envelope,
             )
             raise PlannerPromptChainError(
                 f"planner prompt chain failed after repair: {json.dumps(diagnostics, sort_keys=True)}"
-            ) from repair_exc
+            ) from final_repair_exc
 
-    def _parse_and_validate(self, *, envelope: Envelope, response: str) -> tuple[Plan, bool, bool]:
+    def _parse_and_validate(self, *, envelope: Envelope, response: str) -> tuple[Plan, bool]:
         plan = Plan.model_validate_json(response)
         normalized_plan, budget_auto_aligned = self._normalize_budget(plan)
-        normalized_plan, phase_contract_auto_aligned = self._normalize_phase_contract(normalized_plan)
         validated = self._validator.validate(envelope, normalized_plan)
-        return validated, budget_auto_aligned, phase_contract_auto_aligned
+        return validated, budget_auto_aligned
 
     def _draft_prompt(self, *, envelope: Envelope, schema: dict[str, Any]) -> str:
         payload = {
@@ -168,11 +154,12 @@ class LLMPlanCompiler:
                 "Do not treat artifact names like API, dashboard, policy module, pipeline, component, or service as writable paths.",
                 "DISCOVER may output candidate paths/locations only; do not use those artifacts directly as write scope.",
                 "DESIGN must convert discovered candidates into a narrow mutation_scope, patch_scope, allowed_write_paths, or writable_targets artifact before mutation.",
+                "DESIGN must produce rollback_plan or revert_instructions before any write step.",
                 "If write_files=true appears in any step, include prior read-only discovery when constraints/context require discovery.",
                 "If write_files=true appears in any step, include a later verify_worker step.",
                 "Any write_files=true step must restrict writes with permissions.write_paths or permissions.write_paths_from_artifacts.",
                 "When using write_paths_from_artifacts, reference only DESIGN-produced write-scope artifacts named mutation_scope, patch_scope, allowed_write_paths, or writable_targets.",
-                "Any write_files=true step must output a rollback_plan, rollback_patch, revert_instructions, or change_summary artifact sufficient to undo or review the mutation.",
+                "Any write_files=true step must consume the pre-write rollback artifact and output rollback_patch, revert_instructions, or change_summary sufficient to undo or review the mutation.",
                 "For phase-aware plans, every step.permissions must explicitly include boolean read_files, write_files, and run_commands keys.",
                 "For high-complexity mutating plans, split target discovery, risk/evidence collection, and change design into separate pre-mutation steps when those contexts are required by the envelope.",
                 "If envelope context/constraints require evidence, produce evidence artifacts before mutation and pass them into mutation.",
@@ -180,7 +167,9 @@ class LLMPlanCompiler:
                 "If envelope context/constraints require dependency verification, produce dependency artifacts before mutation and pass them into mutation.",
                 "If dependency verification fails or is inconclusive, stop or replan before mutation.",
                 "Any mutation plan must include metadata.stop_conditions and metadata.replan_triggers as non-empty string arrays.",
+                "Verification after mutation must consume mutation output artifacts, the write-scope artifact, and any evidence/root-cause artifacts used by mutation.",
                 "Verification after mutation must output verification/test artifacts.",
+                "FINALIZE steps must output a final_report, final_summary, or equivalent final artifact.",
                 "For phase-aware mutating plans, include FINALIZE after VERIFY.",
                 "Low confidence or high ambiguity should favor observe-first/discovery-first sequencing.",
                 "Do not combine discovery, evidence collection, design, mutation, and verification into one overloaded worker step.",
@@ -202,7 +191,9 @@ class LLMPlanCompiler:
                 "path_scoped_writes": "Write steps must be scoped to explicit write_paths or DESIGN-produced write-scope artifacts via write_paths_from_artifacts.",
                 "candidate_paths_are_not_write_scope": "DISCOVER artifacts such as target_files, candidate_paths, repo_inventory, manifests, and source locations are candidates only; DESIGN must narrow them into mutation_scope, patch_scope, allowed_write_paths, or writable_targets before mutation.",
                 "artifact_names_are_not_paths": "Envelope artifacts are semantic hints unless explicitly resolved into file paths by discovery.",
+                "rollback_before_write": "DESIGN must produce rollback_plan or revert_instructions before mutation, and MUTATE must consume that artifact.",
                 "rollback_required": "Write steps must produce rollback, revert, or reviewable change artifacts.",
+                "verification_context": "VERIFY must consume the change output, write scope, and evidence/root-cause artifacts used by mutation.",
                 "stop_or_replan": "Mutating plans must include stop conditions and replan triggers in plan metadata.",
                 "low_confidence": "Low confidence or high ambiguity should favor observe-first/discovery-first sequencing.",
                 "single_responsibility_steps": "Avoid overloaded worker steps that mix discovery, analysis, design, mutation, and verification.",
@@ -237,15 +228,21 @@ class LLMPlanCompiler:
                 "Use only worker types in worker_catalog.",
                 "Ensure canonical step.phase values and populated step.mode/task_id for phase-aware plans.",
                 "Ensure plan.execution_pattern and plan.global_invariants are populated for phase-aware plans.",
+                "Fix phase order regressions by changing the plan JSON, not by dropping phase metadata.",
                 "Ensure artifact dependencies reference prior outputs.",
                 "Ensure budget covers step totals.",
                 "Ensure budget includes max_tool_calls, max_model_calls, max_workers, and max_retries.",
                 "Ensure discovery-before-mutation and verify-after-write policies.",
                 "Ensure mutating phase-aware plans include FINALIZE after VERIFY.",
                 "Ensure DISCOVER outputs candidate paths only and DESIGN converts them into mutation_scope, patch_scope, allowed_write_paths, or writable_targets before mutation.",
+                "Do not output mutation_scope, patch_scope, allowed_write_paths, or writable_targets from DISCOVER/ANALYZE/RESEARCH; those are DESIGN outputs only.",
+                "Ensure DESIGN produces rollback_plan or revert_instructions before mutation, and MUTATE consumes it.",
                 "Ensure write_paths_from_artifacts references only DESIGN-produced write-scope artifacts, not broad DISCOVER artifacts.",
+                "Ensure VERIFY consumes mutation outputs, write-scope artifacts, and evidence/root-cause artifacts used by MUTATE.",
+                "Ensure FINALIZE outputs a final_report, final_summary, or equivalent final artifact.",
                 "For high-complexity mutation plans, split dependency discovery and evidence collection into separate pre-mutation steps.",
                 "Ensure mutation consumes required evidence and dependency artifacts when requested by envelope context/constraints.",
+                "If dependency_manifest is required, produce a dependency_manifest/dependency_evidence artifact before mutation and pass it into MUTATE.",
                 "Ensure write steps are path-scoped and output rollback/revert artifacts.",
                 "Ensure every phase-aware step has explicit boolean read_files/write_files/run_commands permissions.",
                 "Ensure mutating plans include metadata.stop_conditions and metadata.replan_triggers.",
@@ -280,7 +277,6 @@ class LLMPlanCompiler:
         validation_errors: list[dict[str, Any]],
         resolved_validation_errors: list[dict[str, Any]],
         budget_auto_aligned: bool,
-        phase_contract_auto_aligned: bool,
         envelope: Envelope,
     ) -> dict[str, Any]:
         return {
@@ -291,7 +287,6 @@ class LLMPlanCompiler:
             "validation_errors": validation_errors,
             "resolved_validation_errors": resolved_validation_errors,
             "budget_auto_aligned": budget_auto_aligned,
-            "phase_contract_auto_aligned": phase_contract_auto_aligned,
             "envelope_input_type": envelope.input_type,
             "envelope_complexity_hint": envelope.complexity_hint,
         }
@@ -346,88 +341,3 @@ class LLMPlanCompiler:
             return int(value)
         except (TypeError, ValueError):
             return None
-
-    def _normalize_phase_contract(self, plan: Plan) -> tuple[Plan, bool]:
-        phase_contract_required = bool((plan.execution_pattern or "").strip()) or bool(plan.global_invariants)
-        phase_contract_required = phase_contract_required or any(step.phase is not None for step in plan.steps)
-
-        if not phase_contract_required or not plan.steps:
-            return plan, False
-
-        needs_phase = any(step.phase is None for step in plan.steps)
-        needs_mode = any(step.mode is None for step in plan.steps)
-        needs_task_id = any(step.task_id is None or not step.task_id.strip() for step in plan.steps)
-
-        if not (needs_phase or needs_mode or needs_task_id):
-            return plan, False
-
-        inferred_phases = self._infer_step_phases(plan)
-        existing_task_id = next(
-            (step.task_id.strip() for step in plan.steps if step.task_id is not None and step.task_id.strip()),
-            "task_main",
-        )
-
-        updated_steps = []
-        for index, step in enumerate(plan.steps):
-            phase = step.phase or inferred_phases[index]
-            mode = step.mode if step.mode is not None and step.mode.strip() else self._DEFAULT_MODE_BY_PHASE.get(phase, "observe_only")
-            task_id = step.task_id if step.task_id is not None and step.task_id.strip() else existing_task_id
-            updated_steps.append(
-                step.model_copy(
-                    update={
-                        "phase": phase,
-                        "mode": mode,
-                        "task_id": task_id,
-                    }
-                )
-            )
-
-        return plan.model_copy(update={"steps": updated_steps}), True
-
-    def _infer_step_phases(self, plan: Plan) -> list[str]:
-        step_count = len(plan.steps)
-        phases_from_pattern = self._phases_from_execution_pattern(plan.execution_pattern)
-        if phases_from_pattern:
-            stretched = self._stretch_phases(phases_from_pattern, step_count)
-        else:
-            stretched = self._stretch_phases(list(self._CANONICAL_PHASE_ORDER), step_count)
-
-        write_indexes = [
-            index
-            for index, step in enumerate(plan.steps)
-            if bool(step.permissions.get("write_files", False))
-        ]
-        if write_indexes:
-            for index in write_indexes:
-                stretched[index] = "MUTATE"
-
-            post_write = [index for index in range(max(write_indexes) + 1, step_count)]
-            if len(post_write) >= 2:
-                stretched[post_write[0]] = "VERIFY"
-                stretched[post_write[-1]] = "FINALIZE"
-
-        return stretched
-
-    def _phases_from_execution_pattern(self, execution_pattern: str | None) -> list[str]:
-        if not execution_pattern:
-            return []
-        tokens = [token for token in re.split(r"[^a-zA-Z]+", execution_pattern.lower()) if token]
-        phases: list[str] = []
-        for token in tokens:
-            phase = self._PHASE_TOKEN_MAP.get(token)
-            if phase and (not phases or phases[-1] != phase):
-                phases.append(phase)
-        return phases
-
-    def _stretch_phases(self, phases: list[str], step_count: int) -> list[str]:
-        if step_count <= 0:
-            return []
-        if not phases:
-            phases = ["DISCOVER"]
-        if step_count == 1:
-            return [phases[0]]
-        if len(phases) == 1:
-            return [phases[0]] * step_count
-
-        max_index = len(phases) - 1
-        return [phases[round((index * max_index) / (step_count - 1))] for index in range(step_count)]

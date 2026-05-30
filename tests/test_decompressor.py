@@ -667,9 +667,12 @@ def test_llm_prompt_chain_describes_vague_mutation_without_observe_first_intent(
 def test_model_client_sends_expected_kwargs_and_extracts_string(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_init: dict[str, Any] = {}
     captured_send: dict[str, Any] = {}
+    init_count = 0
 
     class FakeOpenRouter:
         def __init__(self, **kwargs: Any) -> None:
+            nonlocal init_count
+            init_count += 1
             captured_init.update(kwargs)
 
         def __enter__(self) -> "FakeOpenRouter":
@@ -706,8 +709,15 @@ def test_model_client_sends_expected_kwargs_and_extracts_string(monkeypatch: pyt
         prompt="fix service.py",
         schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
     )
+    second_response = client.complete_json(
+        stage="repair_envelope",
+        prompt="fix service.py",
+        schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
+    )
 
     assert response == '{"ok":true}'
+    assert second_response == '{"ok":true}'
+    assert init_count == 1
     assert captured_init["api_key"] == "test-key"
     assert captured_init["server_url"] == "https://openrouter.example/v1"
     assert captured_init["timeout_ms"] == 12500

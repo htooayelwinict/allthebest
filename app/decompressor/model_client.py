@@ -30,6 +30,11 @@ class OpenAICompatibleJSONClient:
         self._response_format = response_format
         self._provider_sort = provider_sort
         self._max_tokens = max_tokens
+        self._client = OpenRouter(
+            api_key=self._api_key,
+            server_url=self._base_url,
+            timeout_ms=int(self._timeout_seconds * 1000),
+        )
 
     def complete_json(self, *, stage: str, prompt: str, schema: dict[str, Any]) -> str:
         kwargs: dict[str, Any] = {
@@ -51,12 +56,7 @@ class OpenAICompatibleJSONClient:
             kwargs["provider"] = {"sort": self._provider_sort}
 
         try:
-            with OpenRouter(
-                api_key=self._api_key,
-                server_url=self._base_url,
-                timeout_ms=int(self._timeout_seconds * 1000),
-            ) as client:
-                response = client.chat.send(**kwargs)
+            response = self._client.chat.send(**kwargs)
         except Exception as exc:  # pragma: no cover - SDK/network variability
             raise RuntimeError(f"Model request for stage {stage} failed before receiving a response.") from exc
 
