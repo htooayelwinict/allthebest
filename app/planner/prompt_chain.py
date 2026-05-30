@@ -16,6 +16,75 @@ class PlannerPromptChainError(RuntimeError):
     """Raised when planner prompt-chain generation fails."""
 
 
+_DIRECT_SUPPORT_GLOBAL_INVARIANTS = ("no_tools", "no_file_access", "answer_from_user_input_only")
+_DIRECT_SUPPORT_INSTRUCTION = (
+    "Known facts: User needs direct support from the provided input only. "
+    "Unknowns: Missing details from context_needed or ambiguity, if any. "
+    "Do now: Ask concise clarifying questions if needed and provide immediate harmless guidance. "
+    "Do not do: Do not use tools, files, commands, or invent unsupported provider-specific facts. "
+    "Output: direct_guidance with safe next steps or clarification."
+)
+_INSTRUCTION_CONTEXT_LABELS = ("Known facts:", "Unknowns:", "Do now:", "Do not do:", "Output:")
+_INSTRUCTION_CONTEXT_REPAIR_GOAL = (
+    "Rewrite only the instruction text as needed so the context block leads the instruction and remains compact, "
+    "accurate, and step-specific."
+)
+
+
+def _direct_support_plan_template() -> dict[str, Any]:
+    return {
+        "plan_id": "plan_<request_id>_direct_support",
+        "request_id": "<request_id>",
+        "planner": "direct_support_planner",
+        "objective": "Provide direct support without repository, file, command, or worker-runtime side effects.",
+        "strategy": "phase_aware_direct_support",
+        "execution_pattern": "finalize",
+        "global_invariants": list(_DIRECT_SUPPORT_GLOBAL_INVARIANTS),
+        "steps": [
+            {
+                "step_id": "direct_support_response",
+                "worker_type": "direct_worker",
+                "phase": "FINALIZE",
+                "mode": "summarize_only",
+                "task_id": "direct_support",
+                "instruction": _DIRECT_SUPPORT_INSTRUCTION,
+                "input_artifacts": [],
+                "output_artifacts": ["direct_guidance"],
+                "max_tool_calls": 0,
+                "max_model_calls": 1,
+                "permissions": {"read_files": False, "write_files": False, "run_commands": False},
+            }
+        ],
+        "budget": {"max_tool_calls": 0, "max_model_calls": 1, "max_workers": 1, "max_retries": 0},
+        "success_criteria": [
+            "User receives a direct response with appropriate clarification or safe immediate guidance."
+        ],
+        "metadata": {"archetype": "direct_support"},
+    }
+
+
+def _instruction_context_block(*, repair: bool = False) -> dict[str, Any]:
+    block: dict[str, Any] = {"required_prefix_labels": list(_INSTRUCTION_CONTEXT_LABELS)}
+    if repair:
+        block["repair_goal"] = _INSTRUCTION_CONTEXT_REPAIR_GOAL
+        return block
+
+    block.update(
+        {
+            "field_definitions": {
+                "Known facts": "Essential envelope facts plus prior artifact names needed by the worker.",
+                "Unknowns": "Missing details, ambiguity, or evidence gaps; use none when none.",
+                "Do now": "One primary action for this step and only this step.",
+                "Do not do": "Scope, safety, permission, evidence, and mutation boundaries.",
+                "Output": "Expected output artifact names and success signal.",
+            },
+            "direct_support_example": "Known facts: MRT card is not working and commute is tomorrow. Unknowns: city/network, card type, exact error, balance/top-up status. Do now: Ask focused questions and give safe legal backup commute steps. Do not do: Do not use tools/files or suggest fare evasion. Output: direct_guidance with immediate troubleshooting and backup options.",
+            "mutation_example": "Known facts: root_cause_evidence, mutation_scope, rollback_plan, and fix_design are available. Unknowns: none unless evidence_gap is material. Do now: Apply the scoped fix only within mutation_scope. Do not do: Do not write outside scope or claim success without verification. Output: change_summary and rollback_patch.",
+        }
+    )
+    return block
+
+
 class LLMPlanCompiler:
     """Compile a validated plan from an envelope using draft+repair stages."""
 
@@ -155,6 +224,10 @@ class LLMPlanCompiler:
                 "Use step.task_id to group multi-task work; for single-task plans use a stable non-empty task_id.",
                 "If any step has phase/mode/task_id, set top-level plan.execution_pattern to a non-empty snake_case phase sequence such as discover_analyze_design_mutate_verify_finalize.",
                 "If any step has phase/mode/task_id, set top-level plan.global_invariants to a non-empty list of explicit safety invariants.",
+                "Every generated step.instruction must start with a compact instruction context block using exactly these labels in this order: Known facts:, Unknowns:, Do now:, Do not do:, Output:.",
+                "Keep instruction context blocks short but self-contained so a worker can act safely without hidden envelope context.",
+                "For direct_support instructions, include user-visible facts, missing details, immediate guidance/clarifying action, no-tool/no-file boundaries, and direct_guidance output.",
+                "For mutation-sensitive instructions, include mutation_scope, rollback_plan, evidence/design artifacts, no writes outside scope, and required change/rollback/verification outputs where relevant.",
                 "Every step.input_artifact must be produced by an earlier step.output_artifacts.",
                 "Never copy envelope.artifacts into step.input_artifacts; envelope.artifacts are semantic planning hints only, not runtime artifacts.",
                 "Plan budget must cover all step max_tool_calls/max_model_calls and step count.",
@@ -227,23 +300,7 @@ class LLMPlanCompiler:
                         "domains include code or security with requested change/diagnosis",
                         "user asks to identify root cause and apply/design a safe fix with rollback or verification",
                     ],
-                    "shape": {
-                        "execution_pattern": "finalize",
-                        "global_invariants": ["no_tools", "no_file_access", "answer_from_user_input_only"],
-                        "steps": [
-                            {
-                                "worker_type": "direct_worker",
-                                "phase": "FINALIZE",
-                                "mode": "summarize_only",
-                                "task_id": "direct_support",
-                                "input_artifacts": [],
-                                "output_artifacts": ["direct_guidance"],
-                                "permissions": {"read_files": False, "write_files": False, "run_commands": False},
-                                "max_tool_calls": 0,
-                                "max_model_calls": 1,
-                            }
-                        ],
-                    },
+                    "shape": "Use direct_support_plan_template exactly.",
                     "instruction_requirements": [
                         "Ask concise clarifying questions when context_needed or ambiguity is non-empty.",
                         "Include immediate safe guidance when the user has urgency or can take harmless next steps.",
@@ -251,38 +308,13 @@ class LLMPlanCompiler:
                     ],
                 }
             },
-            "direct_support_plan_template": {
-                "plan_id": "plan_<request_id>_direct_support",
-                "request_id": "<request_id>",
-                "planner": "direct_support_planner",
-                "objective": "Provide direct support without repository, file, command, or worker-runtime side effects.",
-                "strategy": "phase_aware_direct_support",
-                "execution_pattern": "finalize",
-                "global_invariants": ["no_tools", "no_file_access", "answer_from_user_input_only"],
-                "steps": [
-                    {
-                        "step_id": "direct_support_response",
-                        "worker_type": "direct_worker",
-                        "phase": "FINALIZE",
-                        "mode": "summarize_only",
-                        "task_id": "direct_support",
-                        "instruction": "Ask concise clarifying questions if needed and provide immediate harmless guidance from the user input only.",
-                        "input_artifacts": [],
-                        "output_artifacts": ["direct_guidance"],
-                        "max_tool_calls": 0,
-                        "max_model_calls": 1,
-                        "permissions": {"read_files": False, "write_files": False, "run_commands": False},
-                    }
-                ],
-                "budget": {"max_tool_calls": 0, "max_model_calls": 1, "max_workers": 1, "max_retries": 0},
-                "success_criteria": ["User receives a direct response with appropriate clarification or safe immediate guidance."],
-                "metadata": {"archetype": "direct_support"},
-            },
+            "direct_support_plan_template": _direct_support_plan_template(),
             "artifact_mapping_rules": {
                 "envelope.artifacts": "Semantic hints for planning and wording only; never valid as step.input_artifacts by themselves.",
                 "step.output_artifacts": "Runtime artifacts produced by earlier steps.",
                 "step.input_artifacts": "Runtime artifacts from earlier step.output_artifacts only; direct_support plans should use an empty list.",
             },
+            "instruction_context_block": _instruction_context_block(),
             "phase_model": {
                 "DISCOVER": {"default_mode": "observe_only", "worker_types": ["repo_worker", "infra_worker", "research_worker"]},
                 "ANALYZE": {"default_mode": "observe_only", "worker_types": ["research_worker", "infra_worker", "repo_worker"]},
@@ -319,6 +351,9 @@ class LLMPlanCompiler:
                 "Ensure canonical step.phase values and populated step.mode/task_id for phase-aware plans.",
                 "Use only allowed_modes for step.mode; do not invent semantic mode names like discovery, analysis, scope_design, apply_patch, standard, or concurrency_check.",
                 "Map phases to modes exactly: DISCOVER/ANALYZE/RESEARCH=observe_only, DESIGN=plan_only, MUTATE=bounded_mutation, VERIFY=verify_only, FINALIZE=summarize_only.",
+                "Repair every missing, weak, or non-leading instruction context block so each step.instruction starts with exactly these labels in order: Known facts:, Unknowns:, Do now:, Do not do:, Output:.",
+                "When repairing instruction context blocks, preserve valid plan shape while adding essential facts, unknowns, action, prohibitions, and expected output artifacts.",
+                "For mutation-sensitive repaired instructions, mention mutation_scope, rollback_plan, evidence/design context, no writes outside scope, and change/rollback/verification outputs where relevant.",
                 "If validation_errors mention plan.execution_pattern, add a non-empty top-level execution_pattern field; do not leave it null, empty, or omitted.",
                 "If validation_errors mention plan.global_invariants, add a non-empty top-level global_invariants array; do not leave it empty or omitted.",
                 "For any phase-aware plan, top-level execution_pattern and global_invariants are required even though the JSON schema allows compatibility omissions.",
@@ -351,49 +386,10 @@ class LLMPlanCompiler:
             "envelope": envelope.model_dump(mode="json"),
             "allowed_modes": ALLOWED_MODES,
             "write_scope_artifacts": WRITE_SCOPE_ARTIFACTS,
-            "direct_support_archetype": {
-                "execution_pattern": "finalize",
-                "global_invariants": ["no_tools", "no_file_access", "answer_from_user_input_only"],
-                "step": {
-                    "worker_type": "direct_worker",
-                    "phase": "FINALIZE",
-                    "mode": "summarize_only",
-                    "task_id": "direct_support",
-                    "input_artifacts": [],
-                    "output_artifacts": ["direct_guidance"],
-                    "permissions": {"read_files": False, "write_files": False, "run_commands": False},
-                    "max_tool_calls": 0,
-                    "max_model_calls": 1,
-                },
-            },
-            "direct_support_plan_template": {
-                "plan_id": "plan_<request_id>_direct_support",
-                "request_id": "<request_id>",
-                "planner": "direct_support_planner",
-                "objective": "Provide direct support without repository, file, command, or worker-runtime side effects.",
-                "strategy": "phase_aware_direct_support",
-                "execution_pattern": "finalize",
-                "global_invariants": ["no_tools", "no_file_access", "answer_from_user_input_only"],
-                "steps": [
-                    {
-                        "step_id": "direct_support_response",
-                        "worker_type": "direct_worker",
-                        "phase": "FINALIZE",
-                        "mode": "summarize_only",
-                        "task_id": "direct_support",
-                        "instruction": "Ask concise clarifying questions if needed and provide immediate harmless guidance from the user input only.",
-                        "input_artifacts": [],
-                        "output_artifacts": ["direct_guidance"],
-                        "max_tool_calls": 0,
-                        "max_model_calls": 1,
-                        "permissions": {"read_files": False, "write_files": False, "run_commands": False},
-                    }
-                ],
-                "budget": {"max_tool_calls": 0, "max_model_calls": 1, "max_workers": 1, "max_retries": 0},
-                "success_criteria": ["User receives a direct response with appropriate clarification or safe immediate guidance."],
-                "metadata": {"archetype": "direct_support"},
-            },
+            "direct_support_archetype": "Use direct_support_plan_template exactly.",
+            "direct_support_plan_template": _direct_support_plan_template(),
             "worker_catalog": WORKER_CATALOG,
+            "instruction_context_block": _instruction_context_block(repair=True),
             "plan_schema": schema,
         }
         return json.dumps(payload, sort_keys=True)

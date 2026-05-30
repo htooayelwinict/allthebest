@@ -1,0 +1,164 @@
+{
+  "failure_count": 0,
+  "generated_at": "2026-05-30T20:13:13.531343+00:00",
+  "run_count": 1,
+  "runs": [
+    {
+      "attempts": 1,
+      "envelope": {
+        "ambiguity": [
+          "cause of the girlfriend being upset is unspecified.",
+          "relationship context and history are unknown.",
+          "user age and safety context are not provided.",
+          "scope of desired plan detail is unspecified."
+        ],
+        "artifacts": [
+          {
+            "name": "girlfriend",
+            "type": "person"
+          },
+          {
+            "name": "user",
+            "type": "person"
+          },
+          {
+            "name": "plan",
+            "type": "deliverable"
+          },
+          {
+            "name": "conflict",
+            "type": "situation"
+          }
+        ],
+        "assumptions": [
+          "user is seeking constructive, non-harmful relationship advice.",
+          "the request is for communication/behavior guidance rather than legal or clinical intervention."
+        ],
+        "complexity_hint": "medium",
+        "confidence": 0.93,
+        "constraints": [
+          "guidance_should_prioritize_respect_honesty_and_consent",
+          "avoid_manipulative_or_coercive_tactics",
+          "do_not_assume_fault_details_without_user_context",
+          "recommendations_should_be_non_harmful_and_age_appropriate",
+          "sensitive_advice_should_account_for_emotional_wellbeing_of_both_parties"
+        ],
+        "context_needed": [
+          "what happened and why she is upset",
+          "severity and recency of the conflict",
+          "whether there are safety concerns or abuse indicators",
+          "relationship boundaries and preferences",
+          "what the user has already said or done to apologize",
+          "desired outcome and acceptable next steps for both people"
+        ],
+        "domains": [
+          "relationships",
+          "general"
+        ],
+        "input_type": "relationship_reconciliation_guidance",
+        "intents": [
+          "advice.seek",
+          "interpersonal.repair",
+          "communication.support"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 10193.482,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 10193.482,
+            "latency_ms_p95": 10193.482,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "User says their girlfriend is upset and asks for help creating a plan to make amends.",
+        "raw_input": "I have a girlfriend who is upset with me. I want to make it up to her. Can you help me come up with a plan to do that?",
+        "request_id": "req_001",
+        "risks": [
+          "emotional_harm_if_misguided",
+          "ambiguous_scope",
+          "needs_context_for_safe_guidance"
+        ],
+        "user_goal": "Get guidance on how to repair the relationship after upsetting their girlfriend."
+      },
+      "index": 1,
+      "plan": {
+        "budget": {
+          "max_model_calls": 1,
+          "max_retries": 0,
+          "max_tool_calls": 0,
+          "max_workers": 1
+        },
+        "execution_pattern": "finalize",
+        "global_invariants": [
+          "no_tools",
+          "no_file_access",
+          "answer_from_user_input_only"
+        ],
+        "metadata": {
+          "archetype": "direct_support",
+          "llm_planner": {
+            "budget_auto_aligned": false,
+            "envelope_complexity_hint": "medium",
+            "envelope_input_type": "relationship_reconciliation_guidance",
+            "mode": "completed",
+            "model_calls": 1,
+            "repair_attempted": false,
+            "resolved_validation_errors": [],
+            "stages": [
+              "draft_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          }
+        },
+        "objective": "Provide direct, safe relationship-repair guidance from user input only, including concise clarifying questions and immediate next steps to make amends respectfully.",
+        "plan_id": "plan_req_001_direct_support",
+        "planner": "direct_support_planner",
+        "request_id": "req_001",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Known facts: User says their girlfriend is upset and wants a plan to make it up to her; guidance should prioritize respect, honesty, consent, and emotional wellbeing for both people. Unknowns: What happened, how recent/severe it is, what has already been said/done, boundaries/preferences, safety concerns, and desired outcome. Do now: Ask a few concise clarifying questions and provide an immediate safe starter plan (own impact, sincere apology, listen without defensiveness, ask what repair would look like, agree on specific follow-through, give space if requested, and check in later). Do not do: Do not use tools, files, or commands; do not assume fault details; do not suggest manipulative, coercive, or harmful tactics; do not invent unsupported facts. Output: direct_guidance with clarifying questions plus practical next steps the user can take now.",
+            "max_model_calls": 1,
+            "max_tool_calls": 0,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "direct_guidance"
+            ],
+            "permissions": {
+              "read_files": false,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "direct_support_response",
+            "task_id": "direct_support",
+            "worker_type": "direct_worker"
+          }
+        ],
+        "strategy": "phase_aware_direct_support",
+        "success_criteria": [
+          "User receives a direct response with concise clarification questions and a safe, respectful step-by-step amends approach they can apply immediately."
+        ]
+      },
+      "prompt": "I have a girlfriend who is upset with me. I want to make it up to her. Can you help me come up with a plan to do that?",
+      "status": "success"
+    }
+  ],
+  "success_count": 1
+}

@@ -774,6 +774,43 @@ def test_prompt_contains_worker_catalog_and_envelope() -> None:
     assert "async_sdk_performance_refactor_request" in draft_prompt
 
 
+def test_draft_prompt_contains_instruction_context_block_policy() -> None:
+    envelope = _envelope()
+    client = FakePlannerClient({"draft_plan": _complex_multi_intent_plan()})
+
+    LLMPlanCompiler(model_client=client).run(envelope)
+
+    draft_prompt = client.calls[0]["prompt"]
+    assert "instruction_context_block" in draft_prompt
+    assert "Every generated step.instruction must start" in draft_prompt
+    assert "Known facts:" in draft_prompt
+    assert "Unknowns:" in draft_prompt
+    assert "Do now:" in draft_prompt
+    assert "Do not do:" in draft_prompt
+    assert "Output:" in draft_prompt
+    assert "mutation_scope" in draft_prompt
+    assert "rollback_plan" in draft_prompt
+
+
+def test_repair_prompt_contains_instruction_context_block_policy() -> None:
+    envelope = _envelope()
+    invalid_draft = _complex_multi_intent_plan()
+    invalid_draft["steps"][0]["worker_type"] = "unknown_worker"
+    repaired = _complex_multi_intent_plan()
+    client = FakePlannerClient({"draft_plan": invalid_draft, "repair_plan_1": repaired})
+
+    LLMPlanCompiler(model_client=client).run(envelope)
+
+    repair_prompt = client.calls[1]["prompt"]
+    assert "instruction_context_block" in repair_prompt
+    assert "Repair every missing, weak, or non-leading instruction context block" in repair_prompt
+    assert "Known facts:" in repair_prompt
+    assert "Unknowns:" in repair_prompt
+    assert "Do now:" in repair_prompt
+    assert "Do not do:" in repair_prompt
+    assert "Output:" in repair_prompt
+
+
 def test_prompt_contains_direct_support_archetype_and_artifact_mapping_rules() -> None:
     envelope = _envelope(
         raw_input="my transit card is not working",
@@ -797,6 +834,8 @@ def test_prompt_contains_direct_support_archetype_and_artifact_mapping_rules() -
     assert "direct_support" in draft_prompt
     assert "phase-aware direct_support archetype" in draft_prompt
     assert "direct_support_plan_template" in draft_prompt
+    assert "direct_support_response" in draft_prompt
+    assert "direct_support_planner" in draft_prompt
     assert "Do not output null or omitted step.phase" in draft_prompt
     assert "Never copy envelope.artifacts into step.input_artifacts" in draft_prompt
     assert "direct_support plans should use an empty list" in draft_prompt

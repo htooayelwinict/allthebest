@@ -1,0 +1,544 @@
+{
+  "generated_at": "2026-05-30T19:30:31.366539+00:00",
+  "run_count": 2,
+  "success_count": 2,
+  "failure_count": 0,
+  "qa_issue_count": 0,
+  "runs": [
+    {
+      "index": 1,
+      "name": "simple_mrt",
+      "prompt": "my mrt card is not working, can you help me fix it? I need to commute tomorrow and do not have a car",
+      "status": "success",
+      "qa_issues": [],
+      "envelope": {
+        "request_id": "req_001",
+        "raw_input": "my mrt card is not working, can you help me fix it? I need to commute tomorrow and do not have a car",
+        "normalized_input": "The user says their MRT transit card is not working and asks for help fixing it because they must commute tomorrow and do not have a car.",
+        "user_goal": "Restore or work around a non-functioning MRT card in time to commute tomorrow.",
+        "input_type": "ambiguous_transit_card_troubleshooting",
+        "intents": [
+          "consumer_support.troubleshoot",
+          "transportation.access_restore",
+          "time_sensitive_problem_resolution"
+        ],
+        "domains": [
+          "transportation",
+          "consumer_support",
+          "general"
+        ],
+        "risks": [
+          "ambiguous_scope",
+          "needs_verification",
+          "time_critical_need",
+          "service_policy_dependency"
+        ],
+        "artifacts": [
+          {
+            "name": "MRT card",
+            "type": "transit_card"
+          },
+          {
+            "name": "commute tomorrow",
+            "type": "deadline"
+          },
+          {
+            "name": "car",
+            "type": "transport_option"
+          }
+        ],
+        "context_needed": [
+          "city_or_transit_operator",
+          "card_type_and_issuer",
+          "observed_failure_mode_or_error_message",
+          "recent_top_up_or_usage_history",
+          "card_physical_condition",
+          "available_support_channels_and_hours",
+          "whether alternate_payment_methods_are_available"
+        ],
+        "constraints": [
+          "must_not_assume_specific_transit_operator_rules_without_location",
+          "diagnosis_should_be_based_on_observed_symptoms_not_unverified_causes",
+          "guidance_must_account_for_deadline_tomorrow",
+          "workaround_options_should_not_require_unverified_resources"
+        ],
+        "complexity_hint": "medium",
+        "confidence": 0.9,
+        "ambiguity": [
+          "MRT system/location is unspecified.",
+          "Exact card failure behavior is not provided.",
+          "Card type (stored-value, bank-linked, concession, etc.) is unknown.",
+          "No details on whether balance, expiry, or damage checks were already done."
+        ],
+        "assumptions": [
+          "User is referring to a public transit fare card used on an MRT system.",
+          "User needs actionable help quickly due to next-day commute.",
+          "User currently lacks private car access."
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "llm_prompt_chain": {
+            "mode": "completed",
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ],
+            "fallback": null,
+            "redacted_prompt_input": false,
+            "model_calls": 1
+          },
+          "decompressor_runtime": {
+            "elapsed_ms": 19257.356,
+            "failure_rate": 0.0,
+            "repair_rate": 0.0,
+            "latency_ms_p50": 19257.356,
+            "latency_ms_p95": 19257.356
+          }
+        }
+      },
+      "plan": {
+        "plan_id": "plan_req_001_direct_support",
+        "request_id": "req_001",
+        "planner": "direct_support_planner",
+        "objective": "Provide direct support to restore or work around a non-functioning MRT card before tomorrow\u2019s commute without any repository, file, command, or runtime side effects.",
+        "strategy": "phase_aware_direct_support",
+        "execution_pattern": "finalize",
+        "steps": [
+          {
+            "step_id": "direct_support_response",
+            "worker_type": "direct_worker",
+            "phase": "FINALIZE",
+            "mode": "summarize_only",
+            "task_id": "direct_support",
+            "instruction": "Known facts: User reports an MRT transit card is not working, commute is tomorrow, and no car is available. Unknowns: City/operator, card type/issuer, exact failure behavior or error, balance/top-up/expiry status, card condition, and available support channels/hours. Do now: Ask concise clarifying questions on those unknowns and provide immediate safe guidance (basic card checks, lawful backup fare/payment options, and urgent station/help-center escalation steps for next-day travel). Do not do: Do not use tools, files, or commands; do not invent provider-specific rules; do not suggest fare evasion or unsupported fixes. Output: direct_guidance with clarifying questions plus immediate next steps for tomorrow commute readiness.",
+            "input_artifacts": [],
+            "output_artifacts": [
+              "direct_guidance"
+            ],
+            "max_tool_calls": 0,
+            "max_model_calls": 1,
+            "permissions": {
+              "read_files": false,
+              "run_commands": false,
+              "write_files": false
+            }
+          }
+        ],
+        "budget": {
+          "max_model_calls": 1,
+          "max_retries": 0,
+          "max_tool_calls": 0,
+          "max_workers": 1
+        },
+        "global_invariants": [
+          "no_tools",
+          "no_file_access",
+          "answer_from_user_input_only"
+        ],
+        "success_criteria": [
+          "User receives concise clarifying questions and immediate safe, lawful next steps to restore or work around card access in time for tomorrow\u2019s commute."
+        ],
+        "metadata": {
+          "archetype": "direct_support",
+          "llm_planner": {
+            "mode": "completed",
+            "stages": [
+              "draft_plan",
+              "validate_plan"
+            ],
+            "model_calls": 1,
+            "repair_attempted": false,
+            "validation_errors": [],
+            "resolved_validation_errors": [],
+            "budget_auto_aligned": false,
+            "envelope_input_type": "ambiguous_transit_card_troubleshooting",
+            "envelope_complexity_hint": "medium"
+          },
+          "planner_runtime": {
+            "mode": "llm_prompt_chain",
+            "fallback_reason": null
+          }
+        }
+      }
+    },
+    {
+      "index": 2,
+      "name": "complex_fintech",
+      "prompt": "payment dispute processor closes fraud cases when duplicate bank callbacks arrive after manual review lock expires; identify root cause, apply safe fix, include rollback plan, and verify with focused dispute-state checks",
+      "status": "success",
+      "qa_issues": [],
+      "envelope": {
+        "request_id": "req_002",
+        "raw_input": "payment dispute processor closes fraud cases when duplicate bank callbacks arrive after manual review lock expires; identify root cause, apply safe fix, include rollback plan, and verify with focused dispute-state checks",
+        "normalized_input": "Investigate why the payment dispute processor incorrectly closes fraud cases when duplicate bank callbacks arrive after a manual-review lock expires, implement a safe fix, provide a rollback option, and validate with targeted dispute-state checks.",
+        "user_goal": "Resolve a concurrency/state-handling defect in dispute processing so fraud cases are not wrongly closed by late duplicate callbacks, with safe remediation and verification.",
+        "input_type": "payment_dispute_processor_race_condition_bugfix_request",
+        "intents": [
+          "code.debug",
+          "code.fix",
+          "state_machine.correctness",
+          "qa.verify",
+          "release.rollback_readiness"
+        ],
+        "domains": [
+          "code",
+          "payments",
+          "risk",
+          "qa"
+        ],
+        "risks": [
+          "mutation_requested",
+          "needs_verification",
+          "financial_workflow_integrity_risk",
+          "state_transition_regression_risk",
+          "concurrency_timing_risk"
+        ],
+        "artifacts": [
+          {
+            "name": "payment dispute processor",
+            "type": "component"
+          },
+          {
+            "name": "fraud cases",
+            "type": "case_type"
+          },
+          {
+            "name": "duplicate bank callbacks",
+            "type": "event"
+          },
+          {
+            "name": "manual review lock",
+            "type": "state_lock"
+          },
+          {
+            "name": "lock expires",
+            "type": "timing_condition"
+          },
+          {
+            "name": "rollback plan",
+            "type": "release_artifact"
+          },
+          {
+            "name": "dispute-state checks",
+            "type": "verification_scope"
+          }
+        ],
+        "context_needed": [
+          "dispute state machine definition and allowed transitions",
+          "callback idempotency/deduplication logic and keys",
+          "manual review lock lifecycle and expiration rules",
+          "code paths that close fraud cases",
+          "event ordering/timing evidence from logs or traces",
+          "existing tests covering duplicate callbacks and lock expiry",
+          "deployment/release mechanism for rollback"
+        ],
+        "constraints": [
+          "root_cause_must_be_evidence_based",
+          "state_transitions_must_remain_policy_compliant",
+          "fix_must_be_safe_under_duplicate_and_out_of_order_callbacks",
+          "idempotency_behavior_must_be_preserved_or_improved",
+          "mutation_requires_targeted_verification_of_dispute_states",
+          "rollback_path_must_restore_previous_behavior_without_data_loss"
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.94,
+        "ambiguity": [
+          "No repository, language, or service boundaries are provided.",
+          "Exact definition of 'manual review lock expires' behavior is unspecified.",
+          "Current deduplication strategy for bank callbacks is not described.",
+          "Verification environment and test harness are not specified.",
+          "Rollback mechanism details (feature flag, deploy rollback, config toggle) are not provided."
+        ],
+        "assumptions": [
+          "A software defect exists in dispute-state handling rather than user error.",
+          "Duplicate bank callbacks are expected real-world events that should be handled safely.",
+          "Fraud-case closure is controlled by application logic in the payment dispute processor."
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "llm_prompt_chain": {
+            "mode": "completed",
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ],
+            "fallback": null,
+            "redacted_prompt_input": false,
+            "model_calls": 1
+          },
+          "decompressor_runtime": {
+            "elapsed_ms": 11894.791,
+            "failure_rate": 0.0,
+            "repair_rate": 0.0,
+            "latency_ms_p50": 15576.074,
+            "latency_ms_p95": 18889.228
+          }
+        }
+      },
+      "plan": {
+        "plan_id": "plan_req_002_dispute_processor_safe_fix",
+        "request_id": "req_002",
+        "planner": "phase_aware_planner_v1",
+        "objective": "Identify evidence-based root cause of fraud-case misclosure on duplicate late callbacks, implement a narrowly scoped safe fix, provide rollback capability, and verify dispute-state correctness.",
+        "strategy": "discovery_first_evidence_driven_state_machine_fix_with_scoped_mutation_and_post_change_verification",
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "steps": [
+          {
+            "step_id": "discover_dispute_processor_context",
+            "worker_type": "repo_worker",
+            "phase": "DISCOVER",
+            "mode": "observe_only",
+            "task_id": "dispute_processor_fix",
+            "instruction": "Known facts: A concurrency/timing defect is reported in payment dispute processing involving duplicate bank callbacks after manual-review lock expiry; rollback and focused verification are required. Unknowns: Exact files, state machine implementation points, dedup keys, lock expiry handlers, and rollback mechanism location. Do now: Discover and map relevant code/tests/config paths for dispute transitions, callback ingestion/idempotency, lock lifecycle, fraud-case closure, and release rollback controls. Do not do: Do not modify files or infer root cause without concrete references. Output: repo_inventory, candidate_paths, state_machine_definition_artifacts, callback_dedup_artifacts, lock_lifecycle_artifacts, closure_path_artifacts, existing_test_inventory, release_rollback_mechanism_artifacts.",
+            "input_artifacts": [],
+            "output_artifacts": [
+              "repo_inventory",
+              "candidate_paths",
+              "state_machine_definition_artifacts",
+              "callback_dedup_artifacts",
+              "lock_lifecycle_artifacts",
+              "closure_path_artifacts",
+              "existing_test_inventory",
+              "release_rollback_mechanism_artifacts"
+            ],
+            "max_tool_calls": 3,
+            "max_model_calls": 1,
+            "permissions": {
+              "read_files": true,
+              "write_files": false,
+              "run_commands": false
+            }
+          },
+          {
+            "step_id": "analyze_root_cause_evidence",
+            "worker_type": "research_worker",
+            "phase": "ANALYZE",
+            "mode": "observe_only",
+            "task_id": "dispute_processor_fix",
+            "instruction": "Known facts: Candidate implementation and test locations are identified for dispute states, deduplication, lock expiry, and closure paths. Unknowns: Whether evidence fully proves the reported race/order condition and exact failing transition sequence. Do now: Build evidence-backed root-cause analysis linking duplicate/out-of-order callbacks, lock expiry timing, idempotency behavior, and wrongful fraud-case closure transition; record any evidence gaps explicitly. Do not do: Do not propose code mutation yet or assume runtime behavior without traceable code/test/log evidence. Output: root_cause_evidence, event_timing_evidence, analysis_evidence, evidence_gap.",
+            "input_artifacts": [
+              "candidate_paths",
+              "state_machine_definition_artifacts",
+              "callback_dedup_artifacts",
+              "lock_lifecycle_artifacts",
+              "closure_path_artifacts",
+              "existing_test_inventory"
+            ],
+            "output_artifacts": [
+              "root_cause_evidence",
+              "event_timing_evidence",
+              "analysis_evidence",
+              "evidence_gap"
+            ],
+            "max_tool_calls": 2,
+            "max_model_calls": 1,
+            "permissions": {
+              "read_files": true,
+              "write_files": false,
+              "run_commands": false
+            }
+          },
+          {
+            "step_id": "research_dependency_and_policy_checks",
+            "worker_type": "research_worker",
+            "phase": "RESEARCH",
+            "mode": "observe_only",
+            "task_id": "dispute_processor_fix",
+            "instruction": "Known facts: Root-cause and timing evidence are available with possible evidence gaps captured. Unknowns: Cross-module dependencies and policy-critical transition guards that could be impacted by a fix. Do now: Identify dependency and policy constraints for dispute-state transitions, idempotency semantics, and fraud-case closure invariants that must hold post-fix. Do not do: Do not design patch logic outside evidenced paths or ignore evidence_gap conditions. Output: dependency_artifacts, policy_transition_constraints, idempotency_invariants.",
+            "input_artifacts": [
+              "root_cause_evidence",
+              "analysis_evidence",
+              "evidence_gap",
+              "state_machine_definition_artifacts",
+              "callback_dedup_artifacts"
+            ],
+            "output_artifacts": [
+              "dependency_artifacts",
+              "policy_transition_constraints",
+              "idempotency_invariants"
+            ],
+            "max_tool_calls": 2,
+            "max_model_calls": 1,
+            "permissions": {
+              "read_files": true,
+              "write_files": false,
+              "run_commands": false
+            }
+          },
+          {
+            "step_id": "design_scoped_fix_and_rollback",
+            "worker_type": "code_worker",
+            "phase": "DESIGN",
+            "mode": "plan_only",
+            "task_id": "dispute_processor_fix",
+            "instruction": "Known facts: Evidence-backed root cause, timing analysis, dependency mapping, and policy/idempotency invariants are available; rollback readiness is required. Unknowns: None, unless evidence_gap indicates unresolved material uncertainty. Do now: Produce a minimal safe change design that prevents wrongful closure under duplicate/out-of-order callbacks after lock expiry, define narrow mutation_scope, define rollback_plan, and define focused verification_plan tied to dispute-state checks. Do not do: Do not authorize mutation if evidence_gap is material; do not expand scope beyond evidenced paths. Output: fix_design, mutation_scope, rollback_plan, verification_plan, allowed_write_paths, replan_signal.",
+            "input_artifacts": [
+              "root_cause_evidence",
+              "event_timing_evidence",
+              "analysis_evidence",
+              "evidence_gap",
+              "dependency_artifacts",
+              "policy_transition_constraints",
+              "idempotency_invariants",
+              "release_rollback_mechanism_artifacts",
+              "existing_test_inventory"
+            ],
+            "output_artifacts": [
+              "fix_design",
+              "mutation_scope",
+              "rollback_plan",
+              "verification_plan",
+              "allowed_write_paths",
+              "replan_signal"
+            ],
+            "max_tool_calls": 1,
+            "max_model_calls": 1,
+            "permissions": {
+              "read_files": true,
+              "write_files": false,
+              "run_commands": false
+            }
+          },
+          {
+            "step_id": "mutate_apply_safe_fix",
+            "worker_type": "code_worker",
+            "phase": "MUTATE",
+            "mode": "bounded_mutation",
+            "task_id": "dispute_processor_fix",
+            "instruction": "Known facts: fix_design defines targeted logic changes, mutation_scope and allowed_write_paths bound writable files, rollback_plan exists, and root-cause evidence defines expected correction. Unknowns: None. Do now: Implement only the scoped fix and rollback artifacts consistent with design, preserving or improving idempotency under duplicate/out-of-order callback conditions. Do not do: Do not write outside mutation_scope, do not alter unrelated dispute transitions, and do not claim verification success in this step. Output: change_summary, rollback_patch, updated_test_targets.",
+            "input_artifacts": [
+              "fix_design",
+              "mutation_scope",
+              "rollback_plan",
+              "allowed_write_paths",
+              "root_cause_evidence",
+              "analysis_evidence",
+              "dependency_artifacts",
+              "replan_signal"
+            ],
+            "output_artifacts": [
+              "change_summary",
+              "rollback_patch",
+              "updated_test_targets"
+            ],
+            "max_tool_calls": 3,
+            "max_model_calls": 1,
+            "permissions": {
+              "read_files": true,
+              "write_files": true,
+              "run_commands": false,
+              "write_paths_from_artifacts": [
+                "mutation_scope"
+              ]
+            }
+          },
+          {
+            "step_id": "verify_dispute_state_behavior",
+            "worker_type": "verify_worker",
+            "phase": "VERIFY",
+            "mode": "verify_only",
+            "task_id": "dispute_processor_fix",
+            "instruction": "Known facts: Scoped code changes and rollback patch are available, with root-cause evidence and verification plan defining expected behavior. Unknowns: Whether all targeted dispute-state and idempotency behaviors now pass without regressions. Do now: Execute focused verification for duplicate callbacks after lock expiry, state-transition policy compliance, idempotency behavior, scope containment, and rollback applicability. Do not do: Do not broaden into unrelated test suites unless required by verification_plan; do not ignore failing focused checks. Output: verification_report, dispute_state_check_results, idempotency_check_results, rollback_validation_result.",
+            "input_artifacts": [
+              "change_summary",
+              "mutation_scope",
+              "verification_plan",
+              "root_cause_evidence",
+              "policy_transition_constraints",
+              "idempotency_invariants",
+              "rollback_patch",
+              "updated_test_targets"
+            ],
+            "output_artifacts": [
+              "verification_report",
+              "dispute_state_check_results",
+              "idempotency_check_results",
+              "rollback_validation_result"
+            ],
+            "max_tool_calls": 4,
+            "max_model_calls": 1,
+            "permissions": {
+              "read_files": true,
+              "write_files": false,
+              "run_commands": true
+            }
+          },
+          {
+            "step_id": "finalize_fix_report",
+            "worker_type": "verify_worker",
+            "phase": "FINALIZE",
+            "mode": "summarize_only",
+            "task_id": "dispute_processor_fix",
+            "instruction": "Known facts: Verification outputs and change/rollback artifacts are available for final disposition. Unknowns: None. Do now: Produce final implementation summary with root-cause linkage, exact scoped changes, verification outcomes, residual risks, and clear rollback instructions. Do not do: Do not introduce new mutations or unstated claims beyond produced artifacts. Output: final_report.",
+            "input_artifacts": [
+              "change_summary",
+              "rollback_patch",
+              "verification_report",
+              "dispute_state_check_results",
+              "idempotency_check_results",
+              "rollback_validation_result"
+            ],
+            "output_artifacts": [
+              "final_report"
+            ],
+            "max_tool_calls": 0,
+            "max_model_calls": 1,
+            "permissions": {
+              "read_files": true,
+              "write_files": false,
+              "run_commands": false
+            }
+          }
+        ],
+        "budget": {
+          "max_tool_calls": 15,
+          "max_model_calls": 7,
+          "max_workers": 7,
+          "max_retries": 1
+        },
+        "global_invariants": [
+          "evidence_based_root_cause_required_before_mutation",
+          "no_writes_before_design_outputs_mutation_scope_and_rollback_plan",
+          "writes_must_be_scoped_via_write_paths_from_artifacts",
+          "fix_must_preserve_or_improve_idempotency_under_duplicate_and_out_of_order_callbacks",
+          "verification_must_cover_dispute_state_checks_and_rollback_readiness",
+          "stop_or_replan_if_material_evidence_gap_persists"
+        ],
+        "success_criteria": [
+          "Root cause is documented with concrete evidence linking lock expiry and duplicate callback handling to wrongful fraud-case closure.",
+          "A minimal scoped fix is applied only within mutation_scope with rollback_patch available.",
+          "Focused verification confirms policy-compliant dispute-state transitions and safe idempotent behavior under duplicate/out-of-order callbacks.",
+          "Rollback procedure is validated and documented in final_report."
+        ],
+        "metadata": {
+          "archetype": "phase_aware_mutation",
+          "complexity": "high",
+          "domains": [
+            "code",
+            "payments",
+            "risk",
+            "qa"
+          ],
+          "llm_planner": {
+            "mode": "completed",
+            "stages": [
+              "draft_plan",
+              "validate_plan"
+            ],
+            "model_calls": 1,
+            "repair_attempted": false,
+            "validation_errors": [],
+            "resolved_validation_errors": [],
+            "budget_auto_aligned": true,
+            "envelope_input_type": "payment_dispute_processor_race_condition_bugfix_request",
+            "envelope_complexity_hint": "high"
+          },
+          "planner_runtime": {
+            "mode": "llm_prompt_chain",
+            "fallback_reason": null
+          }
+        }
+      }
+    }
+  ]
+}
