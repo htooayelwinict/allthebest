@@ -36,6 +36,9 @@ class Envelope(BaseModel):
 class PlanStep(BaseModel):
     step_id: str
     worker_type: str
+    phase: str | None = None
+    mode: str | None = None
+    task_id: str | None = None
 
     instruction: str
 
@@ -55,9 +58,11 @@ class Plan(BaseModel):
     planner: str
     objective: str
     strategy: str
+    execution_pattern: str | None = None
 
     steps: list[PlanStep]
     budget: dict[str, Any] = Field(default_factory=dict)
+    global_invariants: list[str] = Field(default_factory=list)
 
     success_criteria: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

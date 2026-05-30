@@ -86,12 +86,23 @@ def _complex_multi_intent_plan(request_id: str = "req_123") -> dict[str, Any]:
         "planner": "llm_planner",
         "objective": "Determine SDK availability, integrate async transaction APIs, and verify lag fixes.",
         "strategy": "discover_research_patch_verify",
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "global_invariants": [
+            "observe_before_mutate",
+            "target_scope_before_write",
+            "verify_after_mutation",
+            "evidence_before_claim",
+            "bounded_permissions",
+        ],
         "steps": [
             {
                 "step_id": "repo_discovery",
                 "worker_type": "repo_worker",
+                "phase": "DISCOVER",
+                "mode": "observe_only",
+                "task_id": "task_main",
                 "instruction": "Scan repo tree, dependency manifests, and candidate transaction API modules.",
-                "output_artifacts": ["repo_inventory"],
+                "output_artifacts": ["repo_inventory", "target_files", "dependency_manifest"],
                 "max_tool_calls": 4,
                 "max_model_calls": 1,
                 "permissions": {"read_files": True, "write_files": False, "run_commands": False},
@@ -99,6 +110,9 @@ def _complex_multi_intent_plan(request_id: str = "req_123") -> dict[str, Any]:
             {
                 "step_id": "performance_context",
                 "worker_type": "repo_worker",
+                "phase": "ANALYZE",
+                "mode": "observe_only",
+                "task_id": "task_main",
                 "instruction": "Collect performance evidence and lag symptoms from code and logs.",
                 "input_artifacts": ["repo_inventory"],
                 "output_artifacts": ["performance_evidence"],
@@ -109,9 +123,25 @@ def _complex_multi_intent_plan(request_id: str = "req_123") -> dict[str, Any]:
             {
                 "step_id": "sdk_research",
                 "worker_type": "research_worker",
+                "phase": "RESEARCH",
+                "mode": "observe_only",
+                "task_id": "task_main",
                 "instruction": "Determine SDK package availability and integration constraints.",
-                "input_artifacts": ["repo_inventory"],
-                "output_artifacts": ["sdk_notes"],
+                "input_artifacts": ["repo_inventory", "dependency_manifest"],
+                "output_artifacts": ["sdk_dependency_notes"],
+                "max_tool_calls": 3,
+                "max_model_calls": 1,
+                "permissions": {"read_files": True, "write_files": False, "run_commands": False},
+            },
+            {
+                "step_id": "integration_design",
+                "worker_type": "code_worker",
+                "phase": "DESIGN",
+                "mode": "plan_only",
+                "task_id": "task_main",
+                "instruction": "Design the async integration patch and narrow discovered target files into writable mutation scope.",
+                "input_artifacts": ["target_files", "performance_evidence", "sdk_dependency_notes"],
+                "output_artifacts": ["mutation_scope", "patch_design"],
                 "max_tool_calls": 3,
                 "max_model_calls": 1,
                 "permissions": {"read_files": True, "write_files": False, "run_commands": False},
@@ -119,16 +149,27 @@ def _complex_multi_intent_plan(request_id: str = "req_123") -> dict[str, Any]:
             {
                 "step_id": "async_integration_patch",
                 "worker_type": "code_worker",
-                "instruction": "Patch async integration only where discovery and SDK notes identify targets.",
-                "input_artifacts": ["repo_inventory", "performance_evidence", "sdk_notes"],
-                "output_artifacts": ["patch_result"],
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "task_id": "task_main",
+                "instruction": "Patch async integration only within the approved mutation scope.",
+                "input_artifacts": ["mutation_scope", "patch_design", "performance_evidence", "sdk_dependency_notes"],
+                "output_artifacts": ["patch_result", "rollback_plan"],
                 "max_tool_calls": 6,
                 "max_model_calls": 1,
-                "permissions": {"read_files": True, "write_files": True, "run_commands": False},
+                "permissions": {
+                    "read_files": True,
+                    "write_files": True,
+                    "run_commands": False,
+                    "write_paths_from_artifacts": ["mutation_scope"],
+                },
             },
             {
                 "step_id": "verify_integration",
                 "worker_type": "verify_worker",
+                "phase": "VERIFY",
+                "mode": "verify_only",
+                "task_id": "task_main",
                 "instruction": "Run focused verification checks for patched transaction integration.",
                 "input_artifacts": ["patch_result"],
                 "output_artifacts": ["verification_result"],
@@ -136,13 +177,37 @@ def _complex_multi_intent_plan(request_id: str = "req_123") -> dict[str, Any]:
                 "max_model_calls": 0,
                 "permissions": {"read_files": True, "write_files": False, "run_commands": True},
             },
+            {
+                "step_id": "finalize_summary",
+                "worker_type": "research_worker",
+                "phase": "FINALIZE",
+                "mode": "summarize_only",
+                "task_id": "task_main",
+                "instruction": "Summarize what changed, what was verified, and residual risk notes.",
+                "input_artifacts": ["verification_result", "rollback_plan"],
+                "output_artifacts": ["final_report"],
+                "max_tool_calls": 1,
+                "max_model_calls": 0,
+                "permissions": {"read_files": True, "write_files": False, "run_commands": False},
+            },
         ],
-        "budget": {"max_tool_calls": 20, "max_model_calls": 4, "max_workers": 5, "max_retries": 0},
+        "budget": {"max_tool_calls": 24, "max_model_calls": 5, "max_workers": 7, "max_retries": 0},
         "success_criteria": [
             "Dependency and targets discovered before mutation.",
             "Mutation verified with focused checks.",
+            "Final summary is produced.",
         ],
-        "metadata": {},
+        "metadata": {
+            "stop_conditions": [
+                "Stop before mutation if target files are not identified.",
+                "Stop before mutation if SDK/dependency availability is not confirmed.",
+                "Stop before mutation if performance/root-cause evidence is absent.",
+            ],
+            "replan_triggers": [
+                "Replan if discovered targets differ from the requested transaction APIs.",
+                "Replan if verification fails or performance evidence contradicts the assumed root cause.",
+            ],
+        },
     }
 
 
@@ -159,7 +224,8 @@ def test_validator_accepts_observe_patch_verify_plan() -> None:
     plan = Plan.model_validate(_complex_multi_intent_plan())
 
     validated = PlannerPlanValidator().validate(envelope, plan)
-    assert validated.steps[-1].worker_type == "verify_worker"
+    assert validated.steps[-2].worker_type == "verify_worker"
+    assert validated.steps[-1].phase == "FINALIZE"
 
 
 def test_validator_rejects_unknown_worker_type() -> None:
@@ -174,7 +240,7 @@ def test_validator_rejects_unknown_worker_type() -> None:
 def test_validator_rejects_missing_input_artifact() -> None:
     envelope = _envelope()
     payload = _complex_multi_intent_plan()
-    payload["steps"][3]["input_artifacts"] = ["does_not_exist"]
+    payload["steps"][4]["input_artifacts"] = ["does_not_exist"]
 
     with pytest.raises(ValueError, match="not produced by an earlier step"):
         PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
@@ -211,10 +277,76 @@ def test_validator_rejects_write_before_discovery_when_required() -> None:
 def test_validator_rejects_write_without_verify() -> None:
     envelope = _envelope()
     payload = _complex_multi_intent_plan()
-    payload["steps"] = payload["steps"][:-1]
+    payload["steps"] = payload["steps"][:-2]
     payload["budget"] = {"max_tool_calls": 17, "max_model_calls": 4, "max_workers": 4, "max_retries": 0}
 
-    with pytest.raises(ValueError, match="verify_worker"):
+    with pytest.raises(ValueError, match="verify"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_phase_aware_step_without_explicit_permissions() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][0]["permissions"] = {}
+
+    with pytest.raises(ValueError, match="permissions must explicitly include"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_overloaded_research_step_for_sdk_and_performance_evidence() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][1]["output_artifacts"].append("sdk_dependency_notes")
+    payload["steps"].pop(2)
+    payload["steps"][2]["input_artifacts"] = ["target_files", "performance_evidence", "sdk_dependency_notes"]
+    payload["budget"] = {"max_tool_calls": 21, "max_model_calls": 4, "max_workers": 6, "max_retries": 0}
+
+    with pytest.raises(ValueError, match="separate steps"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_mutation_without_performance_evidence_input() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][4]["input_artifacts"] = ["mutation_scope", "patch_design", "sdk_dependency_notes"]
+
+    with pytest.raises(ValueError, match="mutation must consume performance evidence"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_unscoped_write_permissions() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][4]["permissions"] = {"read_files": True, "write_files": True, "run_commands": False}
+
+    with pytest.raises(ValueError, match="restrict writes"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_discovery_artifact_as_write_scope() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][4]["permissions"]["write_paths_from_artifacts"] = ["target_files"]
+
+    with pytest.raises(ValueError, match="DESIGN-produced write-scope artifacts"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_mutation_without_rollback_artifact() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["steps"][4]["output_artifacts"] = ["patch_result"]
+
+    with pytest.raises(ValueError, match="rollback/revert"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_rejects_mutation_without_stop_and_replan_metadata() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["metadata"] = {}
+
+    with pytest.raises(ValueError, match="metadata.stop_conditions"):
         PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
 
 
@@ -226,7 +358,49 @@ def test_prompt_chain_draft_valid_plan_succeeds() -> None:
     assert len(client.calls) == 1
     assert client.calls[0]["stage"] == "draft_plan"
     assert plan.metadata["llm_planner"]["mode"] == "completed"
+    assert plan.metadata["llm_planner"]["validation_errors"] == []
+    assert plan.metadata["llm_planner"]["resolved_validation_errors"] == []
+    assert plan.metadata["llm_planner"]["budget_auto_aligned"] is False
+    assert plan.metadata["llm_planner"]["phase_contract_auto_aligned"] is False
     assert plan.steps[0].worker_type == "repo_worker"
+
+
+def test_prompt_chain_auto_aligns_budget_without_repair_when_only_budget_is_invalid() -> None:
+    envelope = _envelope()
+    budget_invalid = _complex_multi_intent_plan()
+    budget_invalid["budget"] = {"max_tool_calls": 1, "max_model_calls": 1, "max_workers": 1}
+    client = FakePlannerClient({"draft_plan": budget_invalid})
+
+    plan = LLMPlanCompiler(model_client=client).run(envelope)
+
+    assert [call["stage"] for call in client.calls] == ["draft_plan"]
+    assert plan.metadata["llm_planner"]["mode"] == "completed"
+    assert plan.metadata["llm_planner"]["budget_auto_aligned"] is True
+    assert plan.metadata["llm_planner"]["phase_contract_auto_aligned"] is False
+    assert plan.budget["max_tool_calls"] >= sum(step.max_tool_calls for step in plan.steps)
+    assert plan.budget["max_model_calls"] >= sum(step.max_model_calls for step in plan.steps)
+    assert plan.budget["max_workers"] >= len(plan.steps)
+    assert plan.budget["max_retries"] == 0
+
+
+def test_prompt_chain_auto_aligns_missing_phase_contract_fields_without_repair() -> None:
+    envelope = _envelope()
+    draft_missing_phase_contract = _complex_multi_intent_plan()
+    for step in draft_missing_phase_contract["steps"]:
+        step.pop("phase", None)
+        step.pop("mode", None)
+        step.pop("task_id", None)
+
+    client = FakePlannerClient({"draft_plan": draft_missing_phase_contract})
+
+    plan = LLMPlanCompiler(model_client=client).run(envelope)
+
+    assert [call["stage"] for call in client.calls] == ["draft_plan"]
+    assert plan.metadata["llm_planner"]["mode"] == "completed"
+    assert plan.metadata["llm_planner"]["phase_contract_auto_aligned"] is True
+    assert all(step.phase for step in plan.steps)
+    assert all(step.mode for step in plan.steps)
+    assert all(step.task_id for step in plan.steps)
 
 
 def test_prompt_chain_repairs_invalid_plan_once() -> None:
@@ -241,6 +415,31 @@ def test_prompt_chain_repairs_invalid_plan_once() -> None:
     assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan"]
     assert plan.metadata["llm_planner"]["mode"] == "repaired"
     assert plan.metadata["llm_planner"]["repair_attempted"] is True
+    assert plan.metadata["llm_planner"]["validation_errors"] == []
+    assert plan.metadata["llm_planner"]["resolved_validation_errors"]
+
+
+def test_prompt_chain_repair_can_auto_align_missing_phase_contract_fields() -> None:
+    envelope = _envelope()
+    invalid_draft = _complex_multi_intent_plan()
+    invalid_draft["steps"][0]["worker_type"] = "unknown_worker"
+
+    repaired_missing_phase_contract = _complex_multi_intent_plan()
+    for step in repaired_missing_phase_contract["steps"]:
+        step.pop("phase", None)
+        step.pop("mode", None)
+        step.pop("task_id", None)
+
+    client = FakePlannerClient({"draft_plan": invalid_draft, "repair_plan": repaired_missing_phase_contract})
+
+    plan = LLMPlanCompiler(model_client=client).run(envelope)
+
+    assert [call["stage"] for call in client.calls] == ["draft_plan", "repair_plan"]
+    assert plan.metadata["llm_planner"]["mode"] == "repaired"
+    assert plan.metadata["llm_planner"]["phase_contract_auto_aligned"] is True
+    assert all(step.phase for step in plan.steps)
+    assert all(step.mode for step in plan.steps)
+    assert all(step.task_id for step in plan.steps)
 
 
 def test_prompt_chain_repair_prompt_contains_validation_errors() -> None:
@@ -323,8 +522,11 @@ def test_complex_multi_intent_plan_shape() -> None:
         "repo_discovery",
         "performance_context",
         "sdk_research",
+        "integration_design",
         "async_integration_patch",
         "verify_integration",
+        "finalize_summary",
     ]
-    assert plan.steps[3].permissions.get("write_files") is True
-    assert plan.steps[4].worker_type == "verify_worker"
+    assert plan.steps[4].permissions.get("write_files") is True
+    assert plan.steps[5].worker_type == "verify_worker"
+    assert plan.steps[6].phase == "FINALIZE"

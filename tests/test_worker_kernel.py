@@ -235,3 +235,57 @@ def test_unknown_worker_handling() -> None:
 
     with pytest.raises(ValueError, match="Unknown worker_type"):
         WorkerKernelRuntime(registry=build_default_registry()).run(plan)
+
+
+def test_task_compiler_propagates_phase_mode_task_id_metadata() -> None:
+    class MetadataCaptureWorker:
+        worker_type = "direct_worker"
+        last_metadata: dict | None = None
+
+        def run(self, task: Task) -> Result:
+            type(self).last_metadata = task.metadata
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="metadata captured",
+                artifacts=[{"id": "direct_answer", "content": "ok"}],
+                usage={"tool_calls": 0, "model_calls": 0},
+            )
+
+    registry = WorkerRegistry()
+    registry.register(MetadataCaptureWorker())
+
+    plan = Plan(
+        plan_id="plan_req_phase_meta",
+        request_id="req_phase_meta",
+        planner="llm_planner",
+        objective="Capture phase metadata",
+        strategy="phase_metadata",
+        execution_pattern="discover",
+        global_invariants=["observe_before_mutate"],
+        steps=[
+            PlanStep(
+                step_id="discover_scope",
+                worker_type="direct_worker",
+                phase="DISCOVER",
+                mode="observe_only",
+                task_id="task_a",
+                instruction="collect scope",
+                output_artifacts=["direct_answer"],
+                max_tool_calls=0,
+                max_model_calls=0,
+                permissions={"read_files": True, "write_files": False, "run_commands": False},
+            )
+        ],
+        budget={"max_tool_calls": 0, "max_model_calls": 0, "max_workers": 1, "max_retries": 0},
+    )
+
+    result = WorkerKernelRuntime(registry=registry).run(plan)
+
+    assert result.status == "completed"
+    assert MetadataCaptureWorker.last_metadata == {
+        "phase": "DISCOVER",
+        "mode": "observe_only",
+        "task_id": "task_a",
+    }

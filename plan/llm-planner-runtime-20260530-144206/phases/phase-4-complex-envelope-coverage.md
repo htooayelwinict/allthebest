@@ -2,7 +2,7 @@
 
 ## Status
 
-- ✅ Completed (Lighthouse-style envelope behavior and safety coverage added in tests).
+- ✅ Completed (generic high-complexity multi-intent envelope behavior and safety coverage added in tests).
 
 ## Goal
 
@@ -10,13 +10,13 @@ Prove the LLM planner consumes all meaningful envelope fields and emits safe pla
 
 ## Scope
 
-- Add fake-client tests using the Lighthouse-style envelope.
+- Add fake-client tests using high-complexity multi-intent envelopes.
 - Add tests for lower-complexity direct/research/code/ambiguous envelopes.
 - Verify planner validation catches bad complex plans.
 
-## Lighthouse Envelope Expected Shape
+## Complex Envelope Expected Shape
 
-For `sdk_async_performance_refactor_request`, expected plan properties:
+For high-complexity mutation requests with dependency + evidence requirements, expected plan properties:
 
 - Includes repo discovery before mutation.
 - Includes dependency or SDK discovery before mutation.
@@ -24,7 +24,7 @@ For `sdk_async_performance_refactor_request`, expected plan properties:
 - Includes research step when `research.lookup` is present.
 - Includes code patch step only after discovery/research artifacts.
 - Includes verification after patch.
-- Uses `Lighthouse SDK`, `transaction APIs`, and `async function` as instruction search hints.
+- Uses envelope artifacts as search hints without hardcoding any specific product name.
 - Includes ambiguity/assumptions as caveats, not facts.
 
 ## Additional Scenarios
@@ -52,5 +52,5 @@ uv run pytest -q
 
 ## Exit Criteria
 
-- Lighthouse-style envelope has explicit regression coverage.
+- Generic complex-envelope behavior has explicit regression coverage.
 - Planner behavior is tested by safety properties, not brittle exact wording.

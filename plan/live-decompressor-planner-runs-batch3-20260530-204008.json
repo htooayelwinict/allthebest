@@ -1,0 +1,2374 @@
+{
+  "failure_count": 0,
+  "generated_at": "2026-05-30T14:10:08.623378+00:00",
+  "run_count": 8,
+  "runs": [
+    {
+      "attempts": 1,
+      "envelope": {
+        "ambiguity": [
+          "specific codebase or system not provided.",
+          "exact conditions for window overlap undefined."
+        ],
+        "artifacts": [
+          {
+            "name": "audit log compactor",
+            "type": "component"
+          },
+          {
+            "name": "retention windows",
+            "type": "mechanism"
+          },
+          {
+            "name": "partition repair",
+            "type": "process"
+          }
+        ],
+        "assumptions": [
+          "Issue exists in distributed audit logging infrastructure."
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.65,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification",
+          "performance_claims_require_evidence"
+        ],
+        "context_needed": [
+          "log_compactor_implementation",
+          "retention_policy_logic",
+          "partition_repair_code"
+        ],
+        "domains": [
+          "infra",
+          "security",
+          "logs"
+        ],
+        "input_type": "infra_log_compaction_debug_request",
+        "intents": [
+          "infra.debug",
+          "code.fix",
+          "verification.integrity"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 8892.009,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 8892.009,
+            "latency_ms_p95": 8892.009,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "Audit log compactor drops security-relevant entries when retention windows overlap partition repair; find root cause, apply safe fix, include rollback plan, and verify with focused audit integrity checks",
+        "raw_input": "audit log compactor drops security-relevant entries when retention windows overlap partition repair; find root cause, apply safe fix, include rollback plan, and verify with focused audit integrity checks",
+        "request_id": "req_001",
+        "risks": [
+          "mutation_requested",
+          "file_mutation",
+          "needs_verification",
+          "ambiguous_scope"
+        ],
+        "user_goal": "Identify root cause of dropped security entries in audit log compactor under overlapping retention and partition repair, apply safe fix with rollback plan, and verify via integrity checks"
+      },
+      "index": 1,
+      "plan": {
+        "budget": {
+          "max_model_calls": 7,
+          "max_retries": 2,
+          "max_tool_calls": 20,
+          "max_workers": 7
+        },
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no_mutation_without_prior_discovery_and_evidence",
+          "produce_rollback_artifact_on_any_write",
+          "stop_on_evidence_gap_before_mutation"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": false,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "infra_log_compaction_debug_request",
+            "mode": "repaired",
+            "model_calls": 2,
+            "phase_contract_auto_aligned": false,
+            "repair_attempted": true,
+            "resolved_validation_errors": [
+              {
+                "msg": "step step_5 with write_files must restrict writes by write_paths or write_paths_from_artifacts",
+                "type": "planner_validation"
+              },
+              {
+                "msg": "mutation must consume performance evidence",
+                "type": "planner_validation"
+              }
+            ],
+            "stages": [
+              "draft_plan",
+              "validate_plan",
+              "repair_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "mutation produces no rollback_patch",
+            "verification fails integrity checks"
+          ],
+          "stop_conditions": [
+            "evidence_gap detected",
+            "dependency verification fails"
+          ]
+        },
+        "objective": "Identify root cause of dropped security entries in audit log compactor under overlapping retention and partition repair, apply safe fix with rollback plan, and verify via integrity checks",
+        "plan_id": "plan_req_001",
+        "planner": "infra_planner",
+        "request_id": "req_001",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover candidate locations for audit log compactor, retention windows, and partition repair using envelope artifacts as search hints only",
+            "max_model_calls": 1,
+            "max_tool_calls": 5,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "candidate_paths"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step_1",
+            "task_id": "task_001",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths"
+            ],
+            "instruction": "Analyze retention policy logic and partition repair interactions for overlap conditions causing dropped entries; collect performance evidence",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "analysis_evidence",
+              "performance_evidence"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "ANALYZE",
+            "step_id": "step_2",
+            "task_id": "task_001",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "analysis_evidence"
+            ],
+            "instruction": "Research root cause from analysis_evidence and produce evidence_gap if insufficient",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "root_cause_report",
+              "evidence_gap"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "step_3",
+            "task_id": "task_001",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "root_cause_report"
+            ],
+            "instruction": "Design narrow mutation_scope, patch, and rollback_plan from root_cause_report; stop if evidence_gap present",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "rollback_plan"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "step_4",
+            "task_id": "task_001",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "rollback_plan",
+              "performance_evidence"
+            ],
+            "instruction": "Apply bounded mutation using mutation_scope and output rollback_patch",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "rollback_patch",
+              "change_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "mutation_scope"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "step_5",
+            "task_id": "task_001",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary"
+            ],
+            "instruction": "Run focused audit integrity checks and produce verification_report",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "verification_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "step_6",
+            "task_id": "task_001",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "rollback_patch"
+            ],
+            "instruction": "Finalize with summary including rollback instructions and success status",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "final_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "step_7",
+            "task_id": "task_001",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "discovery_first_observe_only_then_design_mutate_verify due to high ambiguity and low confidence",
+        "success_criteria": [
+          "root_cause identified or evidence_gap produced",
+          "verification_report confirms integrity",
+          "rollback_plan available"
+        ]
+      },
+      "prompt": "audit log compactor drops security-relevant entries when retention windows overlap partition repair; find root cause, apply safe fix, include rollback plan, and verify with focused audit integrity checks",
+      "status": "success"
+    },
+    {
+      "attempts": 3,
+      "envelope": {
+        "ambiguity": [
+          "specific rate limiter code location unknown.",
+          "Redis cluster configuration details missing."
+        ],
+        "artifacts": [
+          {
+            "name": "rate_limiter",
+            "type": "component"
+          },
+          {
+            "name": "Redis",
+            "type": "database"
+          },
+          {
+            "name": "replica_promotion",
+            "type": "event"
+          },
+          {
+            "name": "failover",
+            "type": "process"
+          }
+        ],
+        "assumptions": [
+          "issue manifests during production failover scenarios."
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.75,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification",
+          "performance_claims_require_evidence"
+        ],
+        "context_needed": [
+          "redis_config",
+          "rate_limiter_implementation",
+          "failover_logs",
+          "quota_consistency_checks"
+        ],
+        "domains": [
+          "infra",
+          "code"
+        ],
+        "input_type": "infra_failover_debug_request",
+        "intents": [
+          "infra.debug",
+          "code.fix",
+          "performance.investigate"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 13889.396,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 13889.396,
+            "latency_ms_p95": 13889.396,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "Rate limiter grants excess burst capacity after Redis replica promotion during failover; identify root cause, implement safe fix, include rollback plan, and verify with focused quota consistency checks",
+        "raw_input": "rate limiter grants excess burst capacity after Redis replica promotion during failover; identify root cause, implement safe fix, include rollback plan, and verify with focused quota consistency checks",
+        "request_id": "req_004",
+        "risks": [
+          "mutation_requested",
+          "file_mutation",
+          "needs_verification",
+          "performance_cause_unknown"
+        ],
+        "user_goal": "Identify root cause of excess burst capacity in rate limiter post-Redis failover, implement safe fix with rollback, verify via quota checks"
+      },
+      "index": 2,
+      "plan": {
+        "budget": {
+          "max_model_calls": 7,
+          "max_retries": 2,
+          "max_tool_calls": 18,
+          "max_workers": 7
+        },
+        "execution_pattern": "discover_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no_mutation_without_prior_evidence",
+          "rollback_plan_required_before_write",
+          "verify_after_mutation",
+          "target_locations_identified_before_mutation"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": false,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "infra_failover_debug_request",
+            "mode": "completed",
+            "model_calls": 1,
+            "phase_contract_auto_aligned": false,
+            "repair_attempted": false,
+            "resolved_validation_errors": [],
+            "stages": [
+              "draft_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "mutation_scope_incomplete",
+            "verification_failure"
+          ],
+          "stop_conditions": [
+            "evidence_gap_detected",
+            "dependency_verification_failed"
+          ]
+        },
+        "objective": "Identify root cause of excess burst capacity in rate limiter post-Redis failover, implement safe fix with rollback, verify via quota checks",
+        "plan_id": "plan_req_004_v1",
+        "planner": "system_planner",
+        "request_id": "req_004",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover candidate file locations for rate_limiter implementation and Redis configuration",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "candidate_paths"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step1",
+            "task_id": "rate_limiter_failover_debug",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [],
+            "instruction": "Locate failover logs, replica promotion events, and Redis cluster configuration details",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "failover_logs",
+              "redis_config"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step2",
+            "task_id": "rate_limiter_failover_debug",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "failover_logs",
+              "redis_config"
+            ],
+            "instruction": "Analyze root cause using candidate paths, failover logs, and redis_config; produce evidence of quota inconsistency",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "root_cause_evidence"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "step3",
+            "task_id": "rate_limiter_failover_debug",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "root_cause_evidence"
+            ],
+            "instruction": "Design narrow mutation scope and writable targets from evidence; confirm dependencies",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "writable_targets"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "step4",
+            "task_id": "rate_limiter_failover_debug",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "writable_targets",
+              "root_cause_evidence"
+            ],
+            "instruction": "Apply bounded fix to rate limiter using mutation_scope; produce rollback_plan and change_summary",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "rollback_plan",
+              "change_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "writable_targets"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "step5",
+            "task_id": "rate_limiter_failover_debug",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "rollback_plan"
+            ],
+            "instruction": "Run focused quota consistency checks and verify fix; output verification_report",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "verification_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "step6",
+            "task_id": "rate_limiter_failover_debug",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "rollback_plan",
+              "change_summary"
+            ],
+            "instruction": "Summarize findings, fix, verification results, and rollback instructions",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "final_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "step7",
+            "task_id": "rate_limiter_failover_debug",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "discovery-first sequencing with evidence collection and dependency verification before any mutation due to high ambiguity and constraints",
+        "success_criteria": [
+          "root_cause_evidence_produced",
+          "verification_report_passes_quota_checks",
+          "rollback_plan_available"
+        ]
+      },
+      "prompt": "rate limiter grants excess burst capacity after Redis replica promotion during failover; identify root cause, implement safe fix, include rollback plan, and verify with focused quota consistency checks",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "envelope": {
+        "ambiguity": [
+          "code location and language unspecified.",
+          "specific database and transaction boundaries unknown."
+        ],
+        "artifacts": [
+          {
+            "name": "order fulfillment worker",
+            "type": "component"
+          },
+          {
+            "name": "shipments",
+            "type": "entity"
+          },
+          {
+            "name": "inventory reservation",
+            "type": "entity"
+          },
+          {
+            "name": "database deadlock retry",
+            "type": "mechanism"
+          }
+        ],
+        "assumptions": [
+          "Issue involves concurrent transactional operations with retry on deadlock."
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.5,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification"
+        ],
+        "context_needed": [
+          "target_file",
+          "transactional_code",
+          "retry_logic"
+        ],
+        "domains": [
+          "code",
+          "infra"
+        ],
+        "input_type": "ambiguous_app_fix_request",
+        "intents": [
+          "code.fix",
+          "infra.debug"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 21091.163,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 21091.163,
+            "latency_ms_p95": 21091.163,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "Order fulfillment worker marks shipments complete before inventory reservation commits under database deadlock retry; find root cause, apply safe fix, include rollback plan, and verify with focused transactional ordering checks",
+        "raw_input": "order fulfillment worker marks shipments complete before inventory reservation commits under database deadlock retry; find root cause, apply safe fix, include rollback plan, and verify with focused transactional ordering checks",
+        "request_id": "req_005",
+        "risks": [
+          "mutation_requested",
+          "ambiguous_scope",
+          "needs_verification"
+        ],
+        "user_goal": "Identify root cause of premature shipment completion before inventory commit during deadlock retry, apply safe fix with rollback plan, verify via transactional ordering checks"
+      },
+      "index": 3,
+      "plan": {
+        "budget": {
+          "max_model_calls": 7,
+          "max_retries": 2,
+          "max_tool_calls": 17,
+          "max_workers": 7
+        },
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no_mutation_without_prior_discovery_and_evidence",
+          "rollback_plan_produced_before_any_write",
+          "verify_after_mutation",
+          "single_responsibility_per_step",
+          "stop_on_evidence_gap_or_dependency_failure"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": false,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "ambiguous_app_fix_request",
+            "mode": "repaired",
+            "model_calls": 2,
+            "phase_contract_auto_aligned": false,
+            "repair_attempted": true,
+            "resolved_validation_errors": [
+              {
+                "msg": "mutation steps must output a rollback/revert artifact",
+                "type": "planner_validation"
+              }
+            ],
+            "stages": [
+              "draft_plan",
+              "validate_plan",
+              "repair_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "new_ambiguity",
+            "verification_failure",
+            "evidence_inconclusive"
+          ],
+          "stop_conditions": [
+            "evidence_gap",
+            "dependency_failure",
+            "verification_failure"
+          ]
+        },
+        "objective": "Identify root cause of premature shipment completion before inventory commit during deadlock retry, apply safe fix with rollback plan, verify via transactional ordering checks",
+        "plan_id": "plan_req_005",
+        "planner": "safe_planner",
+        "request_id": "req_005",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover candidate file locations and transactional code for order fulfillment worker, shipments, inventory reservation, and database deadlock retry logic",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "candidate_paths"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step_1",
+            "task_id": "fix_order_fulfillment_deadlock",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths"
+            ],
+            "instruction": "Analyze discovered candidates for transactional ordering, deadlock retry boundaries, and evidence of shipment completion before inventory commit",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "evidence_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "ANALYZE",
+            "step_id": "step_2",
+            "task_id": "fix_order_fulfillment_deadlock",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "evidence_artifacts"
+            ],
+            "instruction": "Research dependency verification for transactional ordering and collect any missing context or evidence gaps",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "dependency_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "step_3",
+            "task_id": "fix_order_fulfillment_deadlock",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "evidence_artifacts",
+              "dependency_artifacts"
+            ],
+            "instruction": "Design narrow mutation_scope, patch_scope, and allowed_write_paths from candidates and evidence; produce rollback_plan",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "rollback_plan"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "step_4",
+            "task_id": "fix_order_fulfillment_deadlock",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "rollback_plan",
+              "evidence_artifacts"
+            ],
+            "instruction": "Apply safe fix using mutation_scope and rollback_plan; restrict writes to allowed_write_paths",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "change_summary",
+              "rollback_artifact"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "mutation_scope"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "step_5",
+            "task_id": "fix_order_fulfillment_deadlock",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "evidence_artifacts"
+            ],
+            "instruction": "Verify fix with focused transactional ordering checks and output verification artifacts",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "verification_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "step_6",
+            "task_id": "fix_order_fulfillment_deadlock",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_artifacts",
+              "rollback_plan",
+              "change_summary"
+            ],
+            "instruction": "Finalize with summary of root cause, fix, rollback plan, and verification results",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "step_7",
+            "task_id": "fix_order_fulfillment_deadlock",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "discovery-first sequencing due to high ambiguity and low confidence; separate discovery, evidence collection, design, mutation, and verification into single-responsibility steps with evidence and dependency checks before any mutation",
+        "success_criteria": [
+          "root_cause_identified",
+          "fix_applied_safely",
+          "rollback_plan_available",
+          "verification_passed"
+        ]
+      },
+      "prompt": "order fulfillment worker marks shipments complete before inventory reservation commits under database deadlock retry; find root cause, apply safe fix, include rollback plan, and verify with focused transactional ordering checks",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "envelope": {
+        "ambiguity": [
+          "no specific files or code provided.",
+          "reproduction steps and environment details missing.",
+          "exact cache invalidation trigger unknown."
+        ],
+        "artifacts": [
+          {
+            "name": "multi-tenant report exporter",
+            "type": "component"
+          },
+          {
+            "name": "query plan cache",
+            "type": "cache"
+          },
+          {
+            "name": "cross-tenant rows",
+            "type": "data_issue"
+          }
+        ],
+        "assumptions": [
+          "tenant isolation depends on query filters or parameters.",
+          "cache invalidation impacts query plan reuse across tenants."
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.6,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification"
+        ],
+        "context_needed": [
+          "repo_tree",
+          "target_file",
+          "cache_invalidation_logic"
+        ],
+        "domains": [
+          "code",
+          "infra",
+          "data"
+        ],
+        "input_type": "ambiguous_app_fix_request",
+        "intents": [
+          "infra.debug",
+          "code.fix",
+          "performance.investigate"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 11847.176,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 11847.176,
+            "latency_ms_p95": 11847.176,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "Multi-tenant report exporter includes cross-tenant rows after query plan cache invalidation; identify root cause, implement safe fix, include rollback plan, and verify with focused tenant isolation checks",
+        "raw_input": "multi-tenant report exporter includes cross-tenant rows after query plan cache invalidation; identify root cause, implement safe fix, include rollback plan, and verify with focused tenant isolation checks",
+        "request_id": "req_006",
+        "risks": [
+          "mutation_requested",
+          "needs_verification",
+          "ambiguous_scope"
+        ],
+        "user_goal": "Identify root cause of cross-tenant rows in report exporter after cache invalidation, implement safe fix with rollback plan, and verify via tenant isolation checks"
+      },
+      "index": 4,
+      "plan": {
+        "budget": {
+          "max_model_calls": 7,
+          "max_retries": 2,
+          "max_tool_calls": 21,
+          "max_workers": 7
+        },
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no_mutation_without_prior_discovery_and_design",
+          "tenant_isolation_verified_before_finalize",
+          "rollback_plan_always_available",
+          "evidence_gap_triggers_replan"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": true,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "ambiguous_app_fix_request",
+            "mode": "repaired",
+            "model_calls": 2,
+            "phase_contract_auto_aligned": false,
+            "repair_attempted": true,
+            "resolved_validation_errors": [
+              {
+                "msg": "step step_005 with write_files must restrict writes by write_paths or write_paths_from_artifacts",
+                "type": "planner_validation"
+              }
+            ],
+            "stages": [
+              "draft_plan",
+              "validate_plan",
+              "repair_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "high_mutation_risk",
+            "verification_failure"
+          ],
+          "stop_conditions": [
+            "evidence_gap_detected",
+            "dependency_verification_failed"
+          ]
+        },
+        "objective": "Identify root cause of cross-tenant rows in report exporter after cache invalidation, implement safe fix with rollback plan, and verify via tenant isolation checks",
+        "plan_id": "plan_req_006",
+        "planner": "system_planner",
+        "request_id": "req_006",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover repository structure and locate files related to multi-tenant report exporter, query plan cache, and tenant isolation logic",
+            "max_model_calls": 1,
+            "max_tool_calls": 5,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "candidate_paths",
+              "repo_inventory"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step_001",
+            "task_id": "task_001",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "repo_inventory"
+            ],
+            "instruction": "Analyze discovered paths for cache invalidation logic and tenant filter usage in report exporter",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "analysis_evidence"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "ANALYZE",
+            "step_id": "step_002",
+            "task_id": "task_001",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "analysis_evidence"
+            ],
+            "instruction": "Research query plan cache invalidation patterns and cross-tenant data leakage risks",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "research_findings"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "step_003",
+            "task_id": "task_001",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "analysis_evidence",
+              "research_findings"
+            ],
+            "instruction": "Design narrow mutation scope from candidates and produce writable_targets with rollback requirements",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "writable_targets",
+              "rollback_plan"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "step_004",
+            "task_id": "task_001",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "writable_targets",
+              "rollback_plan"
+            ],
+            "instruction": "Apply bounded fix to query plan cache invalidation ensuring tenant isolation using writable_targets",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "change_summary",
+              "updated_rollback_plan"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "writable_targets"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "step_005",
+            "task_id": "task_001",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "updated_rollback_plan"
+            ],
+            "instruction": "Run focused tenant isolation verification tests and confirm no cross-tenant rows",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "verification_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "step_006",
+            "task_id": "task_001",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "updated_rollback_plan"
+            ],
+            "instruction": "Summarize root cause, fix, verification results and rollback instructions",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "final_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "step_007",
+            "task_id": "task_001",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "observe-first discovery sequencing due to high ambiguity and low confidence, followed by phased analysis, design, bounded mutation, verification and finalize",
+        "success_criteria": [
+          "root_cause_documented",
+          "safe_fix_applied",
+          "verification_report_passes_isolation_checks",
+          "rollback_plan_produced"
+        ]
+      },
+      "prompt": "multi-tenant report exporter includes cross-tenant rows after query plan cache invalidation; identify root cause, implement safe fix, include rollback plan, and verify with focused tenant isolation checks",
+      "status": "success"
+    },
+    {
+      "attempts": 2,
+      "envelope": {
+        "ambiguity": [
+          "exact code locations and error messages unknown.",
+          "no repository or logs provided."
+        ],
+        "artifacts": [
+          {
+            "name": "SAML login handler",
+            "type": "component"
+          },
+          {
+            "name": "metadata refresh",
+            "type": "process"
+          },
+          {
+            "name": "certificate cache",
+            "type": "cache"
+          },
+          {
+            "name": "valid assertions",
+            "type": "data"
+          }
+        ],
+        "assumptions": [
+          "issue occurs in SAML authentication code path.",
+          "race involves concurrent metadata and cache operations."
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.7,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification",
+          "rollback_plan_must_be_included"
+        ],
+        "context_needed": [
+          "source_code",
+          "cache_implementation",
+          "metadata_refresh_logic",
+          "authentication_logs"
+        ],
+        "domains": [
+          "code",
+          "infra",
+          "security"
+        ],
+        "input_type": "saml_authentication_race_condition_debug_request",
+        "intents": [
+          "code.debug",
+          "code.fix",
+          "infra.debug"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 10169.4,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 10169.4,
+            "latency_ms_p95": 10169.4,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "SAML login handler rejects valid assertions after metadata refresh races with certificate cache eviction; find root cause, apply safe fix, include rollback plan, and verify with focused authentication checks",
+        "raw_input": "SAML login handler rejects valid assertions after metadata refresh races with certificate cache eviction; find root cause, apply safe fix, include rollback plan, and verify with focused authentication checks",
+        "request_id": "req_008",
+        "risks": [
+          "mutation_requested",
+          "needs_verification",
+          "race_condition_cause_unknown"
+        ],
+        "user_goal": "Diagnose root cause of SAML assertion rejections from metadata refresh vs certificate cache race, apply safe fix with rollback plan, and verify via focused authentication checks"
+      },
+      "index": 5,
+      "plan": {
+        "budget": {
+          "max_model_calls": 7,
+          "max_retries": 2,
+          "max_tool_calls": 18,
+          "max_workers": 6
+        },
+        "execution_pattern": "discover_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no mutation without prior evidence and dependency artifacts",
+          "all writes scoped to DESIGN-produced artifacts",
+          "rollback_plan produced before any mutation completes",
+          "stop if evidence_gap or dependency failure"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": true,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "saml_authentication_race_condition_debug_request",
+            "mode": "completed",
+            "model_calls": 1,
+            "phase_contract_auto_aligned": false,
+            "repair_attempted": false,
+            "resolved_validation_errors": [],
+            "stages": [
+              "draft_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "no candidate_paths found",
+            "mutation produces errors"
+          ],
+          "stop_conditions": [
+            "evidence_gap detected",
+            "dependency verification fails"
+          ]
+        },
+        "objective": "Diagnose root cause of SAML assertion rejections from metadata refresh vs certificate cache race, apply safe fix with rollback plan, and verify via focused authentication checks",
+        "plan_id": "plan_req_008_saml_race",
+        "planner": "safe_planner",
+        "request_id": "req_008",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Locate SAML login handler, metadata refresh logic, certificate cache implementation, and related files using envelope artifacts as hints only",
+            "max_model_calls": 1,
+            "max_tool_calls": 5,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "candidate_paths",
+              "repo_inventory"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "s1_discover",
+            "task_id": "t_saml",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "repo_inventory"
+            ],
+            "instruction": "Analyze candidate paths for race conditions between metadata refresh and certificate cache eviction; produce evidence artifacts",
+            "max_model_calls": 2,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "evidence_summary",
+              "race_hypotheses"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "s2_research",
+            "task_id": "t_saml",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "evidence_summary",
+              "race_hypotheses",
+              "candidate_paths"
+            ],
+            "instruction": "Narrow candidates to mutation_scope and produce allowed_write_paths; include dependency verification",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "allowed_write_paths",
+              "dependency_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "s3_design",
+            "task_id": "t_saml",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "allowed_write_paths",
+              "evidence_summary",
+              "dependency_artifacts"
+            ],
+            "instruction": "Apply bounded fix for identified race using mutation_scope; output rollback_plan and change_summary",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "rollback_plan",
+              "change_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "allowed_write_paths"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "s4_mutate",
+            "task_id": "t_saml",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "evidence_summary"
+            ],
+            "instruction": "Run focused authentication checks and verify fix using evidence artifacts; output verification_report",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "verification_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "s5_verify",
+            "task_id": "t_saml",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "rollback_plan",
+              "change_summary"
+            ],
+            "instruction": "Summarize root cause, fix, rollback, and verification results",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "final_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "s6_finalize",
+            "task_id": "t_saml",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "discovery-first sequencing due to high ambiguity and unknown locations; separate discovery, evidence, design, mutation, and verification steps with evidence and rollback requirements",
+        "success_criteria": [
+          "evidence_summary produced",
+          "mutation_scope narrowed",
+          "rollback_plan output",
+          "verification_report confirms fix or identifies gap"
+        ]
+      },
+      "prompt": "SAML login handler rejects valid assertions after metadata refresh races with certificate cache eviction; find root cause, apply safe fix, include rollback plan, and verify with focused authentication checks",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "envelope": {
+        "ambiguity": [
+          "specific queue technology unspecified.",
+          "exact overlap condition details missing."
+        ],
+        "artifacts": [
+          {
+            "name": "image processing queue",
+            "type": "queue"
+          },
+          {
+            "name": "thumbnail jobs",
+            "type": "job"
+          },
+          {
+            "name": "poison-message quarantine",
+            "type": "mechanism"
+          },
+          {
+            "name": "retry backoff",
+            "type": "mechanism"
+          },
+          {
+            "name": "queue durability checks",
+            "type": "verification"
+          }
+        ],
+        "assumptions": [
+          "system implements message queuing with retry and quarantine."
+        ],
+        "complexity_hint": "high",
+        "confidence": 0.65,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification"
+        ],
+        "context_needed": [
+          "queue_configuration",
+          "retry_policies",
+          "error_logs"
+        ],
+        "domains": [
+          "infra",
+          "code"
+        ],
+        "input_type": "infra_queue_debug_request",
+        "intents": [
+          "infra.debug",
+          "code.fix"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 8268.066,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 8268.066,
+            "latency_ms_p95": 8268.066,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "Image processing queue loses thumbnail jobs when poison-message quarantine and retry backoff overlap; identify root cause, implement safe fix, include rollback plan, and verify with focused queue durability checks",
+        "raw_input": "image processing queue loses thumbnail jobs when poison-message quarantine and retry backoff overlap; identify root cause, implement safe fix, include rollback plan, and verify with focused queue durability checks",
+        "request_id": "req_009",
+        "risks": [
+          "mutation_requested",
+          "needs_verification",
+          "ambiguous_scope"
+        ],
+        "user_goal": "identify root cause of thumbnail job loss and implement safe fix with rollback and durability verification"
+      },
+      "index": 6,
+      "plan": {
+        "budget": {
+          "max_model_calls": 6,
+          "max_retries": 2,
+          "max_tool_calls": 17,
+          "max_workers": 6
+        },
+        "execution_pattern": "discover_analyze_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no_data_loss",
+          "rollback_available_before_any_mutation",
+          "evidence_required_before_mutation",
+          "write_paths_restricted_to_design_output"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": false,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "infra_queue_debug_request",
+            "mode": "completed",
+            "model_calls": 1,
+            "phase_contract_auto_aligned": true,
+            "repair_attempted": false,
+            "resolved_validation_errors": [],
+            "stages": [
+              "draft_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "verification_failure",
+            "inconclusive_dependency_check"
+          ],
+          "stop_conditions": [
+            "evidence_gap",
+            "dependency_failure"
+          ]
+        },
+        "objective": "Identify root cause of thumbnail job loss in image processing queue due to poison-message quarantine and retry backoff overlap; implement safe fix with rollback plan and verify via queue durability checks",
+        "plan_id": "plan_req_009",
+        "planner": "infra_planner",
+        "request_id": "req_009",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover queue configuration, retry policies, error logs and candidate locations for image processing queue, poison-message quarantine and retry backoff mechanisms",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "queue_config_candidates",
+              "retry_policies_candidates",
+              "error_logs_candidates"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "discover_1",
+            "task_id": "task_main",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "queue_config_candidates",
+              "retry_policies_candidates",
+              "error_logs_candidates"
+            ],
+            "instruction": "Analyze overlap between poison-message quarantine and retry backoff to produce root cause evidence and identify required dependencies",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "root_cause_evidence",
+              "dependency_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "ANALYZE",
+            "step_id": "analyze_2",
+            "task_id": "task_main",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "root_cause_evidence",
+              "dependency_artifacts"
+            ],
+            "instruction": "Convert evidence into narrow mutation_scope and patch design for safe fix",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "fix_design"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "design_3",
+            "task_id": "task_main",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "root_cause_evidence",
+              "fix_design"
+            ],
+            "instruction": "Apply bounded fix using mutation_scope, produce rollback_plan and change_summary",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "rollback_plan",
+              "change_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "mutation_scope"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "mutate_4",
+            "task_id": "task_main",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "rollback_plan"
+            ],
+            "instruction": "Perform focused queue durability checks and output verification artifacts",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "durability_verification",
+              "test_results"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "verify_5",
+            "task_id": "task_main",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "durability_verification",
+              "test_results",
+              "rollback_plan"
+            ],
+            "instruction": "Summarize root cause, applied fix, verification results and rollback instructions",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "final_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "finalize_6",
+            "task_id": "task_main",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "observe-first discovery then evidence collection, design narrow mutation scope, bounded code mutation, post-mutation verification and finalize",
+        "success_criteria": [
+          "root_cause_evidence produced",
+          "mutation_scope produced by DESIGN",
+          "rollback_plan produced",
+          "durability_verification passed"
+        ]
+      },
+      "prompt": "image processing queue loses thumbnail jobs when poison-message quarantine and retry backoff overlap; identify root cause, implement safe fix, include rollback plan, and verify with focused queue durability checks",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "envelope": {
+        "ambiguity": [
+          "no specific files, logs or code locations provided.",
+          "root cause and affected components unknown."
+        ],
+        "artifacts": [
+          {
+            "name": "subscription_renewal_service",
+            "type": "service"
+          },
+          {
+            "name": "timezone_boundary_recalculation",
+            "type": "logic"
+          },
+          {
+            "name": "nightly_batch",
+            "type": "process"
+          },
+          {
+            "name": "billing_eligibility_checks",
+            "type": "verification"
+          }
+        ],
+        "assumptions": [],
+        "complexity_hint": "high",
+        "confidence": 0.4,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification"
+        ],
+        "context_needed": [
+          "repo_tree",
+          "target_file",
+          "billing_logs",
+          "timezone_config"
+        ],
+        "domains": [
+          "infra",
+          "code"
+        ],
+        "input_type": "ambiguous_app_fix_request",
+        "intents": [
+          "infra.debug",
+          "code.fix"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 14296.236,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 14296.236,
+            "latency_ms_p95": 14296.236,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "subscription renewal service charges expired accounts after timezone boundary recalculation during nightly batch; find root cause, apply safe fix, include rollback plan, and verify with focused billing eligibility checks",
+        "raw_input": "subscription renewal service charges expired accounts after timezone boundary recalculation during nightly batch; find root cause, apply safe fix, include rollback plan, and verify with focused billing eligibility checks",
+        "request_id": "req_010",
+        "risks": [
+          "mutation_requested",
+          "file_mutation",
+          "needs_verification",
+          "ambiguous_scope"
+        ],
+        "user_goal": "identify root cause of incorrect subscription charges and apply verified safe fix with rollback"
+      },
+      "index": 7,
+      "plan": {
+        "budget": {
+          "max_model_calls": 8,
+          "max_retries": 2,
+          "max_tool_calls": 22,
+          "max_workers": 7
+        },
+        "execution_pattern": "discover_analyze_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "no_mutation_without_prior_discovery_and_evidence",
+          "always_produce_rollback_artifact_before_or_during_mutation",
+          "verify_after_any_mutation",
+          "stop_on_evidence_gap_or_dependency_failure"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": true,
+            "envelope_complexity_hint": "high",
+            "envelope_input_type": "ambiguous_app_fix_request",
+            "mode": "repaired",
+            "model_calls": 2,
+            "phase_contract_auto_aligned": false,
+            "repair_attempted": true,
+            "resolved_validation_errors": [
+              {
+                "msg": "step step_5 with write_files must restrict writes by write_paths or write_paths_from_artifacts",
+                "type": "planner_validation"
+              }
+            ],
+            "stages": [
+              "draft_plan",
+              "validate_plan",
+              "repair_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "verification_failed",
+            "write_scope_violation",
+            "new_ambiguity_introduced"
+          ],
+          "stop_conditions": [
+            "evidence_gap_detected",
+            "dependency_verification_failed",
+            "mutation_scope_undefined"
+          ]
+        },
+        "objective": "Identify root cause of incorrect subscription charges after timezone boundary recalculation and apply verified safe fix with rollback plan",
+        "plan_id": "plan_req_010",
+        "planner": "safe_planner",
+        "request_id": "req_010",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover repository structure and candidate files related to subscription_renewal_service, timezone_boundary_recalculation, nightly_batch, and billing_eligibility_checks",
+            "max_model_calls": 1,
+            "max_tool_calls": 5,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "candidate_paths",
+              "repo_inventory"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "step_1",
+            "task_id": "tz_billing_fix",
+            "worker_type": "repo_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths"
+            ],
+            "instruction": "Analyze billing logs and timezone config to collect evidence of root cause in expired account charging",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "evidence_artifacts",
+              "billing_logs_analysis"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "ANALYZE",
+            "step_id": "step_2",
+            "task_id": "tz_billing_fix",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "evidence_artifacts"
+            ],
+            "instruction": "Research dependency relationships between nightly_batch, timezone recalculation, and billing eligibility",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "dependency_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "step_3",
+            "task_id": "tz_billing_fix",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_paths",
+              "evidence_artifacts",
+              "dependency_artifacts"
+            ],
+            "instruction": "Design narrow mutation_scope and patch from discovered candidates and evidence, produce allowed_write_paths",
+            "max_model_calls": 2,
+            "max_tool_calls": 2,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "allowed_write_paths",
+              "patch_scope"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "step_4",
+            "task_id": "tz_billing_fix",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "allowed_write_paths",
+              "evidence_artifacts"
+            ],
+            "instruction": "Apply bounded mutation to fix root cause using mutation_scope and allowed_write_paths, output rollback_plan",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "rollback_plan",
+              "change_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "allowed_write_paths"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "step_5",
+            "task_id": "tz_billing_fix",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "rollback_plan"
+            ],
+            "instruction": "Verify fix with focused billing eligibility checks and confirm no regression",
+            "max_model_calls": 1,
+            "max_tool_calls": 4,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "verification_report",
+              "test_artifacts"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "step_6",
+            "task_id": "tz_billing_fix",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "rollback_plan"
+            ],
+            "instruction": "Finalize with summary of root cause, fix, verification results, and rollback instructions",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "final_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "step_7",
+            "task_id": "tz_billing_fix",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "discovery-first sequencing with separate evidence collection, scoped mutation, verification, and rollback for high-ambiguity high-complexity fix",
+        "success_criteria": [
+          "root_cause_identified_with_evidence",
+          "safe_mutation_applied_to_scoped_paths_only",
+          "verification_report_passes",
+          "rollback_plan_available"
+        ]
+      },
+      "prompt": "subscription renewal service charges expired accounts after timezone boundary recalculation during nightly batch; find root cause, apply safe fix, include rollback plan, and verify with focused billing eligibility checks",
+      "status": "success"
+    },
+    {
+      "attempts": 1,
+      "envelope": {
+        "ambiguity": [
+          "specific service discovery implementation unknown.",
+          "exact stale instance detection logic unclear."
+        ],
+        "artifacts": [
+          {
+            "name": "API gateway",
+            "type": "component"
+          },
+          {
+            "name": "websocket reconnects",
+            "type": "feature"
+          },
+          {
+            "name": "upstream instances",
+            "type": "component"
+          },
+          {
+            "name": "service discovery TTL refresh",
+            "type": "mechanism"
+          },
+          {
+            "name": "routing consistency checks",
+            "type": "verification"
+          }
+        ],
+        "assumptions": [],
+        "complexity_hint": "medium",
+        "confidence": 0.65,
+        "constraints": [
+          "target_locations_must_be_identified_before_mutation",
+          "mutation_requires_verification",
+          "rollback_plan_required"
+        ],
+        "context_needed": [
+          "service_discovery_config",
+          "routing_logs",
+          "upstream_instance_state"
+        ],
+        "domains": [
+          "infra"
+        ],
+        "input_type": "infra_config_debug_request",
+        "intents": [
+          "infra.debug",
+          "infra.fix",
+          "infra.verify"
+        ],
+        "metadata": {
+          "decompressor_mode": "llm_prompt_chain",
+          "decompressor_runtime": {
+            "elapsed_ms": 8057.209,
+            "failure_rate": 0.0,
+            "latency_ms_p50": 8057.209,
+            "latency_ms_p95": 8057.209,
+            "repair_rate": 0.0
+          },
+          "llm_prompt_chain": {
+            "fallback": null,
+            "mode": "completed",
+            "model_calls": 1,
+            "redacted_prompt_input": false,
+            "stages": [
+              "decompress_request",
+              "validate_envelope"
+            ]
+          }
+        },
+        "normalized_input": "API gateway routes websocket reconnects to stale upstream instances after service discovery TTL refresh; identify root cause, implement safe fix, include rollback plan, and verify with focused routing consistency checks",
+        "raw_input": "API gateway routes websocket reconnects to stale upstream instances after service discovery TTL refresh; identify root cause, implement safe fix, include rollback plan, and verify with focused routing consistency checks",
+        "request_id": "req_011",
+        "risks": [
+          "mutation_requested",
+          "needs_verification",
+          "ambiguous_scope"
+        ],
+        "user_goal": "Identify root cause of stale upstream routing for websocket reconnects after TTL refresh and implement safe fix with rollback and verification"
+      },
+      "index": 8,
+      "plan": {
+        "budget": {
+          "max_model_calls": 6,
+          "max_retries": 2,
+          "max_tool_calls": 15,
+          "max_workers": 6
+        },
+        "execution_pattern": "discover_research_design_mutate_verify_finalize",
+        "global_invariants": [
+          "target_locations_identified_before_mutation",
+          "mutation_requires_verification",
+          "rollback_plan_required",
+          "evidence_collected_before_mutation",
+          "write_paths_restricted_to_design_artifacts"
+        ],
+        "metadata": {
+          "llm_planner": {
+            "budget_auto_aligned": false,
+            "envelope_complexity_hint": "medium",
+            "envelope_input_type": "infra_config_debug_request",
+            "mode": "completed",
+            "model_calls": 1,
+            "phase_contract_auto_aligned": false,
+            "repair_attempted": false,
+            "resolved_validation_errors": [],
+            "stages": [
+              "draft_plan",
+              "validate_plan"
+            ],
+            "validation_errors": []
+          },
+          "planner_runtime": {
+            "fallback_reason": null,
+            "mode": "llm_prompt_chain"
+          },
+          "replan_triggers": [
+            "mutation_error",
+            "inconclusive_verification"
+          ],
+          "stop_conditions": [
+            "evidence_gap",
+            "dependency_failure",
+            "verification_failure"
+          ]
+        },
+        "objective": "Identify root cause of stale upstream routing for websocket reconnects after TTL refresh and implement safe fix with rollback and verification",
+        "plan_id": "plan_req_011",
+        "planner": "infra_planner",
+        "request_id": "req_011",
+        "steps": [
+          {
+            "input_artifacts": [],
+            "instruction": "Discover service discovery config, routing logs, and upstream instance state locations using envelope hints",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "candidate_locations"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DISCOVER",
+            "step_id": "discover_1",
+            "task_id": "stale_routing_fix",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "candidate_locations"
+            ],
+            "instruction": "Analyze root cause of stale instance routing after TTL refresh and produce evidence",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "observe_only",
+            "output_artifacts": [
+              "root_cause_analysis",
+              "evidence"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "RESEARCH",
+            "step_id": "research_2",
+            "task_id": "stale_routing_fix",
+            "worker_type": "research_worker"
+          },
+          {
+            "input_artifacts": [
+              "root_cause_analysis",
+              "evidence"
+            ],
+            "instruction": "Convert analysis into narrow mutation_scope and allowed_write_paths",
+            "max_model_calls": 1,
+            "max_tool_calls": 2,
+            "mode": "plan_only",
+            "output_artifacts": [
+              "mutation_scope",
+              "allowed_write_paths"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "DESIGN",
+            "step_id": "design_3",
+            "task_id": "stale_routing_fix",
+            "worker_type": "infra_worker"
+          },
+          {
+            "input_artifacts": [
+              "mutation_scope",
+              "allowed_write_paths",
+              "evidence"
+            ],
+            "instruction": "Apply safe fix using mutation_scope with rollback_plan output",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "bounded_mutation",
+            "output_artifacts": [
+              "rollback_plan",
+              "change_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": true,
+              "write_paths_from_artifacts": [
+                "allowed_write_paths"
+              ]
+            },
+            "phase": "MUTATE",
+            "step_id": "mutate_4",
+            "task_id": "stale_routing_fix",
+            "worker_type": "code_worker"
+          },
+          {
+            "input_artifacts": [
+              "change_summary",
+              "rollback_plan"
+            ],
+            "instruction": "Perform focused routing consistency checks and produce verification artifacts",
+            "max_model_calls": 1,
+            "max_tool_calls": 3,
+            "mode": "verify_only",
+            "output_artifacts": [
+              "verification_report"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": true,
+              "write_files": false
+            },
+            "phase": "VERIFY",
+            "step_id": "verify_5",
+            "task_id": "stale_routing_fix",
+            "worker_type": "verify_worker"
+          },
+          {
+            "input_artifacts": [
+              "verification_report",
+              "rollback_plan"
+            ],
+            "instruction": "Summarize outcome, evidence, and rollback instructions",
+            "max_model_calls": 1,
+            "max_tool_calls": 1,
+            "mode": "summarize_only",
+            "output_artifacts": [
+              "final_summary"
+            ],
+            "permissions": {
+              "read_files": true,
+              "run_commands": false,
+              "write_files": false
+            },
+            "phase": "FINALIZE",
+            "step_id": "finalize_6",
+            "task_id": "stale_routing_fix",
+            "worker_type": "verify_worker"
+          }
+        ],
+        "strategy": "discovery-first sequencing with evidence collection, scoped mutation, rollback artifact, and post-mutation verification due to ambiguity and mutation constraints",
+        "success_criteria": [
+          "root cause identified with evidence",
+          "mutation applied only to scoped paths",
+          "verification passes routing checks",
+          "rollback_plan produced"
+        ]
+      },
+      "prompt": "API gateway routes websocket reconnects to stale upstream instances after service discovery TTL refresh; identify root cause, implement safe fix, include rollback plan, and verify with focused routing consistency checks",
+      "status": "success"
+    }
+  ],
+  "success_count": 8
+}

@@ -17,6 +17,14 @@ class TaskCompiler:
             if artifact_id in artifact_store:
                 input_artifacts.append(artifact_store[artifact_id])
 
+        task_metadata: dict[str, str] = {}
+        if step.phase is not None:
+            task_metadata["phase"] = step.phase
+        if step.mode is not None:
+            task_metadata["mode"] = step.mode
+        if step.task_id is not None:
+            task_metadata["task_id"] = step.task_id
+
         return Task(
             task_id=f"task_{step.step_id}",
             run_id=run_id,
@@ -28,4 +36,5 @@ class TaskCompiler:
             max_tool_calls=step.max_tool_calls,
             max_model_calls=step.max_model_calls,
             permissions=step.permissions,
+            metadata=task_metadata,
         )
