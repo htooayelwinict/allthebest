@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.runtime_matrix import RuntimeMatrixLogger
 from app.schemas import ArtifactPayload, PermissionSet, PlanStep, Result, Task, WorkerIssue
 from app.worker_kernel.env_config import WorkerRuntimeConfig
 from app.worker_kernel.registry import WorkerRegistry
@@ -234,14 +235,41 @@ def _normalize_issue(value: Any, *, status: str) -> Any:
         }
     if isinstance(value, dict):
         issue = dict(value)
-        issue.setdefault("issue_type", issue_type)
+        raw_issue_type = issue.pop("type", None)
+        issue.setdefault("issue_type", _normalize_issue_type(raw_issue_type or issue_type))
         issue.setdefault("code", "worker_reported_issue")
-        issue.setdefault("message", str(issue.get("reason") or issue.get("summary") or issue["code"]))
+        issue.setdefault(
+            "message",
+            str(issue.get("detail") or issue.get("reason") or issue.get("summary") or issue["code"]),
+        )
         issue.setdefault("retryable", False)
+        metadata = dict(issue.get("metadata") or {})
+        allowed_keys = {"issue_type", "code", "message", "step_id", "worker_type", "attempt_id", "retryable", "metadata"}
+        for key in list(issue):
+            if key not in allowed_keys:
+                metadata[key] = issue.pop(key)
+        if metadata:
+            issue["metadata"] = metadata
         issue.pop("reason", None)
         issue.pop("summary", None)
+        issue.pop("detail", None)
         return issue
     return value
+
+
+def _normalize_issue_type(value: Any) -> str:
+    if not isinstance(value, str):
+        return "instance_failure"
+    normalized = value.strip().lower()
+    return {
+        "planner_failure": "plan_failure",
+        "planning_failure": "plan_failure",
+        "plan_level": "plan_failure",
+        "planner_level": "plan_failure",
+        "kernel_error": "kernel_failure",
+        "tool_error": "instance_failure",
+        "model_error": "instance_failure",
+    }.get(normalized, normalized)
 
 
 def _parse_arguments(value: str) -> dict[str, Any]:
@@ -271,16 +299,69 @@ class AgenticWorkerGroupRunner:
         self._toolbox = toolbox
         self._max_rounds_per_instance = max_rounds_per_instance
 
-    def run(self, task: Task) -> Result:
+    def run(self, task: Task, trace: RuntimeMatrixLogger | None = None) -> Result:
+        preflight_result = self._preflight_write_scope(task)
+        if preflight_result is not None:
+            return preflight_result
+
         state = WorkerGroupState(artifacts=list(task.input_artifacts))
         usage = {"tool_calls": 0, "model_calls": 0}
         last_summary = "Worker group completed."
+        last_metadata: dict[str, Any] = {}
+        skipped_templates: list[str] = []
+
+        self._trace(
+            trace,
+            task=task,
+            event="worker_group_started",
+            status="started",
+            details={"template_count": len(self._templates)},
+        )
 
         for template in self._templates:
-            result = self._run_template(task=task, template=template, state=state, usage=usage)
+            if state.instance_results and self._expected_outputs_satisfied(task, state.artifacts):
+                skipped_templates.append(template.name)
+                self._trace(
+                    trace,
+                    task=task,
+                    template=template,
+                    event="worker_instance_skipped",
+                    status="skipped",
+                    details={"reason": "expected_outputs_already_produced"},
+                )
+                continue
+
+            self._trace(
+                trace,
+                task=task,
+                template=template,
+                event="worker_instance_started",
+                status="started",
+                details={"role": template.role},
+            )
+            result = self._run_template(
+                task=task,
+                template=template,
+                state=state,
+                usage=usage,
+                trace=trace,
+            )
             state.instance_results.append(result.model_dump(mode="json"))
             state.artifacts.extend(result.artifacts)
             last_summary = result.summary
+            last_metadata = dict(result.metadata)
+            self._trace(
+                trace,
+                task=task,
+                template=template,
+                event="worker_instance_completed",
+                status=result.status,
+                details={
+                    "artifact_count": len(result.artifacts),
+                    "tool_calls_used": usage["tool_calls"],
+                    "model_calls_used": usage["model_calls"],
+                },
+            )
             if result.status != "completed":
                 return result.model_copy(
                     update={
@@ -291,6 +372,7 @@ class AgenticWorkerGroupRunner:
                             **result.metadata,
                             "worker_group_results": state.instance_results,
                             "worker_type": self.worker_type,
+                            "skipped_worker_instances": skipped_templates,
                         },
                     }
                 )
@@ -320,9 +402,20 @@ class AgenticWorkerGroupRunner:
                     "recommended_action": "request a plan that produces the missing worker artifacts",
                     "worker_group_results": state.instance_results,
                     "worker_type": self.worker_type,
+                    "skipped_worker_instances": skipped_templates,
                 },
             )
 
+        self._trace(
+            trace,
+            task=task,
+            event="worker_group_completed",
+            status="completed",
+            details={
+                "artifact_count": len(artifacts),
+                "skipped_worker_instances": skipped_templates,
+            },
+        )
         return Result(
             run_id=task.run_id,
             producer=self.worker_type,
@@ -331,10 +424,41 @@ class AgenticWorkerGroupRunner:
             artifacts=artifacts,
             usage=dict(usage),
             metadata={
+                **last_metadata,
                 "worker_group_results": state.instance_results,
                 "worker_type": self.worker_type,
+                "skipped_worker_instances": skipped_templates,
             },
         )
+
+    def _preflight_write_scope(self, task: Task) -> Result | None:
+        if not task.permissions.write_files:
+            return None
+        try:
+            scope = self._toolbox.validate_write_scope(task)
+        except WorkerToolError as exc:
+            return self._issue_result(
+                task=task,
+                template=self._templates[0],
+                usage={"tool_calls": 0, "model_calls": 0},
+                status="blocked",
+                issue_type="kernel_failure",
+                code="invalid_write_scope",
+                message=str(exc),
+                retryable=False,
+            )
+        if not scope["write_scope_paths"]:
+            return self._issue_result(
+                task=task,
+                template=self._templates[0],
+                usage={"tool_calls": 0, "model_calls": 0},
+                status="blocked",
+                issue_type="kernel_failure",
+                code="invalid_write_scope",
+                message="write_files was allowed but no write scope paths were provided",
+                retryable=False,
+            )
+        return None
 
     def _run_template(
         self,
@@ -343,6 +467,7 @@ class AgenticWorkerGroupRunner:
         template: WorkerInstanceTemplate,
         state: WorkerGroupState,
         usage: dict[str, int],
+        trace: RuntimeMatrixLogger | None = None,
     ) -> Result:
         rounds = 0
         while rounds < self._max_rounds_per_instance:
@@ -351,12 +476,32 @@ class AgenticWorkerGroupRunner:
 
             rounds += 1
             usage["model_calls"] += 1
+            self._trace(
+                trace,
+                task=task,
+                template=template,
+                event="worker_model_call_started",
+                status="started",
+                details={
+                    "round": rounds,
+                    "model_calls_used_including_this_turn": usage["model_calls"],
+                    "remaining_tool_calls": max(0, task.max_tool_calls - usage["tool_calls"]),
+                },
+            )
             try:
                 decision = self._controller.decide(
                     stage=f"{self.worker_type}_{template.name}",
                     prompt=self._prompt(task=task, template=template, state=state, usage=usage),
                 )
             except Exception as exc:
+                self._trace(
+                    trace,
+                    task=task,
+                    template=template,
+                    event="worker_model_call_failed",
+                    status="failed",
+                    details={"error": str(exc), "round": rounds},
+                )
                 return self._issue_result(
                     task=task,
                     template=template,
@@ -368,6 +513,19 @@ class AgenticWorkerGroupRunner:
                     retryable=True,
                 )
 
+            self._trace(
+                trace,
+                task=task,
+                template=template,
+                event="worker_model_call_completed",
+                status="completed",
+                details={
+                    "round": rounds,
+                    "tool_call_count": len(decision.tool_calls),
+                    "has_final_result": decision.final_result is not None,
+                    "final_status": decision.final_result.status if decision.final_result else None,
+                },
+            )
             if decision.tool_calls:
                 tool_result = self._execute_tool_calls(
                     task=task,
@@ -375,12 +533,28 @@ class AgenticWorkerGroupRunner:
                     state=state,
                     usage=usage,
                     tool_calls=decision.tool_calls,
+                    trace=trace,
                 )
                 if tool_result is not None:
                     return tool_result
                 continue
 
             if decision.final_result is not None:
+                if self._completed_mutation_without_write(
+                    task=task,
+                    final=decision.final_result,
+                    state=state,
+                ):
+                    return self._issue_result(
+                        task=task,
+                        template=template,
+                        usage=usage,
+                        status="failed",
+                        issue_type="instance_failure",
+                        code="mutation_completed_without_write",
+                        message="bounded mutation returned completed without any successful write tool observation",
+                        retryable=True,
+                    )
                 return self._final_result(task=task, template=template, usage=usage, final=decision.final_result)
 
             return self._issue_result(
@@ -421,6 +595,7 @@ class AgenticWorkerGroupRunner:
         state: WorkerGroupState,
         usage: dict[str, int],
         tool_calls: list[WorkerToolCall],
+        trace: RuntimeMatrixLogger | None = None,
     ) -> Result | None:
         for tool_index, tool_call in enumerate(tool_calls, start=1):
             if usage["tool_calls"] >= task.max_tool_calls:
@@ -446,6 +621,18 @@ class AgenticWorkerGroupRunner:
                     retryable=True,
                 )
             usage["tool_calls"] += 1
+            self._trace(
+                trace,
+                task=task,
+                template=template,
+                event="worker_tool_call_started",
+                status="started",
+                details={
+                    "tool_name": tool_call.tool_name,
+                    "tool_index": tool_index,
+                    "reason": tool_call.reason,
+                },
+            )
             try:
                 observation = self._toolbox.execute(
                     task=task,
@@ -453,18 +640,34 @@ class AgenticWorkerGroupRunner:
                     arguments=tool_call.arguments,
                 )
             except ToolUnavailableError as exc:
+                self._trace(
+                    trace,
+                    task=task,
+                    template=template,
+                    event="worker_tool_call_failed",
+                    status="blocked",
+                    details={"tool_name": tool_call.tool_name, "error": str(exc), "code": exc.code},
+                )
                 return self._issue_result(
                     task=task,
                     template=template,
                     usage=usage,
-                    status="needs_replan",
+                    status="blocked",
                     issue_type=exc.issue_type,
                     code=exc.code,
                     message=str(exc),
                     retryable=exc.retryable,
-                    recommended_action="replan with available evidence sources or configure the missing provider",
+                    recommended_action="configure the worker runtime tool provider or run a kernel fallback path",
                 )
             except ToolPermissionError as exc:
+                self._trace(
+                    trace,
+                    task=task,
+                    template=template,
+                    event="worker_tool_call_failed",
+                    status="failed",
+                    details={"tool_name": tool_call.tool_name, "error": str(exc), "code": exc.code},
+                )
                 return self._issue_result(
                     task=task,
                     template=template,
@@ -476,6 +679,14 @@ class AgenticWorkerGroupRunner:
                     retryable=exc.retryable,
                 )
             except WorkerToolError as exc:
+                self._trace(
+                    trace,
+                    task=task,
+                    template=template,
+                    event="worker_tool_call_failed",
+                    status="failed",
+                    details={"tool_name": tool_call.tool_name, "error": str(exc), "code": exc.code},
+                )
                 return self._issue_result(
                     task=task,
                     template=template,
@@ -487,6 +698,19 @@ class AgenticWorkerGroupRunner:
                     retryable=exc.retryable,
                 )
 
+            self._trace(
+                trace,
+                task=task,
+                template=template,
+                event="worker_tool_call_completed",
+                status="completed",
+                details={
+                    "tool_name": tool_call.tool_name,
+                    "tool_index": tool_index,
+                    "observation_keys": sorted(observation.keys()),
+                    "returncode": observation.get("returncode"),
+                },
+            )
             record = {
                 "instance": template.name,
                 "tool_name": tool_call.tool_name,
@@ -505,6 +729,38 @@ class AgenticWorkerGroupRunner:
                 )
             )
         return None
+
+    def _expected_outputs_satisfied(self, task: Task, artifacts: list[ArtifactPayload]) -> bool:
+        return not self._missing_expected_outputs(task, self._dedupe_artifacts(artifacts))
+
+    def _trace(
+        self,
+        trace: RuntimeMatrixLogger | None,
+        *,
+        task: Task,
+        event: str,
+        status: str,
+        template: WorkerInstanceTemplate | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        if trace is None:
+            return
+        trace.record(
+            component="worker_agentic_group",
+            stage=str(task.metadata.get("phase") or "WORKER"),
+            event=event,
+            status=status,
+            request_id=str(task.metadata.get("request_id") or ""),
+            plan_id=str(task.metadata.get("plan_id") or ""),
+            run_id=task.run_id,
+            step_id=task.step_id,
+            attempt_id=str(task.metadata.get("attempt_id") or ""),
+            worker_type=self.worker_type,
+            details={
+                "worker_instance": template.name if template is not None else None,
+                **(details or {}),
+            },
+        )
 
     def _final_result(
         self,
@@ -606,9 +862,29 @@ class AgenticWorkerGroupRunner:
                 metadata={"worker_instance": template.name},
             )
         ]
+        verification_result = self._verification_fallback_from_observations(
+            task=task,
+            template=template,
+            state=state,
+            usage=usage,
+            base_artifacts=artifacts,
+        )
+        if verification_result is not None:
+            return verification_result
+
+        mutation_result = self._completed_mutation_fallback(
+            task=task,
+            template=template,
+            state=state,
+            usage=usage,
+            base_artifacts=artifacts,
+        )
+        if mutation_result is not None:
+            return mutation_result
+
         missing = list(task.expected_outputs)
         issue = WorkerIssue(
-            issue_type="plan_failure",
+            issue_type="instance_failure",
             code="model_budget_exhausted_before_final_result",
             message=(
                 "Worker collected tool observations but exhausted model budget before producing "
@@ -622,7 +898,7 @@ class AgenticWorkerGroupRunner:
         return Result(
             run_id=task.run_id,
             producer=self.worker_type,
-            status="needs_replan",
+            status="budget_exceeded",
             summary=issue.message,
             artifacts=artifacts,
             usage=dict(usage),
@@ -636,9 +912,222 @@ class AgenticWorkerGroupRunner:
                 "worker_type": self.worker_type,
                 "worker_instance": template.name,
                 "fallback": "tool_observation_summary",
-                "recommended_action": "increase step max_model_calls for tool-using workers or replan with enough budget",
+                "recommended_action": "kernel should retry with a replacement worker instance or stop on budget ceiling",
             },
         )
+
+    def _completed_mutation_without_write(
+        self,
+        *,
+        task: Task,
+        final: WorkerFinalResult,
+        state: WorkerGroupState,
+    ) -> bool:
+        if self.worker_type != "code_worker" or not task.permissions.write_files:
+            return False
+        if final.status != "completed":
+            return False
+        return not self._write_observations(state)
+
+    def _write_observations(self, state: WorkerGroupState) -> list[dict[str, Any]]:
+        return [
+            observation
+            for observation in state.observations
+            if observation.get("tool_name") in {"write_file", "replace_in_file"}
+            and isinstance(observation.get("observation"), dict)
+            and observation["observation"].get("path")
+        ]
+
+    def _verification_fallback_from_observations(
+        self,
+        *,
+        task: Task,
+        template: WorkerInstanceTemplate,
+        state: WorkerGroupState,
+        usage: dict[str, int],
+        base_artifacts: list[ArtifactPayload],
+    ) -> Result | None:
+        if self.worker_type != "verify_worker":
+            return None
+        command_observations = [
+            observation
+            for observation in state.observations
+            if observation.get("tool_name") == "run_readonly_command"
+            and isinstance(observation.get("observation"), dict)
+        ]
+        if not command_observations:
+            return None
+
+        failed_commands = [
+            observation
+            for observation in command_observations
+            if int(observation["observation"].get("returncode", 0) or 0) != 0
+        ]
+        status = "failed" if failed_commands else "completed"
+        summary = "Verification commands failed." if failed_commands else "Verification commands passed."
+        artifacts = list(base_artifacts)
+        for artifact_id in task.expected_outputs:
+            artifacts.append(
+                ArtifactPayload(
+                    id=artifact_id,
+                    kind="worker_output",
+                    content={
+                        "status": status,
+                        "commands": [observation["observation"] for observation in command_observations],
+                        "failed_commands": [observation["observation"] for observation in failed_commands],
+                        "notes": "Synthesized by worker runtime after verification model budget exhaustion.",
+                    },
+                    producer=self.worker_type,
+                    step_id=task.step_id,
+                    metadata={
+                        "worker_instance": template.name,
+                        "synthesized_after_model_budget_exhaustion": True,
+                    },
+                )
+            )
+
+        return Result(
+            run_id=task.run_id,
+            producer=self.worker_type,
+            status=status,
+            summary=summary,
+            artifacts=artifacts,
+            usage=dict(usage),
+            errors=[summary] if failed_commands else [],
+            warnings=["model budget exhausted after verification observations; artifacts synthesized deterministically"],
+            metadata={
+                "worker_type": self.worker_type,
+                "worker_instance": template.name,
+                "fallback": "verification_observation_synthesis",
+                "synthesized_after_model_budget_exhaustion": True,
+            },
+        )
+
+    def _completed_mutation_fallback(
+        self,
+        *,
+        task: Task,
+        template: WorkerInstanceTemplate,
+        state: WorkerGroupState,
+        usage: dict[str, int],
+        base_artifacts: list[ArtifactPayload],
+    ) -> Result | None:
+        if self.worker_type != "code_worker" or not task.permissions.write_files:
+            return None
+
+        write_observations = self._write_observations(state)
+        if not write_observations:
+            return None
+
+        changed_paths = sorted(
+            {
+                str(observation["observation"]["path"])
+                for observation in write_observations
+            }
+        )
+        diff = self._git_diff_for_paths(task=task, paths=changed_paths)
+        synthesized = list(base_artifacts)
+        for artifact_id in task.expected_outputs:
+            synthesized.append(
+                ArtifactPayload(
+                    id=artifact_id,
+                    kind="worker_output",
+                    content=self._synthesized_mutation_artifact(
+                        artifact_id=artifact_id,
+                        changed_paths=changed_paths,
+                        diff=diff,
+                        write_observations=write_observations,
+                    ),
+                    producer=self.worker_type,
+                    step_id=task.step_id,
+                    metadata={
+                        "worker_instance": template.name,
+                        "synthesized_after_model_budget_exhaustion": True,
+                    },
+                )
+            )
+        if "patch_diff" not in task.expected_outputs:
+            synthesized.append(
+                ArtifactPayload(
+                    id="patch_diff",
+                    kind="worker_output",
+                    content={"paths": changed_paths, "diff": diff},
+                    producer=self.worker_type,
+                    step_id=task.step_id,
+                    metadata={
+                        "worker_instance": template.name,
+                        "synthesized_after_model_budget_exhaustion": True,
+                    },
+                )
+            )
+
+        return Result(
+            run_id=task.run_id,
+            producer=self.worker_type,
+            status="completed",
+            summary=(
+                "Mutation write tools completed; required mutation artifacts were "
+                "synthesized from tool observations after model budget exhaustion."
+            ),
+            artifacts=synthesized,
+            usage=dict(usage),
+            warnings=["model budget exhausted after write observations; artifacts synthesized deterministically"],
+            metadata={
+                "worker_type": self.worker_type,
+                "worker_instance": template.name,
+                "fallback": "mutation_observation_synthesis",
+                "changed_paths": changed_paths,
+                "synthesized_after_model_budget_exhaustion": True,
+            },
+        )
+
+    def _synthesized_mutation_artifact(
+        self,
+        *,
+        artifact_id: str,
+        changed_paths: list[str],
+        diff: str,
+        write_observations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if artifact_id == "change_summary":
+            return {
+                "changed_paths": changed_paths,
+                "write_tools": [
+                    {
+                        "tool_name": observation.get("tool_name"),
+                        "path": observation.get("observation", {}).get("path"),
+                        "replacements": observation.get("observation", {}).get("replacements"),
+                        "bytes_written": observation.get("observation", {}).get("bytes_written"),
+                    }
+                    for observation in write_observations
+                ],
+                "notes": "Synthesized by worker runtime after successful write observations.",
+            }
+        if artifact_id == "rollback_patch":
+            return {
+                "changed_paths": changed_paths,
+                "diff": diff,
+                "rollback_hint": f"git checkout -- {' '.join(changed_paths)}",
+            }
+        return {
+            "changed_paths": changed_paths,
+            "diff": diff,
+            "notes": f"Synthesized artifact for expected output {artifact_id}.",
+        }
+
+    def _git_diff_for_paths(self, *, task: Task, paths: list[str]) -> str:
+        if not task.permissions.read_files:
+            return ""
+        diffs: list[str] = []
+        for path in paths:
+            try:
+                result = self._toolbox.execute(task=task, tool_name="git_diff", arguments={"path": path})
+            except WorkerToolError:
+                continue
+            stdout = result.get("stdout")
+            if isinstance(stdout, str) and stdout:
+                diffs.append(stdout)
+        return "\n".join(diffs)
 
     def _prompt(
         self,
@@ -740,6 +1229,9 @@ def build_agentic_worker_registry(
             root_path=Path(root_path),
             timeout_seconds=config.tool_timeout_seconds,
             max_file_bytes=config.max_file_bytes,
+            web_search_provider=config.web_search_provider,
+            web_search_api_key=config.web_search_api_key,
+            web_search_max_results=config.web_search_max_results,
         )
     )
     registry = WorkerRegistry()
@@ -772,11 +1264,25 @@ def _tool_spec_name(tool: dict[str, Any]) -> str | None:
 def _permitted_tool_names(permissions: PermissionSet) -> set[str]:
     tools: set[str] = set()
     if permissions.read_files:
-        tools.update({"list_dir", "read_file", "file_search", "text_search", "json_query", "git_status", "git_diff"})
+        tools.update(
+            {
+                "repo_snapshot",
+                "list_dir",
+                "read_file",
+                "read_many_files",
+                "file_search",
+                "text_search",
+                "json_query",
+                "git_status",
+                "git_diff",
+                "diff_summary",
+                "mutation_scope_check",
+            }
+        )
     if permissions.write_files:
         tools.update({"write_file", "replace_in_file"})
     if permissions.run_commands:
-        tools.add("run_readonly_command")
+        tools.update({"run_readonly_command", "run_focused_tests"})
     if permissions.web_research:
         tools.update({"web_search", "web_fetch"})
     return tools

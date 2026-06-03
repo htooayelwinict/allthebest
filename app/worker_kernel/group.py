@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.runtime_matrix import RuntimeMatrixLogger
 from app.schemas import Result, Task
 from app.worker_kernel.workers.base import BaseWorker
 
@@ -11,7 +12,7 @@ from app.worker_kernel.workers.base import BaseWorker
 class WorkerGroupRunner(Protocol):
     worker_type: str
 
-    def run(self, task: Task) -> Result:
+    def run(self, task: Task, trace: RuntimeMatrixLogger | None = None) -> Result:
         """Run a worker group for one compiled task."""
 
 
@@ -22,7 +23,7 @@ class SingleInstanceWorkerGroupRunner:
         self._worker = worker
         self.worker_type = worker.worker_type
 
-    def run(self, task: Task) -> Result:
+    def run(self, task: Task, trace: RuntimeMatrixLogger | None = None) -> Result:
         return self._worker.run(task)
 
 
@@ -35,7 +36,7 @@ class SequentialWorkerGroupRunner:
         self.worker_type = worker_type
         self._workers = workers
 
-    def run(self, task: Task) -> Result:
+    def run(self, task: Task, trace: RuntimeMatrixLogger | None = None) -> Result:
         group_results: list[dict] = []
         artifacts = []
         usage = {"tool_calls": 0, "model_calls": 0}

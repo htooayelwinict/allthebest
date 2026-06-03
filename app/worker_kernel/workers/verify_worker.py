@@ -10,12 +10,29 @@ VERIFY_WORKER_SYSTEM_PROMPT = """You are the verification worker.
 Use readonly tools and allowed verification commands to prove whether the worker
 outputs satisfy success criteria. Record exact commands, return codes, and relevant
 stdout/stderr. Do not edit files. If checks fail, report failed or needs_replan based
-on whether the cause is implementation failure or planner-level mismatch."""
+on whether the cause is implementation failure or planner-level mismatch. Prefer
+`python -m pytest ...` or `PYTHONPATH=. pytest ...` for Python test commands, especially
+inside nested repositories. A collection/import error is not proof that code is correct;
+report the exact command failure and do not mark verification passed from scope review alone.
+Prefer run_focused_tests, mutation_scope_check, and diff_summary over raw command and
+primitive git calls when they satisfy the verification contract."""
 
 
 def agentic_templates() -> list[WorkerInstanceTemplate]:
-    repo_tools = ("list_dir", "read_file", "file_search", "text_search", "json_query", "git_status", "git_diff")
-    command_tools = repo_tools + ("run_readonly_command",)
+    repo_tools = (
+        "repo_snapshot",
+        "list_dir",
+        "read_file",
+        "read_many_files",
+        "file_search",
+        "text_search",
+        "json_query",
+        "git_status",
+        "git_diff",
+        "diff_summary",
+        "mutation_scope_check",
+    )
+    command_tools = repo_tools + ("run_focused_tests", "run_readonly_command")
     return [
         WorkerInstanceTemplate(
             name="verification_runner",

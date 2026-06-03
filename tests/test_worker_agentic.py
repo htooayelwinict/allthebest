@@ -1,10 +1,12 @@
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from app.schemas import ArtifactPayload, Plan, Task
+from app.schemas import ArtifactPayload, MutationScope, Plan, Task
+from app.runtime_matrix import RuntimeMatrixLogger
 from app.worker_kernel.agentic import (
     AgenticWorkerGroupRunner,
     WorkerInstanceTemplate,
@@ -78,6 +80,9 @@ def test_worker_env_config_builds_openrouter_compatible_client(tmp_path: Path, m
                 "WORKER_MAX_PARALLEL_INSTANCES=2",
                 "WORKER_TOOL_TIMEOUT_SECONDS=7",
                 "WORKER_MAX_FILE_BYTES=1234",
+                "WORKER_WEB_SEARCH_PROVIDER=duckduckgo",
+                "WORKER_WEB_SEARCH_API_KEY=brave-key",
+                "WORKER_WEB_SEARCH_MAX_RESULTS=7",
             ]
         ),
         encoding="utf-8",
@@ -91,6 +96,9 @@ def test_worker_env_config_builds_openrouter_compatible_client(tmp_path: Path, m
     assert config.max_parallel_instances == 2
     assert config.tool_timeout_seconds == 7
     assert config.max_file_bytes == 1234
+    assert config.web_search_provider == "duckduckgo"
+    assert config.web_search_api_key == "brave-key"
+    assert config.web_search_max_results == 7
     assert FakeConfiguredClient.configs[-1]["api_key"] == "test-key"
     assert FakeConfiguredClient.configs[-1]["model"] == "test-model"
     assert FakeConfiguredClient.configs[-1]["base_url"] == "https://worker.example/v1"
@@ -191,10 +199,27 @@ def test_toolbox_enforces_read_write_command_and_web_permissions(tmp_path: Path)
         tool_name="run_readonly_command",
         arguments={"command": "PYTHONPATH=. pytest --version"},
     )
+    env_pythonpath = toolbox.execute(
+        task=command_task,
+        tool_name="run_readonly_command",
+        arguments={"command": "env PYTHONPATH=. pytest --version"},
+    )
+    sh_pythonpath = toolbox.execute(
+        task=command_task,
+        tool_name="run_readonly_command",
+        arguments={"command": "sh -c 'PYTHONPATH=. pytest --version'"},
+    )
     assert version["returncode"] == 0
     assert missing["returncode"] != 0
     assert pythonpath["returncode"] == 0
+    assert pythonpath["command"][1:3] == ["-m", "pytest"]
     assert pythonpath["env"] == {"PYTHONPATH": "."}
+    assert env_pythonpath["returncode"] == 0
+    assert env_pythonpath["command"][1:3] == ["-m", "pytest"]
+    assert env_pythonpath["env"] == {"PYTHONPATH": "."}
+    assert sh_pythonpath["returncode"] == 0
+    assert sh_pythonpath["command"][1:3] == ["-m", "pytest"]
+    assert sh_pythonpath["env"] == {"PYTHONPATH": "."}
 
     with pytest.raises(ToolPermissionError):
         toolbox.execute(
@@ -202,6 +227,262 @@ def test_toolbox_enforces_read_write_command_and_web_permissions(tmp_path: Path)
             tool_name="run_readonly_command",
             arguments={"command": "OPENAI_API_KEY=x pytest --version"},
         )
+    with pytest.raises(ToolPermissionError):
+        toolbox.execute(
+            task=command_task,
+            tool_name="run_readonly_command",
+            arguments={"command": "sh -c 'pytest --version && echo unsafe'"},
+        )
+
+
+def test_toolbox_high_level_worker_tools_are_permission_gated_and_scoped(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    target = tmp_path / "src" / "app.py"
+    target.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_app.py").write_text(
+        "from src.app import add\n\n\ndef test_add() -> None:\n    assert add(1, 2) == 3\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True, text=True)
+    target.write_text("def add(a, b):\n    return a + b + 0\n", encoding="utf-8")
+
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    read_task = _task(
+        permissions={
+            "read_files": True,
+            "write_files": False,
+            "run_commands": False,
+            "web_research": False,
+        },
+    ).model_copy(
+        update={
+            "input_artifacts": [
+                ArtifactPayload(
+                    id="mutation_scope",
+                    content={"target_paths": ["src/app.py"], "reason": "app logic", "max_files": 1},
+                )
+            ]
+        }
+    )
+    command_task = read_task.model_copy(
+        update={
+            "permissions": read_task.permissions.model_copy(update={"run_commands": True})
+        }
+    )
+
+    snapshot = toolbox.execute(task=read_task, tool_name="repo_snapshot", arguments={"path": "."})
+    many = toolbox.execute(
+        task=read_task,
+        tool_name="read_many_files",
+        arguments={"paths": ["src/app.py", "tests/test_app.py"]},
+    )
+    diff = toolbox.execute(task=read_task, tool_name="diff_summary", arguments={"path": "src/app.py"})
+    scope = toolbox.execute(task=read_task, tool_name="mutation_scope_check", arguments={})
+    tests = toolbox.execute(
+        task=command_task,
+        tool_name="run_focused_tests",
+        arguments={"paths": "tests/test_app.py"},
+    )
+
+    assert "src/app.py" in snapshot["files"]
+    assert "tests/test_app.py" in snapshot["test_candidates"]
+    assert [file["path"] for file in many["files"]] == ["src/app.py", "tests/test_app.py"]
+    assert diff["changed_files"] == ["src/app.py"]
+    assert scope["passed"] is True
+    assert scope["in_scope"] == ["src/app.py"]
+    assert tests["returncode"] == 0
+    assert tests["env"] == {"PYTHONPATH": "."}
+
+
+def test_toolbox_web_search_uses_configured_duckduckgo_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def read(self, limit: int) -> bytes:
+            return b'''
+                <html>
+                  <a class="result__a" href="/l/?uddg=https%3A%2F%2Fstripe.com%2Fdocs%2Fpayments%2Fpayment-intents">Stripe docs</a>
+                  <a class="result__snippet">Use idempotency keys for retry safety.</a>
+                  <a class="result__a" href="https://example.com/retry">Retry guide</a>
+                  <a class="result__snippet">Backoff reduces duplicate pressure.</a>
+                </html>
+            '''
+
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    toolbox = WorkerToolbox(
+        WorkerToolConfig(
+            root_path=tmp_path,
+            web_search_provider="duckduckgo",
+            web_search_max_results=2,
+        )
+    )
+    result = toolbox.execute(
+        task=_task(
+            permissions={
+                "read_files": False,
+                "write_files": False,
+                "run_commands": False,
+                "web_research": True,
+            }
+        ),
+        tool_name="web_search",
+        arguments={"query": "payment idempotency retry"},
+    )
+
+    assert "payment+idempotency+retry" in captured["url"]
+    assert captured["timeout"] == 15.0
+    assert result["provider"] == "duckduckgo"
+    assert len(result["results"]) == 2
+    assert result["results"][0]["url"] == "https://stripe.com/docs/payments/payment-intents"
+    assert "idempotency keys" in result["results"][0]["snippet"]
+
+
+def test_toolbox_web_search_uses_brave_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def read(self, limit: int) -> bytes:
+            return json.dumps(
+                {
+                    "query": {"original": "payment idempotency retry"},
+                    "web": {
+                        "results": [
+                            {
+                                "title": "Stripe idempotency docs",
+                                "url": "https://stripe.com/docs/idempotency",
+                                "description": "Use idempotency keys for retries.",
+                                "extra_snippets": ["Retry requests can safely use the same key."],
+                                "profile": {"name": "Stripe"},
+                                "age": "2 weeks ago",
+                                "language": "en",
+                            }
+                        ]
+                    },
+                }
+            ).encode("utf-8")
+
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    toolbox = WorkerToolbox(
+        WorkerToolConfig(
+            root_path=tmp_path,
+            web_search_provider="brave",
+            web_search_api_key="test-brave-key",
+            web_search_max_results=3,
+        )
+    )
+    result = toolbox.execute(
+        task=_task(
+            permissions={
+                "read_files": False,
+                "write_files": False,
+                "run_commands": False,
+                "web_research": True,
+            }
+        ),
+        tool_name="web_search",
+        arguments={"query": "payment idempotency retry"},
+    )
+
+    assert "api.search.brave.com/res/v1/web/search" in captured["url"]
+    assert "payment+idempotency+retry" in captured["url"]
+    assert captured["headers"]["X-subscription-token"] == "test-brave-key"
+    assert captured["timeout"] == 15.0
+    assert result["provider"] == "brave"
+    assert result["results"][0]["title"] == "Stripe idempotency docs"
+    assert result["results"][0]["snippets"] == [
+        "Use idempotency keys for retries.",
+        "Retry requests can safely use the same key.",
+    ]
+
+
+def test_toolbox_web_fetch_extracts_readable_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHeaders:
+        def get(self, key: str, default: str = "") -> str:
+            return "text/html; charset=utf-8" if key == "Content-Type" else default
+
+    class FakeResponse:
+        headers = FakeHeaders()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://example.com/final"
+
+        def read(self, limit: int) -> bytes:
+            return b"""
+                <html>
+                  <head>
+                    <title>Retry Safety</title>
+                    <meta name="description" content="Payment retry notes">
+                    <script>secret()</script>
+                  </head>
+                  <body>
+                    <h1>Payment retries</h1>
+                    <p>Use stable idempotency keys.</p>
+                    <a href="https://example.com/source">Source page</a>
+                  </body>
+                </html>
+            """
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: FakeResponse())
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    result = toolbox.execute(
+        task=_task(
+            permissions={
+                "read_files": False,
+                "write_files": False,
+                "run_commands": False,
+                "web_research": True,
+            }
+        ),
+        tool_name="web_fetch",
+        arguments={"url": "https://example.com/retry"},
+    )
+
+    assert result["final_url"] == "https://example.com/final"
+    assert result["title"] == "Retry Safety"
+    assert result["description"] == "Payment retry notes"
+    assert "Use stable idempotency keys." in result["content"]
+    assert "secret()" not in result["content"]
+    assert result["links"] == [{"url": "https://example.com/source", "text": "Source page"}]
 
 
 def test_toolbox_excludes_repo_noise_from_discovery(tmp_path: Path) -> None:
@@ -267,6 +548,314 @@ def test_toolbox_extracts_nested_write_scope_paths_from_artifacts(tmp_path: Path
     assert "stable" in target.read_text(encoding="utf-8")
 
 
+def test_mutation_scope_accepts_structured_target_paths() -> None:
+    scope = MutationScope.model_validate(
+        {
+            "target_paths": ["src/fulfillment/events.py"],
+            "test_paths": ["tests/test_webhook.py"],
+            "forbidden_paths": ["src/fulfillment/secrets.py"],
+            "reason": "only webhook idempotency code should change",
+            "max_files": 2,
+        }
+    )
+
+    assert scope.target_paths == ["src/fulfillment/events.py"]
+    assert scope.test_paths == ["tests/test_webhook.py"]
+    assert scope.write_scope_paths == ["src/fulfillment/events.py"]
+
+
+def test_mutation_scope_accepts_legacy_file_label() -> None:
+    scope = MutationScope.model_validate(
+        {
+            "evidence": [
+                "File: src/fulfillment/events.py",
+                "Insertion point: after the ignored event branch.",
+            ],
+            "notes": "Strictly limited to `src/fulfillment/events.py`.",
+        }
+    )
+
+    assert scope.target_paths == ["src/fulfillment/events.py"]
+
+
+def test_mutation_scope_rejects_escaping_path() -> None:
+    with pytest.raises(ValueError, match="invalid repo-relative path"):
+        MutationScope.model_validate(
+            {
+                "target_paths": ["../secret.py"],
+                "reason": "bad scope",
+            }
+        )
+
+
+def test_mutation_scope_rejects_too_many_files() -> None:
+    with pytest.raises(ValueError, match="exceeding max_files"):
+        MutationScope.model_validate(
+            {
+                "target_paths": ["src/a.py", "src/b.py", "src/c.py"],
+                "reason": "too broad",
+                "max_files": 2,
+            }
+        )
+
+
+def test_toolbox_rejects_write_outside_approved_scope(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    allowed = tmp_path / "src" / "allowed.py"
+    denied = tmp_path / "src" / "denied.py"
+    allowed.write_text("value = 'old'\n", encoding="utf-8")
+    denied.write_text("value = 'old'\n", encoding="utf-8")
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["src/allowed.py"],
+        }
+    )
+
+    with pytest.raises(ToolPermissionError, match="outside allowed scope"):
+        toolbox.execute(
+            task=task,
+            tool_name="replace_in_file",
+            arguments={"path": "src/denied.py", "old": "old", "new": "new"},
+        )
+
+
+def test_toolbox_rejects_forbidden_subpath(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    target = tmp_path / "src" / "secret.py"
+    target.write_text("value = 'old'\n", encoding="utf-8")
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["src"],
+        },
+    ).model_copy(
+        update={
+            "metadata": {
+                "write_scope": {
+                    "target_paths": ["src"],
+                    "forbidden_paths": ["src/secret.py"],
+                    "reason": "directory scope with explicit exclusion",
+                    "max_files": 5,
+                }
+            }
+        }
+    )
+
+    with pytest.raises(ToolPermissionError, match="forbidden scope"):
+        toolbox.execute(
+            task=task,
+            tool_name="replace_in_file",
+            arguments={"path": "src/secret.py", "old": "old", "new": "new"},
+        )
+
+
+def test_agentic_group_blocks_missing_write_scope_before_model_call(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "should not be called",
+                    "artifacts": [{"id": "change_summary", "content": "bad"}],
+                }
+            }
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="code_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="code_agent",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("replace_in_file",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="code_worker",
+        expected_outputs=["change_summary"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+        },
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "blocked"
+    assert result.metadata["issue_code"] == "invalid_write_scope"
+    assert client.prompts == []
+
+
+def test_code_worker_synthesizes_mutation_artifacts_after_write_budget_exhaustion(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "src").mkdir()
+    target = tmp_path / "src" / "checkout.py"
+    target.write_text("value = 'old'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True, text=True)
+    client = QueueClient(
+        [
+            {"tool_calls": [{"tool_name": "read_file", "arguments": {"path": "src/checkout.py"}}]},
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "replace_in_file",
+                        "arguments": {"path": "src/checkout.py", "old": "old", "new": "new"},
+                    }
+                ]
+            },
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="code_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="code_agent",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("read_file", "replace_in_file", "git_diff"),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="code_worker",
+        expected_outputs=["change_summary", "rollback_patch"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["src/checkout.py"],
+        },
+        max_tool_calls=2,
+        max_model_calls=2,
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "completed"
+    assert "new" in target.read_text(encoding="utf-8")
+    artifact_ids = {artifact.id for artifact in result.artifacts}
+    assert {"change_summary", "rollback_patch", "patch_diff"} <= artifact_ids
+    assert result.metadata["fallback"] == "mutation_observation_synthesis"
+
+
+def test_code_worker_rejects_completed_mutation_without_write_observation(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "checkout.py").write_text("value = 'old'\n", encoding="utf-8")
+    client = QueueClient(
+        [
+            {"tool_calls": [{"tool_name": "read_file", "arguments": {"path": "src/checkout.py"}}]},
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "Patch applied.",
+                    "artifacts": [
+                        {"id": "change_summary", "content": "claimed change"},
+                        {"id": "rollback_patch", "content": "claimed rollback"},
+                    ],
+                }
+            },
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="code_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="code_agent",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("read_file", "replace_in_file"),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="code_worker",
+        expected_outputs=["change_summary", "rollback_patch"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["src/checkout.py"],
+        },
+        max_tool_calls=1,
+        max_model_calls=2,
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "failed"
+    assert result.metadata["issue_code"] == "mutation_completed_without_write"
+    assert result.metadata["retryable"] is True
+    assert "old" in (tmp_path / "src" / "checkout.py").read_text(encoding="utf-8")
+
+
+def test_verify_worker_synthesizes_failed_verification_after_model_budget_exhaustion(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "run_readonly_command",
+                        "arguments": {"command": ["python", "-m", "pytest", "missing_test.py"]},
+                    }
+                ]
+            }
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="verify_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="verification_runner",
+                role="verify",
+                system_prompt="verify",
+                allowed_tools=("run_readonly_command",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="verify_worker",
+        expected_outputs=["test_results", "verification_results"],
+        permissions={
+            "read_files": False,
+            "write_files": False,
+            "run_commands": True,
+            "web_research": False,
+        },
+        max_tool_calls=1,
+        max_model_calls=1,
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "failed"
+    assert result.metadata["fallback"] == "verification_observation_synthesis"
+    artifact_ids = {artifact.id for artifact in result.artifacts}
+    assert {"test_results", "verification_results"} <= artifact_ids
+
+
 def test_agentic_worker_group_fanout_and_artifact_handoff(tmp_path: Path) -> None:
     client = QueueClient(
         [
@@ -293,7 +882,7 @@ def test_agentic_worker_group_fanout_and_artifact_handoff(tmp_path: Path) -> Non
             WorkerInstanceTemplate(name="citation_formatter", role="format citations"),
         ],
         controller=WorkerLLMController(client),
-        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path, web_search_provider="disabled")),
     )
 
     result = group.run(
@@ -314,6 +903,77 @@ def test_agentic_worker_group_fanout_and_artifact_handoff(tmp_path: Path) -> Non
     assert "source_links" in client.prompts[1]
     assert {artifact.id for artifact in result.artifacts} >= {"source_links", "final_artifact"}
     assert len(result.metadata["worker_group_results"]) == 2
+
+
+def test_agentic_worker_group_skips_later_instances_when_outputs_are_done(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "done early",
+                    "artifacts": [{"id": "final_artifact", "content": "complete"}],
+                }
+            }
+        ]
+    )
+    group = AgenticWorkerGroupRunner(
+        worker_type="repo_worker",
+        templates=[
+            WorkerInstanceTemplate(name="repo_locator", role="locate"),
+            WorkerInstanceTemplate(name="repo_reader", role="read"),
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+
+    result = group.run(_task(worker_type="repo_worker", expected_outputs=["final_artifact"], max_model_calls=2))
+
+    assert result.status == "completed"
+    assert len(client.prompts) == 1
+    assert len(result.metadata["worker_group_results"]) == 1
+    assert result.metadata["skipped_worker_instances"] == ["repo_reader"]
+
+
+def test_agentic_worker_group_records_model_and_tool_matrix_rows(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("value = 1\n", encoding="utf-8")
+    client = QueueClient(
+        [
+            {"tool_calls": [{"tool_name": "read_file", "arguments": {"path": "src/app.py"}}]},
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "read app",
+                    "artifacts": [{"id": "final_artifact", "content": "value = 1"}],
+                }
+            },
+        ]
+    )
+    group = AgenticWorkerGroupRunner(
+        worker_type="repo_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="repo_reader",
+                role="read",
+                allowed_tools=("read_file",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    trace = RuntimeMatrixLogger()
+
+    result = group.run(_task(worker_type="repo_worker", max_tool_calls=1, max_model_calls=2), trace=trace)
+    events = [row["event"] for row in trace.snapshot()["rows"]]
+
+    assert result.status == "completed"
+    assert "worker_group_started" in events
+    assert "worker_instance_started" in events
+    assert events.count("worker_model_call_started") == 2
+    assert "worker_tool_call_started" in events
+    assert "worker_tool_call_completed" in events
+    assert "worker_group_completed" in events
 
 
 def test_worker_llm_controller_normalizes_common_tool_call_aliases() -> None:
@@ -452,6 +1112,36 @@ def test_worker_llm_controller_normalizes_string_issues() -> None:
     assert decision.final_result.issues[0].message == "Missing source code content for src/checkout.py."
 
 
+def test_worker_llm_controller_normalizes_type_and_detail_issue_fields() -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": {
+                    "status": "needs_replan",
+                    "summary": "Need more source evidence.",
+                    "issues": [
+                        {
+                            "type": "plan_failure",
+                            "code": "missing_source_contents",
+                            "detail": "Cannot analyze root_cause without file contents.",
+                            "artifact": "candidate_paths",
+                        }
+                    ],
+                }
+            }
+        ]
+    )
+
+    decision = WorkerLLMController(client).decide(stage="research_worker_context_synthesizer", prompt="{}")
+
+    assert decision.final_result is not None
+    issue = decision.final_result.issues[0]
+    assert issue.issue_type == "plan_failure"
+    assert issue.code == "missing_source_contents"
+    assert issue.message == "Cannot analyze root_cause without file contents."
+    assert issue.metadata["artifact"] == "candidate_paths"
+
+
 def test_research_worker_template_can_use_readonly_tools_when_permitted(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "checkout.py").write_text("def checkout(): pass\n", encoding="utf-8")
@@ -489,7 +1179,7 @@ def test_research_worker_template_can_use_readonly_tools_when_permitted(tmp_path
             )
         ],
         controller=WorkerLLMController(client),
-        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path, web_search_provider="disabled")),
     )
 
     result = group.run(_task(worker_type="research_worker", max_tool_calls=1, max_model_calls=2))
@@ -600,7 +1290,7 @@ def test_agentic_group_does_not_count_bare_artifact_ids_as_completed_outputs(tmp
     assert result.metadata["issues"][0]["metadata"]["missing_artifacts"] == ["final_artifact"]
 
 
-def test_tool_observation_without_final_model_budget_requests_replan(tmp_path: Path) -> None:
+def test_tool_observation_without_final_model_budget_is_kernel_budget_issue(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "checkout.py").write_text("def checkout(): pass\n", encoding="utf-8")
     client = QueueClient([{"tool_calls": [{"name": "list_dir", "arguments": {"path": "."}}]}])
@@ -619,7 +1309,8 @@ def test_tool_observation_without_final_model_budget_requests_replan(tmp_path: P
 
     result = group.run(_task(max_tool_calls=1, max_model_calls=1))
 
-    assert result.status == "needs_replan"
+    assert result.status == "budget_exceeded"
+    assert result.metadata["issues"][0]["issue_type"] == "instance_failure"
     assert result.metadata["issues"][0]["code"] == "model_budget_exhausted_before_final_result"
     assert any(artifact.kind == "tool_observation_summary" for artifact in result.artifacts)
 
@@ -650,7 +1341,7 @@ def test_agentic_worker_rejects_disallowed_tool_as_retryable_instance_failure(tm
     assert result.metadata["issues"][0]["retryable"] is True
 
 
-def test_agentic_web_search_without_provider_requests_replan(tmp_path: Path) -> None:
+def test_agentic_web_search_without_provider_is_kernel_blocked(tmp_path: Path) -> None:
     client = QueueClient([{"tool_calls": [{"tool_name": "web_search", "arguments": {"query": "worker runtime"}}]}])
     group = AgenticWorkerGroupRunner(
         worker_type="web_research_worker",
@@ -662,7 +1353,7 @@ def test_agentic_web_search_without_provider_requests_replan(tmp_path: Path) -> 
             )
         ],
         controller=WorkerLLMController(client),
-        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path, web_search_provider="disabled")),
     )
 
     result = group.run(
@@ -679,6 +1370,6 @@ def test_agentic_web_search_without_provider_requests_replan(tmp_path: Path) -> 
         )
     )
 
-    assert result.status == "needs_replan"
-    assert result.metadata["issues"][0]["issue_type"] == "plan_failure"
+    assert result.status == "blocked"
+    assert result.metadata["issues"][0]["issue_type"] == "kernel_failure"
     assert result.metadata["issues"][0]["code"] == "tool_unavailable"

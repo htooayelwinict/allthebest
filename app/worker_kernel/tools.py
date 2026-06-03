@@ -10,12 +10,17 @@ import json
 import os
 import shlex
 import subprocess
+import sys
+import urllib.error
 import urllib.request
+from html import unescape
+from html.parser import HTMLParser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
-from app.schemas import ArtifactPayload, Task
+from app.schemas import ArtifactPayload, MutationScope, Task, extract_repo_path_candidates
 
 
 IGNORED_DIR_NAMES = {
@@ -47,7 +52,7 @@ class ToolPermissionError(WorkerToolError):
 class ToolUnavailableError(WorkerToolError):
     code = "tool_unavailable"
     retryable = False
-    issue_type = "plan_failure"
+    issue_type = "kernel_failure"
 
 
 class ToolExecutionError(WorkerToolError):
@@ -59,6 +64,9 @@ class WorkerToolConfig:
     root_path: Path
     timeout_seconds: float = 15.0
     max_file_bytes: int = 200_000
+    web_search_provider: str = "brave"
+    web_search_api_key: str | None = None
+    web_search_max_results: int = 5
 
 
 class WorkerToolbox:
@@ -71,13 +79,17 @@ class WorkerToolbox:
         if task.permissions.read_files:
             tools.extend(
                 [
+                    _tool_spec("repo_snapshot", "Return a compact repository inventory, common config files, git status, and test candidates.", "read_files", {"path": "string"}),
                     _tool_spec("list_dir", "List direct children under a repository path.", "read_files", {"path": "string"}),
                     _tool_spec("read_file", "Read a UTF-8 text file under the repository root.", "read_files", {"path": "string"}),
+                    _tool_spec("read_many_files", "Read several UTF-8 text files under the repository root in one tool call.", "read_files", {"paths": "string_or_string_array"}),
                     _tool_spec("file_search", "Find repository files by glob pattern.", "read_files", {"path": "string", "pattern": "string"}),
                     _tool_spec("text_search", "Search repository text using a literal or regex pattern.", "read_files", {"path": "string", "pattern": "string"}),
                     _tool_spec("json_query", "Read a JSON file and return a dotted path value.", "read_files", {"path": "string", "query": "string"}),
                     _tool_spec("git_status", "Return git status --short.", "read_files", {}),
                     _tool_spec("git_diff", "Return git diff for the repo or one path.", "read_files", {"path": "string"}),
+                    _tool_spec("diff_summary", "Return changed file names and bounded git diff text.", "read_files", {"path": "string"}),
+                    _tool_spec("mutation_scope_check", "Check changed files against mutation_scope input artifacts or task write scope.", "read_files", {}),
                 ]
             )
         if task.permissions.write_files:
@@ -88,7 +100,12 @@ class WorkerToolbox:
                 ]
             )
         if task.permissions.run_commands:
-            tools.append(_tool_spec("run_readonly_command", "Run an allowlisted readonly verification command.", "run_commands", {"command": "string_or_string_array"}))
+            tools.extend(
+                [
+                    _tool_spec("run_readonly_command", "Run an allowlisted readonly verification command.", "run_commands", {"command": "string_or_string_array"}),
+                    _tool_spec("run_focused_tests", "Run pytest for selected repo-relative test paths with PYTHONPATH set to the repo root.", "run_commands", {"paths": "string_or_string_array"}),
+                ]
+            )
         if task.permissions.web_research:
             tools.extend(
                 [
@@ -98,14 +115,32 @@ class WorkerToolbox:
             )
         return tools
 
+    def validate_write_scope(self, task: Task) -> dict[str, Any]:
+        if not task.permissions.write_files:
+            return {"write_scope_paths": [], "forbidden_paths": []}
+        allowed = self._allowed_write_paths(task)
+        if not allowed:
+            raise ToolUnavailableError("write_files was allowed but no write scope paths were provided")
+        forbidden = self._forbidden_write_paths(task)
+        return {
+            "write_scope_paths": [self._display_path(path) for path in allowed],
+            "forbidden_paths": [self._display_path(path) for path in forbidden],
+        }
+
     def execute(self, *, task: Task, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         arguments = arguments or {}
+        if tool_name == "repo_snapshot":
+            self._require(task.permissions.read_files, "read_files", tool_name)
+            return self._repo_snapshot(arguments)
         if tool_name == "list_dir":
             self._require(task.permissions.read_files, "read_files", tool_name)
             return self._list_dir(arguments)
         if tool_name == "read_file":
             self._require(task.permissions.read_files, "read_files", tool_name)
             return self._read_file(arguments)
+        if tool_name == "read_many_files":
+            self._require(task.permissions.read_files, "read_files", tool_name)
+            return self._read_many_files(arguments)
         if tool_name == "file_search":
             self._require(task.permissions.read_files, "read_files", tool_name)
             return self._file_search(arguments)
@@ -123,6 +158,12 @@ class WorkerToolbox:
             path = arguments.get("path")
             command = ["git", "diff", "--"] + ([str(path)] if path else [])
             return self._run_checked(command)
+        if tool_name == "diff_summary":
+            self._require(task.permissions.read_files, "read_files", tool_name)
+            return self._diff_summary(arguments)
+        if tool_name == "mutation_scope_check":
+            self._require(task.permissions.read_files, "read_files", tool_name)
+            return self._mutation_scope_check(task)
         if tool_name == "write_file":
             self._require(task.permissions.write_files, "write_files", tool_name)
             return self._write_file(task, arguments)
@@ -132,9 +173,12 @@ class WorkerToolbox:
         if tool_name == "run_readonly_command":
             self._require(task.permissions.run_commands, "run_commands", tool_name)
             return self._run_readonly_command(arguments)
+        if tool_name == "run_focused_tests":
+            self._require(task.permissions.run_commands, "run_commands", tool_name)
+            return self._run_focused_tests(arguments)
         if tool_name == "web_search":
             self._require(task.permissions.web_research, "web_research", tool_name)
-            raise ToolUnavailableError("web_search provider is not configured for worker runtime")
+            return self._web_search(arguments)
         if tool_name == "web_fetch":
             self._require(task.permissions.web_research, "web_research", tool_name)
             return self._web_fetch(arguments)
@@ -157,12 +201,71 @@ class WorkerToolbox:
                 break
         return {"path": self._display_path(path), "entries": entries}
 
+    def _repo_snapshot(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        start = self._resolve_read_path(str(arguments.get("path") or "."))
+        if not start.exists():
+            raise ToolExecutionError(f"path does not exist: {self._display_path(start)}")
+
+        files: list[str] = []
+        dirs: set[str] = set()
+        test_candidates: list[str] = []
+        config_files: list[str] = []
+        for path in sorted(start.rglob("*")):
+            if self._is_ignored_path(path):
+                continue
+            relative = self._display_path(path)
+            if path.is_dir():
+                dirs.add(relative)
+                continue
+            files.append(relative)
+            if _looks_like_test_path(relative):
+                test_candidates.append(relative)
+            if Path(relative).name in {"README.md", "pyproject.toml", "package.json", "requirements.txt", "Makefile"}:
+                config_files.append(relative)
+            if len(files) >= 300:
+                break
+
+        try:
+            git_status = self._run_checked(["git", "status", "--short"])
+        except WorkerToolError as exc:
+            git_status = {"stdout": "", "stderr": str(exc), "returncode": 128}
+
+        return {
+            "path": self._display_path(start),
+            "directories": sorted(dirs)[:100],
+            "files": files[:300],
+            "test_candidates": test_candidates[:50],
+            "config_files": config_files[:30],
+            "git_status": git_status,
+        }
+
     def _read_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
         path = self._resolve_read_path(str(arguments.get("path") or ""))
         if not path.is_file():
             raise ToolExecutionError(f"path is not a file: {self._display_path(path)}")
         content = path.read_text(encoding="utf-8", errors="replace")[: self._config.max_file_bytes]
         return {"path": self._display_path(path), "content": content, "truncated": path.stat().st_size > len(content)}
+
+    def _read_many_files(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        paths = _string_or_list(arguments.get("paths"))
+        if not paths:
+            raise ToolExecutionError("read_many_files requires at least one path")
+        files = []
+        per_file_limit = max(1, self._config.max_file_bytes // max(1, min(len(paths), 20)))
+        for raw_path in paths[:20]:
+            path = self._resolve_read_path(raw_path)
+            if not path.is_file():
+                files.append({"path": self._display_path(path), "error": "not a file"})
+                continue
+            content = path.read_text(encoding="utf-8", errors="replace")[:per_file_limit]
+            files.append(
+                {
+                    "path": self._display_path(path),
+                    "content": content,
+                    "truncated": path.stat().st_size > len(content),
+                }
+            )
+        return {"files": files}
 
     def _file_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
         pattern = str(arguments.get("pattern") or "*")
@@ -232,19 +335,188 @@ class WorkerToolbox:
             command = [str(part) for part in raw_command]
         else:
             raise ToolExecutionError("run_readonly_command requires command as string or list")
-        env_overrides, command = self._split_env_assignments(command)
+        env_overrides, command = self._normalize_readonly_command(command)
         if not self._is_allowed_readonly_command(command):
             raise ToolPermissionError(f"command is not in the readonly allowlist: {' '.join(command)}")
+        command = self._canonical_readonly_command(command)
         return self._run_checked(command, allowed_returncodes=None, env_overrides=env_overrides)
+
+    def _run_focused_tests(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        paths = _string_or_list(arguments.get("paths"))
+        safe_paths = [self._display_path(self._resolve_read_path(path)) for path in paths if path]
+        command = [sys.executable, "-m", "pytest", *(safe_paths or ["-q"])]
+        return self._run_checked(command, allowed_returncodes=None, env_overrides={"PYTHONPATH": "."})
+
+    def _diff_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        path = str(arguments.get("path") or "")
+        command_suffix = ["--", path] if path else []
+        diff = self._run_checked(["git", "diff", *command_suffix])
+        names = self._run_checked(["git", "diff", "--name-only", *command_suffix])
+        changed_files = [line for line in str(names.get("stdout") or "").splitlines() if line.strip()]
+        return {
+            "changed_files": changed_files,
+            "diff": diff.get("stdout", ""),
+            "returncode": diff.get("returncode"),
+        }
+
+    def _mutation_scope_check(self, task: Task) -> dict[str, Any]:
+        scope = self._mutation_scope_from_task(task)
+        names = self._run_checked(["git", "diff", "--name-only"])
+        changed_files = [line for line in str(names.get("stdout") or "").splitlines() if line.strip()]
+        if scope is None:
+            return {
+                "scope_available": False,
+                "changed_files": changed_files,
+                "in_scope": [],
+                "out_of_scope": changed_files,
+                "forbidden_changes": [],
+            }
+
+        targets = set(scope.target_paths)
+        forbidden = set(scope.forbidden_paths)
+        in_scope = [
+            path for path in changed_files if any(path == target or path.startswith(f"{target}/") for target in targets)
+        ]
+        out_of_scope = [path for path in changed_files if path not in in_scope]
+        forbidden_changes = [
+            path
+            for path in changed_files
+            if any(path == forbidden_path or path.startswith(f"{forbidden_path}/") for forbidden_path in forbidden)
+        ]
+        return {
+            "scope_available": True,
+            "target_paths": scope.target_paths,
+            "forbidden_paths": scope.forbidden_paths,
+            "changed_files": changed_files,
+            "in_scope": in_scope,
+            "out_of_scope": out_of_scope,
+            "forbidden_changes": forbidden_changes,
+            "passed": not out_of_scope and not forbidden_changes,
+        }
 
     def _web_fetch(self, arguments: dict[str, Any]) -> dict[str, Any]:
         url = str(arguments.get("url") or "")
         if not url.startswith(("http://", "https://")):
             raise ToolExecutionError("web_fetch requires an http(s) URL")
         request = urllib.request.Request(url, headers={"User-Agent": "allthebest-worker-runtime/1.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
+                body = response.read(self._config.max_file_bytes).decode("utf-8", errors="replace")
+                final_url = response.geturl()
+                content_type = response.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as exc:
+            body = exc.read(min(self._config.max_file_bytes, 4000)).decode("utf-8", errors="replace")
+            raise ToolExecutionError(f"web_fetch failed with HTTP {exc.code}: {body}") from exc
+        except urllib.error.URLError as exc:
+            raise ToolExecutionError(f"web_fetch request failed: {exc}") from exc
+
+        extractor = _ReadableHTMLExtractor()
+        extractor.feed(body)
+        text = extractor.text(max_chars=self._config.max_file_bytes)
+        return {
+            "url": url,
+            "final_url": final_url,
+            "content_type": content_type,
+            "title": extractor.title,
+            "description": extractor.description,
+            "content": text,
+            "text": text,
+            "links": extractor.links[:50],
+            "truncated": len(body.encode("utf-8", errors="ignore")) >= self._config.max_file_bytes,
+        }
+
+    def _web_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        provider = (self._config.web_search_provider or "disabled").strip().lower()
+        if provider in {"", "disabled", "none", "off"}:
+            raise ToolUnavailableError("web_search provider is disabled for worker runtime")
+        if provider == "brave":
+            return self._brave_web_search(arguments)
+        if provider != "duckduckgo":
+            raise ToolUnavailableError(f"unsupported web_search provider: {provider}")
+
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            raise ToolExecutionError("web_search requires a non-empty query")
+        url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "allthebest-worker-runtime/1.0",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
         with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
-            body = response.read(self._config.max_file_bytes).decode("utf-8", errors="replace")
-        return {"url": url, "content": body}
+            html = response.read(self._config.max_file_bytes).decode("utf-8", errors="replace")
+
+        parser = _DuckDuckGoHTMLParser(max_results=self._config.web_search_max_results)
+        parser.feed(html)
+        if not parser.results:
+            raise ToolExecutionError(f"web_search returned no parseable results for query: {query}")
+        return {"provider": provider, "query": query, "results": parser.results}
+
+    def _brave_web_search(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        api_key = (self._config.web_search_api_key or "").strip()
+        if not api_key:
+            raise ToolUnavailableError("Brave web_search provider requires WORKER_WEB_SEARCH_API_KEY")
+
+        query = str(arguments.get("query") or "").strip()
+        if not query:
+            raise ToolExecutionError("web_search requires a non-empty query")
+        max_results = max(1, min(self._config.web_search_max_results, 20))
+        url = (
+            "https://api.search.brave.com/res/v1/web/search"
+            f"?q={quote_plus(query)}&count={max_results}&extra_snippets=true&safesearch=moderate"
+        )
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": api_key,
+                "User-Agent": "allthebest-worker-runtime/1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._config.timeout_seconds) as response:
+                payload = json.loads(response.read(self._config.max_file_bytes).decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read(min(self._config.max_file_bytes, 4000)).decode("utf-8", errors="replace")
+            if exc.code in {401, 403, 429}:
+                raise ToolUnavailableError(f"Brave web_search failed with HTTP {exc.code}: {body}") from exc
+            raise ToolExecutionError(f"Brave web_search failed with HTTP {exc.code}: {body}") from exc
+        except urllib.error.URLError as exc:
+            raise ToolExecutionError(f"Brave web_search request failed: {exc}") from exc
+
+        raw_results = ((payload.get("web") or {}).get("results") or []) if isinstance(payload, dict) else []
+        results = []
+        for index, raw_result in enumerate(raw_results[:max_results], start=1):
+            if not isinstance(raw_result, dict):
+                continue
+            result_url = str(raw_result.get("url") or "").strip()
+            title = str(raw_result.get("title") or "").strip()
+            if not result_url or not title:
+                continue
+            description = str(raw_result.get("description") or "").strip()
+            snippets = [description] if description else []
+            extra_snippets = raw_result.get("extra_snippets")
+            if isinstance(extra_snippets, list):
+                snippets.extend(str(snippet).strip() for snippet in extra_snippets if str(snippet).strip())
+            profile = raw_result.get("profile")
+            results.append(
+                {
+                    "rank": index,
+                    "title": title,
+                    "url": result_url,
+                    "snippet": description,
+                    "snippets": snippets,
+                    "source": profile.get("name") if isinstance(profile, dict) else None,
+                    "age": raw_result.get("age"),
+                    "language": raw_result.get("language"),
+                }
+            )
+
+        if not results:
+            raise ToolExecutionError(f"Brave web_search returned no usable results for query: {query}")
+        return {"provider": "brave", "query": query, "results": results, "raw_query": payload.get("query", {})}
 
     def _run_checked(
         self,
@@ -294,6 +566,28 @@ class WorkerToolbox:
             command = command[1:]
         return env_overrides, command
 
+    def _normalize_readonly_command(self, command: list[str]) -> tuple[dict[str, str], list[str]]:
+        if not command:
+            raise ToolExecutionError("run_readonly_command requires a non-empty command")
+
+        if command[0] == "env":
+            command = command[1:]
+            if command and command[0].startswith("-"):
+                raise ToolPermissionError("env options are not allowed in readonly commands")
+            return self._split_env_assignments(command)
+
+        if len(command) == 3 and command[0] == "sh" and command[1] == "-c":
+            inner = command[2]
+            if _contains_shell_control(inner):
+                raise ToolPermissionError("shell control operators are not allowed in readonly commands")
+            try:
+                inner_command = shlex.split(inner)
+            except ValueError as exc:
+                raise ToolExecutionError("could not parse sh -c readonly command") from exc
+            return self._split_env_assignments(inner_command)
+
+        return self._split_env_assignments(command)
+
     def _is_allowed_readonly_command(self, command: list[str]) -> bool:
         if not command:
             return False
@@ -310,6 +604,11 @@ class WorkerToolbox:
             return True
         return False
 
+    def _canonical_readonly_command(self, command: list[str]) -> list[str]:
+        if command and command[0] == "pytest":
+            return [sys.executable, "-m", "pytest", *command[1:]]
+        return command
+
     def _resolve_read_path(self, raw_path: str) -> Path:
         if not raw_path:
             raise ToolExecutionError("path is required")
@@ -320,11 +619,13 @@ class WorkerToolbox:
 
     def _resolve_write_path(self, task: Task, raw_path: str) -> Path:
         path = self._resolve_read_path(raw_path)
-        allowed = self._allowed_write_paths(task)
-        if not allowed:
-            raise ToolUnavailableError("write_files was allowed but no write scope paths were provided")
+        scope = self.validate_write_scope(task)
+        allowed = [self._resolve_read_path(raw_path) for raw_path in scope["write_scope_paths"]]
         if not any(path == allowed_path or path.is_relative_to(allowed_path) for allowed_path in allowed):
             raise ToolPermissionError(f"write path is outside allowed scope: {self._display_path(path)}")
+        forbidden = [self._resolve_read_path(raw_path) for raw_path in scope["forbidden_paths"]]
+        if any(path == forbidden_path or path.is_relative_to(forbidden_path) for forbidden_path in forbidden):
+            raise ToolPermissionError(f"write path is inside forbidden scope: {self._display_path(path)}")
         return path
 
     def _allowed_write_paths(self, task: Task) -> list[Path]:
@@ -339,12 +640,44 @@ class WorkerToolbox:
         for raw_path in raw_paths:
             try:
                 resolved.append(self._resolve_read_path(raw_path))
-            except WorkerToolError:
-                continue
+            except WorkerToolError as exc:
+                raise ToolPermissionError(f"invalid write scope path: {raw_path}") from exc
         return resolved
 
     def _paths_from_artifact(self, artifact: ArtifactPayload) -> list[str]:
-        return sorted(set(_extract_path_candidates(artifact.content)))
+        try:
+            return MutationScope.model_validate(artifact.content).write_scope_paths
+        except ValueError:
+            return extract_repo_path_candidates(artifact.content)
+
+    def _mutation_scope_from_task(self, task: Task) -> MutationScope | None:
+        write_scope = task.metadata.get("write_scope")
+        if isinstance(write_scope, dict):
+            try:
+                return MutationScope.model_validate(write_scope)
+            except ValueError:
+                return None
+        for artifact in task.input_artifacts:
+            if artifact.id != "mutation_scope":
+                continue
+            try:
+                return MutationScope.model_validate(artifact.content)
+            except ValueError:
+                return None
+        return None
+
+    def _forbidden_write_paths(self, task: Task) -> list[Path]:
+        raw_paths: list[str] = []
+        write_scope = task.metadata.get("write_scope")
+        if isinstance(write_scope, dict):
+            raw_paths.extend(str(path) for path in write_scope.get("forbidden_paths") or [])
+        resolved: list[Path] = []
+        for raw_path in raw_paths:
+            try:
+                resolved.append(self._resolve_read_path(raw_path))
+            except WorkerToolError as exc:
+                raise ToolPermissionError(f"invalid forbidden write scope path: {raw_path}") from exc
+        return resolved
 
     def _display_path(self, path: Path) -> str:
         try:
@@ -418,3 +751,176 @@ def _looks_like_repo_path(value: str) -> bool:
     if value.startswith(("-", "git ", "pytest ", "python ")):
         return False
     return "/" in value or "." in Path(value).name
+
+
+def _looks_like_test_path(value: str) -> bool:
+    path = Path(value)
+    lowered = value.lower()
+    return (
+        "test" in path.name.lower()
+        or "/tests/" in f"/{lowered}"
+        or lowered.startswith("tests/")
+        or lowered.endswith((".spec.ts", ".spec.tsx", ".test.ts", ".test.tsx"))
+    )
+
+
+def _string_or_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _contains_shell_control(command: str) -> bool:
+    forbidden_fragments = ("&&", "||", "$(", "`", "\n")
+    if any(fragment in command for fragment in forbidden_fragments):
+        return True
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return True
+    return any(token in {";", "|", "<", ">", ">>", "&"} for token in tokens)
+
+
+class _DuckDuckGoHTMLParser(HTMLParser):
+    def __init__(self, *, max_results: int) -> None:
+        super().__init__(convert_charrefs=True)
+        self.max_results = max(1, max_results)
+        self.results: list[dict[str, Any]] = []
+        self._capture: str | None = None
+        self._capture_depth = 0
+        self._pending_url: str | None = None
+        self._text_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {key: value or "" for key, value in attrs}
+        classes = set(attr_map.get("class", "").split())
+        if tag == "a" and "result__a" in classes and len(self.results) < self.max_results:
+            self._capture = "title"
+            self._capture_depth = 1
+            self._pending_url = _normalize_duckduckgo_url(attr_map.get("href", ""))
+            self._text_parts = []
+            return
+        if "result__snippet" in classes and self.results:
+            self._capture = "snippet"
+            self._capture_depth = 1
+            self._text_parts = []
+            return
+        if self._capture:
+            self._capture_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._capture:
+            return
+        self._capture_depth -= 1
+        if self._capture_depth > 0:
+            return
+        text = " ".join("".join(self._text_parts).split())
+        if self._capture == "title" and self._pending_url and text:
+            self.results.append(
+                {
+                    "rank": len(self.results) + 1,
+                    "title": unescape(text),
+                    "url": self._pending_url,
+                    "snippet": "",
+                }
+            )
+        elif self._capture == "snippet" and text and self.results:
+            self.results[-1]["snippet"] = unescape(text)
+        self._capture = None
+        self._pending_url = None
+        self._text_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._capture:
+            self._text_parts.append(data)
+
+
+def _normalize_duckduckgo_url(raw_url: str) -> str:
+    if raw_url.startswith("//"):
+        raw_url = f"https:{raw_url}"
+    raw_url = urljoin("https://duckduckgo.com", raw_url)
+    parsed = urlparse(raw_url)
+    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
+        redirected = parse_qs(parsed.query).get("uddg", [""])[0]
+        if redirected:
+            return unquote(redirected)
+    return raw_url
+
+
+class _ReadableHTMLExtractor(HTMLParser):
+    BLOCKED_TAGS = {"script", "style", "noscript", "svg", "canvas", "template"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title: str | None = None
+        self.description: str | None = None
+        self.links: list[dict[str, str]] = []
+        self._blocked_depth = 0
+        self._capture_title = False
+        self._current_link: str | None = None
+        self._current_link_text: list[str] = []
+        self._text_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {key.lower(): value or "" for key, value in attrs}
+        tag = tag.lower()
+        if tag in self.BLOCKED_TAGS:
+            self._blocked_depth += 1
+            return
+        if self._blocked_depth:
+            return
+        if tag == "title":
+            self._capture_title = True
+            return
+        if tag == "meta":
+            name = (attr_map.get("name") or attr_map.get("property") or "").lower()
+            if name in {"description", "og:description"} and not self.description:
+                self.description = _clean_text(attr_map.get("content", ""))
+            return
+        if tag == "a" and attr_map.get("href"):
+            self._current_link = attr_map["href"]
+            self._current_link_text = []
+        if tag in {"p", "div", "section", "article", "header", "footer", "br", "li", "tr", "h1", "h2", "h3"}:
+            self._text_parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self.BLOCKED_TAGS and self._blocked_depth:
+            self._blocked_depth -= 1
+            return
+        if self._blocked_depth:
+            return
+        if tag == "title":
+            self._capture_title = False
+            if self.title:
+                self.title = _clean_text(self.title)
+            return
+        if tag == "a" and self._current_link:
+            text = _clean_text("".join(self._current_link_text))
+            if text:
+                self.links.append({"url": self._current_link, "text": text})
+            self._current_link = None
+            self._current_link_text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._blocked_depth:
+            return
+        if self._capture_title:
+            self.title = (self.title or "") + data
+            return
+        if self._current_link:
+            self._current_link_text.append(data)
+        self._text_parts.append(data)
+
+    def text(self, *, max_chars: int) -> str:
+        return _clean_text(" ".join(self._text_parts))[:max_chars]
+
+
+def _clean_text(value: str) -> str:
+    return " ".join(unescape(value).split())

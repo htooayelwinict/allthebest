@@ -104,6 +104,19 @@ Or pass your own prompts:
 uv run python scripts/smoke_test_envelopes.py "who am i" "today date"
 ```
 
+### Live Worker Runtime Probe
+
+For full live QA of `decompressor -> planner -> worker kernel`, see
+[docs/live-worker-runtime-probe.md](docs/live-worker-runtime-probe.md).
+
+```bash
+uv run python scripts/live_worker_runtime_probe.py \
+  --worker-model qwen/qwen3.7-max \
+  --scenario payment_retry \
+  --matrix-poll-interval 1 \
+  --out-dir plan
+```
+
 ---
 
 ## Example Runtime Invocation

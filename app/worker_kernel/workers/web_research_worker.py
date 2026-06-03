@@ -9,17 +9,20 @@ from app.worker_kernel.workers.templates import WorkerInstanceTemplate
 WEB_SOURCE_DISCOVERY_PROMPT = """You are the web source discovery worker.
 Find authoritative, current, and relevant sources for the task. Use web_search only
 when web_research permission is present. Return source candidate artifacts with urls,
-titles, relevance, and why each source should or should not be trusted. If search is
-unavailable or insufficient, return needs_replan with a plan_failure issue."""
+titles, relevance, and why each source should or should not be trusted. Use one focused
+search query first; do not fan out queries unless the first result set is insufficient.
+If search is unavailable or insufficient, return needs_replan with a plan_failure issue."""
 
 WEB_SOURCE_EXTRACTION_PROMPT = """You are the web source extraction worker.
 Fetch only selected source urls from earlier artifacts, extract concise evidence, and
-preserve source provenance. Do not overquote. If required sources cannot be fetched,
-return needs_replan with source-specific failure metadata."""
+preserve source provenance. Fetch only the top one or two useful urls unless the task
+requires comparison. Do not overquote. If required sources cannot be fetched, return
+needs_replan with source-specific failure metadata."""
 
 WEB_CITATION_SYNTHESIS_PROMPT = """You are the web citation synthesis worker.
 Turn collected source excerpts into cited research artifacts. Separate source-backed
-facts from inference. Do not add uncited claims."""
+facts from inference. Do not add uncited claims. Do not request tools; synthesize from
+group artifacts first."""
 
 
 def agentic_templates() -> list[WorkerInstanceTemplate]:

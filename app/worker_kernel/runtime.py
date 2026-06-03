@@ -10,7 +10,7 @@ from app.planner.validator import PlannerPlanValidator
 from app.runtime_matrix import RuntimeMatrixLogger, attach_runtime_matrix, coerce_runtime_matrix
 from app.schemas import ArtifactPayload, Envelope, Plan, ReplanRequest, Result, Task, WorkerIssue
 from app.worker_kernel.budget import BudgetExceeded, BudgetGate
-from app.worker_kernel.compiler import MissingInputArtifacts, TaskCompiler
+from app.worker_kernel.compiler import InvalidWriteScope, MissingInputArtifacts, TaskCompiler
 from app.worker_kernel.dispatcher import WorkerDispatcher
 from app.worker_kernel.registry import WorkerRegistry, build_default_registry
 
@@ -152,6 +152,7 @@ class WorkerKernelRuntime:
         failed_step_artifacts: list[ArtifactPayload] = []
         worker_results: list[Result] = []
         completed_step_ids: list[str] = []
+        completed_mutation_step_ids: list[str] = []
         issues: list[WorkerIssue] = []
         instance_attempts_used = 0
 
@@ -263,6 +264,47 @@ class WorkerKernelRuntime:
                     }
                 )
                 return self._finalize_result(finalized, trace)
+            except InvalidWriteScope as exc:
+                issue = WorkerIssue(
+                    issue_type="kernel_failure",
+                    code="invalid_write_scope",
+                    message=str(exc),
+                    step_id=step.step_id,
+                    worker_type=step.worker_type,
+                    retryable=False,
+                    metadata=dict(exc.metadata),
+                )
+                issues.append(issue)
+                self._trace(
+                    trace,
+                    stage=step.phase or "EXECUTE",
+                    event="task_compile_failed",
+                    status="blocked",
+                    request_id=plan.request_id,
+                    plan_id=plan.plan_id,
+                    run_id=run_id,
+                    step_id=step.step_id,
+                    worker_type=step.worker_type,
+                    details={"error": str(exc), "issue_code": issue.code, **dict(exc.metadata)},
+                )
+                terminal_result = Result(
+                    run_id=run_id,
+                    producer="worker_kernel",
+                    status="blocked",
+                    summary=f"Execution stopped at step {step.step_id}: {exc}",
+                    artifacts=list(completed_artifacts.values()),
+                    errors=[str(exc)],
+                    metadata=self._metadata(
+                        worker_results=worker_results,
+                        issues=issues,
+                        partial_artifacts=partial_artifacts,
+                        failed_step_artifacts=failed_step_artifacts,
+                        budget_gate=budget_gate,
+                        instance_attempts_used=instance_attempts_used,
+                        extra=self._control_plane_metadata(control_plane_adjustments),
+                    ),
+                )
+                return self._finalize_result(terminal_result, trace)
 
             try:
                 budget_gate.before_task(task)
@@ -316,7 +358,7 @@ class WorkerKernelRuntime:
                 )
 
                 try:
-                    result = self._dispatcher.dispatch(attempt_task)
+                    result = self._dispatcher.dispatch(attempt_task, trace=trace)
                     result = self._with_attempt_metadata_on_result(result, attempt_id=attempt_id)
                     budget_gate.after_result(result)
                 except BudgetExceeded as exc:
@@ -397,7 +439,10 @@ class WorkerKernelRuntime:
                         retryable=True,
                     )
                     issues.append(issue)
-                    will_retry = self._retry_instance_failure(budget_gate)
+                    will_retry = self._retry_instance_failure(
+                        budget_gate,
+                        step_retries_used=attempt_number - 1,
+                    )
                     self._trace(
                         trace,
                         stage=step.phase or "EXECUTE",
@@ -440,6 +485,10 @@ class WorkerKernelRuntime:
                     issue.issue_type == "instance_failure" and issue.retryable
                     for issue in result_issues
                 )
+                worker_runtime_failure = self._is_worker_runtime_owned_failure(
+                    result=result,
+                    issues=result_issues,
+                )
                 self._trace(
                     trace,
                     stage=step.phase or "EXECUTE",
@@ -457,9 +506,20 @@ class WorkerKernelRuntime:
                         "model_calls": result.usage.get("model_calls"),
                     },
                 )
-                if result.status == "failed" and retryable_instance_failure and self._retry_instance_failure(
-                    budget_gate
+                if (
+                    result.status in {"failed", "needs_replan", "budget_exceeded", "blocked"}
+                    and (retryable_instance_failure or worker_runtime_failure)
+                    and self._retry_instance_failure(
+                        budget_gate,
+                        step_retries_used=attempt_number - 1,
+                    )
                 ):
+                    previous_task = task
+                    task, retry_adjustments = self._adjust_task_for_local_retry(
+                        task=task,
+                        result=result,
+                        issues=result_issues,
+                    )
                     self._trace(
                         trace,
                         stage=step.phase or "EXECUTE",
@@ -471,6 +531,13 @@ class WorkerKernelRuntime:
                         step_id=step.step_id,
                         attempt_id=attempt_id,
                         worker_type=step.worker_type,
+                        details={
+                            "reason": "worker_runtime_failure"
+                            if worker_runtime_failure
+                            else "retryable_instance_failure",
+                            "task_recompiled": task != previous_task,
+                            "adjustments": retry_adjustments,
+                        },
                     )
                     failed_step_artifacts.extend(
                         self._annotate_artifacts(
@@ -521,6 +588,8 @@ class WorkerKernelRuntime:
                 for artifact in annotated_artifacts:
                     completed_artifacts[artifact.id] = artifact
                 completed_step_ids.append(step.step_id)
+                if self._is_mutation_step(step):
+                    completed_mutation_step_ids.append(step.step_id)
                 self._trace(
                     trace,
                     stage=step.phase or "EXECUTE",
@@ -558,11 +627,18 @@ class WorkerKernelRuntime:
 
             if result.status in ["failed", "blocked", "budget_exceeded", "kernel_error"]:
                 failed_step_artifacts.extend(annotated_artifacts)
+                terminal_status = result.status
+                if (
+                    result.status == "failed"
+                    and self._is_verification_step(step)
+                    and completed_mutation_step_ids
+                ):
+                    terminal_status = "completed_with_failed_verification"
                 self._trace(
                     trace,
                     stage=step.phase or "EXECUTE",
                     event="step_terminal",
-                    status=result.status,
+                    status=terminal_status,
                     request_id=plan.request_id,
                     plan_id=plan.plan_id,
                     run_id=run_id,
@@ -573,7 +649,7 @@ class WorkerKernelRuntime:
                 terminal_result = Result(
                     run_id=run_id,
                     producer="worker_kernel",
-                    status=result.status,
+                    status=terminal_status,
                     summary=f"Execution stopped at step {step.step_id}: {result.summary}",
                     artifacts=list(completed_artifacts.values()),
                     errors=result.errors,
@@ -627,9 +703,146 @@ class WorkerKernelRuntime:
         )
         return self._finalize_result(completed_result, trace)
 
+    def _is_mutation_step(self, step: Any) -> bool:
+        return step.phase == "MUTATE" or bool(step.permissions.write_files)
+
+    def _is_verification_step(self, step: Any) -> bool:
+        return step.phase == "VERIFY" or step.worker_type == "verify_worker"
+
+    def _is_worker_runtime_owned_failure(self, *, result: Result, issues: list[WorkerIssue]) -> bool:
+        if result.status == "budget_exceeded":
+            return True
+        if any(issue.issue_type == "instance_failure" and issue.retryable for issue in issues):
+            return True
+        issue_codes = {issue.code for issue in issues}
+        non_retryable_kernel_codes = {
+            "invalid_write_scope",
+            "tool_unavailable",
+            "unknown_worker_group",
+        }
+        if issue_codes & non_retryable_kernel_codes:
+            return False
+        runtime_codes = {
+            "budget_exceeded",
+            "empty_worker_decision",
+            "model_budget_exceeded",
+            "model_budget_exhausted_before_final_result",
+            "tool_budget_exceeded",
+            "tool_execution_error",
+            "tool_not_allowed_for_instance",
+            "tool_permission_denied",
+            "tool_unavailable",
+            "worker_llm_error",
+            "worker_exception",
+        }
+        if issue_codes & runtime_codes:
+            return True
+
+        text = " ".join(
+            [
+                result.summary or "",
+                " ".join(result.errors or []),
+                str(result.metadata.get("issue_code") or ""),
+                str(result.metadata.get("recommended_action") or ""),
+            ]
+        ).lower()
+        runtime_fragments = (
+            "remaining_tool_calls",
+            "remaining_model_calls",
+            "tool budget",
+            "model budget",
+            "budget exhausted",
+            "tool observations",
+            "tool call",
+            "worker model call budget",
+            "validation errors for workerllmdecision",
+        )
+        return any(fragment in text for fragment in runtime_fragments)
+
+    def _adjust_task_for_local_retry(
+        self,
+        *,
+        task: Task,
+        result: Result,
+        issues: list[WorkerIssue],
+    ) -> tuple[Task, list[dict[str, Any]]]:
+        adjustments: list[dict[str, Any]] = []
+        usage = result.usage or {}
+        text = " ".join(
+            [
+                result.summary or "",
+                " ".join(result.errors or []),
+                " ".join(issue.code for issue in issues),
+            ]
+        ).lower()
+
+        max_tool_calls = task.max_tool_calls
+        if (
+            "tool" in text
+            or "remaining_tool_calls" in text
+            or int(usage.get("tool_calls", 0) or 0) >= task.max_tool_calls
+        ):
+            max_tool_calls = max(task.max_tool_calls + 2, task.max_tool_calls * 2, 2)
+            adjustments.append(
+                {
+                    "field": "max_tool_calls",
+                    "from": task.max_tool_calls,
+                    "to": max_tool_calls,
+                    "reason": "local retry after worker/tool budget or tool-call failure",
+                }
+            )
+
+        max_model_calls = task.max_model_calls
+        if (
+            "model" in text
+            or "final" in text
+            or "workerllmdecision" in text
+            or int(usage.get("model_calls", 0) or 0) >= task.max_model_calls
+        ):
+            max_model_calls = max(task.max_model_calls + 1, task.max_model_calls * 2, 2)
+            adjustments.append(
+                {
+                    "field": "max_model_calls",
+                    "from": task.max_model_calls,
+                    "to": max_model_calls,
+                    "reason": "local retry after worker/model/finalization failure",
+                }
+            )
+
+        if not adjustments:
+            metadata = dict(task.metadata)
+            retries = list(metadata.get("local_retry_adjustments") or [])
+            retries.append({"reason": "local retry without budget adjustment"})
+            metadata["local_retry_adjustments"] = retries
+            return task.model_copy(update={"metadata": metadata}), []
+
+        metadata = dict(task.metadata)
+        retries = list(metadata.get("local_retry_adjustments") or [])
+        retries.extend(adjustments)
+        metadata["local_retry_adjustments"] = retries
+        return task.model_copy(
+            update={
+                "max_tool_calls": max_tool_calls,
+                "max_model_calls": max_model_calls,
+                "metadata": metadata,
+            }
+        ), adjustments
+
     def _normalize_execution_plan(self, plan: Plan) -> tuple[Plan, list[dict[str, Any]]]:
         adjustments: list[dict[str, Any]] = []
         normalized_steps = []
+        budget = dict(plan.budget)
+        current_retry_budget = int(budget.get("max_retries", 0) or 0)
+        if current_retry_budget < 2:
+            adjustments.append(
+                {
+                    "field": "budget.max_retries",
+                    "from": current_retry_budget,
+                    "to": 2,
+                    "reason": "worker runtime retries are capped per stage, with two instance retries per stage",
+                }
+            )
+            budget["max_retries"] = 2
         for step in plan.steps:
             minimum_model_calls = self._minimum_model_calls_for_step(step)
             if step.max_model_calls < minimum_model_calls:
@@ -649,11 +862,27 @@ class WorkerKernelRuntime:
                 step = step.model_copy(update={"max_model_calls": minimum_model_calls})
             normalized_steps.append(step)
 
-        if not adjustments:
-            return plan, adjustments
+        retry_limit = int(budget.get("max_retries", 0) or 0)
+        required_tool_calls = sum(
+            self._retry_envelope_call_budget(step.max_tool_calls, retry_limit, kind="tool")
+            for step in normalized_steps
+        )
+        required_model_calls = sum(
+            self._retry_envelope_call_budget(step.max_model_calls, retry_limit, kind="model")
+            for step in normalized_steps
+        )
+        current_tool_budget = int(budget.get("max_tool_calls", 0) or 0)
+        if current_tool_budget < required_tool_calls:
+            adjustments.append(
+                {
+                    "field": "budget.max_tool_calls",
+                    "from": current_tool_budget,
+                    "to": required_tool_calls,
+                    "reason": "budget must cover kernel-owned per-stage retry tool-call envelope",
+                }
+            )
+            budget["max_tool_calls"] = required_tool_calls
 
-        budget = dict(plan.budget)
-        required_model_calls = sum(step.max_model_calls for step in normalized_steps)
         current_model_budget = int(budget.get("max_model_calls", 0) or 0)
         if current_model_budget < required_model_calls:
             adjustments.append(
@@ -661,12 +890,26 @@ class WorkerKernelRuntime:
                     "field": "budget.max_model_calls",
                     "from": current_model_budget,
                     "to": required_model_calls,
-                    "reason": "budget must cover kernel-normalized worker model-call ceilings",
+                    "reason": "budget must cover kernel-owned per-stage retry model-call envelope",
                 }
             )
             budget["max_model_calls"] = required_model_calls
 
         return plan.model_copy(update={"steps": normalized_steps, "budget": budget}), adjustments
+
+    def _retry_envelope_call_budget(self, initial_limit: int, retry_limit: int, *, kind: str) -> int:
+        if initial_limit <= 0:
+            return 0
+
+        total = initial_limit
+        attempt_limit = initial_limit
+        for _ in range(max(0, retry_limit)):
+            if kind == "tool":
+                attempt_limit = max(attempt_limit + 2, attempt_limit * 2, 2)
+            else:
+                attempt_limit = max(attempt_limit + 1, attempt_limit * 2, 2)
+            total += attempt_limit
+        return total
 
     def _minimum_model_calls_for_step(self, step: Any) -> int:
         try:
@@ -846,7 +1089,9 @@ class WorkerKernelRuntime:
                 "max_tool_calls": max(0, budget_gate.max_tool_calls - budget_gate.tool_calls_used),
                 "max_model_calls": max(0, budget_gate.max_model_calls - budget_gate.model_calls_used),
                 "max_workers": max(0, budget_gate.max_workers - budget_gate.workers_used),
-                "max_retries": max(0, budget_gate.max_retries - budget_gate.retries_used),
+                "max_retries": budget_gate.max_retries,
+                "max_retries_per_stage": budget_gate.max_retries,
+                "retry_count_used": budget_gate.retries_used,
             },
             recommended_action=self._recommended_action(result),
             issues=issues,
@@ -868,11 +1113,11 @@ class WorkerKernelRuntime:
             and replan_depth < 1
         )
 
-    def _retry_instance_failure(self, budget_gate: BudgetGate) -> bool:
-        if not budget_gate.can_retry():
+    def _retry_instance_failure(self, budget_gate: BudgetGate, *, step_retries_used: int) -> bool:
+        if not budget_gate.can_retry(step_retries_used=step_retries_used):
             return False
         try:
-            budget_gate.record_retry()
+            budget_gate.record_retry(step_retries_used=step_retries_used)
         except BudgetExceeded:
             return False
         return True

@@ -24,6 +24,10 @@ CONFIG_KEYS = (
     "WORKER_MAX_PARALLEL_INSTANCES",
     "WORKER_TOOL_TIMEOUT_SECONDS",
     "WORKER_MAX_FILE_BYTES",
+    "WORKER_WEB_SEARCH_PROVIDER",
+    "WORKER_WEB_SEARCH_API_KEY",
+    "WORKER_WEB_SEARCH_MAX_RESULTS",
+    "BRAVE_SEARCH_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENROUTER_MODEL",
     "OPENROUTER_BASE_URL",
@@ -47,6 +51,9 @@ class WorkerRuntimeConfig:
     max_parallel_instances: int = 3
     tool_timeout_seconds: float = 15.0
     max_file_bytes: int = 200_000
+    web_search_provider: str = "brave"
+    web_search_api_key: str | None = None
+    web_search_max_results: int = 5
 
 
 def load_dotenv_values(path: str | Path = ".env") -> dict[str, str]:
@@ -92,6 +99,9 @@ def load_worker_runtime_config(dotenv_path: str | Path = ".env") -> WorkerRuntim
         max_parallel_instances=_positive_int(config.get("WORKER_MAX_PARALLEL_INSTANCES"), default=3),
         tool_timeout_seconds=float(config.get("WORKER_TOOL_TIMEOUT_SECONDS", "15")),
         max_file_bytes=_positive_int(config.get("WORKER_MAX_FILE_BYTES"), default=200_000),
+        web_search_provider=(config.get("WORKER_WEB_SEARCH_PROVIDER") or "brave").strip().lower(),
+        web_search_api_key=config.get("WORKER_WEB_SEARCH_API_KEY") or config.get("BRAVE_SEARCH_API_KEY"),
+        web_search_max_results=_positive_int(config.get("WORKER_WEB_SEARCH_MAX_RESULTS"), default=5),
     )
 
 

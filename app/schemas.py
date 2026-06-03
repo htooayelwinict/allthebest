@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import PurePosixPath
 from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -10,6 +12,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 ResultStatus = Literal[
     "completed",
+    "completed_with_failed_verification",
     "failed",
     "blocked",
     "budget_exceeded",
@@ -122,6 +125,74 @@ class ArtifactPayload(BaseModel):
         if value is None and key not in type(self).model_fields and key not in (self.__pydantic_extra__ or {}):
             raise KeyError(key)
         return value
+
+
+class MutationScope(BaseModel):
+    """Structured write scope produced by DESIGN and enforced before MUTATE."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_paths: list[str]
+    test_paths: list[str] = Field(default_factory=list)
+    forbidden_paths: list[str] = Field(default_factory=list)
+    reason: str = "derived from mutation scope artifact"
+    max_files: int = 5
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_scope(cls, value: Any) -> Any:
+        if isinstance(value, cls):
+            return value
+
+        if isinstance(value, ArtifactPayload):
+            value = value.content
+
+        if not isinstance(value, dict):
+            return {
+                "target_paths": extract_repo_path_candidates(value),
+                "reason": "derived from unstructured mutation scope artifact",
+            }
+
+        data = dict(value)
+        target_paths = _collect_scope_paths(
+            data,
+            keys=("target_paths", "paths", "files", "allowed_paths", "candidate_paths", "path", "file"),
+            fallback=True,
+        )
+        test_paths = _collect_scope_paths(data, keys=("test_paths", "tests", "test_files", "test_path"))
+        forbidden_paths = _collect_scope_paths(
+            data,
+            keys=("forbidden_paths", "forbidden", "forbidden_files", "excluded_paths"),
+        )
+
+        return {
+            "target_paths": target_paths,
+            "test_paths": test_paths,
+            "forbidden_paths": forbidden_paths,
+            "reason": str(data.get("reason") or data.get("notes") or data.get("rationale") or "derived from mutation scope artifact"),
+            "max_files": data.get("max_files", 5),
+            "metadata": data.get("metadata") or {},
+        }
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "MutationScope":
+        self.target_paths = _dedupe_paths(self.target_paths)
+        self.test_paths = _dedupe_paths(self.test_paths)
+        self.forbidden_paths = _dedupe_paths(self.forbidden_paths)
+        if not self.target_paths:
+            raise ValueError("mutation_scope.target_paths must be non-empty")
+        if self.max_files < 1:
+            raise ValueError("mutation_scope.max_files must be positive")
+        if len(self.target_paths) > self.max_files:
+            raise ValueError(
+                f"mutation_scope contains {len(self.target_paths)} target paths, exceeding max_files={self.max_files}"
+            )
+        return self
+
+    @property
+    def write_scope_paths(self) -> list[str]:
+        return _dedupe_paths(self.target_paths)
 
 
 class WorkerIssue(BaseModel):
@@ -267,3 +338,171 @@ class RuntimeState(TypedDict, total=False):
     result: dict[str, Any]
     runtime_matrix: dict[str, Any]
     errors: list[str]
+
+
+_KNOWN_FILE_SUFFIXES = {
+    ".cfg",
+    ".conf",
+    ".css",
+    ".csv",
+    ".go",
+    ".html",
+    ".ini",
+    ".java",
+    ".js",
+    ".json",
+    ".jsx",
+    ".lock",
+    ".md",
+    ".php",
+    ".py",
+    ".rb",
+    ".rs",
+    ".scss",
+    ".sh",
+    ".sql",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+_KNOWN_FILE_NAMES = {
+    "Dockerfile",
+    "Makefile",
+    "Pipfile",
+    "README",
+    "README.md",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+}
+_LABELED_PATH_RE = re.compile(
+    r"(?:^|[\s,;([{])(?:file|path|target|source|test file|test path)s?:\s*`?([A-Za-z0-9_./@+\-]+)`?",
+    re.IGNORECASE,
+)
+_GENERIC_PATH_RE = re.compile(r"`?((?:[A-Za-z0-9_.@+\-]+/)+[A-Za-z0-9_.@+\-]+|[A-Za-z0-9_.@+\-]+\.[A-Za-z0-9_]+)`?")
+
+
+def extract_repo_path_candidates(value: Any) -> list[str]:
+    """Extract safe-looking repo-relative path candidates from structured or legacy text."""
+
+    candidates: list[str] = []
+    if isinstance(value, str):
+        candidates.extend(_paths_from_text(value))
+    elif isinstance(value, list):
+        for item in value:
+            candidates.extend(extract_repo_path_candidates(item))
+    elif isinstance(value, dict):
+        for child in value.values():
+            candidates.extend(extract_repo_path_candidates(child))
+    return _dedupe_paths(candidates)
+
+
+def normalize_repo_relative_path(value: str) -> str | None:
+    return _normalize_repo_relative_path(value, allow_bare_filename=True)
+
+
+def _collect_scope_paths(
+    data: dict[str, Any],
+    *,
+    keys: tuple[str, ...],
+    fallback: bool = False,
+) -> list[str]:
+    paths: list[str] = []
+    for key in keys:
+        if key in data:
+            paths.extend(_strict_scope_path_values(data[key], field_name=key))
+    if fallback and not paths:
+        paths.extend(
+            extract_repo_path_candidates(
+                {
+                    key: value
+                    for key, value in data.items()
+                    if key not in {"test_paths", "tests", "test_files", "forbidden_paths", "forbidden"}
+                }
+            )
+        )
+    return _dedupe_paths(paths)
+
+
+def _strict_scope_path_values(value: Any, *, field_name: str) -> list[str]:
+    if isinstance(value, str):
+        whole_path = _normalize_repo_relative_path(value, allow_bare_filename=True)
+        paths = [whole_path] if whole_path is not None else _paths_from_text(value)
+        if not paths and value.strip():
+            raise ValueError(f"mutation_scope.{field_name} contains invalid repo-relative path: {value}")
+        return _dedupe_paths(paths)
+    if isinstance(value, list):
+        paths: list[str] = []
+        for item in value:
+            paths.extend(_strict_scope_path_values(item, field_name=field_name))
+        return _dedupe_paths(paths)
+    if isinstance(value, dict):
+        paths: list[str] = []
+        path_keys = (
+            "target_paths",
+            "test_paths",
+            "paths",
+            "files",
+            "allowed_paths",
+            "candidate_paths",
+            "path",
+            "file",
+        )
+        selected_values = [value[key] for key in path_keys if key in value]
+        for item in selected_values or value.values():
+            if selected_values or isinstance(item, (list, dict)):
+                paths.extend(_strict_scope_path_values(item, field_name=field_name))
+        return _dedupe_paths(paths)
+    return []
+
+
+def _paths_from_text(value: str) -> list[str]:
+    candidates: list[str] = []
+    normalized_whole = _normalize_repo_relative_path(value, allow_bare_filename=True)
+    if normalized_whole is not None:
+        candidates.append(normalized_whole)
+
+    for match in _LABELED_PATH_RE.finditer(value):
+        normalized = _normalize_repo_relative_path(match.group(1), allow_bare_filename=True)
+        if normalized is not None:
+            candidates.append(normalized)
+
+    for match in _GENERIC_PATH_RE.finditer(value):
+        normalized = _normalize_repo_relative_path(match.group(1), allow_bare_filename=False)
+        if normalized is not None:
+            candidates.append(normalized)
+    return _dedupe_paths(candidates)
+
+
+def _normalize_repo_relative_path(value: str, *, allow_bare_filename: bool) -> str | None:
+    raw = value.strip().strip("`'\".,;)]}")
+    if raw.startswith("./"):
+        raw = raw[2:]
+    if not raw or any(char.isspace() for char in raw):
+        return None
+    if raw.startswith(("-", "~")) or "://" in raw or "\\" in raw:
+        return None
+    path = PurePosixPath(raw)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return None
+    name = path.name
+    if "/" not in raw and not allow_bare_filename:
+        return None
+    if "/" not in raw and name not in _KNOWN_FILE_NAMES and path.suffix not in _KNOWN_FILE_SUFFIXES:
+        return None
+    return path.as_posix()
+
+
+def _dedupe_paths(paths: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for raw_path in paths:
+        normalized = normalize_repo_relative_path(str(raw_path))
+        if normalized is None or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped

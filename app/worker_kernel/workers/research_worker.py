@@ -11,12 +11,26 @@ Use provided artifacts as primary truth. You may use readonly repo tools or read
 verification commands only when the task permissions expose them. Do not use external
 web; that belongs to web_research_worker. Build evidence-backed analysis, tradeoffs,
 root-cause notes, or final summaries. If required evidence is absent, return
-needs_replan with a plan_failure issue instead of guessing."""
+needs_replan with a plan_failure issue instead of guessing. Start from group_artifacts;
+call tools only for explicit evidence gaps. Prefer read_many_files, diff_summary, or
+run_focused_tests over many primitive tool calls."""
 
 
 def agentic_templates() -> list[WorkerInstanceTemplate]:
-    repo_tools = ("list_dir", "read_file", "file_search", "text_search", "json_query", "git_status", "git_diff")
-    command_tools = repo_tools + ("run_readonly_command",)
+    repo_tools = (
+        "repo_snapshot",
+        "list_dir",
+        "read_file",
+        "read_many_files",
+        "file_search",
+        "text_search",
+        "json_query",
+        "git_status",
+        "git_diff",
+        "diff_summary",
+        "mutation_scope_check",
+    )
+    command_tools = repo_tools + ("run_focused_tests", "run_readonly_command")
     return [
         WorkerInstanceTemplate(
             name="context_synthesizer",

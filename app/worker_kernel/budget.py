@@ -15,7 +15,7 @@ class BudgetGate:
         self.max_tool_calls = int(budget.get("max_tool_calls", 8))
         self.max_model_calls = int(budget.get("max_model_calls", 2))
         self.max_workers = int(budget.get("max_workers", 2))
-        self.max_retries = int(budget.get("max_retries", 0))
+        self.max_retries = max(2, int(budget.get("max_retries", 2)))
 
         if (
             self.max_tool_calls < 0
@@ -69,10 +69,10 @@ class BudgetGate:
         if self.model_calls_used > self.max_model_calls:
             raise BudgetExceeded("Model budget exceeded.")
 
-    def can_retry(self) -> bool:
-        return self.retries_used < self.max_retries
+    def can_retry(self, *, step_retries_used: int = 0) -> bool:
+        return step_retries_used < self.max_retries
 
-    def record_retry(self) -> None:
-        if not self.can_retry():
+    def record_retry(self, *, step_retries_used: int = 0) -> None:
+        if not self.can_retry(step_retries_used=step_retries_used):
             raise BudgetExceeded("Retry budget exceeded.")
         self.retries_used += 1

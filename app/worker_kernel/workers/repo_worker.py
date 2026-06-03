@@ -7,27 +7,42 @@ from app.worker_kernel.workers.templates import WorkerInstanceTemplate
 
 
 REPO_LOCATOR_SYSTEM_PROMPT = """You are the repository locator instance.
-Find likely target files, tests, and command/config clues using cheap readonly search.
-Prefer file_search, text_search, git_status, and shallow list_dir calls. Avoid reading
+Find likely target files, tests, and command/config clues using the fewest readonly
+calls possible. Prefer one repo_snapshot call before primitive search. Use file_search
+or text_search only when repo_snapshot does not expose enough evidence. Avoid reading
 large files in this instance unless there is no reader instance left. Produce candidate
 path artifacts with evidence from tool observations. Never mutate files."""
 
 REPO_READER_SYSTEM_PROMPT = """You are the repository reader instance.
 Read the highest-value candidate source and test files from earlier group artifacts and
-tool observations. Extract exact functions, failing assertions, commands, and local
-contracts. Keep evidence concise and path-specific. Never mutate files."""
+tool observations. Prefer one read_many_files call over repeated read_file calls.
+Extract exact functions, failing assertions, commands, and local contracts. Keep
+evidence concise and path-specific. Never mutate files."""
 
 REPO_SUMMARIZER_SYSTEM_PROMPT = """You are the repository discovery summarizer.
 Use only group artifacts and tool observations to produce the exact expected output
 artifacts. Every artifact must be an object with id and content. Content should be
 structured, evidence-backed, and useful to downstream analyze/design workers. If the
-observations are insufficient, return needs_replan with precise missing evidence."""
+observations are insufficient, return needs_replan with precise missing evidence. Do
+not request tools; synthesize from artifacts first."""
 
 
 def agentic_templates() -> list[WorkerInstanceTemplate]:
-    repo_tools = ("list_dir", "read_file", "file_search", "text_search", "json_query", "git_status", "git_diff")
-    locator_tools = ("list_dir", "file_search", "text_search", "git_status", "git_diff")
-    reader_tools = repo_tools + ("run_readonly_command",)
+    repo_tools = (
+        "repo_snapshot",
+        "list_dir",
+        "read_file",
+        "read_many_files",
+        "file_search",
+        "text_search",
+        "json_query",
+        "git_status",
+        "git_diff",
+        "diff_summary",
+        "mutation_scope_check",
+    )
+    locator_tools = ("repo_snapshot", "file_search", "text_search", "git_status", "diff_summary")
+    reader_tools = repo_tools + ("run_focused_tests", "run_readonly_command")
     return [
         WorkerInstanceTemplate(
             name="repo_locator",

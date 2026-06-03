@@ -10,12 +10,25 @@ INFRA_WORKER_SYSTEM_PROMPT = """You are the infrastructure diagnosis worker.
 Inspect configs, logs, scripts, environment examples, and readonly command evidence.
 Do not mutate infrastructure or secrets. Separate confirmed findings from operational
 recommendations. If required infra artifacts or permissions are missing, return
-needs_replan or blocked with a structured issue."""
+needs_replan or blocked with a structured issue. Prefer repo_snapshot, read_many_files,
+diff_summary, and focused readonly commands over repeated primitive scans."""
 
 
 def agentic_templates() -> list[WorkerInstanceTemplate]:
-    repo_tools = ("list_dir", "read_file", "file_search", "text_search", "json_query", "git_status", "git_diff")
-    command_tools = repo_tools + ("run_readonly_command",)
+    repo_tools = (
+        "repo_snapshot",
+        "list_dir",
+        "read_file",
+        "read_many_files",
+        "file_search",
+        "text_search",
+        "json_query",
+        "git_status",
+        "git_diff",
+        "diff_summary",
+        "mutation_scope_check",
+    )
+    command_tools = repo_tools + ("run_focused_tests", "run_readonly_command")
     return [
         WorkerInstanceTemplate(
             name="infra_diagnoser",
