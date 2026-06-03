@@ -69,6 +69,11 @@ def test_worker_kernel_direct_plan_executes() -> None:
     assert result.errors == []
     assert any((a.get("id") or a.get("artifact_id")) == "direct_answer" for a in result.artifacts)
     assert result.usage.get("model_calls", 0) >= 0
+    assert result.metadata["runtime_matrix"]["row_count"] >= 1
+    assert any(
+        row["event"] == "run_completed" and row["component"] == "worker_kernel_runtime"
+        for row in result.metadata["runtime_matrix"]["rows"]
+    )
 
 
 def test_worker_kernel_returns_needs_replan_without_planner_runtime() -> None:
@@ -428,6 +433,10 @@ def test_worker_kernel_replans_with_fixed_new_plan() -> None:
     )
     assert result.metadata["replan"]["replacement_plan"]["plan_id"] == "plan_req_replan_fixed"
     assert result.artifacts[0]["id"] == "final_report"
+    assert any(
+        row["event"] == "replan_requested" and row["component"] == "worker_kernel_runtime"
+        for row in result.metadata["runtime_matrix"]["rows"]
+    )
 
 
 def test_worker_kernel_code_flow_executes() -> None:

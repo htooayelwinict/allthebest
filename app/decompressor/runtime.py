@@ -13,6 +13,7 @@ from typing import Any
 from app.decompressor.contracts import PromptChainModelClient
 from app.decompressor.env_config import build_decompressor_model_client
 from app.decompressor.prompt_chain import LLMPromptChainDecompressor
+from app.runtime_matrix import RuntimeMatrixLogger, attach_runtime_matrix, coerce_runtime_matrix
 from app.schemas import Envelope
 
 
@@ -108,14 +109,32 @@ class DecompressorRuntime:
             raise ValueError("LLM decompressor is not configured. Set DECOMPRESSOR_LLM_ENABLED=true.")
         return cls(model_client=model_client)
 
-    def run(self, user_input: str) -> Envelope:
+    def run(self, user_input: str, *, trace: RuntimeMatrixLogger | None = None) -> Envelope:
         started = time.perf_counter()
         request_id = f"req_{next(_REQUEST_COUNTER):03d}"
+        trace = coerce_runtime_matrix(trace)
+        trace.record(
+            component="decompressor_runtime",
+            stage="decompress_request",
+            event="run_started",
+            status="started",
+            request_id=request_id,
+            details={"input_chars": len(user_input or "")},
+        )
         try:
             envelope = self._prompt_chain.run(user_input or "", request_id)
-        except Exception:
+        except Exception as exc:
             elapsed_ms = (time.perf_counter() - started) * 1000
             self._metrics.record_failure(elapsed_ms=elapsed_ms)
+            trace.record(
+                component="decompressor_runtime",
+                stage="decompress_request",
+                event="run_failed",
+                status="failed",
+                request_id=request_id,
+                elapsed_ms=elapsed_ms,
+                details={"error": str(exc)},
+            )
             raise
 
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -126,16 +145,31 @@ class DecompressorRuntime:
             model_calls = 1
         model_calls = max(1, model_calls)
         self._metrics.record_success(elapsed_ms=elapsed_ms, repaired=model_calls > 1)
+        trace.record(
+            component="decompressor_runtime",
+            stage="decompress_request",
+            event="run_completed",
+            status="completed",
+            request_id=request_id,
+            elapsed_ms=elapsed_ms,
+            details={
+                "model_calls": model_calls,
+                "confidence": envelope.confidence,
+                "ambiguity_count": len(envelope.ambiguity),
+            },
+        )
 
         snapshot = self._metrics.snapshot()
-        envelope.metadata["decompressor_runtime"] = {
+        metadata = dict(envelope.metadata)
+        metadata["decompressor_runtime"] = {
             "elapsed_ms": round(elapsed_ms, 3),
             "failure_rate": snapshot["failure_rate"],
             "repair_rate": snapshot["repair_rate"],
             "latency_ms_p50": snapshot["latency_ms_p50"],
             "latency_ms_p95": snapshot["latency_ms_p95"],
         }
-        return envelope
+        metadata = attach_runtime_matrix(metadata, trace)
+        return envelope.model_copy(update={"metadata": metadata})
 
     def metrics_snapshot(self) -> dict[str, Any]:
         """Return bounded runtime observability counters and latency percentiles."""

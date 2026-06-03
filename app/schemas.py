@@ -265,4 +265,5 @@ class RuntimeState(TypedDict, total=False):
     envelope: dict[str, Any]
     plan: dict[str, Any]
     result: dict[str, Any]
+    runtime_matrix: dict[str, Any]
     errors: list[str]

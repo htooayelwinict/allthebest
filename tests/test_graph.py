@@ -89,8 +89,12 @@ def test_compiled_graph_invocation(monkeypatch) -> None:
     assert "envelope" in state
     assert "plan" in state
     assert "result" in state
+    assert "runtime_matrix" in state
     assert state["result"]["status"] == "completed"
     assert state["envelope"]["metadata"]["decompressor_mode"] == "llm_prompt_chain"
+    assert state["result"]["metadata"]["runtime_matrix"]["row_count"] >= 1
+    components = {row["component"] for row in state["runtime_matrix"]["rows"]}
+    assert {"graph", "decompressor_runtime", "planner_runtime", "worker_kernel_runtime"} <= components
 
 
 def test_graph_registers_required_node_keys_when_exposed(monkeypatch) -> None:
@@ -141,3 +145,4 @@ def test_compiled_graph_can_use_worker_llm_runtime(monkeypatch) -> None:
 
     assert state["result"]["status"] == "completed"
     assert state["result"]["metadata"]["worker_results"][0]["metadata"]["worker_type"] == "direct_worker"
+    assert state["runtime_matrix"]["row_count"] >= 1

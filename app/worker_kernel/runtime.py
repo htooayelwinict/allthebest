@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from app.planner.contracts import PlannerValidationError
 from app.planner.validator import PlannerPlanValidator
+from app.runtime_matrix import RuntimeMatrixLogger, attach_runtime_matrix, coerce_runtime_matrix
 from app.schemas import ArtifactPayload, Envelope, Plan, ReplanRequest, Result, Task, WorkerIssue
 from app.worker_kernel.budget import BudgetExceeded, BudgetGate
 from app.worker_kernel.compiler import MissingInputArtifacts, TaskCompiler
@@ -62,22 +64,88 @@ class WorkerKernelRuntime:
             allow_replan=allow_replan,
         )
 
-    def run(self, plan: Plan, *, envelope: Envelope | None = None, _replan_depth: int = 0) -> Result:
+    def run(
+        self,
+        plan: Plan,
+        *,
+        envelope: Envelope | None = None,
+        trace: RuntimeMatrixLogger | None = None,
+        _replan_depth: int = 0,
+    ) -> Result:
+        trace = coerce_runtime_matrix(
+            trace,
+            plan.metadata,
+            envelope.metadata if envelope is not None else None,
+        )
         plan, control_plane_adjustments = self._normalize_execution_plan(plan)
         run_id = f"run_{plan.plan_id}"
+        self._trace(
+            trace,
+            event="run_started",
+            status="started",
+            request_id=plan.request_id,
+            plan_id=plan.plan_id,
+            run_id=run_id,
+            details={
+                "planner": plan.planner,
+                "step_count": len(plan.steps),
+                "replan_depth": _replan_depth,
+            },
+        )
+        if control_plane_adjustments:
+            self._trace(
+                trace,
+                event="plan_normalized",
+                status="completed",
+                request_id=plan.request_id,
+                plan_id=plan.plan_id,
+                run_id=run_id,
+                details={"adjustments": control_plane_adjustments},
+            )
         try:
             budget_gate = BudgetGate(plan.budget)
             if envelope is not None:
                 self._validator.validate(envelope, plan)
             budget_gate.check_plan(plan)
         except BudgetExceeded as exc:
-            return self._budget_result(run_id=run_id, exc=exc)
-        except (PlannerValidationError, ValueError) as exc:
-            return self._kernel_error_result(
+            self._trace(
+                trace,
+                event="preflight_failed",
+                status="budget_exceeded",
+                request_id=plan.request_id,
+                plan_id=plan.plan_id,
                 run_id=run_id,
-                summary="Plan failed worker-kernel preflight validation.",
-                issue=self._kernel_issue(code="invalid_plan", message=str(exc)),
+                details={"error": str(exc)},
             )
+            return self._finalize_result(self._budget_result(run_id=run_id, exc=exc), trace)
+        except (PlannerValidationError, ValueError) as exc:
+            self._trace(
+                trace,
+                event="preflight_failed",
+                status="kernel_error",
+                request_id=plan.request_id,
+                plan_id=plan.plan_id,
+                run_id=run_id,
+                details={"error": str(exc)},
+            )
+            return self._finalize_result(
+                self._kernel_error_result(
+                    run_id=run_id,
+                    summary="Plan failed worker-kernel preflight validation.",
+                    issue=self._kernel_issue(code="invalid_plan", message=str(exc)),
+                ),
+                trace,
+            )
+
+        self._trace(
+            trace,
+            event="preflight_completed",
+            status="completed",
+            request_id=plan.request_id,
+            plan_id=plan.plan_id,
+            run_id=run_id,
+            details={"budget": dict(plan.budget)},
+        )
 
         completed_artifacts: dict[str, ArtifactPayload] = {}
         partial_artifacts: list[ArtifactPayload] = []
@@ -88,6 +156,22 @@ class WorkerKernelRuntime:
         instance_attempts_used = 0
 
         for step in plan.steps:
+            self._trace(
+                trace,
+                stage=step.phase or "EXECUTE",
+                event="step_started",
+                status="started",
+                request_id=plan.request_id,
+                plan_id=plan.plan_id,
+                run_id=run_id,
+                step_id=step.step_id,
+                worker_type=step.worker_type,
+                details={
+                    "mode": step.mode,
+                    "input_artifacts": list(step.input_artifacts),
+                    "output_artifacts": list(step.output_artifacts),
+                },
+            )
             try:
                 task = self._compiler.compile(
                     run_id=run_id,
@@ -95,6 +179,21 @@ class WorkerKernelRuntime:
                     artifact_store=completed_artifacts,
                     plan=plan,
                     envelope=envelope,
+                )
+                self._trace(
+                    trace,
+                    stage=step.phase or "EXECUTE",
+                    event="task_compiled",
+                    status="completed",
+                    request_id=plan.request_id,
+                    plan_id=plan.plan_id,
+                    run_id=run_id,
+                    step_id=step.step_id,
+                    worker_type=step.worker_type,
+                    details={
+                        "input_count": len(task.input_artifacts),
+                        "expected_outputs": list(task.expected_outputs),
+                    },
                 )
             except MissingInputArtifacts as exc:
                 issue = WorkerIssue(
@@ -119,6 +218,18 @@ class WorkerKernelRuntime:
                         "recommended_action": "request a fresh plan that produces the missing artifacts first",
                     },
                 )
+                self._trace(
+                    trace,
+                    stage=step.phase or "EXECUTE",
+                    event="task_compile_failed",
+                    status=result.status,
+                    request_id=plan.request_id,
+                    plan_id=plan.plan_id,
+                    run_id=run_id,
+                    step_id=step.step_id,
+                    worker_type=step.worker_type,
+                    details={"missing_artifacts": exc.missing_artifacts},
+                )
                 if result.status == "needs_replan":
                     return self._handle_replan(
                         envelope=envelope,
@@ -135,8 +246,9 @@ class WorkerKernelRuntime:
                         issues=issues,
                         instance_attempts_used=instance_attempts_used,
                         replan_depth=_replan_depth,
+                        trace=trace,
                     )
-                return result.model_copy(
+                finalized = result.model_copy(
                     update={
                         "artifacts": list(completed_artifacts.values()),
                         "metadata": self._metadata(
@@ -150,20 +262,36 @@ class WorkerKernelRuntime:
                         ),
                     }
                 )
+                return self._finalize_result(finalized, trace)
 
             try:
                 budget_gate.before_task(task)
             except BudgetExceeded as exc:
-                return self._budget_result(
+                self._trace(
+                    trace,
+                    stage=step.phase or "EXECUTE",
+                    event="step_budget_blocked",
+                    status="budget_exceeded",
+                    request_id=plan.request_id,
+                    plan_id=plan.plan_id,
                     run_id=run_id,
-                    exc=exc,
-                    artifacts=list(completed_artifacts.values()),
-                    worker_results=worker_results,
-                    issues=issues,
-                    budget_gate=budget_gate,
-                    partial_artifacts=partial_artifacts,
-                    failed_step_artifacts=failed_step_artifacts,
-                    instance_attempts_used=instance_attempts_used,
+                    step_id=step.step_id,
+                    worker_type=step.worker_type,
+                    details={"error": str(exc)},
+                )
+                return self._finalize_result(
+                    self._budget_result(
+                        run_id=run_id,
+                        exc=exc,
+                        artifacts=list(completed_artifacts.values()),
+                        worker_results=worker_results,
+                        issues=issues,
+                        budget_gate=budget_gate,
+                        partial_artifacts=partial_artifacts,
+                        failed_step_artifacts=failed_step_artifacts,
+                        instance_attempts_used=instance_attempts_used,
+                    ),
+                    trace,
                 )
 
             result: Result | None = None
@@ -173,6 +301,19 @@ class WorkerKernelRuntime:
                 instance_attempts_used += 1
                 attempt_id = f"{step.step_id}_attempt_{attempt_number}"
                 attempt_task = self._with_attempt_metadata(task, attempt_id=attempt_id)
+                self._trace(
+                    trace,
+                    stage=step.phase or "EXECUTE",
+                    event="attempt_started",
+                    status="started",
+                    request_id=plan.request_id,
+                    plan_id=plan.plan_id,
+                    run_id=run_id,
+                    step_id=step.step_id,
+                    attempt_id=attempt_id,
+                    worker_type=step.worker_type,
+                    details={"attempt_number": attempt_number},
+                )
 
                 try:
                     result = self._dispatcher.dispatch(attempt_task)
@@ -189,16 +330,32 @@ class WorkerKernelRuntime:
                         retryable=False,
                     )
                     issues.append(issue)
-                    return self._budget_result(
+                    self._trace(
+                        trace,
+                        stage=step.phase or "EXECUTE",
+                        event="attempt_failed",
+                        status="budget_exceeded",
+                        request_id=plan.request_id,
+                        plan_id=plan.plan_id,
                         run_id=run_id,
-                        exc=exc,
-                        artifacts=list(completed_artifacts.values()),
-                        worker_results=worker_results,
-                        issues=issues,
-                        budget_gate=budget_gate,
-                        partial_artifacts=partial_artifacts,
-                        failed_step_artifacts=failed_step_artifacts,
-                        instance_attempts_used=instance_attempts_used,
+                        step_id=step.step_id,
+                        attempt_id=attempt_id,
+                        worker_type=step.worker_type,
+                        details={"error": str(exc)},
+                    )
+                    return self._finalize_result(
+                        self._budget_result(
+                            run_id=run_id,
+                            exc=exc,
+                            artifacts=list(completed_artifacts.values()),
+                            worker_results=worker_results,
+                            issues=issues,
+                            budget_gate=budget_gate,
+                            partial_artifacts=partial_artifacts,
+                            failed_step_artifacts=failed_step_artifacts,
+                            instance_attempts_used=instance_attempts_used,
+                        ),
+                        trace,
                     )
                 except Exception as exc:
                     if isinstance(exc, ValueError) and "Unknown worker_type" in str(exc):
@@ -209,10 +366,26 @@ class WorkerKernelRuntime:
                             worker_type=step.worker_type,
                         )
                         issues.append(issue)
-                        return self._kernel_error_result(
+                        self._trace(
+                            trace,
+                            stage=step.phase or "EXECUTE",
+                            event="attempt_failed",
+                            status="kernel_error",
+                            request_id=plan.request_id,
+                            plan_id=plan.plan_id,
                             run_id=run_id,
-                            summary="Worker kernel could not resolve worker group.",
-                            issue=issue,
+                            step_id=step.step_id,
+                            attempt_id=attempt_id,
+                            worker_type=step.worker_type,
+                            details={"error": str(exc)},
+                        )
+                        return self._finalize_result(
+                            self._kernel_error_result(
+                                run_id=run_id,
+                                summary="Worker kernel could not resolve worker group.",
+                                issue=issue,
+                            ),
+                            trace,
                         )
                     issue = WorkerIssue(
                         issue_type="instance_failure",
@@ -224,19 +397,36 @@ class WorkerKernelRuntime:
                         retryable=True,
                     )
                     issues.append(issue)
-                    if self._retry_instance_failure(budget_gate):
-                        continue
-                    return self._failed_instance_result(
+                    will_retry = self._retry_instance_failure(budget_gate)
+                    self._trace(
+                        trace,
+                        stage=step.phase or "EXECUTE",
+                        event="attempt_failed",
+                        status="instance_failure",
+                        request_id=plan.request_id,
+                        plan_id=plan.plan_id,
                         run_id=run_id,
                         step_id=step.step_id,
-                        summary=f"Worker instance failed at step {step.step_id}: {exc}",
-                        artifacts=list(completed_artifacts.values()),
-                        worker_results=worker_results,
-                        issues=issues,
-                        budget_gate=budget_gate,
-                        partial_artifacts=partial_artifacts,
-                        failed_step_artifacts=failed_step_artifacts,
-                        instance_attempts_used=instance_attempts_used,
+                        attempt_id=attempt_id,
+                        worker_type=step.worker_type,
+                        details={"error": str(exc), "retrying": will_retry},
+                    )
+                    if will_retry:
+                        continue
+                    return self._finalize_result(
+                        self._failed_instance_result(
+                            run_id=run_id,
+                            step_id=step.step_id,
+                            summary=f"Worker instance failed at step {step.step_id}: {exc}",
+                            artifacts=list(completed_artifacts.values()),
+                            worker_results=worker_results,
+                            issues=issues,
+                            budget_gate=budget_gate,
+                            partial_artifacts=partial_artifacts,
+                            failed_step_artifacts=failed_step_artifacts,
+                            instance_attempts_used=instance_attempts_used,
+                        ),
+                        trace,
                     )
 
                 worker_results.append(result)
@@ -250,9 +440,38 @@ class WorkerKernelRuntime:
                     issue.issue_type == "instance_failure" and issue.retryable
                     for issue in result_issues
                 )
+                self._trace(
+                    trace,
+                    stage=step.phase or "EXECUTE",
+                    event="attempt_completed",
+                    status=result.status,
+                    request_id=plan.request_id,
+                    plan_id=plan.plan_id,
+                    run_id=run_id,
+                    step_id=step.step_id,
+                    attempt_id=attempt_id,
+                    worker_type=result.producer,
+                    details={
+                        "artifact_count": len(result.artifacts),
+                        "tool_calls": result.usage.get("tool_calls"),
+                        "model_calls": result.usage.get("model_calls"),
+                    },
+                )
                 if result.status == "failed" and retryable_instance_failure and self._retry_instance_failure(
                     budget_gate
                 ):
+                    self._trace(
+                        trace,
+                        stage=step.phase or "EXECUTE",
+                        event="attempt_retry_scheduled",
+                        status="retrying",
+                        request_id=plan.request_id,
+                        plan_id=plan.plan_id,
+                        run_id=run_id,
+                        step_id=step.step_id,
+                        attempt_id=attempt_id,
+                        worker_type=step.worker_type,
+                    )
                     failed_step_artifacts.extend(
                         self._annotate_artifacts(
                             result.artifacts,
@@ -265,15 +484,30 @@ class WorkerKernelRuntime:
                 break
 
             if result is None:
-                return self._kernel_error_result(
+                self._trace(
+                    trace,
+                    stage=step.phase or "EXECUTE",
+                    event="step_failed",
+                    status="kernel_error",
+                    request_id=plan.request_id,
+                    plan_id=plan.plan_id,
                     run_id=run_id,
-                    summary=f"Step {step.step_id} did not produce a result.",
-                    issue=self._kernel_issue(
-                        code="missing_worker_result",
-                        message=f"Step {step.step_id} did not produce a result.",
-                        step_id=step.step_id,
-                        worker_type=step.worker_type,
+                    step_id=step.step_id,
+                    worker_type=step.worker_type,
+                    details={"error": "missing worker result"},
+                )
+                return self._finalize_result(
+                    self._kernel_error_result(
+                        run_id=run_id,
+                        summary=f"Step {step.step_id} did not produce a result.",
+                        issue=self._kernel_issue(
+                            code="missing_worker_result",
+                            message=f"Step {step.step_id} did not produce a result.",
+                            step_id=step.step_id,
+                            worker_type=step.worker_type,
+                        ),
                     ),
+                    trace,
                 )
 
             annotated_artifacts = self._annotate_artifacts(
@@ -287,6 +521,18 @@ class WorkerKernelRuntime:
                 for artifact in annotated_artifacts:
                     completed_artifacts[artifact.id] = artifact
                 completed_step_ids.append(step.step_id)
+                self._trace(
+                    trace,
+                    stage=step.phase or "EXECUTE",
+                    event="step_completed",
+                    status="completed",
+                    request_id=plan.request_id,
+                    plan_id=plan.plan_id,
+                    run_id=run_id,
+                    step_id=step.step_id,
+                    worker_type=step.worker_type,
+                    details={"artifact_ids": [artifact.id for artifact in annotated_artifacts]},
+                )
                 continue
 
             if result.status == "needs_replan":
@@ -307,11 +553,24 @@ class WorkerKernelRuntime:
                     issues=issues,
                     instance_attempts_used=instance_attempts_used,
                     replan_depth=_replan_depth,
+                    trace=trace,
                 )
 
             if result.status in ["failed", "blocked", "budget_exceeded", "kernel_error"]:
                 failed_step_artifacts.extend(annotated_artifacts)
-                return Result(
+                self._trace(
+                    trace,
+                    stage=step.phase or "EXECUTE",
+                    event="step_terminal",
+                    status=result.status,
+                    request_id=plan.request_id,
+                    plan_id=plan.plan_id,
+                    run_id=run_id,
+                    step_id=step.step_id,
+                    worker_type=step.worker_type,
+                    details={"summary": result.summary},
+                )
+                terminal_result = Result(
                     run_id=run_id,
                     producer="worker_kernel",
                     status=result.status,
@@ -329,8 +588,21 @@ class WorkerKernelRuntime:
                         extra={**result.metadata, **self._control_plane_metadata(control_plane_adjustments)},
                     ),
                 )
+                return self._finalize_result(terminal_result, trace)
 
-        return Result(
+        self._trace(
+            trace,
+            event="run_completed",
+            status="completed",
+            request_id=plan.request_id,
+            plan_id=plan.plan_id,
+            run_id=run_id,
+            details={
+                "completed_steps": list(completed_step_ids),
+                "artifact_count": len(completed_artifacts),
+            },
+        )
+        completed_result = Result(
             run_id=run_id,
             producer="worker_kernel",
             status="completed",
@@ -353,6 +625,7 @@ class WorkerKernelRuntime:
                 extra=self._control_plane_metadata(control_plane_adjustments),
             ),
         )
+        return self._finalize_result(completed_result, trace)
 
     def _normalize_execution_plan(self, plan: Plan) -> tuple[Plan, list[dict[str, Any]]]:
         adjustments: list[dict[str, Any]] = []
@@ -441,7 +714,18 @@ class WorkerKernelRuntime:
         issues: list[WorkerIssue],
         instance_attempts_used: int,
         replan_depth: int,
+        trace: RuntimeMatrixLogger,
     ) -> Result:
+        self._trace(
+            trace,
+            event="replan_requested",
+            status="needs_replan",
+            request_id=plan.request_id,
+            plan_id=plan.plan_id,
+            run_id=run_id,
+            step_id=failed_step_id,
+            details={"reason": result.summary},
+        )
         replan_request = self._build_replan_request(
             plan=plan,
             run_id=run_id,
@@ -455,7 +739,16 @@ class WorkerKernelRuntime:
             failed_step_artifacts=failed_step_artifacts,
         )
         if not self._can_replan(envelope, replan_depth):
-            return Result(
+            self._trace(
+                trace,
+                event="replan_deferred",
+                status="needs_replan",
+                request_id=plan.request_id,
+                plan_id=plan.plan_id,
+                run_id=run_id,
+                step_id=failed_step_id,
+            )
+            deferred_result = Result(
                 run_id=run_id,
                 producer="worker_kernel",
                 status="needs_replan",
@@ -473,11 +766,27 @@ class WorkerKernelRuntime:
                     extra={"replan_request": replan_request.model_dump(mode="json")},
                 ),
             )
+            return self._finalize_result(deferred_result, trace)
 
-        replacement_plan = self._planner_runtime.replan(envelope, plan, replan_request)
+        self._trace(
+            trace,
+            event="replan_started",
+            status="started",
+            request_id=plan.request_id,
+            plan_id=plan.plan_id,
+            run_id=run_id,
+            step_id=failed_step_id,
+        )
+        replacement_plan = self._planner_replan(
+            envelope=envelope,
+            current_plan=plan,
+            replan_request=replan_request,
+            trace=trace,
+        )
         replacement_result = self.run(
             replacement_plan,
             envelope=envelope,
+            trace=trace,
             _replan_depth=replan_depth + 1,
         )
         metadata = dict(replacement_result.metadata)
@@ -492,7 +801,19 @@ class WorkerKernelRuntime:
             ],
             "depth": replan_depth + 1,
         }
-        return replacement_result.model_copy(update={"metadata": metadata})
+        self._trace(
+            trace,
+            event="replan_completed",
+            status=replacement_result.status,
+            request_id=plan.request_id,
+            plan_id=replacement_plan.plan_id,
+            run_id=run_id,
+            step_id=failed_step_id,
+        )
+        finalized = replacement_result.model_copy(
+            update={"metadata": attach_runtime_matrix(metadata, trace)}
+        )
+        return self._finalize_result(finalized, trace)
 
     def _build_replan_request(
         self,
@@ -636,6 +957,58 @@ class WorkerKernelRuntime:
         if extra:
             metadata.update(extra)
         return metadata
+
+    def _planner_replan(
+        self,
+        *,
+        envelope: Envelope,
+        current_plan: Plan,
+        replan_request: ReplanRequest,
+        trace: RuntimeMatrixLogger,
+    ) -> Plan:
+        replan_method = self._planner_runtime.replan
+        try:
+            signature = inspect.signature(replan_method)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None and "trace" in signature.parameters:
+            return replan_method(envelope, current_plan, replan_request, trace=trace)
+        return replan_method(envelope, current_plan, replan_request)
+
+    def _trace(
+        self,
+        trace: RuntimeMatrixLogger,
+        *,
+        event: str,
+        status: str,
+        stage: str | None = "plan_execution",
+        request_id: str | None = None,
+        plan_id: str | None = None,
+        run_id: str | None = None,
+        step_id: str | None = None,
+        attempt_id: str | None = None,
+        worker_type: str | None = None,
+        elapsed_ms: float | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        trace.record(
+            component="worker_kernel_runtime",
+            stage=stage,
+            event=event,
+            status=status,
+            request_id=request_id,
+            plan_id=plan_id,
+            run_id=run_id,
+            step_id=step_id,
+            attempt_id=attempt_id,
+            worker_type=worker_type,
+            elapsed_ms=elapsed_ms,
+            details=details,
+        )
+
+    def _finalize_result(self, result: Result, trace: RuntimeMatrixLogger) -> Result:
+        metadata = attach_runtime_matrix(result.metadata, trace)
+        return result.model_copy(update={"metadata": metadata})
 
     def _budget_result(
         self,

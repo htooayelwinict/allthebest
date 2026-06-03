@@ -6,6 +6,7 @@ from typing import Any
 
 from app.planner.env_config import build_planner_model_client
 from app.planner.prompt_chain import LLMPlanCompiler, PlannerPromptChainError
+from app.runtime_matrix import RuntimeMatrixLogger, attach_runtime_matrix, coerce_runtime_matrix
 from app.schemas import Envelope, Plan, ReplanRequest
 
 
@@ -42,9 +43,25 @@ class PlannerRuntime:
             fallback_on_error=fallback_on_error,
         )
 
-    def run(self, envelope: Envelope) -> Plan:
+    def run(self, envelope: Envelope, *, trace: RuntimeMatrixLogger | None = None) -> Plan:
+        trace = coerce_runtime_matrix(trace, envelope.metadata)
+        trace.record(
+            component="planner_runtime",
+            stage="draft_plan",
+            event="run_started",
+            status="started",
+            request_id=envelope.request_id,
+            details={
+                "input_type": envelope.input_type,
+                "complexity_hint": envelope.complexity_hint,
+            },
+        )
         if self._compiler is None:
-            return self._safe_fallback_plan(envelope, fallback_reason="planner_llm_unavailable")
+            return self._safe_fallback_plan(
+                envelope,
+                fallback_reason="planner_llm_unavailable",
+                trace=trace,
+            )
 
         try:
             plan = self._compiler.run(envelope)
@@ -53,22 +70,68 @@ class PlannerRuntime:
                 "mode": "llm_prompt_chain",
                 "fallback_reason": None,
             }
+            trace.record(
+                component="planner_runtime",
+                stage="draft_plan",
+                event="run_completed",
+                status="completed",
+                request_id=envelope.request_id,
+                plan_id=plan.plan_id,
+                details={
+                    "planner": plan.planner,
+                    "step_count": len(plan.steps),
+                    "mode": "llm_prompt_chain",
+                },
+            )
+            metadata = attach_runtime_matrix(metadata, trace)
             return plan.model_copy(update={"metadata": metadata})
         except Exception as exc:
+            trace.record(
+                component="planner_runtime",
+                stage="draft_plan",
+                event="run_failed",
+                status="failed",
+                request_id=envelope.request_id,
+                details={
+                    "error": str(exc),
+                    "fallback_on_error": self._fallback_on_error,
+                },
+            )
             if not self._fallback_on_error:
                 raise
             return self._safe_fallback_plan(
                 envelope,
                 fallback_reason=self._fallback_reason(exc),
+                trace=trace,
             )
 
-    def replan(self, envelope: Envelope, current_plan: Plan, replan_request: ReplanRequest) -> Plan:
+    def replan(
+        self,
+        envelope: Envelope,
+        current_plan: Plan,
+        replan_request: ReplanRequest,
+        *,
+        trace: RuntimeMatrixLogger | None = None,
+    ) -> Plan:
+        trace = coerce_runtime_matrix(trace, current_plan.metadata, envelope.metadata)
+        trace.record(
+            component="planner_runtime",
+            stage="replan",
+            event="replan_started",
+            status="started",
+            request_id=envelope.request_id,
+            plan_id=current_plan.plan_id,
+            run_id=replan_request.run_id,
+            step_id=replan_request.failed_step_id,
+            details={"reason": replan_request.reason},
+        )
         if self._compiler is None:
             return self._safe_fallback_replan(
                 envelope,
                 current_plan=current_plan,
                 replan_request=replan_request,
                 fallback_reason="planner_llm_unavailable",
+                trace=trace,
             )
 
         try:
@@ -82,8 +145,38 @@ class PlannerRuntime:
                 "mode": "llm_prompt_chain_replan",
                 "fallback_reason": None,
             }
+            trace.record(
+                component="planner_runtime",
+                stage="replan",
+                event="replan_completed",
+                status="completed",
+                request_id=envelope.request_id,
+                plan_id=plan.plan_id,
+                run_id=replan_request.run_id,
+                step_id=replan_request.failed_step_id,
+                details={
+                    "planner": plan.planner,
+                    "step_count": len(plan.steps),
+                    "mode": "llm_prompt_chain_replan",
+                },
+            )
+            metadata = attach_runtime_matrix(metadata, trace)
             return plan.model_copy(update={"metadata": metadata})
         except Exception as exc:
+            trace.record(
+                component="planner_runtime",
+                stage="replan",
+                event="replan_failed",
+                status="failed",
+                request_id=envelope.request_id,
+                plan_id=current_plan.plan_id,
+                run_id=replan_request.run_id,
+                step_id=replan_request.failed_step_id,
+                details={
+                    "error": str(exc),
+                    "fallback_on_error": self._fallback_on_error,
+                },
+            )
             if not self._fallback_on_error:
                 raise
             return self._safe_fallback_replan(
@@ -91,10 +184,17 @@ class PlannerRuntime:
                 current_plan=current_plan,
                 replan_request=replan_request,
                 fallback_reason=self._fallback_reason(exc),
+                trace=trace,
             )
 
-    def _safe_fallback_plan(self, envelope: Envelope, *, fallback_reason: str) -> Plan:
-        return Plan(
+    def _safe_fallback_plan(
+        self,
+        envelope: Envelope,
+        *,
+        fallback_reason: str,
+        trace: RuntimeMatrixLogger | None = None,
+    ) -> Plan:
+        plan = Plan(
             plan_id=f"plan_{envelope.request_id}",
             request_id=envelope.request_id,
             planner="fallback",
@@ -133,6 +233,19 @@ class PlannerRuntime:
                 }
             },
         )
+        if trace is not None:
+            trace.record(
+                component="planner_runtime",
+                stage="draft_plan",
+                event="fallback_plan_emitted",
+                status="fallback",
+                request_id=envelope.request_id,
+                plan_id=plan.plan_id,
+                details={"fallback_reason": fallback_reason, "step_count": len(plan.steps)},
+            )
+            metadata = attach_runtime_matrix(plan.metadata, trace)
+            plan = plan.model_copy(update={"metadata": metadata})
+        return plan
 
     def _safe_fallback_replan(
         self,
@@ -141,8 +254,9 @@ class PlannerRuntime:
         current_plan: Plan,
         replan_request: ReplanRequest,
         fallback_reason: str,
+        trace: RuntimeMatrixLogger | None = None,
     ) -> Plan:
-        return Plan(
+        plan = Plan(
             plan_id=f"plan_{envelope.request_id}_replan_fallback",
             request_id=envelope.request_id,
             planner="fallback_replan",
@@ -218,6 +332,21 @@ class PlannerRuntime:
                 },
             },
         )
+        if trace is not None:
+            trace.record(
+                component="planner_runtime",
+                stage="replan",
+                event="fallback_replan_emitted",
+                status="fallback",
+                request_id=envelope.request_id,
+                plan_id=plan.plan_id,
+                run_id=replan_request.run_id,
+                step_id=replan_request.failed_step_id,
+                details={"fallback_reason": fallback_reason, "step_count": len(plan.steps)},
+            )
+            metadata = attach_runtime_matrix(plan.metadata, trace)
+            plan = plan.model_copy(update={"metadata": metadata})
+        return plan
 
     def _fallback_reason(self, exc: Exception) -> str:
         if isinstance(exc, PlannerPromptChainError):

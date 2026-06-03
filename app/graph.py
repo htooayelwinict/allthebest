@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.decompressor.runtime import DecompressorRuntime
 from app.planner.runtime import PlannerRuntime
+from app.runtime_matrix import RuntimeMatrixLogger, coerce_runtime_matrix
 from app.schemas import Envelope, Plan, RuntimeState
 from app.worker_kernel.runtime import WorkerKernelRuntime
 
@@ -35,27 +36,112 @@ def build_graph(
         )
 
     def decompressor_node(state: RuntimeState) -> RuntimeState:
+        trace = coerce_runtime_matrix(None, state.get("runtime_matrix"))
         user_input = state.get("user_input", "")
-        envelope = decompressor_runtime.run(user_input)
+        trace.record(
+            component="graph",
+            stage="decompressor_node",
+            event="node_enter",
+            status="started",
+            details={"input_chars": len(user_input or "")},
+        )
+        try:
+            envelope = decompressor_runtime.run(user_input, trace=trace)
+        except Exception as exc:
+            trace.record(
+                component="graph",
+                stage="decompressor_node",
+                event="node_failed",
+                status="failed",
+                details={"error": str(exc)},
+            )
+            raise
+        trace.record(
+            component="graph",
+            stage="decompressor_node",
+            event="node_exit",
+            status="completed",
+            request_id=envelope.request_id,
+        )
         return {
             "envelope": envelope.model_dump(),
+            "runtime_matrix": trace.snapshot(),
             "errors": state.get("errors", []),
         }
 
     def planner_node(state: RuntimeState) -> RuntimeState:
+        trace = coerce_runtime_matrix(None, state.get("runtime_matrix"))
         envelope = Envelope.model_validate(state["envelope"])
-        plan = planner_runtime.run(envelope)
+        trace.record(
+            component="graph",
+            stage="planner_node",
+            event="node_enter",
+            status="started",
+            request_id=envelope.request_id,
+        )
+        try:
+            plan = planner_runtime.run(envelope, trace=trace)
+        except Exception as exc:
+            trace.record(
+                component="graph",
+                stage="planner_node",
+                event="node_failed",
+                status="failed",
+                request_id=envelope.request_id,
+                details={"error": str(exc)},
+            )
+            raise
+        trace.record(
+            component="graph",
+            stage="planner_node",
+            event="node_exit",
+            status="completed",
+            request_id=envelope.request_id,
+            plan_id=plan.plan_id,
+        )
         return {
             "plan": plan.model_dump(),
+            "runtime_matrix": trace.snapshot(),
             "errors": state.get("errors", []),
         }
 
     def worker_kernel_node(state: RuntimeState) -> RuntimeState:
+        trace = coerce_runtime_matrix(None, state.get("runtime_matrix"))
         envelope = Envelope.model_validate(state["envelope"])
         plan = Plan.model_validate(state["plan"])
-        result = worker_kernel_runtime.run(plan, envelope=envelope)
+        trace.record(
+            component="graph",
+            stage="worker_kernel_node",
+            event="node_enter",
+            status="started",
+            request_id=envelope.request_id,
+            plan_id=plan.plan_id,
+        )
+        try:
+            result = worker_kernel_runtime.run(plan, envelope=envelope, trace=trace)
+        except Exception as exc:
+            trace.record(
+                component="graph",
+                stage="worker_kernel_node",
+                event="node_failed",
+                status="failed",
+                request_id=envelope.request_id,
+                plan_id=plan.plan_id,
+                details={"error": str(exc)},
+            )
+            raise
+        trace.record(
+            component="graph",
+            stage="worker_kernel_node",
+            event="node_exit",
+            status=result.status,
+            request_id=envelope.request_id,
+            plan_id=plan.plan_id,
+            run_id=result.run_id,
+        )
         return {
             "result": result.model_dump(),
+            "runtime_matrix": trace.snapshot(),
             "errors": state.get("errors", []),
         }
 
