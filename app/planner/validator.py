@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from app.planner.contracts import ALLOWED_MODES, ALLOWED_WORKER_TYPES, PlannerValidationError, WRITE_SCOPE_ARTIFACTS
 from app.schemas import Envelope, Plan
 
@@ -66,8 +68,15 @@ class PlannerPlanValidator:
 
     _WRITE_CAPABLE_WORKERS = {"code_worker", "filesystem_worker"}
 
-    def validate(self, envelope: Envelope, plan: Plan) -> Plan:
+    def validate(
+        self,
+        envelope: Envelope,
+        plan: Plan,
+        *,
+        initial_artifact_ids: Iterable[str] | None = None,
+    ) -> Plan:
         errors: list[str] = []
+        initial_artifacts = {artifact_id for artifact_id in (initial_artifact_ids or []) if artifact_id}
 
         if plan.request_id != envelope.request_id:
             errors.append("plan.request_id must match envelope.request_id")
@@ -154,14 +163,14 @@ class PlannerPlanValidator:
         if max_workers < len(plan.steps):
             errors.append("plan budget max_workers must cover step count")
 
-        produced: set[str] = set()
+        produced: set[str] = set(initial_artifacts)
         produced_by: dict[str, int] = {}
         write_step_indexes: list[int] = []
         for index, step in enumerate(plan.steps):
             for artifact_id in step.input_artifacts:
                 if artifact_id not in produced:
                     errors.append(
-                        f"step {step.step_id} input_artifact '{artifact_id}' is not produced by an earlier step"
+                        f"step {step.step_id} input_artifact '{artifact_id}' is not produced by an earlier step or provided as a carryover artifact"
                     )
 
             write_files = bool(step.permissions.get("write_files", False))
@@ -177,6 +186,7 @@ class PlannerPlanValidator:
                         permissions=step.permissions,
                         produced=produced,
                         produced_by=produced_by,
+                        initial_artifacts=initial_artifacts,
                         steps=plan.steps,
                     )
                 )
@@ -202,6 +212,10 @@ class PlannerPlanValidator:
                 artifact_id
                 for artifact_id, producer_index in produced_by.items()
                 if producer_index < first_write and self._artifact_matches(artifact_id, ("rollback", "revert"))
+            } | {
+                artifact_id
+                for artifact_id in initial_artifacts
+                if self._artifact_matches(artifact_id, ("rollback", "revert"))
             }
             if not pre_write_rollback_artifacts:
                 errors.append("mutation requires a rollback/revert artifact before write")
@@ -224,7 +238,7 @@ class PlannerPlanValidator:
                 for index, step in enumerate(plan.steps[:first_write])
                 if step.phase == "DESIGN"
                 for artifact_id in step.output_artifacts
-            }
+            } | initial_artifacts
             if "mutation_scope" not in design_outputs:
                 errors.append("mutation requires prior DESIGN step output mutation_scope")
             if "rollback_plan" not in design_outputs:
@@ -299,6 +313,7 @@ class PlannerPlanValidator:
         permissions: dict,
         produced: set[str],
         produced_by: dict[str, int],
+        initial_artifacts: set[str],
         steps: list,
     ) -> list[str]:
         write_paths = permissions.get("write_paths")
@@ -311,6 +326,8 @@ class PlannerPlanValidator:
             if not missing:
                 invalid_scope_artifacts = []
                 for artifact_id in write_path_artifacts:
+                    if artifact_id in initial_artifacts and artifact_id in WRITE_SCOPE_ARTIFACT_SIGNALS:
+                        continue
                     producer_index = produced_by.get(artifact_id)
                     producer_phase = steps[producer_index].phase if producer_index is not None else None
                     if producer_phase != "DESIGN" or artifact_id not in WRITE_SCOPE_ARTIFACT_SIGNALS:

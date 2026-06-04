@@ -220,6 +220,7 @@ class LLMPlanCompiler:
             plan, budget_auto_aligned = self._parse_and_validate(
                 envelope=envelope,
                 response=response,
+                initial_artifact_ids=self._carryover_artifact_ids(replan_request),
             )
             diagnostics = self._build_diagnostics(
                 mode="completed",
@@ -259,6 +260,7 @@ class LLMPlanCompiler:
             repaired_plan, budget_auto_aligned = self._parse_and_validate(
                 envelope=envelope,
                 response=repair_response,
+                initial_artifact_ids=self._carryover_artifact_ids(replan_request),
             )
             diagnostics = self._build_diagnostics(
                 mode="repaired",
@@ -301,10 +303,20 @@ class LLMPlanCompiler:
                 f"planner replan prompt chain failed after repair: {json.dumps(diagnostics, sort_keys=True)}"
             ) from repair_exc
 
-    def _parse_and_validate(self, *, envelope: Envelope, response: str) -> tuple[Plan, bool]:
+    def _parse_and_validate(
+        self,
+        *,
+        envelope: Envelope,
+        response: str,
+        initial_artifact_ids: list[str] | None = None,
+    ) -> tuple[Plan, bool]:
         plan = Plan.model_validate_json(response)
         normalized_plan, budget_auto_aligned = self._normalize_budget(plan)
-        validated = self._validator.validate(envelope, normalized_plan)
+        validated = self._validator.validate(
+            envelope,
+            normalized_plan,
+            initial_artifact_ids=initial_artifact_ids,
+        )
         return validated, budget_auto_aligned
 
     def _draft_prompt(self, *, envelope: Envelope, schema: dict[str, Any]) -> str:
@@ -524,9 +536,11 @@ class LLMPlanCompiler:
             "instructions": [
                 "Return only JSON matching the existing Plan schema exactly.",
                 "Return a full replacement Plan, not a patch, not a continuation fragment, and not prose.",
-                "The new Plan must be internally valid under the normal planner validator.",
-                "Do not rely on validator exceptions, old-plan artifact carryover, or hidden worker state.",
-                "Do not reference artifacts from the previous plan as step.input_artifacts unless the new plan produces them in an earlier step.",
+                "The new Plan must be internally valid under the replan-aware planner validator.",
+                "replan_request.carryover_artifacts are trusted completed runtime artifacts seeded into the replacement run.",
+                "You may reference carryover artifact ids directly in step.input_artifacts without reproducing them.",
+                "Prefer carryover artifacts over rehydrating old context when they are sufficient for the recovery step.",
+                "Do not reference partial_artifacts or failed_step_artifacts as completed truth; use them only as failure evidence.",
                 "Preserve the original envelope objective unless the replan reason proves the old approach is impossible.",
                 "Use only worker types in worker_catalog.",
                 "Use canonical phases: DISCOVER, ANALYZE, RESEARCH, DESIGN, MUTATE, VERIFY, FINALIZE.",
@@ -535,8 +549,8 @@ class LLMPlanCompiler:
                 "Plan around the failed step and reason; reduce repeated work only if the new plan remains self-contained.",
                 "Treat replan_request.completed_step_ids as authoritative execution history for which previous steps completed successfully.",
                 "Do not include replan_request.failed_step_id in completed work unless it also appears in completed_step_ids.",
-                "If previous context is needed, add an early read-only step that re-establishes that context and outputs fresh artifacts.",
-                "Every step.input_artifacts entry must be produced by an earlier step.output_artifacts in this new plan.",
+                "Add an early read-only re-observation step only when carryover artifacts are insufficient or stale.",
+                "Every step.input_artifacts entry must be produced by an earlier step.output_artifacts in this new plan or be present in carryover_artifact_ids.",
                 "Every phase-aware step.permissions must explicitly include boolean read_files, write_files, run_commands, and web_research keys.",
                 "If any step permission read_files, write_files, run_commands, or web_research is true, set that step.max_tool_calls to a positive integer.",
                 "Use max_tool_calls=0 only for direct no-tool/no-file/no-command/no-web steps.",
@@ -550,6 +564,8 @@ class LLMPlanCompiler:
             "envelope": envelope.model_dump(mode="json"),
             "current_plan": current_plan.model_dump(mode="json"),
             "replan_request": replan_request.model_dump(mode="json"),
+            "carryover_artifact_ids": self._carryover_artifact_ids(replan_request),
+            "carryover_artifact_cards": self._artifact_cards(replan_request.carryover_artifacts),
             "allowed_modes": ALLOWED_MODES,
             "write_scope_artifacts": WRITE_SCOPE_ARTIFACTS,
             "worker_catalog": WORKER_CATALOG,
@@ -573,15 +589,16 @@ class LLMPlanCompiler:
             "instructions": [
                 "Return only repaired JSON matching the existing Plan schema.",
                 "Do not return a patch or partial continuation.",
-                "Do not reference old-plan artifacts as input_artifacts unless this repaired plan produces them first.",
-                "Ensure the repaired plan passes the same normal planner validator as any initial plan.",
+                "The repaired plan may reference replan_request.carryover_artifacts directly by id as step.input_artifacts.",
+                "Do not reference partial_artifacts or failed_step_artifacts as completed truth.",
+                "Ensure the repaired plan passes the replan-aware planner validator.",
                 "Use only worker types in worker_catalog.",
                 "Ensure phase/mode/task_id/execution_pattern/global_invariants are populated for phase-aware plans.",
                 "Ensure every step.permissions includes boolean read_files/write_files/run_commands/web_research.",
                 "If any step permission read_files, write_files, run_commands, or web_research is true, set that step.max_tool_calls to a positive integer.",
                 "Treat replan_request.completed_step_ids as the authoritative list of previous steps that completed successfully.",
                 "Ensure budget covers step totals and includes max_tool_calls, max_model_calls, max_workers, and max_retries.",
-                "Ensure artifact dependencies reference only earlier outputs from this repaired plan.",
+                "Ensure artifact dependencies reference earlier outputs from this repaired plan or carryover_artifact_ids.",
                 "Ensure mutation plans include discovery/design/mutate/verify/finalize safety contracts.",
                 "Ensure multi-file scaffolding or workspace cleanup plans use filesystem_worker with batch-friendly scoped write artifacts.",
             ],
@@ -590,6 +607,8 @@ class LLMPlanCompiler:
             "envelope": envelope.model_dump(mode="json"),
             "current_plan": current_plan.model_dump(mode="json"),
             "replan_request": replan_request.model_dump(mode="json"),
+            "carryover_artifact_ids": self._carryover_artifact_ids(replan_request),
+            "carryover_artifact_cards": self._artifact_cards(replan_request.carryover_artifacts),
             "allowed_modes": ALLOWED_MODES,
             "write_scope_artifacts": WRITE_SCOPE_ARTIFACTS,
             "worker_catalog": WORKER_CATALOG,
@@ -597,6 +616,29 @@ class LLMPlanCompiler:
             "plan_schema": schema,
         }
         return json.dumps(payload, sort_keys=True)
+
+    def _carryover_artifact_ids(self, replan_request: ReplanRequest) -> list[str]:
+        return sorted({artifact.id for artifact in replan_request.carryover_artifacts})
+
+    def _artifact_cards(self, artifacts: list[Any]) -> list[dict[str, Any]]:
+        cards = []
+        for artifact in artifacts:
+            content = artifact.content
+            if isinstance(content, str):
+                preview = content[:500]
+            else:
+                preview = json.dumps(content, sort_keys=True, default=str)[:500]
+            cards.append(
+                {
+                    "id": artifact.id,
+                    "kind": artifact.kind,
+                    "producer": artifact.producer,
+                    "step_id": artifact.step_id,
+                    "trust_level": artifact.trust_level,
+                    "content_preview": preview,
+                }
+            )
+        return cards
 
     def _serialize_validation_errors(self, error: ValidationError | PlannerValidationError) -> list[dict[str, Any]]:
         if isinstance(error, ValidationError):

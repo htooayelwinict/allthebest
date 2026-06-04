@@ -809,6 +809,61 @@ def test_prompt_chain_replan_returns_full_valid_plan() -> None:
     assert plan.metadata["llm_planner"]["failed_step_id"] == "sdk_research"
 
 
+def test_prompt_chain_replan_accepts_carryover_inputs() -> None:
+    envelope = _envelope()
+    current_plan = Plan.model_validate(_complex_multi_intent_plan())
+    replan_plan = {
+        "plan_id": "plan_req_123_replan_resume",
+        "request_id": envelope.request_id,
+        "planner": "phase_aware_execution_planner",
+        "objective": current_plan.objective,
+        "strategy": "resume_from_completed_repo_inventory",
+        "execution_pattern": "finalize",
+        "global_invariants": ["use_carryover_artifacts_only"],
+        "steps": [
+            {
+                "step_id": "finalize_from_carryover",
+                "worker_type": "direct_worker",
+                "phase": "FINALIZE",
+                "mode": "summarize_only",
+                "task_id": "replan_recovery",
+                "instruction": "Known facts: repo_inventory is available as a trusted carryover artifact. Unknowns: none. Do now: summarize recovery status. Do not do: do not mutate. Output: final_report.",
+                "input_artifacts": ["repo_inventory"],
+                "output_artifacts": ["final_report"],
+                "max_tool_calls": 0,
+                "max_model_calls": 1,
+                "permissions": _permissions(
+                    read_files=False,
+                    write_files=False,
+                    run_commands=False,
+                    web_research=False,
+                ),
+            }
+        ],
+        "budget": {"max_tool_calls": 0, "max_model_calls": 1, "max_workers": 1, "max_retries": 0},
+        "success_criteria": ["Recovery summary is grounded in carryover artifacts."],
+    }
+    replan_request = ReplanRequest(
+        request_id=envelope.request_id,
+        plan_id=current_plan.plan_id,
+        run_id=f"run_{current_plan.plan_id}",
+        failed_step_id="sdk_research",
+        reason="worker needs existing repo context",
+        completed_artifacts=[{"id": "repo_inventory", "content": {"files": ["pyproject.toml"]}}],
+        completed_step_ids=["repo_discovery"],
+    )
+    client = FakePlannerClient({"replan_plan": replan_plan})
+
+    plan = LLMPlanCompiler(model_client=client).replan(
+        envelope=envelope,
+        current_plan=current_plan,
+        replan_request=replan_request,
+    )
+
+    assert plan.steps[0].input_artifacts == ["repo_inventory"]
+    assert plan.metadata["llm_planner"]["replan"] is True
+
+
 def test_replan_prompt_demands_full_existing_schema_plan() -> None:
     envelope = _envelope()
     current_plan = Plan.model_validate(_complex_multi_intent_plan())
@@ -831,7 +886,8 @@ def test_replan_prompt_demands_full_existing_schema_plan() -> None:
     assert "full replacement Plan" in replan_prompt
     assert "existing Plan schema" in replan_prompt
     assert "not a patch" in replan_prompt
-    assert "Do not reference artifacts from the previous plan" in replan_prompt
+    assert "carryover_artifacts are trusted completed runtime artifacts" in replan_prompt
+    assert "carryover_artifact_ids" in replan_prompt
     assert "completed_step_ids" in replan_prompt
     assert "authoritative execution history" in replan_prompt
 

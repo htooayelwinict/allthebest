@@ -21,6 +21,7 @@ ResultStatus = Literal[
 ]
 WorkerIssueType = Literal["instance_failure", "plan_failure", "kernel_failure"]
 TrustLevel = Literal["unknown", "worker_reported", "verified"]
+WritePolicyMode = Literal["readonly", "advisory", "strict"]
 
 
 class PermissionSet(BaseModel):
@@ -127,17 +128,59 @@ class ArtifactPayload(BaseModel):
         return value
 
 
-class MutationScope(BaseModel):
-    """Kernel-resolved write scope enforced before MUTATE.
+class MutationMove(BaseModel):
+    """One scoped file move operation inside a mutation scope."""
 
-    Worker DESIGN steps may emit flexible proposal shapes. Runtime code should
-    call resolve_mutation_scope_proposal(...) at the kernel boundary and pass the
-    resulting strict scope to write-capable workers.
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    destination: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_move(cls, value: Any) -> Any:
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, dict):
+            return value
+
+        data = dict(value)
+        source = data.get("source") or data.get("from") or data.get("src")
+        destination = data.get("destination") or data.get("to") or data.get("dest") or data.get("target")
+        return {"source": source, "destination": destination}
+
+    @model_validator(mode="after")
+    def validate_paths(self) -> "MutationMove":
+        source = normalize_repo_relative_path(self.source)
+        destination = normalize_repo_relative_path(self.destination)
+        if source is None:
+            raise ValueError(f"mutation_scope.move_pairs.source contains invalid repo-relative path: {self.source}")
+        if destination is None:
+            raise ValueError(
+                f"mutation_scope.move_pairs.destination contains invalid repo-relative path: {self.destination}"
+            )
+        self.source = source
+        self.destination = destination
+        return self
+
+
+class MutationScope(BaseModel):
+    """Worker-proposed write scope resolved at the kernel boundary.
+
+    DESIGN workers may emit flexible proposal shapes. For bounded mutation, the
+    kernel can use this as advisory context while the write tools remain the
+    final authority for concrete file operations.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     target_paths: list[str]
+    create_paths: list[str] = Field(default_factory=list)
+    update_paths: list[str] = Field(default_factory=list)
+    delete_paths: list[str] = Field(default_factory=list)
+    manifest_paths: list[str] = Field(default_factory=list)
+    directory_paths: list[str] = Field(default_factory=list)
+    move_pairs: list[MutationMove] = Field(default_factory=list)
     test_paths: list[str] = Field(default_factory=list)
     forbidden_paths: list[str] = Field(default_factory=list)
     forbidden_globs: list[str] = Field(default_factory=list)
@@ -163,9 +206,46 @@ class MutationScope(BaseModel):
         data = dict(value)
         target_paths = _collect_scope_paths(
             data,
-            keys=("target_paths", "paths", "files", "allowed_paths", "candidate_paths", "path", "file"),
+            keys=(
+                "target_paths",
+                "write_paths",
+                "write_scope_paths",
+                "paths",
+                "files",
+                "allowed_paths",
+                "candidate_paths",
+                "path",
+                "file",
+            ),
             fallback=True,
         )
+        create_paths = _collect_scope_paths(
+            data,
+            keys=("create_paths", "creations", "created_paths", "new_files", "files_to_create", "write_files"),
+        )
+        update_paths = _collect_scope_paths(
+            data,
+            keys=("update_paths", "updates", "updated_paths", "modified_paths", "edit_paths", "files_to_update"),
+        )
+        delete_paths = _collect_scope_paths(
+            data,
+            keys=("delete_paths", "deletions", "deleted_paths", "remove_paths", "files_to_delete"),
+        )
+        manifest_paths = _collect_scope_paths(data, keys=("manifest_paths", "manifests", "manifest_target"))
+        directory_paths = _collect_scope_paths(
+            data,
+            keys=("directory_paths", "directories", "created_directories", "dirs"),
+        )
+        move_pairs = _collect_move_pairs(data.get("move_pairs") or data.get("moves") or data.get("renames") or [])
+        operation_paths = _operation_scope_paths(
+            create_paths=create_paths,
+            update_paths=update_paths,
+            delete_paths=delete_paths,
+            manifest_paths=manifest_paths,
+            directory_paths=directory_paths,
+            move_pairs=move_pairs,
+        )
+        target_paths = _dedupe_paths(target_paths + operation_paths)
         test_paths = _collect_scope_paths(data, keys=("test_paths", "tests", "test_files", "test_path"))
         forbidden_paths, forbidden_globs = _collect_forbidden_scope_paths(
             data,
@@ -174,6 +254,12 @@ class MutationScope(BaseModel):
 
         return {
             "target_paths": target_paths,
+            "create_paths": create_paths,
+            "update_paths": update_paths,
+            "delete_paths": delete_paths,
+            "manifest_paths": manifest_paths,
+            "directory_paths": directory_paths,
+            "move_pairs": move_pairs,
             "test_paths": test_paths,
             "forbidden_paths": forbidden_paths,
             "forbidden_globs": forbidden_globs,
@@ -185,9 +271,25 @@ class MutationScope(BaseModel):
     @model_validator(mode="after")
     def validate_scope(self) -> "MutationScope":
         self.target_paths = _dedupe_paths(self.target_paths)
+        self.create_paths = _dedupe_paths(self.create_paths)
+        self.update_paths = _dedupe_paths(self.update_paths)
+        self.delete_paths = _dedupe_paths(self.delete_paths)
+        self.manifest_paths = _dedupe_paths(self.manifest_paths)
+        self.directory_paths = _dedupe_paths(self.directory_paths)
         self.test_paths = _dedupe_paths(self.test_paths)
         self.forbidden_paths = _dedupe_paths(self.forbidden_paths)
         self.forbidden_globs = _dedupe_globs(self.forbidden_globs)
+        self.target_paths = _dedupe_paths(
+            self.target_paths
+            + _operation_scope_paths(
+                create_paths=self.create_paths,
+                update_paths=self.update_paths,
+                delete_paths=self.delete_paths,
+                manifest_paths=self.manifest_paths,
+                directory_paths=self.directory_paths,
+                move_pairs=self.move_pairs,
+            )
+        )
         if not self.target_paths:
             raise ValueError("mutation_scope.target_paths must be non-empty")
         if self.max_files < 1:
@@ -200,7 +302,17 @@ class MutationScope(BaseModel):
 
     @property
     def write_scope_paths(self) -> list[str]:
-        return _dedupe_paths(self.target_paths)
+        return _dedupe_paths(
+            self.target_paths
+            + _operation_scope_paths(
+                create_paths=self.create_paths,
+                update_paths=self.update_paths,
+                delete_paths=self.delete_paths,
+                manifest_paths=self.manifest_paths,
+                directory_paths=self.directory_paths,
+                move_pairs=self.move_pairs,
+            )
+        )
 
 
 def resolve_mutation_scope_proposal(value: Any, *, source_artifact_id: str | None = None) -> MutationScope:
@@ -214,6 +326,60 @@ def resolve_mutation_scope_proposal(value: Any, *, source_artifact_id: str | Non
     if source_artifact_id:
         metadata["source_artifact_id"] = source_artifact_id
     return scope.model_copy(update={"metadata": metadata})
+
+
+class WritePolicy(BaseModel):
+    """Worker-facing write policy enforced by the kernel/tool boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: WritePolicyMode = "advisory"
+    advisory_paths: list[str] = Field(default_factory=list)
+    strict_allowed_paths: list[str] = Field(default_factory=list)
+    forbidden_paths: list[str] = Field(default_factory=list)
+    forbidden_globs: list[str] = Field(default_factory=list)
+    batch_max_files: int = 6
+    step_max_files: int = 25
+    repair_attempts: int = 1
+    validation_warnings: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_policy(self) -> "WritePolicy":
+        self.advisory_paths = _dedupe_policy_paths(self.advisory_paths)
+        self.strict_allowed_paths = _dedupe_policy_paths(self.strict_allowed_paths)
+        self.forbidden_paths = _dedupe_policy_paths(self.forbidden_paths)
+        self.forbidden_globs = _dedupe_globs(
+            glob
+            for glob in (_normalize_repo_glob(pattern) for pattern in self.forbidden_globs)
+            if glob is not None
+        )
+        if self.strict_allowed_paths:
+            self.mode = "strict"
+        elif self.mode == "strict":
+            self.mode = "advisory"
+        if self.batch_max_files < 1:
+            raise ValueError("write_policy.batch_max_files must be positive")
+        if self.step_max_files < 1:
+            raise ValueError("write_policy.step_max_files must be positive")
+        if self.repair_attempts < 0:
+            raise ValueError("write_policy.repair_attempts cannot be negative")
+        return self
+
+
+class MutationOperationDenial(BaseModel):
+    """Structured denial returned to a worker when a proposed mutation is unsafe."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+    tool_name: str | None = None
+    touched_paths: list[str] = Field(default_factory=list)
+    rejected_paths: list[str] = Field(default_factory=list)
+    repairable: bool = True
+    policy: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkerIssue(BaseModel):
@@ -310,12 +476,21 @@ class ReplanRequest(BaseModel):
 
     worker_result: dict[str, Any] = Field(default_factory=dict)
     completed_artifacts: list[ArtifactPayload] = Field(default_factory=list)
+    carryover_artifacts: list[ArtifactPayload] = Field(default_factory=list)
     completed_step_ids: list[str] = Field(default_factory=list)
     remaining_budget: dict[str, Any] = Field(default_factory=dict)
     recommended_action: str | None = None
     issues: list[WorkerIssue] = Field(default_factory=list)
     partial_artifacts: list[ArtifactPayload] = Field(default_factory=list)
     failed_step_artifacts: list[ArtifactPayload] = Field(default_factory=list)
+    failed_step: dict[str, Any] = Field(default_factory=dict)
+    failure_observation: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def default_carryover_artifacts(self) -> "ReplanRequest":
+        if not self.carryover_artifacts:
+            self.carryover_artifacts = list(self.completed_artifacts)
+        return self
 
 
 class Task(BaseModel):
@@ -467,6 +642,50 @@ def _collect_forbidden_scope_paths(data: dict[str, Any], *, keys: tuple[str, ...
         paths.extend(value_paths)
         globs.extend(value_globs)
     return _dedupe_paths(paths), _dedupe_globs(globs)
+
+
+def _collect_move_pairs(value: Any) -> list[MutationMove]:
+    if not value:
+        return []
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+
+    moves: list[MutationMove] = []
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        move = MutationMove.model_validate(item)
+        key = (move.source, move.destination)
+        if key in seen:
+            continue
+        seen.add(key)
+        moves.append(move)
+    return moves
+
+
+def _operation_scope_paths(
+    *,
+    create_paths: list[str],
+    update_paths: list[str],
+    delete_paths: list[str],
+    manifest_paths: list[str],
+    directory_paths: list[str],
+    move_pairs: list[MutationMove],
+) -> list[str]:
+    move_paths: list[str] = []
+    for move in move_pairs:
+        move_paths.extend([move.source, move.destination])
+    return _dedupe_paths(
+        create_paths
+        + update_paths
+        + delete_paths
+        + manifest_paths
+        + directory_paths
+        + move_paths
+    )
 
 
 def _forbidden_scope_values(value: Any, *, field_name: str) -> tuple[list[str], list[str]]:
@@ -624,15 +843,15 @@ def _collect_move_paths(value: Any) -> list[str]:
         if isinstance(move, dict):
             if "destination" in move:
                 paths.extend(_extract_legacy_scope_paths(move["destination"]))
-            elif "target" in move:
+            if "target" in move:
                 paths.extend(_extract_legacy_scope_paths(move["target"]))
-            elif "path" in move:
+            if "path" in move:
                 paths.extend(_extract_legacy_scope_paths(move["path"]))
-            elif "file" in move:
+            if "file" in move:
                 paths.extend(_extract_legacy_scope_paths(move["file"]))
-            elif "source" in move:
+            if "source" in move:
                 paths.extend(_extract_legacy_scope_paths(move["source"]))
-            else:
+            if not any(key in move for key in ("destination", "target", "path", "file", "source")):
                 for sub_value in move.values():
                     paths.extend(_extract_legacy_scope_paths(sub_value))
         elif isinstance(move, str):
@@ -679,6 +898,22 @@ def _normalize_repo_relative_path(value: str, *, allow_bare_filename: bool) -> s
     return path.as_posix()
 
 
+def _normalize_write_policy_path(value: str) -> str | None:
+    raw = _strip_path_token(value)
+    if raw.startswith("./"):
+        raw = raw[2:]
+    if not raw or any(char.isspace() for char in raw):
+        return None
+    if _has_glob_meta(raw):
+        return None
+    if raw.startswith(("-", "~")) or "://" in raw or "\\" in raw:
+        return None
+    path = PurePosixPath(raw)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return None
+    return path.as_posix()
+
+
 def _normalize_repo_glob(value: str) -> str | None:
     raw = _strip_path_token(value)
     if raw.startswith("./"):
@@ -711,6 +946,18 @@ def _dedupe_paths(paths: list[str]) -> list[str]:
     seen: set[str] = set()
     for raw_path in paths:
         normalized = normalize_repo_relative_path(str(raw_path))
+        if normalized is None or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
+def _dedupe_policy_paths(paths: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for raw_path in paths:
+        normalized = _normalize_write_policy_path(str(raw_path))
         if normalized is None or normalized in seen:
             continue
         seen.add(normalized)

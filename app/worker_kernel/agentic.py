@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -14,6 +16,7 @@ from app.schemas import ArtifactPayload, PermissionSet, PlanStep, Result, Task, 
 from app.worker_kernel.env_config import WorkerRuntimeConfig
 from app.worker_kernel.registry import WorkerRegistry
 from app.worker_kernel.tools import (
+    MutationOperationDeniedError,
     ToolPermissionError,
     ToolUnavailableError,
     WorkerToolConfig,
@@ -26,6 +29,16 @@ from app.worker_kernel.workers.templates import WorkerInstanceTemplate
 
 MUTATING_WORKER_TYPES = {"code_worker", "filesystem_worker"}
 WRITE_TOOL_NAMES = {"write_file", "write_many_files", "replace_in_file", "move_file", "delete_file"}
+REPO_READER_REQUIRED_OUTPUT_IDS = {
+    "api_surface_map",
+    "candidate_paths",
+    "source_file_inventory",
+    "source_files",
+    "target_files",
+    "test_command",
+    "test_command_candidates",
+    "test_files",
+}
 
 
 class WorkerToolCall(BaseModel):
@@ -60,6 +73,7 @@ class WorkerGroupState:
     artifacts: list[ArtifactPayload] = field(default_factory=list)
     observations: list[dict[str, Any]] = field(default_factory=list)
     instance_results: list[dict[str, Any]] = field(default_factory=list)
+    operation_denials: dict[str, int] = field(default_factory=dict)
 
 
 class WorkerLLMController:
@@ -127,6 +141,14 @@ def _normalize_tool_call(raw_call: dict[str, Any]) -> dict[str, Any]:
             call["tool_name"] = function.get("name")
         if "arguments" not in call:
             call["arguments"] = function.get("arguments", {})
+    if "arguments" not in call and "input" in call:
+        call["arguments"] = call.pop("input")
+    if isinstance(call.get("tool_name"), str):
+        repaired = _repair_embedded_tool_call(call["tool_name"])
+        if repaired:
+            call["tool_name"] = repaired["tool_name"]
+            if not call.get("arguments") and isinstance(repaired.get("arguments"), dict):
+                call["arguments"] = repaired["arguments"]
     return call
 
 
@@ -196,7 +218,14 @@ def _normalize_artifact(value: Any, *, index: int) -> Any:
     if isinstance(value, ArtifactPayload):
         return value
     if isinstance(value, dict):
-        return value
+        artifact = dict(value)
+        metadata = artifact.get("metadata")
+        if _content_is_empty(artifact.get("content")) and _metadata_has_payload(metadata):
+            artifact["content"] = dict(metadata)
+            repaired_metadata = dict(metadata)
+            repaired_metadata["content_repaired_from_metadata"] = True
+            artifact["metadata"] = repaired_metadata
+        return artifact
     if isinstance(value, str):
         return {
             "id": value,
@@ -209,6 +238,23 @@ def _normalize_artifact(value: Any, *, index: int) -> Any:
         "content": value,
         "kind": "worker_unstructured_artifact",
     }
+
+
+def _content_is_empty(content: Any) -> bool:
+    if content is None:
+        return True
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, (list, tuple, set, dict)):
+        return len(content) == 0
+    return False
+
+
+def _metadata_has_payload(metadata: Any) -> bool:
+    if not isinstance(metadata, dict) or not metadata:
+        return False
+    internal_keys = {"worker_returned_bare_artifact_id", "artifact_index", "content_repaired_from_metadata"}
+    return any(key not in internal_keys for key in metadata)
 
 
 def _normalize_status(value: Any) -> Any:
@@ -282,10 +328,86 @@ def _normalize_issue_type(value: Any) -> str:
 def _parse_arguments(value: str) -> dict[str, Any]:
     if not value.strip():
         return {}
-    parsed = json.loads(value)
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            return {}
     if isinstance(parsed, dict):
         return parsed
     return {"value": parsed}
+
+
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+
+
+def _repair_embedded_tool_call(value: str) -> dict[str, Any] | None:
+    raw = value.strip()
+    if _TOOL_NAME_RE.fullmatch(raw):
+        return None
+
+    tool_name = _extract_embedded_tool_name(raw)
+    if not tool_name:
+        return None
+
+    repaired: dict[str, Any] = {"tool_name": tool_name}
+    arguments_text = _extract_embedded_arguments_text(raw)
+    if arguments_text:
+        repaired["arguments"] = _parse_arguments(arguments_text)
+    return repaired
+
+
+def _extract_embedded_tool_name(value: str) -> str | None:
+    patterns = (
+        r"\btool_name['\"]?\s*[:=]\s*['\"]?([A-Za-z][A-Za-z0-9_-]{0,63})",
+        r"\bname['\"]?\s*[:=]\s*['\"]?([A-Za-z][A-Za-z0-9_-]{0,63})",
+        r"^tool\s+([A-Za-z][A-Za-z0-9_-]{0,63})",
+        r"^([A-Za-z][A-Za-z0-9_-]{0,63})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, value)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _extract_embedded_arguments_text(value: str) -> str | None:
+    marker = re.search(r"\barguments['\"]?\s*[:=]\s*", value)
+    if not marker:
+        return None
+    start = value.find("{", marker.end())
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string: str | None = None
+    escape = False
+    for index, char in enumerate(value[start:], start=start):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == in_string:
+                in_string = None
+            continue
+        if char in {"'", '"'}:
+            in_string = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return value[start : index + 1]
+    return value[start:]
+
+
+def _looks_like_malformed_tool_name(value: str) -> bool:
+    if _TOOL_NAME_RE.fullmatch(value):
+        return False
+    return any(fragment in value for fragment in ("arguments", "{", "}", "'", '"', ",", ":"))
 
 
 class AgenticWorkerGroupRunner:
@@ -326,7 +448,11 @@ class AgenticWorkerGroupRunner:
         )
 
         for template in self._templates:
-            if state.instance_results and self._expected_outputs_satisfied(task, state.artifacts):
+            if (
+                state.instance_results
+                and self._expected_outputs_satisfied(task, state.artifacts)
+                and self._can_skip_template(task=task, template=template)
+            ):
                 skipped_templates.append(template.name)
                 self._trace(
                     trace,
@@ -385,28 +511,97 @@ class AgenticWorkerGroupRunner:
                 )
 
         artifacts = self._dedupe_artifacts(state.artifacts)
-        missing = self._missing_expected_outputs(task, artifacts)
+        quality = self._artifact_quality(task, artifacts)
+        self._trace(
+            trace,
+            task=task,
+            event="worker_artifact_quality_checked",
+            status="failed" if quality["missing_count"] or quality["empty_count"] else "completed",
+            details={
+                "expected_count": quality["expected_count"],
+                "missing_count": quality["missing_count"],
+                "empty_count": quality["empty_count"],
+                "synthesized_count": quality["synthesized_count"],
+                "missing_artifacts": quality["missing_artifacts"],
+                "empty_artifacts": quality["empty_artifacts"],
+                "synthesized_artifacts": quality["synthesized_artifacts"],
+            },
+        )
+        missing = list(quality["missing_artifacts"])
         if missing:
             issue = WorkerIssue(
-                issue_type="plan_failure",
-                code="missing_expected_artifacts",
+                issue_type="instance_failure",
+                code="worker_output_contract_miss",
                 message=f"worker group did not produce expected artifacts: {', '.join(missing)}",
                 step_id=task.step_id,
                 worker_type=self.worker_type,
-                retryable=False,
-                metadata={"missing_artifacts": missing},
+                retryable=True,
+                metadata={
+                    "missing_artifacts": missing,
+                    "produced_artifacts": [artifact.id for artifact in artifacts],
+                    "expected_artifacts": list(task.expected_outputs),
+                    "artifact_contract": self._expected_artifact_contract(task),
+                },
             )
             return Result(
                 run_id=task.run_id,
                 producer=self.worker_type,
-                status="needs_replan",
+                status="failed",
                 summary=issue.message,
                 artifacts=artifacts,
                 usage=dict(usage),
                 errors=[issue.message],
                 metadata={
                     "issues": [issue.model_dump(mode="json")],
-                    "recommended_action": "request a plan that produces the missing worker artifacts",
+                    "issue_type": issue.issue_type,
+                    "issue_code": issue.code,
+                    "retryable": issue.retryable,
+                    "recommended_action": "retry the worker with a final-result-only artifact repair contract",
+                    "expected_artifacts": list(task.expected_outputs),
+                    "produced_artifacts": [artifact.id for artifact in artifacts],
+                    "missing_artifacts": missing,
+                    "artifact_contract": self._expected_artifact_contract(task),
+                    "worker_group_results": state.instance_results,
+                    "worker_type": self.worker_type,
+                    "skipped_worker_instances": skipped_templates,
+                    "artifact_quality": quality,
+                },
+            )
+        empty = list(quality["empty_artifacts"])
+        if empty:
+            issue = WorkerIssue(
+                issue_type="instance_failure",
+                code="worker_artifact_content_empty",
+                message=f"worker group produced empty expected artifacts: {', '.join(empty)}",
+                step_id=task.step_id,
+                worker_type=self.worker_type,
+                retryable=True,
+                metadata={
+                    "empty_artifacts": empty,
+                    "produced_artifacts": [artifact.id for artifact in artifacts],
+                    "expected_artifacts": list(task.expected_outputs),
+                    "artifact_contract": self._expected_artifact_contract(task),
+                },
+            )
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="failed",
+                summary=issue.message,
+                artifacts=artifacts,
+                usage=dict(usage),
+                errors=[issue.message],
+                metadata={
+                    "issues": [issue.model_dump(mode="json")],
+                    "issue_type": issue.issue_type,
+                    "issue_code": issue.code,
+                    "retryable": issue.retryable,
+                    "recommended_action": "retry the worker with a final-result-only artifact repair contract",
+                    "expected_artifacts": list(task.expected_outputs),
+                    "produced_artifacts": [artifact.id for artifact in artifacts],
+                    "empty_artifacts": empty,
+                    "artifact_contract": self._expected_artifact_contract(task),
+                    "artifact_quality": quality,
                     "worker_group_results": state.instance_results,
                     "worker_type": self.worker_type,
                     "skipped_worker_instances": skipped_templates,
@@ -435,11 +630,14 @@ class AgenticWorkerGroupRunner:
                 "worker_group_results": state.instance_results,
                 "worker_type": self.worker_type,
                 "skipped_worker_instances": skipped_templates,
+                "artifact_quality": quality,
             },
         )
 
     def _preflight_write_scope(self, task: Task) -> Result | None:
         if not task.permissions.write_files:
+            return None
+        if task.metadata.get("mode") == "bounded_mutation" or task.metadata.get("phase") == "MUTATE":
             return None
         try:
             scope = self._toolbox.validate_write_scope(task)
@@ -581,7 +779,28 @@ class AgenticWorkerGroupRunner:
         total = 0
         for template in self._templates:
             total += 2 if self._template_can_take_tool_turn(template, step.permissions, step.max_tool_calls) else 1
-        return max(1, total)
+        minimum = max(1, total)
+        phase = str(step.phase or "").upper()
+        if self.worker_type == "verify_worker" and step.max_tool_calls > 0 and self._step_can_use_tools(step):
+            minimum = max(minimum, 3)
+        if (
+            self.worker_type in MUTATING_WORKER_TYPES
+            and (phase == "MUTATE" or step.mode == "bounded_mutation")
+            and step.max_tool_calls > 0
+            and step.permissions.write_files
+        ):
+            minimum = max(minimum, 3)
+        return minimum
+
+    def _step_can_use_tools(self, step: PlanStep) -> bool:
+        return any(
+            [
+                step.permissions.read_files,
+                step.permissions.write_files,
+                step.permissions.run_commands,
+                step.permissions.web_research,
+            ]
+        )
 
     def _template_can_take_tool_turn(
         self,
@@ -617,15 +836,24 @@ class AgenticWorkerGroupRunner:
                     retryable=False,
                 )
             if tool_call.tool_name not in template.allowed_tools:
+                code = (
+                    "tool_call_contract_error"
+                    if _looks_like_malformed_tool_name(tool_call.tool_name)
+                    else "tool_not_allowed_for_instance"
+                )
                 return self._issue_result(
                     task=task,
                     template=template,
                     usage=usage,
                     status="failed",
                     issue_type="instance_failure",
-                    code="tool_not_allowed_for_instance",
+                    code=code,
                     message=f"tool {tool_call.tool_name} is not allowed for instance {template.name}",
                     retryable=True,
+                    issue_metadata={
+                        "requested_tool_name": tool_call.tool_name,
+                        "allowed_tools": list(template.allowed_tools),
+                    },
                 )
             usage["tool_calls"] += 1
             self._trace(
@@ -646,6 +874,70 @@ class AgenticWorkerGroupRunner:
                     tool_name=tool_call.tool_name,
                     arguments=tool_call.arguments,
                 )
+            except MutationOperationDeniedError as exc:
+                denial = exc.denial
+                denial_count = state.operation_denials.get(template.name, 0) + 1
+                state.operation_denials[template.name] = denial_count
+                repair_attempts = denial.policy.get("repair_attempts", 1)
+                if not isinstance(repair_attempts, int):
+                    repair_attempts = 1
+                self._trace(
+                    trace,
+                    task=task,
+                    template=template,
+                    event="worker_tool_call_denied",
+                    status="denied",
+                    details={
+                        "tool_name": tool_call.tool_name,
+                        "tool_index": tool_index,
+                        "code": denial.code,
+                        "message": denial.message,
+                        "denial_count": denial_count,
+                        "repair_attempts": repair_attempts,
+                        "rejected_paths": list(denial.rejected_paths),
+                    },
+                )
+                if denial_count > repair_attempts:
+                    return self._issue_result(
+                        task=task,
+                        template=template,
+                        usage=usage,
+                        status="failed",
+                        issue_type="instance_failure",
+                        code="write_operation_denied_after_repair",
+                        message=(
+                            "worker write operation was denied after repair attempts: "
+                            f"{denial.message}"
+                        ),
+                        retryable=True,
+                        issue_metadata={
+                            "denial": denial.model_dump(mode="json"),
+                            "denial_count": denial_count,
+                            "repair_attempts": repair_attempts,
+                        },
+                    )
+                record = {
+                    "instance": template.name,
+                    "tool_name": tool_call.tool_name,
+                    "arguments": tool_call.arguments,
+                    "observation": {
+                        "denied": True,
+                        "denial": denial.model_dump(mode="json"),
+                        "instruction": "Revise the tool call to satisfy write_policy and continue this same task.",
+                    },
+                }
+                state.observations.append(record)
+                state.artifacts.append(
+                    ArtifactPayload(
+                        id=f"{task.step_id}_{template.name}_tool_denial_{len(state.observations)}",
+                        kind="tool_denial",
+                        content=record,
+                        producer=self.worker_type,
+                        step_id=task.step_id,
+                        metadata={"tool_name": tool_call.tool_name, "tool_index": tool_index},
+                    )
+                )
+                return None
             except ToolUnavailableError as exc:
                 self._trace(
                     trace,
@@ -738,7 +1030,35 @@ class AgenticWorkerGroupRunner:
         return None
 
     def _expected_outputs_satisfied(self, task: Task, artifacts: list[ArtifactPayload]) -> bool:
-        return not self._missing_expected_outputs(task, self._dedupe_artifacts(artifacts))
+        quality = self._artifact_quality(task, self._dedupe_artifacts(artifacts))
+        return not quality["missing_artifacts"] and not quality["empty_artifacts"]
+
+    def _can_skip_template(self, *, task: Task, template: WorkerInstanceTemplate) -> bool:
+        if (
+            self.worker_type == "repo_worker"
+            and template.name == "repo_reader"
+            and self._repo_task_needs_reader(task)
+        ):
+            return False
+        return True
+
+    def _repo_task_needs_reader(self, task: Task) -> bool:
+        expected = {artifact_id.lower() for artifact_id in task.expected_outputs}
+        if expected & REPO_READER_REQUIRED_OUTPUT_IDS:
+            return True
+        if task.metadata.get("plan_has_mutation_steps"):
+            return True
+        text = " ".join(
+            str(part or "")
+            for part in (
+                task.instruction,
+                task.metadata.get("objective"),
+                task.metadata.get("strategy"),
+                task.metadata.get("normalized_input"),
+                task.metadata.get("user_goal"),
+            )
+        ).lower()
+        return any(token in text for token in ("bug", "code", "fix", "source", "test"))
 
     def _trace(
         self,
@@ -809,6 +1129,7 @@ class AgenticWorkerGroupRunner:
         message: str,
         retryable: bool,
         recommended_action: str | None = None,
+        issue_metadata: dict[str, Any] | None = None,
     ) -> Result:
         issue = WorkerIssue(
             issue_type=issue_type,
@@ -817,7 +1138,7 @@ class AgenticWorkerGroupRunner:
             step_id=task.step_id,
             worker_type=self.worker_type,
             retryable=retryable,
-            metadata={"worker_instance": template.name},
+            metadata={"worker_instance": template.name, **(issue_metadata or {})},
         )
         metadata: dict[str, Any] = {
             "issues": [issue.model_dump(mode="json")],
@@ -980,7 +1301,7 @@ class AgenticWorkerGroupRunner:
         command_observations = [
             observation
             for observation in state.observations
-            if observation.get("tool_name") == "run_readonly_command"
+            if observation.get("tool_name") in {"run_readonly_command", "run_focused_tests", "run_project_tests"}
             and isinstance(observation.get("observation"), dict)
         ]
         if not command_observations:
@@ -1174,6 +1495,22 @@ class AgenticWorkerGroupRunner:
             available_tools = [
                 tool for tool in self._toolbox.available_tools(task) if _tool_spec_name(tool) in template.allowed_tools
             ]
+        instructions = [
+            "Return JSON matching the schema.",
+            "available_tools are OpenAI-style function tool specs; request only those names.",
+            "For tool use, return {'tool_calls': [{'tool_name': '<name>', 'arguments': {...}}]}.",
+            "OpenAI/OpenRouter function-call shape {'function': {'name': '<name>', 'arguments': '{...}'}} is also accepted.",
+            "A response with tool_calls is an action turn; after observations, return a separate final_result turn.",
+            "Use only listed tools.",
+            "If available_tools is empty or remaining_tool_calls is 0, return final_result from observations or needs_replan.",
+            "Return final_result only when expected artifacts can be produced.",
+            "final_result.artifacts must be objects with id and non-null, non-empty content; never return bare artifact-name strings.",
+            "For planner-level gaps, return {'final_result': {'status': 'needs_replan', 'summary': '<why>', 'issues': [...]}}.",
+            "Use failed with an instance_failure issue for transient model/tool mistakes.",
+        ]
+        runtime_retry_instruction = task.metadata.get("runtime_retry_instruction")
+        if runtime_retry_instruction:
+            instructions.insert(0, str(runtime_retry_instruction))
         payload = {
             "worker_type": self.worker_type,
             "instance": {
@@ -1189,15 +1526,7 @@ class AgenticWorkerGroupRunner:
                 "remaining_model_calls_after_this_turn": max(0, task.max_model_calls - usage["model_calls"]),
             },
             "expected_output_contract": [
-                {
-                    "id": artifact_id,
-                    "required": True,
-                    "artifact_shape": {
-                        "id": artifact_id,
-                        "content": "structured evidence or result payload",
-                        "kind": "short artifact kind",
-                    },
-                }
+                self._artifact_contract(artifact_id)
                 for artifact_id in task.expected_outputs
             ],
             "final_result_example": {
@@ -1217,21 +1546,80 @@ class AgenticWorkerGroupRunner:
             "available_tools": available_tools,
             "group_artifacts": [artifact.model_dump(mode="json") for artifact in state.artifacts],
             "tool_observations": state.observations,
-            "instructions": [
-                "Return JSON matching the schema.",
-                "available_tools are OpenAI-style function tool specs; request only those names.",
-                "For tool use, return {'tool_calls': [{'tool_name': '<name>', 'arguments': {...}}]}.",
-                "OpenAI/OpenRouter function-call shape {'function': {'name': '<name>', 'arguments': '{...}'}} is also accepted.",
-                "A response with tool_calls is an action turn; after observations, return a separate final_result turn.",
-                "Use only listed tools.",
-                "If available_tools is empty or remaining_tool_calls is 0, return final_result from observations or needs_replan.",
-                "Return final_result only when expected artifacts can be produced.",
-                "final_result.artifacts must be objects with id and content; never return bare artifact-name strings.",
-                "For planner-level gaps, return {'final_result': {'status': 'needs_replan', 'summary': '<why>', 'issues': [...]}}.",
-                "Use failed with an instance_failure issue for transient model/tool mistakes.",
-            ],
+            "instructions": instructions,
         }
         return json.dumps(payload, indent=2, sort_keys=True, default=str)
+
+    def _expected_artifact_contract(self, task: Task) -> list[dict[str, Any]]:
+        return [self._artifact_contract(artifact_id) for artifact_id in task.expected_outputs]
+
+    def _artifact_contract(self, artifact_id: str) -> dict[str, Any]:
+        shapes: dict[str, dict[str, Any]] = {
+            "mutation_scope": {
+                "target_paths": ["repo/relative/path"],
+                "create_paths": [],
+                "update_paths": [],
+                "delete_paths": [],
+                "move_pairs": [{"source": "old/path", "destination": "new/path"}],
+                "test_paths": [],
+                "forbidden_paths": [],
+                "forbidden_globs": [],
+                "reason": "why this is the full write boundary",
+                "max_files": 5,
+            },
+            "rollback_plan": {
+                "strategy": "how to reverse or abandon the proposed mutation safely",
+                "preimage_required": True,
+                "affected_paths": [],
+            },
+            "verification_plan": {
+                "checks": [],
+                "commands": [],
+                "expected_outcome": "what proves the work",
+            },
+            "change_design": {
+                "steps": [],
+                "target_behavior": "intended behavior after mutation",
+                "scope_notes": "why this design is bounded",
+            },
+            "fix_design": {
+                "steps": [],
+                "root_cause": "specific behavior to fix",
+                "target_behavior": "intended behavior after mutation",
+            },
+            "change_summary": {
+                "changed_paths": [],
+                "summary": "what changed",
+                "risk_notes": [],
+            },
+            "patch_diff": {
+                "paths": [],
+                "diff": "unified diff or bounded diff summary",
+            },
+            "rollback_patch": {
+                "changed_paths": [],
+                "diff": "reverse patch or rollback instructions",
+            },
+            "verification_results": {
+                "status": "passed|failed",
+                "commands": [],
+                "scope_audit": {},
+            },
+            "test_results": {
+                "status": "passed|failed",
+                "commands": [],
+                "failed_commands": [],
+            },
+        }
+        return {
+            "id": artifact_id,
+            "required": True,
+            "artifact_shape": {
+                "id": artifact_id,
+                "content": shapes.get(artifact_id, "structured evidence or result payload"),
+                "kind": "worker_output",
+            },
+        }
 
     def _missing_expected_outputs(self, task: Task, artifacts: list[ArtifactPayload]) -> list[str]:
         produced = {
@@ -1240,6 +1628,42 @@ class AgenticWorkerGroupRunner:
             if not artifact.metadata.get("worker_returned_bare_artifact_id")
         }
         return [artifact_id for artifact_id in task.expected_outputs if artifact_id not in produced]
+
+    def _artifact_quality(self, task: Task, artifacts: list[ArtifactPayload]) -> dict[str, Any]:
+        by_id = {
+            artifact.id: artifact
+            for artifact in artifacts
+            if not artifact.metadata.get("worker_returned_bare_artifact_id")
+        }
+        missing = [artifact_id for artifact_id in task.expected_outputs if artifact_id not in by_id]
+        empty = [
+            artifact_id
+            for artifact_id in task.expected_outputs
+            if artifact_id in by_id and self._artifact_content_empty(by_id[artifact_id].content)
+        ]
+        synthesized = [
+            artifact_id
+            for artifact_id in task.expected_outputs
+            if artifact_id in by_id and by_id[artifact_id].metadata.get("synthesized_after_model_budget_exhaustion")
+        ]
+        return {
+            "expected_count": len(task.expected_outputs),
+            "missing_count": len(missing),
+            "empty_count": len(empty),
+            "synthesized_count": len(synthesized),
+            "missing_artifacts": missing,
+            "empty_artifacts": empty,
+            "synthesized_artifacts": synthesized,
+        }
+
+    def _artifact_content_empty(self, content: Any) -> bool:
+        if content is None:
+            return True
+        if isinstance(content, str):
+            return not content.strip()
+        if isinstance(content, (list, tuple, set, dict)):
+            return len(content) == 0
+        return False
 
     def _dedupe_artifacts(self, artifacts: list[ArtifactPayload]) -> list[ArtifactPayload]:
         deduped: dict[str, ArtifactPayload] = {}
@@ -1313,7 +1737,7 @@ def _permitted_tool_names(permissions: PermissionSet) -> set[str]:
     if permissions.write_files:
         tools.update(WRITE_TOOL_NAMES)
     if permissions.run_commands:
-        tools.update({"runtime_capabilities", "run_readonly_command", "run_focused_tests"})
+        tools.update({"runtime_capabilities", "run_readonly_command", "run_focused_tests", "run_project_tests"})
     if permissions.web_research:
         tools.update({"web_search", "web_fetch"})
     return tools

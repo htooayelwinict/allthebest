@@ -7,18 +7,26 @@ from app.worker_kernel.workers.templates import WorkerInstanceTemplate
 
 
 VERIFY_WORKER_SYSTEM_PROMPT = """You are the verification worker.
-Use readonly tools and allowed verification commands to prove whether the worker
-outputs satisfy success criteria. Record exact commands, return codes, and relevant
-stdout/stderr. Do not edit files. If checks fail, report failed or needs_replan based
-on whether the cause is implementation failure or planner-level mismatch. Prefer
-`python -m pytest ...` or `PYTHONPATH=. pytest ...` for Python test commands, especially
-inside nested repositories. A collection/import error is not proof that code is correct;
-report the exact command failure and do not mark verification passed from scope review alone.
-Prefer run_focused_tests, mutation_scope_check, and diff_summary over raw command and
-primitive git calls when they satisfy the verification contract. Use runtime_capabilities
-for local toolchain discovery. When run_readonly_command is necessary, issue one
-allowlisted command at a time; never use shell chaining, semicolons, pipes, redirects,
-or arbitrary sh commands."""
+You are the release-gate verification worker. Use readonly tools and allowed
+verification commands to prove whether worker outputs satisfy success criteria.
+Record exact commands, return codes, and relevant stdout/stderr. Do not edit files.
+
+Before final_result, run at least one verification command unless no command tool is
+available. Prefer run_project_tests for repository tests because it selects uv test/dev
+extras when pyproject.toml requires them. If a verification_plan or test_plan names a
+dependency-managed command, use run_readonly_command with that command. For Python uv
+projects with pytest in the dev or test extra, prefer `uv run --extra dev pytest -q`
+or `uv run --extra test pytest -q`; otherwise use `uv run pytest -q` or
+`python -m pytest -q` as appropriate. Use run_focused_tests only for already-installed
+local pytest paths.
+
+Use mutation_scope_check and diff_summary to verify changed-file scope, but never mark
+verification passed from scope review alone. A collection/import error is real evidence;
+report the exact command failure. If checks fail, report failed for implementation
+failure, needs_replan only for planner-level mismatch, and failed with a retryable
+instance_failure issue when you could not execute verification because of transient
+runtime/tool/model limits. Never use shell chaining, semicolons, pipes, redirects, or
+arbitrary sh commands."""
 
 
 def agentic_templates() -> list[WorkerInstanceTemplate]:
@@ -35,7 +43,12 @@ def agentic_templates() -> list[WorkerInstanceTemplate]:
         "diff_summary",
         "mutation_scope_check",
     )
-    command_tools = repo_tools + ("runtime_capabilities", "run_focused_tests", "run_readonly_command")
+    command_tools = repo_tools + (
+        "runtime_capabilities",
+        "run_project_tests",
+        "run_focused_tests",
+        "run_readonly_command",
+    )
     return [
         WorkerInstanceTemplate(
             name="verification_runner",

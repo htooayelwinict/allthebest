@@ -13,6 +13,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tomllib
 import urllib.error
 import urllib.request
 from html import unescape
@@ -24,8 +25,10 @@ from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 from app.schemas import (
     ArtifactPayload,
+    MutationOperationDenial,
     MutationScope,
     Task,
+    WritePolicy,
     extract_repo_path_candidates,
     resolve_mutation_scope_proposal,
 )
@@ -69,6 +72,14 @@ class ToolExecutionError(WorkerToolError):
     code = "tool_execution_error"
 
 
+class MutationOperationDeniedError(WorkerToolError):
+    code = "mutation_operation_denied"
+
+    def __init__(self, denial: MutationOperationDenial) -> None:
+        self.denial = denial
+        super().__init__(denial.message)
+
+
 @dataclass(frozen=True)
 class WorkerToolConfig:
     root_path: Path
@@ -105,11 +116,11 @@ class WorkerToolbox:
         if task.permissions.write_files:
             tools.extend(
                 [
-                    _tool_spec("write_file", "Write a full file inside approved write scope.", "write_files", {"path": "string", "content": "string"}),
-                    _tool_spec("write_many_files", "Write multiple full files inside approved write scope in one atomic preflighted batch.", "write_files", {"files": "file_write_array"}),
-                    _tool_spec("replace_in_file", "Replace one exact text occurrence inside approved write scope.", "write_files", {"path": "string", "old": "string", "new": "string"}),
-                    _tool_spec("move_file", "Move one file when both source and destination are inside approved write scope.", "write_files", {"source": "string", "destination": "string", "overwrite": "boolean"}),
-                    _tool_spec("delete_file", "Delete one file inside approved write scope.", "write_files", {"path": "string"}),
+                    _tool_spec("write_file", "Write a full file inside approved write policy.", "write_files", {"path": "string", "content": "string"}),
+                    _tool_spec("write_many_files", "Write multiple full files inside approved write policy in one atomic preflighted batch.", "write_files", {"files": "file_write_array"}),
+                    _tool_spec("replace_in_file", "Replace one exact text occurrence inside approved write policy.", "write_files", {"path": "string", "old": "string", "new": "string"}),
+                    _tool_spec("move_file", "Move one file when both source and destination are inside approved write policy.", "write_files", {"source": "string", "destination": "string", "overwrite": "boolean"}),
+                    _tool_spec("delete_file", "Delete one file inside approved write policy.", "write_files", {"path": "string"}),
                 ]
             )
         if task.permissions.run_commands:
@@ -118,6 +129,7 @@ class WorkerToolbox:
                     _tool_spec("runtime_capabilities", "Return structured availability/version checks for common local runtimes and package/test tools.", "run_commands", {}),
                     _tool_spec("run_readonly_command", "Run an allowlisted readonly verification command.", "run_commands", {"command": "string_or_string_array"}),
                     _tool_spec("run_focused_tests", "Run pytest for selected repo-relative test paths with PYTHONPATH set to the repo root.", "run_commands", {"paths": "string_or_string_array"}),
+                    _tool_spec("run_project_tests", "Run the repository's pytest command using the detected package manager and dev extras when needed.", "run_commands", {"paths": "string_or_string_array"}),
                 ]
             )
         if task.permissions.web_research:
@@ -132,11 +144,12 @@ class WorkerToolbox:
     def validate_write_scope(self, task: Task) -> dict[str, Any]:
         if not task.permissions.write_files:
             return {"write_scope_paths": [], "forbidden_paths": [], "forbidden_globs": []}
-        allowed = self._allowed_write_paths(task)
-        if not allowed:
+        policy = self._write_policy(task)
+        allowed = self._strict_allowed_write_paths(task, policy)
+        if not allowed and not _is_bounded_mutation_task(task):
             raise ToolUnavailableError("write_files was allowed but no write scope paths were provided")
-        forbidden = self._forbidden_write_paths(task)
-        forbidden_globs = self._forbidden_write_globs(task)
+        forbidden = self._forbidden_write_paths(task, policy)
+        forbidden_globs = self._forbidden_write_globs(task, policy)
         return {
             "write_scope_paths": [self._display_path(path) for path in allowed],
             "forbidden_paths": [self._display_path(path) for path in forbidden],
@@ -204,6 +217,9 @@ class WorkerToolbox:
         if tool_name == "run_focused_tests":
             self._require(task.permissions.run_commands, "run_commands", tool_name)
             return self._run_focused_tests(arguments)
+        if tool_name == "run_project_tests":
+            self._require(task.permissions.run_commands, "run_commands", tool_name)
+            return self._run_project_tests(arguments)
         if tool_name == "web_search":
             self._require(task.permissions.web_research, "web_research", tool_name)
             return self._web_search(arguments)
@@ -337,7 +353,11 @@ class WorkerToolbox:
         return {"path": self._display_path(path), "query": query, "value": value}
 
     def _write_file(self, task: Task, arguments: dict[str, Any]) -> dict[str, Any]:
-        path = self._resolve_write_path(task, str(arguments.get("path") or ""))
+        path = self._preflight_write_operation(
+            task,
+            tool_name="write_file",
+            raw_paths=[str(arguments.get("path") or "")],
+        )[0]
         content = str(arguments.get("content") or "")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -350,13 +370,24 @@ class WorkerToolbox:
         if len(raw_files) > 50:
             raise ToolExecutionError("write_many_files supports at most 50 files per call")
 
-        planned: list[tuple[Path, str]] = []
+        raw_paths: list[str] = []
+        contents: list[str] = []
         for index, item in enumerate(raw_files, start=1):
             if not isinstance(item, dict):
                 raise ToolExecutionError(f"write_many_files item {index} must be an object")
-            path = self._resolve_write_path(task, str(item.get("path") or ""))
-            content = str(item.get("content") or "")
-            planned.append((path, content))
+            raw_paths.append(str(item.get("path") or ""))
+            contents.append(str(item.get("content") or ""))
+        planned = list(
+            zip(
+                self._preflight_write_operation(
+                    task,
+                    tool_name="write_many_files",
+                    raw_paths=raw_paths,
+                ),
+                contents,
+                strict=False,
+            )
+        )
 
         written = []
         for path, content in planned:
@@ -366,36 +397,99 @@ class WorkerToolbox:
         return {"files_written": written, "count": len(written)}
 
     def _replace_in_file(self, task: Task, arguments: dict[str, Any]) -> dict[str, Any]:
-        path = self._resolve_write_path(task, str(arguments.get("path") or ""))
+        path = self._preflight_write_operation(
+            task,
+            tool_name="replace_in_file",
+            raw_paths=[str(arguments.get("path") or "")],
+        )[0]
         old = str(arguments.get("old") or "")
         new = str(arguments.get("new") or "")
         if not old:
             raise ToolExecutionError("replace_in_file requires a non-empty old value")
+        if not path.is_file():
+            self._raise_repairable_write_denial(
+                task=task,
+                tool_name="replace_in_file",
+                code="replace_target_not_file",
+                message=f"replace_in_file target is not a file: {self._display_path(path)}",
+                touched_paths=[self._display_path(path)],
+                rejected_paths=[self._display_path(path)],
+            )
         content = path.read_text(encoding="utf-8")
         if old not in content:
-            raise ToolExecutionError("replace_in_file old value was not found")
+            self._raise_repairable_write_denial(
+                task=task,
+                tool_name="replace_in_file",
+                code="replace_target_text_not_found",
+                message="replace_in_file old value was not found",
+                touched_paths=[self._display_path(path)],
+                rejected_paths=[self._display_path(path)],
+            )
         updated = content.replace(old, new, 1)
         path.write_text(updated, encoding="utf-8")
         return {"path": self._display_path(path), "replacements": 1}
 
     def _move_file(self, task: Task, arguments: dict[str, Any]) -> dict[str, Any]:
-        source = self._resolve_write_path(task, str(arguments.get("source") or ""))
-        destination = self._resolve_write_path(task, str(arguments.get("destination") or ""))
+        source, destination = self._preflight_write_operation(
+            task,
+            tool_name="move_file",
+            raw_paths=[
+                str(arguments.get("source") or ""),
+                str(arguments.get("destination") or ""),
+            ],
+        )
         overwrite = bool(arguments.get("overwrite", False))
+        if source == destination:
+            return {
+                "source": self._display_path(source),
+                "destination": self._display_path(destination),
+                "overwritten": False,
+                "skipped": True,
+                "reason": "source_equals_destination",
+            }
         if not source.is_file():
-            raise ToolExecutionError(f"move_file source is not a file: {self._display_path(source)}")
+            self._raise_repairable_write_denial(
+                task=task,
+                tool_name="move_file",
+                code="move_source_not_file",
+                message=f"move_file source is not a file: {self._display_path(source)}",
+                touched_paths=[self._display_path(source), self._display_path(destination)],
+                rejected_paths=[self._display_path(source)],
+            )
         if destination.exists() and not overwrite:
-            raise ToolExecutionError(f"move_file destination exists: {self._display_path(destination)}")
+            self._raise_repairable_write_denial(
+                task=task,
+                tool_name="move_file",
+                code="move_destination_exists",
+                message=(
+                    f"move_file destination exists: {self._display_path(destination)}. "
+                    "Set overwrite=true only when replacing it is intentional, choose another destination, "
+                    "or skip the move if the destination already satisfies the task."
+                ),
+                touched_paths=[self._display_path(source), self._display_path(destination)],
+                rejected_paths=[self._display_path(destination)],
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
         source.replace(destination)
         return {"source": self._display_path(source), "destination": self._display_path(destination), "overwritten": overwrite}
 
     def _delete_file(self, task: Task, arguments: dict[str, Any]) -> dict[str, Any]:
-        path = self._resolve_write_path(task, str(arguments.get("path") or ""))
+        path = self._preflight_write_operation(
+            task,
+            tool_name="delete_file",
+            raw_paths=[str(arguments.get("path") or "")],
+        )[0]
         if not path.exists():
             return {"path": self._display_path(path), "deleted": False, "reason": "not_found"}
         if not path.is_file():
-            raise ToolExecutionError(f"delete_file path is not a file: {self._display_path(path)}")
+            self._raise_repairable_write_denial(
+                task=task,
+                tool_name="delete_file",
+                code="delete_target_not_file",
+                message=f"delete_file path is not a file: {self._display_path(path)}",
+                touched_paths=[self._display_path(path)],
+                rejected_paths=[self._display_path(path)],
+            )
         path.unlink()
         return {"path": self._display_path(path), "deleted": True}
 
@@ -439,13 +533,26 @@ class WorkerToolbox:
         if not self._is_allowed_readonly_command(command):
             raise ToolPermissionError(f"command is not in the readonly allowlist: {' '.join(command)}")
         command = self._canonical_readonly_command(command)
-        return self._run_checked(command, allowed_returncodes=None, env_overrides=env_overrides)
+        result = self._run_checked(command, allowed_returncodes=None, env_overrides=env_overrides)
+        if command[:2] == ["uv", "run"]:
+            result["detected_command_source"] = self._project_test_command_source(command)
+        return result
 
     def _run_focused_tests(self, arguments: dict[str, Any]) -> dict[str, Any]:
         paths = _string_or_list(arguments.get("paths"))
         safe_paths = [self._display_path(self._resolve_read_path(path)) for path in paths if path]
         command = [sys.executable, "-m", "pytest", *(safe_paths or ["-q"])]
         return self._run_checked(command, allowed_returncodes=None, env_overrides={"PYTHONPATH": "."})
+
+    def _run_project_tests(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        paths = _string_or_list(arguments.get("paths"))
+        safe_paths = [self._display_path(self._resolve_read_path(path)) for path in paths if path]
+        pytest_args = safe_paths or ["-q"]
+        command = self._project_pytest_command(pytest_args)
+        env_overrides = {"PYTHONPATH": "."} if command[0] != "uv" else None
+        result = self._run_checked(command, allowed_returncodes=None, env_overrides=env_overrides)
+        result["detected_command_source"] = self._project_test_command_source(command)
+        return result
 
     def _diff_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
         path = str(arguments.get("path") or "")
@@ -476,7 +583,7 @@ class WorkerToolbox:
                 "forbidden_changes": [],
             }
 
-        targets = set(scope.target_paths)
+        targets = set(scope.write_scope_paths)
         forbidden = set(scope.forbidden_paths)
         forbidden_globs = set(scope.forbidden_globs)
         in_scope = [
@@ -492,6 +599,7 @@ class WorkerToolbox:
         return {
             "scope_available": True,
             "target_paths": scope.target_paths,
+            "write_scope_paths": scope.write_scope_paths,
             "forbidden_paths": scope.forbidden_paths,
             "forbidden_globs": scope.forbidden_globs,
             "changed_files": changed_files,
@@ -740,8 +848,8 @@ class WorkerToolbox:
             return True
         if command[0] == "git" and len(command) >= 2:
             return command[1] in {"status", "diff", "show", "log"}
-        if command[:3] == ["uv", "run", "pytest"]:
-            return True
+        if command[:2] == ["uv", "run"]:
+            return _is_allowed_uv_pytest_command(command[2:])
         if command[0] == "pytest":
             return True
         executable = Path(command[0]).name
@@ -752,7 +860,63 @@ class WorkerToolbox:
     def _canonical_readonly_command(self, command: list[str]) -> list[str]:
         if command and command[0] == "pytest":
             return [sys.executable, "-m", "pytest", *command[1:]]
+        if command[:2] == ["uv", "run"]:
+            return self._canonical_uv_pytest_command(command)
         return command
+
+    def _canonical_uv_pytest_command(self, command: list[str]) -> list[str]:
+        arguments = command[2:]
+        if not _is_allowed_uv_pytest_command(arguments):
+            return command
+        if _uv_arguments_select_extra(arguments):
+            return command
+        pytest_extra = self._pyproject_pytest_extra()
+        if not pytest_extra:
+            return command
+        insert_at = 2 + _uv_run_option_prefix_length(arguments)
+        return [*command[:insert_at], "--extra", pytest_extra, *command[insert_at:]]
+
+    def _project_pytest_command(self, pytest_args: list[str]) -> list[str]:
+        if (self._root / "pyproject.toml").is_file():
+            pytest_extra = self._pyproject_pytest_extra()
+            if pytest_extra:
+                return ["uv", "run", "--extra", pytest_extra, "pytest", *pytest_args]
+            return ["uv", "run", "pytest", *pytest_args]
+        return [sys.executable, "-m", "pytest", *pytest_args]
+
+    def _project_test_command_source(self, command: list[str]) -> str:
+        if command[:2] == ["uv", "run"]:
+            arguments = command[2:]
+            if "--all-extras" in arguments:
+                return "pyproject_all_extras"
+            if "--extra" in arguments:
+                index = arguments.index("--extra")
+                if index + 1 < len(arguments):
+                    return f"pyproject_optional_{arguments[index + 1]}_extra"
+            return "pyproject_uv"
+        return "python_module_pytest"
+
+    def _pyproject_pytest_extra(self) -> str | None:
+        pyproject = self._root / "pyproject.toml"
+        if not pyproject.is_file():
+            return None
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return None
+        optional = data.get("project", {}).get("optional-dependencies", {})
+        if not isinstance(optional, dict):
+            return None
+        extras_with_pytest = [
+            str(extra)
+            for extra, dependencies in optional.items()
+            if isinstance(dependencies, list)
+            and any(str(dependency).split(";", 1)[0].strip().lower().startswith("pytest") for dependency in dependencies)
+        ]
+        for preferred in ("dev", "test", "tests", "testing"):
+            if preferred in extras_with_pytest:
+                return preferred
+        return sorted(extras_with_pytest)[0] if extras_with_pytest else None
 
     def _resolve_read_path(self, raw_path: str) -> Path:
         if not raw_path:
@@ -776,22 +940,141 @@ class WorkerToolbox:
             return normalized[len(prefix) :] or "."
         return normalized
 
-    def _resolve_write_path(self, task: Task, raw_path: str) -> Path:
-        path = self._resolve_read_path(raw_path)
-        scope = self.validate_write_scope(task)
-        allowed = [self._resolve_read_path(raw_path) for raw_path in scope["write_scope_paths"]]
-        if not any(path == allowed_path or path.is_relative_to(allowed_path) for allowed_path in allowed):
-            raise ToolPermissionError(f"write path is outside allowed scope: {self._display_path(path)}")
-        forbidden = [self._resolve_read_path(raw_path) for raw_path in scope["forbidden_paths"]]
-        if any(path == forbidden_path or path.is_relative_to(forbidden_path) for forbidden_path in forbidden):
-            raise ToolPermissionError(f"write path is inside forbidden scope: {self._display_path(path)}")
-        relative_path = self._display_path(path)
-        if any(_matches_repo_glob(relative_path, pattern) for pattern in scope.get("forbidden_globs", [])):
-            raise ToolPermissionError(f"write path is inside forbidden scope: {relative_path}")
-        return path
+    def _preflight_write_operation(self, task: Task, *, tool_name: str, raw_paths: list[str]) -> list[Path]:
+        paths = [self._resolve_read_path(raw_path) for raw_path in raw_paths]
+        display_paths = [self._display_path(path) for path in paths]
+        unique_paths = sorted(set(display_paths))
+        policy = self._write_policy(task)
+        if len(unique_paths) > policy.step_max_files:
+            raise self._operation_denial(
+                task=task,
+                policy=policy,
+                tool_name=tool_name,
+                code="write_operation_too_broad",
+                message=(
+                    f"{tool_name} touches {len(unique_paths)} paths, "
+                    f"exceeding step_max_files={policy.step_max_files}"
+                ),
+                touched_paths=unique_paths,
+                rejected_paths=unique_paths,
+            )
+        if tool_name == "write_many_files" and len(unique_paths) > policy.batch_max_files:
+            raise self._operation_denial(
+                task=task,
+                policy=policy,
+                tool_name=tool_name,
+                code="write_batch_too_broad",
+                message=(
+                    f"write_many_files touches {len(unique_paths)} paths, "
+                    f"exceeding batch_max_files={policy.batch_max_files}"
+                ),
+                touched_paths=unique_paths,
+                rejected_paths=unique_paths,
+            )
 
-    def _allowed_write_paths(self, task: Task) -> list[Path]:
-        raw_paths = list(task.permissions.write_paths)
+        allowed = self._strict_allowed_write_paths(task, policy)
+        if allowed:
+            rejected = [
+                path
+                for path in paths
+                if not any(path == allowed_path or path.is_relative_to(allowed_path) for allowed_path in allowed)
+            ]
+            if rejected:
+                if not _is_bounded_mutation_task(task):
+                    raise ToolPermissionError(
+                        "write path is outside allowed scope: "
+                        + ", ".join(self._display_path(path) for path in rejected)
+                    )
+                raise self._operation_denial(
+                    task=task,
+                    policy=policy,
+                    tool_name=tool_name,
+                    code="write_path_outside_strict_scope",
+                    message=(
+                        f"{tool_name} includes paths outside strict allowed scope: "
+                        f"{', '.join(self._display_path(path) for path in rejected)}"
+                    ),
+                    touched_paths=unique_paths,
+                    rejected_paths=[self._display_path(path) for path in rejected],
+                )
+        elif not _is_bounded_mutation_task(task):
+            raise ToolUnavailableError("write_files was allowed but no write scope paths were provided")
+
+        forbidden = self._forbidden_write_paths(task, policy)
+        rejected_forbidden = [
+            path
+            for path in paths
+            if any(path == forbidden_path or path.is_relative_to(forbidden_path) for forbidden_path in forbidden)
+        ]
+        if rejected_forbidden:
+            raise ToolPermissionError(
+                "write path is inside forbidden scope: "
+                + ", ".join(self._display_path(path) for path in rejected_forbidden)
+            )
+        forbidden_globs = self._forbidden_write_globs(task, policy)
+        rejected_globs = [
+            path for path in paths if any(_matches_repo_glob(self._display_path(path), pattern) for pattern in forbidden_globs)
+        ]
+        if rejected_globs:
+            raise ToolPermissionError(
+                "write path is inside forbidden scope: "
+                + ", ".join(self._display_path(path) for path in rejected_globs)
+            )
+        return paths
+
+    def _operation_denial(
+        self,
+        *,
+        task: Task,
+        policy: WritePolicy,
+        tool_name: str,
+        code: str,
+        message: str,
+        touched_paths: list[str],
+        rejected_paths: list[str],
+    ) -> MutationOperationDeniedError:
+        return MutationOperationDeniedError(
+            MutationOperationDenial(
+                code=code,
+                message=message,
+                tool_name=tool_name,
+                touched_paths=touched_paths,
+                rejected_paths=rejected_paths,
+                repairable=True,
+                policy=policy.model_dump(mode="json"),
+                metadata={
+                    "step_id": task.step_id,
+                    "worker_type": task.worker_type,
+                    "instruction": "Revise the operation to satisfy write_policy. Do not restart analysis.",
+                },
+            )
+        )
+
+    def _raise_repairable_write_denial(
+        self,
+        *,
+        task: Task,
+        tool_name: str,
+        code: str,
+        message: str,
+        touched_paths: list[str],
+        rejected_paths: list[str],
+    ) -> None:
+        if not _is_bounded_mutation_task(task):
+            raise ToolExecutionError(message)
+        raise self._operation_denial(
+            task=task,
+            policy=self._write_policy(task),
+            tool_name=tool_name,
+            code=code,
+            message=message,
+            touched_paths=touched_paths,
+            rejected_paths=rejected_paths,
+        )
+
+    def _strict_allowed_write_paths(self, task: Task, policy: WritePolicy | None = None) -> list[Path]:
+        policy = policy or self._write_policy(task)
+        raw_paths = list(policy.strict_allowed_paths or task.permissions.write_paths)
         artifact_lookup = {artifact.id: artifact for artifact in task.input_artifacts}
         for artifact_id in task.permissions.write_paths_from_artifacts:
             artifact = artifact_lookup.get(artifact_id)
@@ -821,14 +1104,14 @@ class WorkerToolbox:
         write_scope = task.metadata.get("write_scope")
         if isinstance(write_scope, dict):
             try:
-                return resolve_mutation_scope_proposal(write_scope)
+                return self._resolve_scope_for_verification(write_scope)
             except ValueError:
                 return None
         for artifact in task.input_artifacts:
-            if artifact.id != "mutation_scope":
+            if not _is_write_scope_artifact_id(artifact.id):
                 continue
             try:
-                return resolve_mutation_scope_proposal(
+                return self._resolve_scope_for_verification(
                     artifact.content,
                     source_artifact_id=artifact.id,
                 )
@@ -836,8 +1119,44 @@ class WorkerToolbox:
                 return None
         return None
 
-    def _forbidden_write_paths(self, task: Task) -> list[Path]:
-        raw_paths: list[str] = []
+    def _resolve_scope_for_verification(
+        self,
+        value: Any,
+        *,
+        source_artifact_id: str | None = None,
+    ) -> MutationScope:
+        try:
+            return resolve_mutation_scope_proposal(value, source_artifact_id=source_artifact_id)
+        except ValueError as exc:
+            if "exceeding max_files" not in str(exc) or not isinstance(value, dict):
+                raise
+            widened = dict(value)
+            widened["max_files"] = max(25, int(widened.get("max_files") or 1))
+            while True:
+                try:
+                    return resolve_mutation_scope_proposal(widened, source_artifact_id=source_artifact_id)
+                except ValueError as retry_exc:
+                    if "exceeding max_files" not in str(retry_exc) or widened["max_files"] >= 500:
+                        raise retry_exc
+                    widened["max_files"] *= 2
+
+    def _write_policy(self, task: Task) -> WritePolicy:
+        raw_policy = task.metadata.get("write_policy")
+        if isinstance(raw_policy, dict):
+            return WritePolicy.model_validate(raw_policy)
+        raw_paths = list(task.permissions.write_paths)
+        write_scope = task.metadata.get("write_scope")
+        if isinstance(write_scope, dict):
+            raw_paths.extend(str(path) for path in write_scope.get("target_paths") or [])
+        return WritePolicy.model_validate(
+            {
+                "mode": "strict" if raw_paths else "advisory",
+                "strict_allowed_paths": raw_paths,
+            }
+        )
+
+    def _forbidden_write_paths(self, task: Task, policy: WritePolicy | None = None) -> list[Path]:
+        raw_paths: list[str] = list((policy or self._write_policy(task)).forbidden_paths)
         write_scope = task.metadata.get("write_scope")
         if isinstance(write_scope, dict):
             raw_paths.extend(
@@ -853,8 +1172,8 @@ class WorkerToolbox:
                 raise ToolPermissionError(f"invalid forbidden write scope path: {raw_path}") from exc
         return resolved
 
-    def _forbidden_write_globs(self, task: Task) -> list[str]:
-        raw_globs: list[str] = []
+    def _forbidden_write_globs(self, task: Task, policy: WritePolicy | None = None) -> list[str]:
+        raw_globs: list[str] = list((policy or self._write_policy(task)).forbidden_globs)
         write_scope = task.metadata.get("write_scope")
         if isinstance(write_scope, dict):
             raw_globs.extend(str(pattern) for pattern in write_scope.get("forbidden_globs") or [])
@@ -903,6 +1222,10 @@ def _tool_spec(name: str, description: str, permission: str, parameters: dict[st
             "strict": True,
         },
     }
+
+
+def _is_bounded_mutation_task(task: Task) -> bool:
+    return task.metadata.get("mode") == "bounded_mutation" or task.metadata.get("phase") == "MUTATE"
 
 
 def _parameter_schema(value: str) -> dict[str, Any]:
@@ -1032,6 +1355,84 @@ def _contains_shell_control(command: str) -> bool:
     except ValueError:
         return True
     return any(token in {";", "|", "<", ">", ">>", "&"} for token in tokens)
+
+
+def _is_allowed_uv_pytest_command(arguments: list[str]) -> bool:
+    if not arguments:
+        return False
+
+    bool_flags = {
+        "--active",
+        "--all-extras",
+        "--dev",
+        "--frozen",
+        "--locked",
+        "--no-dev",
+        "--no-sync",
+    }
+    value_flags = {
+        "--extra",
+        "--only-extra",
+        "--with",
+        "--with-editable",
+        "--without",
+    }
+
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token in bool_flags:
+            index += 1
+            continue
+        if token in value_flags:
+            if index + 1 >= len(arguments) or arguments[index + 1].startswith("-"):
+                return False
+            index += 2
+            continue
+        break
+
+    if index >= len(arguments):
+        return False
+    executable = Path(arguments[index]).name
+    if executable == "pytest":
+        return True
+    if executable in {"python", "python3"} and arguments[index + 1 : index + 3] == ["-m", "pytest"]:
+        return True
+    return False
+
+
+def _uv_run_option_prefix_length(arguments: list[str]) -> int:
+    bool_flags = {
+        "--active",
+        "--all-extras",
+        "--dev",
+        "--frozen",
+        "--locked",
+        "--no-dev",
+        "--no-sync",
+    }
+    value_flags = {
+        "--extra",
+        "--only-extra",
+        "--with",
+        "--with-editable",
+        "--without",
+    }
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        if token in bool_flags:
+            index += 1
+            continue
+        if token in value_flags and index + 1 < len(arguments):
+            index += 2
+            continue
+        break
+    return index
+
+
+def _uv_arguments_select_extra(arguments: list[str]) -> bool:
+    return any(token in {"--extra", "--only-extra", "--all-extras", "--dev"} for token in arguments)
 
 
 class _DuckDuckGoHTMLParser(HTMLParser):
@@ -1171,3 +1572,10 @@ class _ReadableHTMLExtractor(HTMLParser):
 
 def _clean_text(value: str) -> str:
     return " ".join(unescape(value).split())
+
+
+def _is_write_scope_artifact_id(artifact_id: str) -> bool:
+    normalized = artifact_id.lower()
+    return artifact_id in STRICT_WRITE_SCOPE_ARTIFACT_IDS or any(
+        signal in normalized for signal in STRICT_WRITE_SCOPE_ARTIFACT_IDS
+    )

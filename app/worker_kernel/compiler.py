@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import ValidationError
 
 from app.schemas import (
@@ -12,6 +14,8 @@ from app.schemas import (
     Plan,
     PlanStep,
     Task,
+    WritePolicy,
+    extract_repo_path_candidates,
     resolve_mutation_scope_proposal,
 )
 
@@ -77,6 +81,10 @@ class TaskCompiler:
                     "success_criteria": plan.success_criteria,
                     "plan_id": plan.plan_id,
                     "request_id": plan.request_id,
+                    "plan_has_mutation_steps": any(
+                        candidate.phase == "MUTATE" or candidate.permissions.write_files
+                        for candidate in plan.steps
+                    ),
                 }
             )
         if envelope is not None:
@@ -96,11 +104,20 @@ class TaskCompiler:
 
         permissions = step.permissions
         if step.permissions.write_files:
-            permissions, write_scope = self._resolve_write_scope(
-                step=step,
-                input_artifacts=input_artifacts,
-            )
-            task_metadata["write_scope"] = write_scope.model_dump(mode="json")
+            if _is_bounded_mutation(step):
+                permissions, write_policy, write_scope = self._resolve_mutation_write_policy(
+                    step=step,
+                    input_artifacts=input_artifacts,
+                )
+                task_metadata["write_policy"] = write_policy.model_dump(mode="json")
+                if write_scope is not None:
+                    task_metadata["write_scope"] = write_scope.model_dump(mode="json")
+            else:
+                permissions, write_scope = self._resolve_write_scope(
+                    step=step,
+                    input_artifacts=input_artifacts,
+                )
+                task_metadata["write_scope"] = write_scope.model_dump(mode="json")
 
         return Task(
             task_id=f"task_{step.step_id}",
@@ -115,6 +132,98 @@ class TaskCompiler:
             permissions=permissions,
             metadata=task_metadata,
         )
+
+    def _resolve_mutation_write_policy(
+        self,
+        *,
+        step: PlanStep,
+        input_artifacts: list[ArtifactPayload],
+    ) -> tuple[PermissionSet, WritePolicy, MutationScope | None]:
+        source_artifact_ids: list[str] = []
+        explicit_paths = list(step.permissions.write_paths)
+        artifact_lookup = {artifact.id: artifact for artifact in input_artifacts}
+        scopes: list[MutationScope] = []
+        advisory_paths: list[str] = list(explicit_paths)
+        validation_warnings: list[dict[str, Any]] = []
+
+        for artifact_id in step.permissions.write_paths_from_artifacts:
+            artifact = artifact_lookup.get(artifact_id)
+            if artifact is None:
+                continue
+            try:
+                scope = resolve_mutation_scope_proposal(artifact.content, source_artifact_id=artifact_id)
+            except ValidationError as exc:
+                validation_errors = _json_safe_validation_errors(exc)
+                validation_warnings.append(
+                    {
+                        "artifact_id": artifact_id,
+                        "message": str(validation_errors[0].get("msg") or "invalid write scope artifact"),
+                        "validation_errors": validation_errors,
+                    }
+                )
+                advisory_paths.extend(extract_repo_path_candidates(artifact.content))
+                continue
+            scopes.append(scope)
+            source_artifact_ids.append(artifact_id)
+            advisory_paths.extend(scope.write_scope_paths)
+
+        merged_scope: MutationScope | None = None
+        strict_paths: list[str] = []
+        forbidden_paths: list[str] = []
+        forbidden_globs: list[str] = []
+        if scopes or explicit_paths:
+            try:
+                merged_scope = self._merge_write_scopes(
+                    explicit_paths=explicit_paths,
+                    scopes=scopes,
+                    source_artifact_ids=source_artifact_ids,
+                )
+            except ValidationError as exc:
+                validation_errors = _json_safe_validation_errors(exc)
+                if explicit_paths:
+                    raise InvalidWriteScope(
+                        step_id=step.step_id,
+                        message=f"invalid mutation write scope for step {step.step_id}: {validation_errors[0]['msg']}",
+                        metadata={"validation_errors": validation_errors, "source_artifact_ids": source_artifact_ids},
+                    ) from exc
+                validation_warnings.append(
+                    {
+                        "artifact_id": ",".join(source_artifact_ids),
+                        "message": str(validation_errors[0].get("msg") or "invalid write scope artifact"),
+                        "validation_errors": validation_errors,
+                    }
+                )
+            if merged_scope is not None:
+                strict_paths = merged_scope.write_scope_paths
+                forbidden_paths = list(merged_scope.forbidden_paths)
+                forbidden_globs = list(merged_scope.forbidden_globs)
+                advisory_paths.extend(strict_paths)
+
+        write_policy = WritePolicy.model_validate(
+            {
+                "mode": "strict" if strict_paths else "advisory",
+                "advisory_paths": advisory_paths,
+                "strict_allowed_paths": strict_paths,
+                "forbidden_paths": forbidden_paths,
+                "forbidden_globs": forbidden_globs,
+                "batch_max_files": 6,
+                "step_max_files": 25,
+                "repair_attempts": 1,
+                "validation_warnings": validation_warnings,
+                "metadata": {
+                    "source_artifact_ids": source_artifact_ids,
+                    "write_paths_from_artifacts": list(step.permissions.write_paths_from_artifacts),
+                },
+            }
+        )
+        permissions = PermissionSet.model_validate(
+            {
+                **step.permissions.as_dict(),
+                "write_paths": strict_paths,
+                "write_paths_from_artifacts": [],
+            }
+        )
+        return permissions, write_policy, merged_scope
 
     def _resolve_write_scope(
         self,
@@ -175,6 +284,12 @@ class TaskCompiler:
         source_artifact_ids: list[str],
     ) -> MutationScope:
         target_paths = list(explicit_paths)
+        create_paths: list[str] = []
+        update_paths: list[str] = []
+        delete_paths: list[str] = []
+        manifest_paths: list[str] = []
+        directory_paths: list[str] = []
+        move_pairs: list[dict[str, str]] = []
         test_paths: list[str] = []
         forbidden_paths: list[str] = []
         forbidden_globs: list[str] = []
@@ -182,6 +297,12 @@ class TaskCompiler:
         max_files = len(explicit_paths)
         for scope in scopes:
             target_paths.extend(scope.target_paths)
+            create_paths.extend(scope.create_paths)
+            update_paths.extend(scope.update_paths)
+            delete_paths.extend(scope.delete_paths)
+            manifest_paths.extend(scope.manifest_paths)
+            directory_paths.extend(scope.directory_paths)
+            move_pairs.extend(move.model_dump(mode="json") for move in scope.move_pairs)
             test_paths.extend(scope.test_paths)
             forbidden_paths.extend(scope.forbidden_paths)
             forbidden_globs.extend(scope.forbidden_globs)
@@ -194,6 +315,12 @@ class TaskCompiler:
         return MutationScope.model_validate(
             {
                 "target_paths": target_paths,
+                "create_paths": create_paths,
+                "update_paths": update_paths,
+                "delete_paths": delete_paths,
+                "manifest_paths": manifest_paths,
+                "directory_paths": directory_paths,
+                "move_pairs": move_pairs,
                 "test_paths": test_paths,
                 "forbidden_paths": forbidden_paths,
                 "forbidden_globs": forbidden_globs,
@@ -205,6 +332,10 @@ class TaskCompiler:
                 },
             }
         )
+
+
+def _is_bounded_mutation(step: PlanStep) -> bool:
+    return step.mode == "bounded_mutation" or step.phase == "MUTATE"
 
 
 def _json_safe_validation_errors(exc: ValidationError) -> list[dict[str, object]]:

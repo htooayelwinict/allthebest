@@ -71,7 +71,14 @@ class WorkerKernelRuntime:
         envelope: Envelope | None = None,
         trace: RuntimeMatrixLogger | None = None,
         _replan_depth: int = 0,
+        _initial_artifacts: list[ArtifactPayload] | None = None,
+        _initial_completed_step_ids: list[str] | None = None,
+        _initial_completed_mutation_step_ids: list[str] | None = None,
     ) -> Result:
+        initial_artifacts = self._artifact_store(_initial_artifacts or [])
+        initial_artifact_ids = set(initial_artifacts)
+        initial_completed_step_ids = list(_initial_completed_step_ids or [])
+        initial_completed_mutation_step_ids = list(_initial_completed_mutation_step_ids or [])
         trace = coerce_runtime_matrix(
             trace,
             plan.metadata,
@@ -90,6 +97,8 @@ class WorkerKernelRuntime:
                 "planner": plan.planner,
                 "step_count": len(plan.steps),
                 "replan_depth": _replan_depth,
+                "initial_artifact_count": len(initial_artifacts),
+                "initial_completed_step_count": len(initial_completed_step_ids),
             },
         )
         if control_plane_adjustments:
@@ -105,7 +114,11 @@ class WorkerKernelRuntime:
         try:
             budget_gate = BudgetGate(plan.budget)
             if envelope is not None:
-                self._validator.validate(envelope, plan)
+                self._validator.validate(
+                    envelope,
+                    plan,
+                    initial_artifact_ids=initial_artifact_ids,
+                )
             budget_gate.check_plan(plan)
         except BudgetExceeded as exc:
             self._trace(
@@ -147,12 +160,12 @@ class WorkerKernelRuntime:
             details={"budget": dict(plan.budget)},
         )
 
-        completed_artifacts: dict[str, ArtifactPayload] = {}
+        completed_artifacts: dict[str, ArtifactPayload] = dict(initial_artifacts)
         partial_artifacts: list[ArtifactPayload] = []
         failed_step_artifacts: list[ArtifactPayload] = []
         worker_results: list[Result] = []
-        completed_step_ids: list[str] = []
-        completed_mutation_step_ids: list[str] = []
+        completed_step_ids: list[str] = list(initial_completed_step_ids)
+        completed_mutation_step_ids: list[str] = list(initial_completed_mutation_step_ids)
         issues: list[WorkerIssue] = []
         instance_attempts_used = 0
 
@@ -488,6 +501,7 @@ class WorkerKernelRuntime:
                 worker_runtime_failure = self._is_worker_runtime_owned_failure(
                     result=result,
                     issues=result_issues,
+                    step=step,
                 )
                 self._trace(
                     trace,
@@ -709,7 +723,15 @@ class WorkerKernelRuntime:
     def _is_verification_step(self, step: Any) -> bool:
         return step.phase == "VERIFY" or step.worker_type == "verify_worker"
 
-    def _is_worker_runtime_owned_failure(self, *, result: Result, issues: list[WorkerIssue]) -> bool:
+    def _is_worker_runtime_owned_failure(
+        self,
+        *,
+        result: Result,
+        issues: list[WorkerIssue],
+        step: Any | None = None,
+    ) -> bool:
+        if step is not None and self._verification_failed_before_command(step=step, result=result, issues=issues):
+            return True
         if result.status == "budget_exceeded":
             return True
         if any(issue.issue_type == "instance_failure" and issue.retryable for issue in issues):
@@ -728,10 +750,13 @@ class WorkerKernelRuntime:
             "model_budget_exceeded",
             "model_budget_exhausted_before_final_result",
             "tool_budget_exceeded",
+            "tool_call_contract_error",
             "tool_execution_error",
             "tool_not_allowed_for_instance",
             "tool_permission_denied",
             "tool_unavailable",
+            "worker_output_contract_miss",
+            "worker_artifact_content_empty",
             "worker_llm_error",
             "worker_exception",
         }
@@ -756,8 +781,109 @@ class WorkerKernelRuntime:
             "tool call",
             "worker model call budget",
             "validation errors for workerllmdecision",
+            "worker output contract",
         )
         return any(fragment in text for fragment in runtime_fragments)
+
+    def _verification_failed_before_command(
+        self,
+        *,
+        step: Any,
+        result: Result,
+        issues: list[WorkerIssue],
+    ) -> bool:
+        if not self._is_verification_step(step):
+            return False
+        if result.status not in {"failed", "blocked", "budget_exceeded"}:
+            return False
+        if self._has_verification_command_evidence(result):
+            return False
+
+        text = self._result_issue_text(result=result, issues=issues)
+        no_command_fragments = (
+            "before test execution",
+            "before verification",
+            "could not execute verification",
+            "could not be completed",
+            "did not execute",
+            "no verification command",
+            "not executed",
+            "test execution",
+            "verification command",
+            "verification could not",
+        )
+        budget_fragments = (
+            "budget exhaustion",
+            "budget exhausted",
+            "instance budget",
+            "model budget",
+            "remaining_model_calls",
+            "worker model call budget",
+        )
+        if any(fragment in text for fragment in no_command_fragments):
+            return True
+        if any(fragment in text for fragment in budget_fragments) and not self._has_verification_result_payload(result):
+            return True
+        return False
+
+    def _has_verification_command_evidence(self, result: Result) -> bool:
+        command_tools = {"run_readonly_command", "run_focused_tests", "run_project_tests"}
+        for artifact in result.artifacts:
+            tool_name = artifact.metadata.get("tool_name")
+            if tool_name in command_tools:
+                return True
+            content = artifact.content
+            if isinstance(content, dict):
+                if content.get("tool_name") in command_tools:
+                    return True
+                observation = content.get("observation")
+                if isinstance(observation, dict) and content.get("tool_name") in command_tools:
+                    return True
+                observations = content.get("observations")
+                if isinstance(observations, list):
+                    for item in observations:
+                        if isinstance(item, dict) and item.get("tool_name") in command_tools:
+                            return True
+                commands = content.get("commands")
+                if isinstance(commands, list) and commands:
+                    return True
+        for group_result in result.metadata.get("worker_group_results") or []:
+            if not isinstance(group_result, dict):
+                continue
+            try:
+                nested = Result.model_validate(group_result)
+            except Exception:
+                continue
+            if self._has_verification_command_evidence(nested):
+                return True
+        return False
+
+    def _has_verification_result_payload(self, result: Result) -> bool:
+        for artifact in result.artifacts:
+            content = artifact.content
+            if not isinstance(content, dict):
+                continue
+            if content.get("commands"):
+                return True
+            if content.get("returncode") is not None:
+                return True
+            if content.get("failed_commands"):
+                return True
+        return False
+
+    def _result_issue_text(self, *, result: Result, issues: list[WorkerIssue]) -> str:
+        parts = [
+            result.summary or "",
+            " ".join(result.errors or []),
+            str(result.metadata.get("issue_code") or ""),
+            str(result.metadata.get("recommended_action") or ""),
+        ]
+        for issue in issues:
+            parts.extend([issue.code, issue.message, str(issue.metadata)])
+        for artifact in result.artifacts:
+            if artifact.id in {"test_results", "verification_results", "verification_result"}:
+                parts.append(str(artifact.content))
+        return " ".join(parts).lower()
 
     def _adjust_task_for_local_retry(
         self,
@@ -775,11 +901,16 @@ class WorkerKernelRuntime:
                 " ".join(issue.code for issue in issues),
             ]
         ).lower()
+        verification_retry = (
+            task.worker_type == "verify_worker"
+            or str(task.metadata.get("phase") or "").upper() == "VERIFY"
+        ) and not self._has_verification_command_evidence(result)
 
         max_tool_calls = task.max_tool_calls
         if (
             "tool" in text
             or "remaining_tool_calls" in text
+            or verification_retry
             or int(usage.get("tool_calls", 0) or 0) >= task.max_tool_calls
         ):
             max_tool_calls = max(task.max_tool_calls + 2, task.max_tool_calls * 2, 2)
@@ -796,7 +927,11 @@ class WorkerKernelRuntime:
         if (
             "model" in text
             or "final" in text
+            or "budget" in text
+            or "worker_artifact_content_empty" in text
+            or "worker_output_contract_miss" in text
             or "workerllmdecision" in text
+            or verification_retry
             or int(usage.get("model_calls", 0) or 0) >= task.max_model_calls
         ):
             max_model_calls = max(task.max_model_calls + 1, task.max_model_calls * 2, 2)
@@ -817,6 +952,36 @@ class WorkerKernelRuntime:
             return task.model_copy(update={"metadata": metadata}), []
 
         metadata = dict(task.metadata)
+        if verification_retry:
+            metadata["force_verification_command_first"] = True
+            metadata["verification_retry_reason"] = "verification_failed_before_command"
+            metadata["runtime_retry_instruction"] = (
+                "This is a replacement VERIFY instance. Run run_project_tests or an "
+                "explicit verification_plan command before final_result; do not spend "
+                "turns on capability discovery unless command selection is impossible."
+            )
+        elif (
+            "worker_output_contract_miss" in text
+            or "worker_artifact_content_empty" in text
+            or "missing expected artifacts" in text
+            or "empty expected artifacts" in text
+        ):
+            metadata["force_final_result_artifacts"] = True
+            metadata["runtime_retry_instruction"] = (
+                "This is a replacement worker instance after an output artifact quality failure. "
+                "Do not call tools unless essential. Return final_result with every "
+                "expected artifact id exactly once. Each artifact content must be "
+                "non-null and non-empty, using the expected_output_contract schemas "
+                "and concrete content from input artifacts and observations."
+            )
+        elif "tool_call_contract_error" in text or "tool_not_allowed_for_instance" in text:
+            metadata["force_strict_tool_call_shape"] = True
+            metadata["runtime_retry_instruction"] = (
+                "This is a replacement worker instance after a malformed or disallowed "
+                "tool-call envelope. Use only exact names from available_tools. If you "
+                "need a tool, return JSON exactly as {'tool_calls':[{'tool_name':'name',"
+                "'arguments':{...}}]}; otherwise return final_result."
+            )
         retries = list(metadata.get("local_retry_adjustments") or [])
         retries.extend(adjustments)
         metadata["local_retry_adjustments"] = retries
@@ -1026,16 +1191,24 @@ class WorkerKernelRuntime:
             replan_request=replan_request,
             trace=trace,
         )
+        carryover_artifacts = list(completed_artifacts.values())
         replacement_result = self.run(
             replacement_plan,
             envelope=envelope,
             trace=trace,
             _replan_depth=replan_depth + 1,
+            _initial_artifacts=carryover_artifacts,
+            _initial_completed_step_ids=list(completed_step_ids),
+            _initial_completed_mutation_step_ids=self._completed_mutation_step_ids(
+                plan=plan,
+                completed_step_ids=completed_step_ids,
+            ),
         )
         metadata = dict(replacement_result.metadata)
         metadata["replan"] = {
             "request": replan_request.model_dump(mode="json"),
             "replacement_plan": replacement_plan.model_dump(mode="json"),
+            "carryover_artifacts": [artifact.model_dump(mode="json") for artifact in carryover_artifacts],
             "original_worker_results": [r.model_dump(mode="json") for r in worker_results],
             "original_issues": [issue.model_dump(mode="json") for issue in issues],
             "partial_artifacts": [artifact.model_dump(mode="json") for artifact in partial_artifacts],
@@ -1076,6 +1249,7 @@ class WorkerKernelRuntime:
         if result.errors:
             reason = f"{reason}: {'; '.join(result.errors)}"
 
+        completed = list(completed_artifacts.values())
         return ReplanRequest(
             request_id=plan.request_id,
             plan_id=plan.plan_id,
@@ -1083,7 +1257,8 @@ class WorkerKernelRuntime:
             failed_step_id=failed_step_id,
             reason=reason,
             worker_result=result.model_dump(mode="json"),
-            completed_artifacts=list(completed_artifacts.values()),
+            completed_artifacts=completed,
+            carryover_artifacts=completed,
             completed_step_ids=list(completed_step_ids),
             remaining_budget={
                 "max_tool_calls": max(0, budget_gate.max_tool_calls - budget_gate.tool_calls_used),
@@ -1097,7 +1272,94 @@ class WorkerKernelRuntime:
             issues=issues,
             partial_artifacts=partial_artifacts,
             failed_step_artifacts=failed_step_artifacts,
+            failed_step=self._failed_step_payload(plan=plan, failed_step_id=failed_step_id),
+            failure_observation=self._failure_observation(result),
         )
+
+    def _artifact_store(self, artifacts: list[ArtifactPayload]) -> dict[str, ArtifactPayload]:
+        store: dict[str, ArtifactPayload] = {}
+        for artifact in artifacts:
+            normalized = ArtifactPayload.model_validate(artifact)
+            store[normalized.id] = normalized
+        return store
+
+    def _completed_mutation_step_ids(self, *, plan: Plan, completed_step_ids: list[str]) -> list[str]:
+        completed = set(completed_step_ids)
+        return [step.step_id for step in plan.steps if step.step_id in completed and self._is_mutation_step(step)]
+
+    def _failed_step_payload(self, *, plan: Plan, failed_step_id: str) -> dict[str, Any]:
+        for step in plan.steps:
+            if step.step_id == failed_step_id:
+                return step.model_dump(mode="json")
+        return {}
+
+    def _failure_observation(self, result: Result) -> dict[str, Any]:
+        observations = []
+        for artifact in result.artifacts:
+            content = artifact.content if isinstance(artifact.content, dict) else {}
+            if artifact.kind != "tool_observation" and not content.get("tool_name"):
+                continue
+            observation = content.get("observation") if isinstance(content.get("observation"), dict) else {}
+            observations.append(
+                {
+                    "artifact_id": artifact.id,
+                    "tool_name": content.get("tool_name"),
+                    "command": observation.get("command"),
+                    "returncode": observation.get("returncode"),
+                    "stdout_tail": str(observation.get("stdout") or "")[-2000:],
+                    "stderr_tail": str(observation.get("stderr") or "")[-2000:],
+                }
+            )
+        return {
+            "status": result.status,
+            "summary": result.summary,
+            "errors": list(result.errors),
+            "warnings": list(result.warnings),
+            "usage": dict(result.usage),
+            "artifact_ids": [artifact.id for artifact in result.artifacts],
+            "tool_observations": observations,
+            "issue_codes": [
+                issue.get("code")
+                for issue in result.metadata.get("issues", [])
+                if isinstance(issue, dict) and issue.get("code")
+            ],
+            "expected_artifacts": result.metadata.get("expected_artifacts") or [],
+            "produced_artifacts": result.metadata.get("produced_artifacts")
+            or [artifact.id for artifact in result.artifacts],
+            "missing_artifacts": result.metadata.get("missing_artifacts") or [],
+            "artifact_contract": result.metadata.get("artifact_contract") or [],
+            "worker_group_results": self._compact_worker_group_results(
+                result.metadata.get("worker_group_results") or []
+            ),
+        }
+
+    def _compact_worker_group_results(self, worker_group_results: Any) -> list[dict[str, Any]]:
+        compact: list[dict[str, Any]] = []
+        if not isinstance(worker_group_results, list):
+            return compact
+        for item in worker_group_results:
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            compact.append(
+                {
+                    "status": item.get("status"),
+                    "summary": item.get("summary"),
+                    "producer": item.get("producer"),
+                    "usage": item.get("usage"),
+                    "artifact_ids": [
+                        artifact.get("id")
+                        for artifact in item.get("artifacts", [])
+                        if isinstance(artifact, dict)
+                    ],
+                    "issue_codes": [
+                        issue.get("code")
+                        for issue in metadata.get("issues", [])
+                        if isinstance(issue, dict) and issue.get("code")
+                    ],
+                }
+            )
+        return compact
 
     def _recommended_action(self, result: Result) -> str | None:
         value = (result.metadata or {}).get("recommended_action")
@@ -1198,10 +1460,43 @@ class WorkerKernelRuntime:
             ],
             "retry_count": budget_gate.retries_used,
             "instance_attempts_used": instance_attempts_used,
+            "artifact_quality": self._aggregate_artifact_quality(worker_results),
         }
         if extra:
             metadata.update(extra)
         return metadata
+
+    def _aggregate_artifact_quality(self, worker_results: list[Result]) -> dict[str, Any]:
+        aggregate: dict[str, Any] = {
+            "expected_count": 0,
+            "missing_count": 0,
+            "empty_count": 0,
+            "synthesized_count": 0,
+            "missing_artifacts": [],
+            "empty_artifacts": [],
+            "synthesized_artifacts": [],
+            "steps": [],
+        }
+        for result in worker_results:
+            quality = result.metadata.get("artifact_quality")
+            if not isinstance(quality, dict):
+                continue
+            aggregate["expected_count"] += int(quality.get("expected_count", 0) or 0)
+            aggregate["missing_count"] += int(quality.get("missing_count", 0) or 0)
+            aggregate["empty_count"] += int(quality.get("empty_count", 0) or 0)
+            aggregate["synthesized_count"] += int(quality.get("synthesized_count", 0) or 0)
+            for key in ("missing_artifacts", "empty_artifacts", "synthesized_artifacts"):
+                values = quality.get(key)
+                if isinstance(values, list):
+                    aggregate[key].extend(str(value) for value in values)
+            aggregate["steps"].append(
+                {
+                    "producer": result.producer,
+                    "status": result.status,
+                    **quality,
+                }
+            )
+        return aggregate
 
     def _planner_replan(
         self,

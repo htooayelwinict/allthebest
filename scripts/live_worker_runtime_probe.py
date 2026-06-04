@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -36,9 +37,9 @@ WEBHOOK_FULFILLMENT_PROMPT = (
 FILE_WORKSPACE_MANAGEMENT_PROMPT = (
     "In the repo rooted at live_worker_workspace_repo, clean up the workspace "
     "layout for a release prep. Move markdown notes from notes/drafts, notes/raw, "
-    "and tmp into docs while preserving file contents; move logs and json artifacts "
-    "from artifacts/tmp and misc to artifacts/logs; create/update docs/workspace_manifest.json "
-    "listing moved_documents, moved_logs, and moved_json_artifacts with the final relative paths. "
+    "reports, and tmp into docs while preserving file contents; move logs and json artifacts "
+    "from artifacts/tmp and misc into artifacts/logs; create/update docs/workspace_manifest.json "
+    "listing moved_documents, moved_logs, and moved_json_artifacts as file names, plus total_artifacts. "
     "Keep edits limited to file moves/creation and leave source code untouched. "
     "Run tests, then summarize exactly what you moved and any risk of data loss."
 )
@@ -267,6 +268,7 @@ def _ensure_mock_repo(repo_path: Path, *, scenario: str) -> None:
         _ensure_greenfield_repo(repo_path)
         return
 
+    _reset_seeded_probe_repo(repo_path)
     (repo_path / "src").mkdir(parents=True, exist_ok=True)
     (repo_path / "tests").mkdir(parents=True, exist_ok=True)
     _remove_generated_runtime_dirs(repo_path)
@@ -316,9 +318,7 @@ def test_retries_reuse_same_idempotency_key() -> None:
 ''',
         encoding="utf-8",
     )
-    if not (repo_path / ".git").exists():
-        subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
+    _ensure_probe_git_baseline(repo_path)
 
 
 def _ensure_greenfield_repo(repo_path: Path) -> None:
@@ -343,6 +343,7 @@ def _ensure_greenfield_repo(repo_path: Path) -> None:
 
 
 def _ensure_webhook_fulfillment_repo(repo_path: Path) -> None:
+    _reset_seeded_probe_repo(repo_path)
     (repo_path / "src" / "fulfillment").mkdir(parents=True, exist_ok=True)
     (repo_path / "tests").mkdir(parents=True, exist_ok=True)
     _remove_generated_runtime_dirs(repo_path)
@@ -522,12 +523,11 @@ def test_failed_event_is_not_marked_processed_before_retry() -> None:
 ''',
         encoding="utf-8",
     )
-    if not (repo_path / ".git").exists():
-        subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
+    _ensure_probe_git_baseline(repo_path)
 
 
 def _ensure_file_workspace_repo(repo_path: Path) -> None:
+    _reset_seeded_probe_repo(repo_path)
     _remove_generated_runtime_dirs(repo_path)
 
     (repo_path / "notes" / "drafts").mkdir(parents=True, exist_ok=True)
@@ -621,9 +621,51 @@ def test_workspace_manifest_lists_moved_artifacts() -> None:
         ,
         encoding="utf-8",
     )
+    _ensure_probe_git_baseline(repo_path)
+
+
+def _reset_seeded_probe_repo(repo_path: Path) -> None:
+    repo_path.mkdir(parents=True, exist_ok=True)
+    children = list(repo_path.iterdir())
+    if not children:
+        return
+    if not repo_path.name.startswith("live_worker_"):
+        raise SystemExit(
+            f"refusing to refresh non-probe repo {repo_path}; use a live_worker_* repo name for seeded scenarios"
+        )
+    for child in children:
+        if child.name == ".git":
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def _ensure_probe_git_baseline(repo_path: Path) -> None:
     if not (repo_path / ".git").exists():
         subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "add", "."], cwd=repo_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo_path, check=True, capture_output=True, text=True)
+    status = subprocess.run(["git", "status", "--short"], cwd=repo_path, capture_output=True, text=True, check=True)
+    if not status.stdout.strip():
+        return
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Live Worker Probe",
+            "-c",
+            "user.email=live-worker-probe@example.invalid",
+            "commit",
+            "-m",
+            "seed live worker probe repo",
+            "--no-verify",
+        ],
+        cwd=repo_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _remove_generated_runtime_dirs(repo_path: Path) -> None:
@@ -653,6 +695,9 @@ def _run_pytest(repo_path: Path, label: str) -> dict[str, object]:
     command = [sys.executable, "-m", "pytest", "-q"]
     if (repo_path / "pyproject.toml").exists():
         command = ["uv", "run", "pytest", "-q"]
+        pytest_extra = _pyproject_pytest_extra(repo_path)
+        if pytest_extra:
+            command = ["uv", "run", "--extra", pytest_extra, "pytest", "-q"]
     completed = subprocess.run(
         command,
         cwd=repo_path,
@@ -667,6 +712,29 @@ def _run_pytest(repo_path: Path, label: str) -> dict[str, object]:
         "stdout": completed.stdout,
         "stderr": completed.stderr,
     }
+
+
+def _pyproject_pytest_extra(repo_path: Path) -> str | None:
+    pyproject = repo_path / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    optional = data.get("project", {}).get("optional-dependencies", {})
+    if not isinstance(optional, dict):
+        return None
+    extras_with_pytest = [
+        str(extra)
+        for extra, dependencies in optional.items()
+        if isinstance(dependencies, list)
+        and any(str(dependency).split(";", 1)[0].strip().lower().startswith("pytest") for dependency in dependencies)
+    ]
+    for preferred in ("dev", "test", "tests", "testing"):
+        if preferred in extras_with_pytest:
+            return preferred
+    return sorted(extras_with_pytest)[0] if extras_with_pytest else None
 
 
 def _run(command: list[str], *, cwd: Path) -> dict[str, object]:

@@ -16,7 +16,13 @@ from app.worker_kernel.agentic import (
 )
 from app.worker_kernel.env_config import build_worker_model_client, load_worker_runtime_config
 from app.worker_kernel.runtime import WorkerKernelRuntime
-from app.worker_kernel.tools import ToolPermissionError, WorkerToolConfig, WorkerToolbox
+from app.worker_kernel.tools import (
+    ToolExecutionError,
+    ToolPermissionError,
+    WorkerToolConfig,
+    WorkerToolbox,
+    _is_allowed_uv_pytest_command,
+)
 from app.worker_kernel.workers.agentic_templates import get_agentic_worker_templates
 
 
@@ -165,6 +171,16 @@ def test_filesystem_worker_template_exposes_scoped_file_tools() -> None:
     assert "shell chaining" in templates[0].system_prompt
     assert "hatchling" in templates[0].system_prompt
     assert 'packages = ["app"]' in templates[0].system_prompt
+
+
+def test_verify_worker_template_exposes_project_test_tool() -> None:
+    templates = get_agentic_worker_templates()["verify_worker"]
+
+    assert [template.name for template in templates] == ["verification_runner"]
+    assert "run_project_tests" in templates[0].allowed_tools
+    assert "release-gate verification worker" in templates[0].system_prompt
+    assert "uv run --extra dev pytest -q" in templates[0].system_prompt
+    assert "uv run --extra test pytest -q" in templates[0].system_prompt
 
 
 def test_worker_decision_normalizes_implementation_failure_issue_type() -> None:
@@ -574,6 +590,67 @@ def test_toolbox_runtime_capabilities_is_structured_command_tool(tmp_path: Path)
     assert result["capabilities"]["pytest"]["command"][1:3] == ["-m", "pytest"]
 
 
+def test_toolbox_project_tests_selects_uv_pytest_extra_when_pytest_is_optional(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "sample"
+version = "0.1.0"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+""",
+        encoding="utf-8",
+    )
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+
+    assert toolbox._project_pytest_command(["-q"]) == ["uv", "run", "--extra", "dev", "pytest", "-q"]
+    assert _is_allowed_uv_pytest_command(["--extra", "dev", "pytest", "-q"]) is True
+    assert _is_allowed_uv_pytest_command(["--all-extras", "python", "-m", "pytest", "-q"]) is True
+    assert _is_allowed_uv_pytest_command(["--directory", "/tmp", "pytest", "-q"]) is False
+
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "sample"
+version = "0.1.0"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest", "httpx"]
+""",
+        encoding="utf-8",
+    )
+    assert toolbox._project_pytest_command(["-q"]) == ["uv", "run", "--extra", "test", "pytest", "-q"]
+    assert toolbox._canonical_readonly_command(["uv", "run", "pytest", "tests/", "-v"]) == [
+        "uv",
+        "run",
+        "--extra",
+        "test",
+        "pytest",
+        "tests/",
+        "-v",
+    ]
+    assert toolbox._canonical_readonly_command(["uv", "run", "--locked", "pytest", "-q"]) == [
+        "uv",
+        "run",
+        "--locked",
+        "--extra",
+        "test",
+        "pytest",
+        "-q",
+    ]
+    assert toolbox._canonical_readonly_command(["uv", "run", "--extra", "dev", "pytest", "-q"]) == [
+        "uv",
+        "run",
+        "--extra",
+        "dev",
+        "pytest",
+        "-q",
+    ]
+
+
 def test_toolbox_batch_write_move_and_delete_are_scoped(tmp_path: Path) -> None:
     (tmp_path / "docs").mkdir()
     (tmp_path / "staging").mkdir()
@@ -663,6 +740,93 @@ def test_diff_summary_and_scope_check_include_untracked_new_files(tmp_path: Path
     assert scope["in_scope"] == ["src/app.py"]
 
 
+def test_mutation_scope_check_accepts_rehydrated_scope_artifact_id(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("value = 1\n", encoding="utf-8")
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        permissions={
+            "read_files": True,
+            "write_files": False,
+            "run_commands": False,
+            "web_research": False,
+        },
+    ).model_copy(
+        update={
+            "input_artifacts": [
+                ArtifactPayload(
+                    id="rehydrated_mutation_scope",
+                    content={"target_paths": ["src/app.py"], "reason": "replan recovered scope", "max_files": 1},
+                )
+            ]
+        }
+    )
+
+    scope = toolbox.execute(task=task, tool_name="mutation_scope_check", arguments={})
+
+    assert scope["scope_available"] is True
+    assert scope["passed"] is True
+    assert scope["in_scope"] == ["src/app.py"]
+
+
+def test_mutation_scope_check_uses_move_endpoints_even_when_max_files_hint_is_low(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "notes" / "drafts").mkdir(parents=True)
+    source = tmp_path / "notes" / "drafts" / "task.md"
+    source.write_text("notes\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "seed",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (tmp_path / "docs").mkdir()
+    source.replace(tmp_path / "docs" / "task.md")
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        permissions={
+            "read_files": True,
+            "write_files": False,
+            "run_commands": False,
+            "web_research": False,
+        },
+    ).model_copy(
+        update={
+            "input_artifacts": [
+                ArtifactPayload(
+                    id="mutation_scope",
+                    content={
+                        "move_pairs": [
+                            {"source": "notes/drafts/task.md", "destination": "docs/task.md"},
+                        ],
+                        "reason": "move notes into docs",
+                        "max_files": 1,
+                    },
+                )
+            ]
+        }
+    )
+
+    scope = toolbox.execute(task=task, tool_name="mutation_scope_check", arguments={})
+
+    assert scope["scope_available"] is True
+    assert scope["passed"] is True
+    assert scope["out_of_scope"] == []
+    assert set(scope["write_scope_paths"]) >= {"notes/drafts/task.md", "docs/task.md"}
+
+
 def test_toolbox_extracts_nested_write_scope_paths_from_artifacts(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     target = tmp_path / "src" / "checkout.py"
@@ -725,6 +889,72 @@ def test_mutation_scope_accepts_structured_target_paths() -> None:
     assert scope.write_scope_paths == ["src/fulfillment/events.py"]
 
 
+def test_mutation_scope_accepts_write_paths_alias() -> None:
+    scope = MutationScope.model_validate(
+        {
+            "write_paths": ["pyproject.toml", "app/main.py", "tests/test_api.py"],
+            "reason": "greenfield scaffold write set",
+        }
+    )
+
+    assert scope.target_paths == ["pyproject.toml", "app/main.py", "tests/test_api.py"]
+    assert scope.write_scope_paths == ["pyproject.toml", "app/main.py", "tests/test_api.py"]
+
+
+def test_mutation_scope_move_pairs_authorize_source_and_destination(tmp_path: Path) -> None:
+    (tmp_path / "artifacts" / "tmp").mkdir(parents=True)
+    (tmp_path / "artifacts" / "logs").mkdir(parents=True)
+    source = tmp_path / "artifacts" / "tmp" / "error_dump.json"
+    source.write_text('{"error": true}\n', encoding="utf-8")
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        worker_type="filesystem_worker",
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths_from_artifacts": ["mutation_scope"],
+        },
+    ).model_copy(
+        update={
+            "input_artifacts": [
+                ArtifactPayload(
+                    id="mutation_scope",
+                    content={
+                        "moves": [
+                            {
+                                "source": "artifacts/tmp/error_dump.json",
+                                "destination": "artifacts/logs/error_dump.json",
+                            }
+                        ],
+                        "reason": "workspace cleanup moves generated artifacts into logs",
+                        "max_files": 2,
+                    },
+                )
+            ]
+        }
+    )
+
+    scope = resolve_mutation_scope_proposal(task.input_artifacts[0].content)
+    result = toolbox.execute(
+        task=task,
+        tool_name="move_file",
+        arguments={
+            "source": "artifacts/tmp/error_dump.json",
+            "destination": "artifacts/logs/error_dump.json",
+        },
+    )
+
+    assert set(scope.write_scope_paths) == {
+        "artifacts/tmp/error_dump.json",
+        "artifacts/logs/error_dump.json",
+    }
+    assert result["destination"] == "artifacts/logs/error_dump.json"
+    assert not source.exists()
+    assert (tmp_path / "artifacts" / "logs" / "error_dump.json").is_file()
+
+
 def test_mutation_scope_normalizes_forbidden_globs() -> None:
     scope = MutationScope.model_validate(
         {
@@ -774,7 +1004,7 @@ def test_mutation_scope_rejects_too_many_files() -> None:
         )
 
 
-def test_mutation_scope_extracts_move_destinations_and_skips_manifest_noise() -> None:
+def test_mutation_scope_extracts_move_endpoints_and_skips_manifest_noise() -> None:
     scope = MutationScope.model_validate(
         {
             "moves": [
@@ -792,10 +1022,12 @@ def test_mutation_scope_extracts_move_destinations_and_skips_manifest_noise() ->
 
     assert scope.target_paths == [
         "docs/task_notes.md",
+        "notes/drafts/task_notes.md",
         "docs/tmp_report.md",
+        "tmp/tmp_report.md",
         "docs/workspace_manifest.json",
     ]
-    assert scope.max_files == 3
+    assert scope.max_files == 5
 
 
 def test_mutation_scope_extracts_operation_paths_for_greenfield_scaffold() -> None:
@@ -1046,6 +1278,336 @@ def test_agentic_group_blocks_missing_write_scope_before_model_call(tmp_path: Pa
     assert client.prompts == []
 
 
+def test_bounded_mutation_denial_observation_allows_repaired_write(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_many_files",
+                        "arguments": {
+                            "files": [
+                                {"path": "src/a.py", "content": "A\n"},
+                                {"path": "src/b.py", "content": "B\n"},
+                            ]
+                        },
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_file",
+                        "arguments": {"path": "src/a.py", "content": "A\n"},
+                    }
+                ]
+            },
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "wrote narrowed file",
+                    "artifacts": [{"id": "change_summary", "content": "wrote src/a.py"}],
+                }
+            },
+        ]
+    )
+    trace = RuntimeMatrixLogger()
+    runner = AgenticWorkerGroupRunner(
+        worker_type="filesystem_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="filesystem_operator",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("write_many_files", "write_file"),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="filesystem_worker",
+        expected_outputs=["change_summary"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+        },
+        max_tool_calls=3,
+        max_model_calls=3,
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "write_policy": {"batch_max_files": 1, "step_max_files": 5, "repair_attempts": 1},
+            }
+        }
+    )
+
+    result = runner.run(task, trace=trace)
+
+    assert result.status == "completed"
+    assert (tmp_path / "src" / "a.py").read_text(encoding="utf-8") == "A\n"
+    assert not (tmp_path / "src" / "b.py").exists()
+    assert any(row["event"] == "worker_tool_call_denied" for row in trace.snapshot()["rows"])
+    assert "denied" in client.prompts[1]
+
+
+def test_bounded_mutation_strict_scope_denial_can_be_repaired(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "allowed.py").write_text("value = 'old'\n", encoding="utf-8")
+    (tmp_path / "src" / "denied.py").write_text("value = 'old'\n", encoding="utf-8")
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "replace_in_file",
+                        "arguments": {"path": "src/denied.py", "old": "old", "new": "new"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "replace_in_file",
+                        "arguments": {"path": "src/allowed.py", "old": "old", "new": "new"},
+                    }
+                ]
+            },
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "repaired strict scope",
+                    "artifacts": [{"id": "change_summary", "content": "updated allowed file"}],
+                }
+            },
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="code_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="code_agent",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("replace_in_file",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="code_worker",
+        expected_outputs=["change_summary"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+        },
+        max_tool_calls=2,
+        max_model_calls=3,
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "write_policy": {
+                    "strict_allowed_paths": ["src/allowed.py"],
+                    "repair_attempts": 1,
+                },
+            }
+        }
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "completed"
+    assert (tmp_path / "src" / "allowed.py").read_text(encoding="utf-8") == "value = 'new'\n"
+    assert (tmp_path / "src" / "denied.py").read_text(encoding="utf-8") == "value = 'old'\n"
+
+
+def test_bounded_mutation_move_destination_exists_can_be_repaired(tmp_path: Path) -> None:
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "notes" / "task.md").write_text("new\n", encoding="utf-8")
+    (tmp_path / "docs" / "task.md").write_text("old\n", encoding="utf-8")
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "move_file",
+                        "arguments": {"source": "notes/task.md", "destination": "docs/task.md"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "move_file",
+                        "arguments": {"source": "notes/task.md", "destination": "docs/task.md", "overwrite": True},
+                    }
+                ]
+            },
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "moved with explicit overwrite",
+                    "artifacts": [{"id": "change_summary", "content": "moved docs/task.md"}],
+                }
+            },
+        ]
+    )
+    trace = RuntimeMatrixLogger()
+    runner = AgenticWorkerGroupRunner(
+        worker_type="filesystem_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="filesystem_operator",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("move_file",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="filesystem_worker",
+        expected_outputs=["change_summary"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+        },
+        max_tool_calls=2,
+        max_model_calls=3,
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "write_policy": {"repair_attempts": 1},
+            }
+        }
+    )
+
+    result = runner.run(task, trace=trace)
+
+    assert result.status == "completed"
+    assert (tmp_path / "docs" / "task.md").read_text(encoding="utf-8") == "new\n"
+    assert not (tmp_path / "notes" / "task.md").exists()
+    assert any(row["event"] == "worker_tool_call_denied" for row in trace.snapshot()["rows"])
+    assert "move_destination_exists" in client.prompts[1]
+
+
+def test_non_mutation_move_destination_exists_remains_tool_error(tmp_path: Path) -> None:
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "notes" / "task.md").write_text("new\n", encoding="utf-8")
+    (tmp_path / "docs" / "task.md").write_text("old\n", encoding="utf-8")
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        worker_type="filesystem_worker",
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["notes/task.md", "docs/task.md"],
+        },
+    )
+
+    with pytest.raises(ToolExecutionError, match="destination exists"):
+        toolbox.execute(
+            task=task,
+            tool_name="move_file",
+            arguments={"source": "notes/task.md", "destination": "docs/task.md"},
+        )
+
+    assert (tmp_path / "docs" / "task.md").read_text(encoding="utf-8") == "old\n"
+    assert (tmp_path / "notes" / "task.md").exists()
+
+
+def test_bounded_mutation_small_batch_denial_exhaustion_is_retryable_instance_failure(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_many_files",
+                        "arguments": {
+                            "files": [
+                                {"path": "src/a.py", "content": "A\n"},
+                                {"path": "src/b.py", "content": "B\n"},
+                            ]
+                        },
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_many_files",
+                        "arguments": {
+                            "files": [
+                                {"path": "src/a.py", "content": "A\n"},
+                                {"path": "src/b.py", "content": "B\n"},
+                            ]
+                        },
+                    }
+                ]
+            },
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="filesystem_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="filesystem_operator",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("write_many_files",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="filesystem_worker",
+        expected_outputs=["change_summary"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+        },
+        max_tool_calls=2,
+        max_model_calls=2,
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "write_policy": {"batch_max_files": 1, "repair_attempts": 1},
+            }
+        }
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "failed"
+    assert result.metadata["issue_code"] == "write_operation_denied_after_repair"
+    assert result.metadata["retryable"] is True
+    assert not (tmp_path / "src" / "a.py").exists()
+    assert not (tmp_path / "src" / "b.py").exists()
+
+
 def test_code_worker_synthesizes_mutation_artifacts_after_write_budget_exhaustion(tmp_path: Path) -> None:
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
     (tmp_path / "src").mkdir()
@@ -1160,6 +1722,150 @@ def test_filesystem_worker_synthesizes_mutation_artifacts_after_batch_write_budg
     patch_diff = next(artifact for artifact in result.artifacts if artifact.id == "patch_diff")
     assert "src/calculator.py" in patch_diff.content["diff"]
     assert result.metadata["fallback"] == "mutation_observation_synthesis"
+
+
+def test_bounded_mutation_denial_is_observed_and_repaired(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_many_files",
+                        "arguments": {
+                            "files": [
+                                {"path": "a.txt", "content": "a\n"},
+                                {"path": "b.txt", "content": "b\n"},
+                                {"path": "c.txt", "content": "c\n"},
+                            ]
+                        },
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_many_files",
+                        "arguments": {
+                            "files": [
+                                {"path": "a.txt", "content": "a\n"},
+                                {"path": "b.txt", "content": "b\n"},
+                            ]
+                        },
+                    }
+                ]
+            },
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "Wrote narrowed batch.",
+                    "artifacts": [{"id": "change_summary", "content": "wrote two files"}],
+                }
+            },
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="filesystem_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="filesystem_operator",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("write_many_files",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="filesystem_worker",
+        expected_outputs=["change_summary"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+        },
+        max_tool_calls=2,
+        max_model_calls=3,
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "write_policy": {"batch_max_files": 2, "step_max_files": 5, "repair_attempts": 1},
+            }
+        }
+    )
+    trace = RuntimeMatrixLogger()
+
+    result = runner.run(task, trace=trace)
+
+    assert result.status == "completed"
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "a\n"
+    assert (tmp_path / "b.txt").read_text(encoding="utf-8") == "b\n"
+    assert not (tmp_path / "c.txt").exists()
+    rows = trace.snapshot()["rows"]
+    assert any(row["event"] == "worker_tool_call_denied" for row in rows)
+    denial_artifact = next(artifact for artifact in result.artifacts if artifact.kind == "tool_denial")
+    assert denial_artifact.content["observation"]["denial"]["code"] == "write_batch_too_broad"
+
+
+def test_bounded_mutation_denial_exhaustion_is_retryable_instance_failure(tmp_path: Path) -> None:
+    too_broad_call = {
+        "tool_calls": [
+            {
+                "tool_name": "write_many_files",
+                "arguments": {
+                    "files": [
+                        {"path": "a.txt", "content": "a\n"},
+                        {"path": "b.txt", "content": "b\n"},
+                        {"path": "c.txt", "content": "c\n"},
+                    ]
+                },
+            }
+        ]
+    }
+    client = QueueClient([too_broad_call, too_broad_call])
+    runner = AgenticWorkerGroupRunner(
+        worker_type="filesystem_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="filesystem_operator",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("write_many_files",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="filesystem_worker",
+        expected_outputs=["change_summary"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+        },
+        max_tool_calls=2,
+        max_model_calls=2,
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "write_policy": {"batch_max_files": 2, "step_max_files": 5, "repair_attempts": 1},
+            }
+        }
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "failed"
+    assert result.metadata["issue_code"] == "write_operation_denied_after_repair"
+    assert result.metadata["retryable"] is True
+    assert not any(tmp_path.glob("*.txt"))
 
 
 def test_code_worker_rejects_completed_mutation_without_write_observation(tmp_path: Path) -> None:
@@ -1339,6 +2045,162 @@ def test_agentic_worker_group_skips_later_instances_when_outputs_are_done(tmp_pa
     assert len(client.prompts) == 1
     assert len(result.metadata["worker_group_results"]) == 1
     assert result.metadata["skipped_worker_instances"] == ["repo_reader"]
+
+
+def test_repo_worker_does_not_skip_reader_for_source_evidence_outputs(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "located candidates",
+                    "artifacts": [
+                        {"id": "candidate_paths", "content": ["src/app.py"]},
+                        {"id": "api_surface_map", "content": {"paths": ["src/app.py"]}},
+                    ],
+                }
+            },
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "read candidates",
+                    "artifacts": [
+                        {"id": "candidate_paths", "content": ["src/app.py"]},
+                        {"id": "api_surface_map", "content": {"functions": ["handle"]}},
+                    ],
+                }
+            },
+        ]
+    )
+    group = AgenticWorkerGroupRunner(
+        worker_type="repo_worker",
+        templates=[
+            WorkerInstanceTemplate(name="repo_locator", role="locate"),
+            WorkerInstanceTemplate(name="repo_reader", role="read"),
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+
+    result = group.run(
+        _task(
+            worker_type="repo_worker",
+            expected_outputs=["candidate_paths", "api_surface_map"],
+            max_model_calls=2,
+        )
+    )
+
+    assert result.status == "completed"
+    assert len(client.prompts) == 2
+    assert len(result.metadata["worker_group_results"]) == 2
+    assert result.metadata["skipped_worker_instances"] == []
+
+
+def test_agentic_group_rejects_null_expected_artifact_content(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "designed scope",
+                    "artifacts": [{"id": "mutation_scope", "content": None}],
+                }
+            }
+        ]
+    )
+    trace = RuntimeMatrixLogger()
+    group = AgenticWorkerGroupRunner(
+        worker_type="code_worker",
+        templates=[WorkerInstanceTemplate(name="code_agent", role="design")],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+
+    result = group.run(
+        _task(
+            worker_type="code_worker",
+            expected_outputs=["mutation_scope"],
+            max_model_calls=1,
+        ),
+        trace=trace,
+    )
+
+    assert result.status == "failed"
+    assert result.metadata["issue_code"] == "worker_artifact_content_empty"
+    assert result.metadata["retryable"] is True
+    assert result.metadata["artifact_quality"]["empty_artifacts"] == ["mutation_scope"]
+    assert any(row["event"] == "worker_artifact_quality_checked" for row in trace.snapshot()["rows"])
+
+
+def test_agentic_group_repairs_metadata_only_expected_artifact_content(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "located repo targets",
+                    "artifacts": [
+                        {
+                            "id": "repo_inventory",
+                            "content": None,
+                            "metadata": {"files": ["src/checkout.py", "tests/test_checkout.py"]},
+                        }
+                    ],
+                }
+            }
+        ]
+    )
+    group = AgenticWorkerGroupRunner(
+        worker_type="repo_worker",
+        templates=[WorkerInstanceTemplate(name="repo_locator", role="locate")],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+
+    result = group.run(
+        _task(
+            worker_type="repo_worker",
+            expected_outputs=["repo_inventory"],
+            max_model_calls=1,
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.artifacts[0].content == {"files": ["src/checkout.py", "tests/test_checkout.py"]}
+    assert result.artifacts[0].metadata["content_repaired_from_metadata"] is True
+    assert result.metadata["artifact_quality"]["empty_artifacts"] == []
+
+
+def test_verify_worker_reserves_finalization_model_call(tmp_path: Path) -> None:
+    group = AgenticWorkerGroupRunner(
+        worker_type="verify_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="verification_runner",
+                role="verify",
+                allowed_tools=("runtime_capabilities", "run_project_tests"),
+            )
+        ],
+        controller=WorkerLLMController(QueueClient([])),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    step = PlanStep(
+        step_id="verify",
+        worker_type="verify_worker",
+        phase="VERIFY",
+        mode="verify_only",
+        instruction="verify",
+        max_tool_calls=4,
+        max_model_calls=1,
+        permissions={
+            "read_files": True,
+            "write_files": False,
+            "run_commands": True,
+            "web_research": False,
+        },
+    )
+
+    assert group.minimum_model_calls(step) == 3
 
 
 def test_agentic_worker_group_records_model_and_tool_matrix_rows(tmp_path: Path) -> None:
@@ -1691,9 +2553,27 @@ def test_agentic_group_does_not_count_bare_artifact_ids_as_completed_outputs(tmp
 
     result = group.run(_task(worker_type="repo_worker", max_tool_calls=0, max_model_calls=1))
 
-    assert result.status == "needs_replan"
-    assert result.metadata["issues"][0]["code"] == "missing_expected_artifacts"
+    assert result.status == "failed"
+    assert result.metadata["issues"][0]["code"] == "worker_output_contract_miss"
+    assert result.metadata["issues"][0]["retryable"] is True
     assert result.metadata["issues"][0]["metadata"]["missing_artifacts"] == ["final_artifact"]
+
+
+def test_normalize_worker_decision_repairs_embedded_tool_arguments() -> None:
+    decision = _normalize_worker_decision(
+        {
+            "tool_calls": [
+                {
+                    "tool_name": "tool read_many_files', 'arguments': {'paths': ['src/checkout.py', 'tests/test_checkout.py']}}}",
+                }
+            ]
+        }
+    )
+
+    assert decision["tool_calls"][0]["tool_name"] == "read_many_files"
+    assert decision["tool_calls"][0]["arguments"] == {
+        "paths": ["src/checkout.py", "tests/test_checkout.py"]
+    }
 
 
 def test_tool_observation_without_final_model_budget_is_kernel_budget_issue(tmp_path: Path) -> None:

@@ -1,9 +1,23 @@
 import pytest
 
 from app.schemas import Envelope, Plan, PlanStep, ReplanRequest, Result, Task
+from app.worker_kernel.agentic import AgenticWorkerGroupRunner, WorkerInstanceTemplate, WorkerLLMController
 from app.worker_kernel.group import SequentialWorkerGroupRunner
 from app.worker_kernel.registry import WorkerRegistry, build_default_registry
 from app.worker_kernel.runtime import WorkerKernelRuntime
+from app.worker_kernel.tools import WorkerToolConfig, WorkerToolbox
+
+
+class QueueClient:
+    def __init__(self, responses: list[dict]) -> None:
+        self.responses = list(responses)
+        self.prompts: list[str] = []
+
+    def complete_json(self, *, stage: str, prompt: str, schema: dict) -> str:
+        import json
+
+        self.prompts.append(prompt)
+        return json.dumps(self.responses.pop(0))
 
 
 def _envelope() -> Envelope:
@@ -164,9 +178,10 @@ def test_worker_kernel_passes_structured_mutation_scope_to_mutate_step() -> None
     assert {artifact.id for artifact in result.artifacts} >= {"change_summary", "rollback_patch", "patch_diff"}
 
 
-def test_worker_kernel_blocks_empty_mutation_scope_before_dispatch() -> None:
+def test_worker_kernel_dispatches_bounded_mutation_with_empty_advisory_scope() -> None:
     class CodeWorker:
         worker_type = "code_worker"
+        mutation_policy: dict[str, object] = {}
 
         def run(self, task: Task) -> Result:
             if task.step_id == "design_step":
@@ -177,7 +192,17 @@ def test_worker_kernel_blocks_empty_mutation_scope_before_dispatch() -> None:
                     summary="designed empty mutation",
                     artifacts=[{"id": "mutation_scope", "content": {"target_paths": [], "reason": "bad"}}],
                 )
-            raise AssertionError("mutate worker must not be dispatched")
+            type(self).mutation_policy = task.metadata["write_policy"]
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="mutated after advisory warning",
+                artifacts=[
+                    {"id": "change_summary", "content": "changed"},
+                    {"id": "rollback_patch", "content": "rollback"},
+                ],
+            )
 
     registry = WorkerRegistry()
     registry.register(CodeWorker())
@@ -185,14 +210,16 @@ def test_worker_kernel_blocks_empty_mutation_scope_before_dispatch() -> None:
 
     result = WorkerKernelRuntime(registry=registry).run(plan)
 
-    assert result.status == "blocked"
-    assert result.metadata["issues"][-1]["code"] == "invalid_write_scope"
+    assert result.status == "completed"
+    assert CodeWorker.mutation_policy["mode"] == "advisory"
+    assert CodeWorker.mutation_policy["validation_warnings"]
     assert result.metadata["worker_results"][0]["summary"] == "designed empty mutation"
 
 
-def test_worker_kernel_blocks_escaping_mutation_scope_before_dispatch() -> None:
+def test_worker_kernel_dispatches_bounded_mutation_with_escaping_advisory_scope() -> None:
     class CodeWorker:
         worker_type = "code_worker"
+        mutation_policy: dict[str, object] = {}
 
         def run(self, task: Task) -> Result:
             if task.step_id == "design_step":
@@ -203,21 +230,32 @@ def test_worker_kernel_blocks_escaping_mutation_scope_before_dispatch() -> None:
                     summary="designed unsafe mutation",
                     artifacts=[{"id": "mutation_scope", "content": {"target_paths": ["../secret.py"], "reason": "bad"}}],
                 )
-            raise AssertionError("mutate worker must not be dispatched")
+            type(self).mutation_policy = task.metadata["write_policy"]
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="mutated after advisory warning",
+                artifacts=[
+                    {"id": "change_summary", "content": "changed"},
+                    {"id": "rollback_patch", "content": "rollback"},
+                ],
+            )
 
     registry = WorkerRegistry()
     registry.register(CodeWorker())
 
     result = WorkerKernelRuntime(registry=registry).run(_mutation_scope_block_plan())
 
-    assert result.status == "blocked"
-    assert result.metadata["issues"][-1]["code"] == "invalid_write_scope"
-    assert "invalid repo-relative path" in result.errors[0]
+    assert result.status == "completed"
+    assert CodeWorker.mutation_policy["mode"] == "advisory"
+    assert "invalid repo-relative path" in CodeWorker.mutation_policy["validation_warnings"][0]["message"]
 
 
-def test_worker_kernel_blocks_oversized_mutation_scope_before_dispatch() -> None:
+def test_worker_kernel_dispatches_bounded_mutation_with_oversized_advisory_scope() -> None:
     class CodeWorker:
         worker_type = "code_worker"
+        mutation_policy: dict[str, object] = {}
 
         def run(self, task: Task) -> Result:
             if task.step_id == "design_step":
@@ -237,16 +275,27 @@ def test_worker_kernel_blocks_oversized_mutation_scope_before_dispatch() -> None
                         }
                     ],
                 )
-            raise AssertionError("mutate worker must not be dispatched")
+            type(self).mutation_policy = task.metadata["write_policy"]
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="mutated after advisory warning",
+                artifacts=[
+                    {"id": "change_summary", "content": "changed"},
+                    {"id": "rollback_patch", "content": "rollback"},
+                ],
+            )
 
     registry = WorkerRegistry()
     registry.register(CodeWorker())
 
     result = WorkerKernelRuntime(registry=registry).run(_mutation_scope_block_plan())
 
-    assert result.status == "blocked"
-    assert result.metadata["issues"][-1]["code"] == "invalid_write_scope"
-    assert "exceeding max_files" in result.errors[0]
+    assert result.status == "completed"
+    assert CodeWorker.mutation_policy["mode"] == "advisory"
+    assert CodeWorker.mutation_policy["advisory_paths"] == ["src/a.py", "src/b.py", "src/c.py"]
+    assert "exceeding max_files" in CodeWorker.mutation_policy["validation_warnings"][0]["message"]
 
 
 def test_worker_kernel_marks_failed_verify_after_mutation_as_completed_with_failed_verification() -> None:
@@ -289,7 +338,23 @@ def test_worker_kernel_marks_failed_verify_after_mutation_as_completed_with_fail
                 producer=self.worker_type,
                 status="failed",
                 summary="pytest failed",
-                artifacts=[{"id": "test_results", "content": {"returncode": 1}}],
+                artifacts=[
+                    {
+                        "id": "verify_step_verification_runner_tool_1",
+                        "kind": "tool_observation",
+                        "content": {
+                            "tool_name": "run_project_tests",
+                            "observation": {
+                                "command": ["uv", "run", "--extra", "dev", "pytest", "-q"],
+                                "returncode": 1,
+                                "stdout": "",
+                                "stderr": "failed",
+                            },
+                        },
+                        "metadata": {"tool_name": "run_project_tests"},
+                    },
+                    {"id": "test_results", "content": {"returncode": 1}},
+                ],
                 errors=["pytest failed"],
             )
 
@@ -301,6 +366,107 @@ def test_worker_kernel_marks_failed_verify_after_mutation_as_completed_with_fail
 
     assert result.status == "completed_with_failed_verification"
     assert result.errors == ["pytest failed"]
+
+
+def test_worker_kernel_retries_verify_failure_before_command_evidence() -> None:
+    class CodeWorker:
+        worker_type = "code_worker"
+
+        def run(self, task: Task) -> Result:
+            if task.step_id == "design_step":
+                return Result(
+                    run_id=task.run_id,
+                    producer=self.worker_type,
+                    status="completed",
+                    summary="designed scoped mutation",
+                    artifacts=[
+                        {
+                            "id": "mutation_scope",
+                            "content": {"target_paths": ["src/events.py"], "reason": "one file", "max_files": 1},
+                        },
+                        {"id": "rollback_plan", "content": "revert"},
+                        {"id": "fix_design", "content": "fix"},
+                    ],
+                )
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="patched",
+                artifacts=[
+                    {"id": "change_summary", "content": "changed"},
+                    {"id": "rollback_patch", "content": "rollback"},
+                ],
+            )
+
+    class VerifyWorker:
+        worker_type = "verify_worker"
+        runs = 0
+
+        def run(self, task: Task) -> Result:
+            type(self).runs += 1
+            if type(self).runs == 1:
+                return Result(
+                    run_id=task.run_id,
+                    producer=self.worker_type,
+                    status="failed",
+                    summary="Verification failed due to instance budget exhaustion before test execution could be completed.",
+                    artifacts=[
+                        {
+                            "id": "test_results",
+                            "content": {"status": "failed", "notes": "test execution was not executed"},
+                        }
+                    ],
+                    metadata={
+                        "issues": [
+                            {
+                                "issue_type": "instance_failure",
+                                "code": "worker_reported_issue",
+                                "message": "instance budget exhaustion before test execution",
+                                "retryable": False,
+                            }
+                        ]
+                    },
+                )
+            assert task.metadata["force_verification_command_first"] is True
+            assert task.metadata["verification_retry_reason"] == "verification_failed_before_command"
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="verification passed",
+                artifacts=[
+                    {
+                        "id": "verify_step_verification_runner_tool_1",
+                        "kind": "tool_observation",
+                        "content": {
+                            "tool_name": "run_project_tests",
+                            "observation": {
+                                "command": ["uv", "run", "--extra", "dev", "pytest", "-q"],
+                                "returncode": 0,
+                            },
+                        },
+                        "metadata": {"tool_name": "run_project_tests"},
+                    },
+                    {"id": "test_results", "content": {"returncode": 0}},
+                ],
+            )
+
+    registry = WorkerRegistry()
+    registry.register(CodeWorker())
+    registry.register(VerifyWorker())
+
+    result = WorkerKernelRuntime(registry=registry).run(_mutation_with_verify_plan())
+
+    assert result.status == "completed"
+    assert result.metadata["retry_count"] == 1
+    assert result.metadata["instance_attempts_used"] == 4
+    assert "replan" not in result.metadata
+    retry_rows = [
+        row for row in result.metadata["runtime_matrix"]["rows"] if row["event"] == "attempt_retry_scheduled"
+    ]
+    assert retry_rows[-1]["step_id"] == "verify_step"
+    assert retry_rows[-1]["details"]["reason"] == "worker_runtime_failure"
 
 
 def _mutation_scope_block_plan() -> Plan:
@@ -751,11 +917,141 @@ def test_worker_kernel_replans_with_fixed_new_plan() -> None:
         for a in FakePlannerRuntime.last_replan_request.failed_step_artifacts
     )
     assert result.metadata["replan"]["replacement_plan"]["plan_id"] == "plan_req_replan_fixed"
-    assert result.artifacts[0]["id"] == "final_report"
+    assert any(artifact.id == "final_report" for artifact in result.artifacts)
     assert any(
         row["event"] == "replan_requested" and row["component"] == "worker_kernel_runtime"
         for row in result.metadata["runtime_matrix"]["rows"]
     )
+
+
+def test_worker_kernel_replan_seeds_carryover_artifacts_for_replacement_plan() -> None:
+    class DiscoverWorker:
+        worker_type = "repo_worker"
+
+        def run(self, task: Task) -> Result:
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="repo inventory produced",
+                artifacts=[{"id": "repo_inventory", "content": {"files": ["pyproject.toml"]}}],
+                usage={"tool_calls": 1, "model_calls": 0},
+            )
+
+    class FailingWorker:
+        worker_type = "research_worker"
+
+        def run(self, task: Task) -> Result:
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="needs_replan",
+                summary="planner needs to resume from completed repo inventory",
+                artifacts=[{"id": "planner_gap", "content": "resume with existing repo_inventory"}],
+                metadata={"recommended_action": "use carryover repo_inventory directly"},
+            )
+
+    class ReplacementWorker:
+        worker_type = "direct_worker"
+        seen_inputs: list[str] = []
+
+        def run(self, task: Task) -> Result:
+            type(self).seen_inputs = [artifact.id for artifact in task.input_artifacts]
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="replacement consumed carryover",
+                artifacts=[{"id": "final_report", "content": {"inputs": type(self).seen_inputs}}],
+                usage={"tool_calls": 0, "model_calls": 1},
+            )
+
+    class FakePlannerRuntime:
+        last_replan_request: ReplanRequest | None = None
+
+        def replan(self, envelope: Envelope, current_plan: Plan, replan_request: ReplanRequest) -> Plan:
+            type(self).last_replan_request = replan_request
+            return Plan(
+                plan_id="plan_req_replan_carryover",
+                request_id=envelope.request_id,
+                planner="llm_planner_replan",
+                objective=current_plan.objective,
+                strategy="resume_from_carryover_artifacts",
+                execution_pattern="finalize",
+                global_invariants=["carryover_artifacts_are_seeded"],
+                steps=[
+                    PlanStep(
+                        step_id="finalize_from_repo_inventory",
+                        worker_type="direct_worker",
+                        phase="FINALIZE",
+                        mode="summarize_only",
+                        task_id="replan_recovery",
+                        instruction="Known facts: repo_inventory is available as carryover. Unknowns: none. Do now: summarize. Do not do: do not mutate. Output: final_report.",
+                        input_artifacts=["repo_inventory"],
+                        output_artifacts=["final_report"],
+                        max_tool_calls=0,
+                        max_model_calls=1,
+                        permissions=_permissions(),
+                    )
+                ],
+                budget={"max_tool_calls": 0, "max_model_calls": 1, "max_workers": 1, "max_retries": 0},
+            )
+
+    registry = WorkerRegistry()
+    registry.register(DiscoverWorker())
+    registry.register(FailingWorker())
+    registry.register(ReplacementWorker())
+    plan = Plan(
+        plan_id="plan_req_carryover",
+        request_id="req_replan",
+        planner="llm_planner",
+        objective="Resume from completed repo context",
+        strategy="discover_then_replan",
+        execution_pattern="discover_analyze",
+        global_invariants=["completed_artifacts_are_truth"],
+        steps=[
+            PlanStep(
+                step_id="discover_repo",
+                worker_type="repo_worker",
+                phase="DISCOVER",
+                mode="observe_only",
+                task_id="carryover",
+                instruction="Known facts: repo needs inventory. Unknowns: files. Do now: inspect repo. Do not do: do not mutate. Output: repo_inventory.",
+                output_artifacts=["repo_inventory"],
+                max_tool_calls=1,
+                max_model_calls=0,
+                permissions=_permissions(read_files=True),
+            ),
+            PlanStep(
+                step_id="analyze_gap",
+                worker_type="research_worker",
+                phase="ANALYZE",
+                mode="observe_only",
+                task_id="carryover",
+                instruction="Known facts: repo_inventory exists. Unknowns: recovery path. Do now: decide if replan needed. Do not do: do not mutate. Output: planner_gap.",
+                input_artifacts=["repo_inventory"],
+                output_artifacts=["planner_gap"],
+                max_tool_calls=0,
+                max_model_calls=1,
+                permissions=_permissions(),
+            ),
+        ],
+        budget={"max_tool_calls": 1, "max_model_calls": 1, "max_workers": 2, "max_retries": 0},
+    )
+
+    result = WorkerKernelRuntime(registry=registry, planner_runtime=FakePlannerRuntime()).run(
+        plan,
+        envelope=_envelope(),
+    )
+
+    assert result.status == "completed"
+    assert ReplacementWorker.seen_inputs == ["repo_inventory"]
+    assert FakePlannerRuntime.last_replan_request is not None
+    assert [artifact.id for artifact in FakePlannerRuntime.last_replan_request.carryover_artifacts] == [
+        "repo_inventory"
+    ]
+    assert FakePlannerRuntime.last_replan_request.failed_step["instruction"].startswith("Known facts:")
+    assert result.metadata["replan"]["carryover_artifacts"][0]["id"] == "repo_inventory"
 
 
 def test_worker_kernel_code_flow_executes() -> None:
@@ -1549,6 +1845,79 @@ def test_worker_budget_exceeded_retries_same_step_with_adjusted_task() -> None:
     assert result.status == "completed"
     assert result.metadata["retry_count"] == 1
     assert result.metadata["instance_attempts_used"] == 2
+
+
+def test_worker_empty_expected_artifact_retries_same_step_with_adjusted_task(tmp_path) -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "scope selected",
+                    "artifacts": [{"id": "mutation_scope", "content": None}],
+                }
+            },
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "scope repaired",
+                    "artifacts": [
+                        {
+                            "id": "mutation_scope",
+                            "content": {
+                                "target_paths": ["src/app.py"],
+                                "reason": "single source file owns the behavior",
+                                "max_files": 1,
+                            },
+                        }
+                    ],
+                }
+            },
+        ]
+    )
+    registry = WorkerRegistry()
+    registry.register_group(
+        AgenticWorkerGroupRunner(
+            worker_type="code_worker",
+            templates=[WorkerInstanceTemplate(name="code_agent", role="design")],
+            controller=WorkerLLMController(client),
+            toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+        )
+    )
+    plan = Plan(
+        plan_id="plan_empty_artifact_retry",
+        request_id="req_empty_artifact_retry",
+        planner="test",
+        objective="design scoped mutation",
+        strategy="design",
+        steps=[
+            PlanStep(
+                step_id="design",
+                worker_type="code_worker",
+                phase="DESIGN",
+                mode="plan_only",
+                instruction="choose mutation scope",
+                output_artifacts=["mutation_scope"],
+                max_tool_calls=0,
+                max_model_calls=1,
+                permissions=_permissions(read_files=True),
+            )
+        ],
+        budget={"max_tool_calls": 0, "max_model_calls": 5, "max_workers": 1, "max_retries": 1},
+    )
+
+    result = WorkerKernelRuntime(registry=registry).run(plan)
+
+    assert result.status == "completed"
+    assert result.metadata["retry_count"] == 1
+    assert result.metadata["instance_attempts_used"] == 2
+    assert result.metadata["artifact_quality"]["empty_count"] == 1
+    assert "non-null, non-empty" in client.prompts[1]
+    assert any(
+        row["event"] == "attempt_retry_scheduled"
+        and row["details"]["reason"] == "worker_runtime_failure"
+        for row in result.metadata["runtime_matrix"]["rows"]
+    )
 
 
 def test_invalid_write_scope_block_does_not_retry_same_step() -> None:
