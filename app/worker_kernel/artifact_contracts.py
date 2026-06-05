@@ -57,12 +57,14 @@ CORE_ARTIFACT_SHAPES: dict[str, dict[str, Any]] = {
     "verification_results": {
         "status": "passed|failed",
         "commands": [],
+        "file_state_verification": {},
         "scope_audit": {},
     },
     "test_results": {
         "status": "passed|failed",
         "commands": [],
         "failed_commands": [],
+        "not_applicable_reason": "optional reason when no command can exist",
     },
     "final_report": {
         "summary": "human-facing report summary",
@@ -90,6 +92,28 @@ CORE_ARTIFACT_SHAPES: dict[str, dict[str, Any]] = {
             "moved_json_artifacts": ["error_dump.json"],
             "total_artifacts": 0,
         },
+    },
+    "file_classification_report": {
+        "candidates": [
+            {
+                "source": "repo/relative/source",
+                "destination": "repo/relative/destination",
+                "manifest_key": "moved_documents",
+                "evidence": [],
+            }
+        ],
+        "held_items": [],
+        "unknown_items": [],
+        "manifest_payload_seed": {},
+    },
+    "file_state_verification": {
+        "status": "passed|failed",
+        "manifest_path": "repo/relative/manifest.json",
+        "manifest_exists": True,
+        "counts_match": True,
+        "move_checks": [],
+        "held_checks": [],
+        "errors": [],
     },
     "allowed_write_paths": {
         "allowed_write_files": ["repo/relative/source-or-destination"],
@@ -156,6 +180,8 @@ CORE_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
     "verification_results": ("status",),
     "test_results": ("status",),
     "selected_move_candidates": ("candidates",),
+    "file_classification_report": ("candidates",),
+    "file_state_verification": ("status", "manifest_path"),
     "allowed_write_paths": ("allowed_write_files",),
     "moved_items_record": ("moved_documents", "moved_logs", "moved_json_artifacts", "total_artifacts"),
     "moved_items_evidence": ("move_pairs",),
@@ -354,6 +380,14 @@ def _semantic_contract_errors(
             content=content,
             contract_context=contract_context,
         )
+    if artifact_id == "test_results":
+        return _test_results_errors(artifact_id=artifact_id, content=content)
+    if artifact_id == "verification_results":
+        return _verification_results_errors(artifact_id=artifact_id, content=content)
+    if artifact_id == "file_state_verification":
+        return _file_state_verification_errors(artifact_id=artifact_id, content=content)
+    if artifact_id == "file_classification_report":
+        return _file_classification_report_errors(artifact_id=artifact_id, content=content)
     if artifact_id in {"manifest_update_record", "manifest_file", "manifest_validation"}:
         return _manifest_artifact_errors(
             artifact_id=artifact_id,
@@ -361,6 +395,130 @@ def _semantic_contract_errors(
             contract_context=contract_context,
         )
     return []
+
+
+def _test_results_errors(*, artifact_id: str, content: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _status_is_passing(content.get("status")):
+        return []
+    commands = content.get("commands")
+    if _has_passing_command(commands) or content.get("not_applicable_reason"):
+        return []
+    return [
+        {
+            "artifact_id": artifact_id,
+            "code": "artifact_missing_command_evidence",
+            "field": "commands",
+            "message": "passing test_results requires passing command evidence or not_applicable_reason",
+        }
+    ]
+
+
+def _verification_results_errors(*, artifact_id: str, content: dict[str, Any]) -> list[dict[str, Any]]:
+    if not _status_is_passing(content.get("status")):
+        return []
+    if _has_passing_command(content.get("commands")) or _has_passing_file_state_evidence(content):
+        return []
+    return [
+        {
+            "artifact_id": artifact_id,
+            "code": "artifact_missing_verification_evidence",
+            "field": "commands",
+            "message": (
+                "passing verification_results requires command evidence or "
+                "deterministic file-state verification evidence"
+            ),
+        }
+    ]
+
+
+def _file_state_verification_errors(*, artifact_id: str, content: dict[str, Any]) -> list[dict[str, Any]]:
+    status = str(content.get("status") or "").lower()
+    if status not in {"passed", "failed"}:
+        return [
+            {
+                "artifact_id": artifact_id,
+                "code": "artifact_status_invalid",
+                "field": "status",
+                "message": "file_state_verification.status must be passed or failed",
+            }
+        ]
+    if status == "passed":
+        errors = content.get("errors")
+        if errors:
+            return [
+                {
+                    "artifact_id": artifact_id,
+                    "code": "artifact_passed_with_errors",
+                    "field": "errors",
+                    "message": "file_state_verification cannot pass with errors",
+                }
+            ]
+    return []
+
+
+def _file_classification_report_errors(*, artifact_id: str, content: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = content.get("candidates")
+    if not isinstance(candidates, list):
+        return [
+            {
+                "artifact_id": artifact_id,
+                "code": "artifact_field_type_invalid",
+                "field": "candidates",
+                "message": "file_classification_report.candidates must be a list",
+            }
+        ]
+    missing_evidence = [
+        item
+        for item in candidates
+        if isinstance(item, dict) and not item.get("evidence")
+    ]
+    if missing_evidence:
+        return [
+            {
+                "artifact_id": artifact_id,
+                "code": "artifact_candidate_missing_evidence",
+                "field": "candidates",
+                "message": "file_classification_report candidates must include evidence",
+            }
+        ]
+    return []
+
+
+def _status_is_passing(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"passed", "pass", "completed", "success", "successful"}
+
+
+def _has_passing_command(commands: Any) -> bool:
+    if not isinstance(commands, list):
+        return False
+    for command in commands:
+        if not isinstance(command, dict):
+            continue
+        returncode = command.get("returncode")
+        if isinstance(returncode, int) and returncode == 0:
+            return True
+        if str(command.get("status") or "").lower() in {"passed", "completed", "success"}:
+            return True
+    return False
+
+
+def _has_passing_file_state_evidence(content: dict[str, Any]) -> bool:
+    direct = content.get("file_state_verification")
+    if isinstance(direct, dict) and direct.get("status") == "passed":
+        return True
+    checks = content.get("file_state_checks")
+    if isinstance(checks, list) and checks and all(
+        isinstance(check, dict) and check.get("passed") is True for check in checks
+    ):
+        return True
+    evidence = content.get("evidence")
+    if isinstance(evidence, list):
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            if item.get("tool_name") == "verify_file_state_against_manifest" and item.get("status") == "passed":
+                return True
+    return False
 
 
 def _moved_items_record_errors(

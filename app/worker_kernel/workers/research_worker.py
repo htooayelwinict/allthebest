@@ -12,8 +12,10 @@ verification commands only when the task permissions expose them. Do not use ext
 web; that belongs to web_research_worker. Build evidence-backed analysis, tradeoffs,
 root-cause notes, or final summaries. If required evidence is absent, return
 needs_replan with a plan_failure issue instead of guessing. Start from group_artifacts;
-kernel_memory is retry context and should be read before tools. Call tools only for
-explicit evidence gaps. Prefer read_many_files, diff_summary, or run_focused_tests
+kernel_memory is retry context and should be read before tools, but it is not primary
+proof unless it cites concrete tool observations. Call tools only for explicit
+evidence gaps. Prefer read_many_files, diff_summary, classify_file_management_candidates,
+verify_file_state_against_manifest, or run_focused_tests
 over many primitive tool calls. When run_readonly_command is
 necessary, issue one allowlisted command at a time. Do not ask for replan only because
 tools are unavailable when input artifacts are enough.
@@ -56,8 +58,11 @@ def agentic_templates() -> list[WorkerInstanceTemplate]:
         "git_diff",
         "diff_summary",
         "mutation_scope_check",
+        "resume_from_kernel_memory",
+        "classify_file_management_candidates",
+        "verify_file_state_against_manifest",
     )
-    command_tools = repo_tools + ("runtime_capabilities", "run_focused_tests", "run_readonly_command")
+    command_tools = repo_tools + ("runtime_capabilities", "run_required_verification", "run_focused_tests", "run_readonly_command")
     return [
         WorkerInstanceTemplate(
             name="context_synthesizer",

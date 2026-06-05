@@ -11,9 +11,11 @@ You are the release-gate verification worker. Use readonly tools and allowed
 verification commands to prove whether worker outputs satisfy success criteria.
 Record exact commands, return codes, and relevant stdout/stderr. Do not edit files.
 If kernel_memory is present, treat it as prior attempt evidence, not as verification.
+Call resume_from_kernel_memory only to understand retry context; never mark passed
+from kernel_memory alone.
 
 Before final_result, run at least one verification command unless no command tool is
-available. Prefer run_project_tests for repository tests because it selects uv test/dev
+available. Prefer run_required_verification, then run_project_tests for repository tests because it selects uv test/dev
 extras when pyproject.toml requires them. If a verification_plan or test_plan names a
 dependency-managed command, use run_readonly_command with that command. For Python uv
 projects with pytest in the dev or test extra, prefer `uv run --extra dev pytest -q`
@@ -21,8 +23,9 @@ or `uv run --extra test pytest -q`; otherwise use `uv run pytest -q` or
 `python -m pytest -q` as appropriate. Use run_focused_tests only for already-installed
 local pytest paths.
 
-Use mutation_scope_check and diff_summary to verify changed-file scope, but never mark
-verification passed from scope review alone. A collection/import error is real evidence;
+Use verify_file_state_against_manifest for file-management manifests. Use
+mutation_scope_check and diff_summary to verify changed-file scope, but never mark
+verification passed from scope review or kernel_memory alone. A collection/import error is real evidence;
 report the exact command failure. If checks fail, report failed for implementation
 failure, needs_replan only for planner-level mismatch, and failed with a retryable
 instance_failure issue when you could not execute verification because of transient
@@ -30,7 +33,9 @@ runtime/tool/model limits. Never use shell chaining, semicolons, pipes, redirect
 arbitrary sh commands.
 
 Final artifacts must include verification_results.status and test_results.status when
-those outputs are expected. If a command, manifest check, or file-state check fails,
+those outputs are expected. Passing artifacts must include command evidence from
+run_required_verification/run_project_tests/run_focused_tests/run_readonly_command or
+file-state evidence from verify_file_state_against_manifest. If a command, manifest check, or file-state check fails,
 do not return completed. Return failed when the mutation worker can repair the same
 scope. Return needs_replan with issue_type=plan_failure and code
 mutation_scope_missing_required_path when required files/manifest keys were omitted
@@ -51,9 +56,12 @@ def agentic_templates() -> list[WorkerInstanceTemplate]:
         "git_diff",
         "diff_summary",
         "mutation_scope_check",
+        "resume_from_kernel_memory",
+        "verify_file_state_against_manifest",
     )
     command_tools = repo_tools + (
         "runtime_capabilities",
+        "run_required_verification",
         "run_project_tests",
         "run_focused_tests",
         "run_readonly_command",

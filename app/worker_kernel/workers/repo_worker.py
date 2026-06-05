@@ -17,12 +17,15 @@ read_file, read_many_files, file_search, text_search, repo_snapshot. Do not inve
 synonyms such as file_read, batch_read, grep, or ls. If kernel_memory is
 present, use it to avoid repeating failed discovery. In ANALYZE/observe_only mode,
 produce expected artifacts from available evidence; do not ask for mutation permission.
-Never mutate files. For file-management tasks, preserve exact user/test categories:
+Never mutate files. If kernel_memory is present, call resume_from_kernel_memory before
+repeating discovery. For file-management tasks, prefer
+classify_file_management_candidates before free-form classification and preserve exact user/test categories:
 Markdown means .md/.markdown, logs mean named log files, JSON artifacts mean named
 diagnostic/data JSON files only when prompt/tests/artifacts imply they should move,
 and excluded files must be recorded with reasons. Capture exact manifest/report key
 names from README, tests, prompt text, or existing files so downstream workers do not
-invent synonyms."""
+invent synonyms. Do not mark a matching file unclear when the classifier produced a
+candidate or held-item reason."""
 
 REPO_READER_SYSTEM_PROMPT = """You are the repository reader instance.
 Read the highest-value candidate source and test files from earlier group artifacts and
@@ -59,8 +62,19 @@ def agentic_templates() -> list[WorkerInstanceTemplate]:
         "git_diff",
         "diff_summary",
         "mutation_scope_check",
+        "resume_from_kernel_memory",
+        "classify_file_management_candidates",
+        "verify_file_state_against_manifest",
     )
-    locator_tools = ("repo_snapshot", "file_search", "text_search", "git_status", "diff_summary")
+    locator_tools = (
+        "repo_snapshot",
+        "file_search",
+        "text_search",
+        "git_status",
+        "diff_summary",
+        "resume_from_kernel_memory",
+        "classify_file_management_candidates",
+    )
     reader_tools = repo_tools + ("runtime_capabilities", "run_focused_tests", "run_readonly_command")
     return [
         WorkerInstanceTemplate(

@@ -13,8 +13,9 @@ write_policy marks paths as strict. Use write tools only when write_files is tru
 Prefer exact minimal edits with replace_in_file before full rewrites. Never write
 outside the kernel-approved operation policy.
 For multi-file creation or file-management work, prefer apply_file_operations,
-write_json_manifest, or write_many_files over repeated primitive calls. If task.metadata.kernel_memory exists,
-resume from it and do not replay successful operations.
+write_json_manifest, write_many_files, and classify_file_management_candidates over
+repeated primitive calls. If task.metadata.kernel_memory exists, call
+resume_from_kernel_memory first, resume from it, and do not replay successful operations.
 For apply_file_operations, use an operations array with entries like
 {"action":"move","source":"old","destination":"new"},
 {"action":"write","path":"file","content":"..."}, or
@@ -39,8 +40,9 @@ prefer manifest_update_record, moved_items_record, manifest_validation, and
 manifest_file over near-aliases such as manifest_update_result or moved_item_records.
 Start from input artifacts before using tools. Prefer read_many_files for focused
 source/test inspection, mutation_scope_check for scope validation, diff_summary after
-writes, and run_focused_tests for verification probes. Avoid repeated primitive reads
-when a higher-level tool can answer the same question.
+writes, verify_file_state_against_manifest for manifest/file-state proof, and
+run_focused_tests for verification probes. Avoid repeated primitive reads when a
+higher-level tool can answer the same question.
 For DESIGN/plan_only steps that output mutation_scope, use this structured content:
 {"target_paths": ["repo/relative/file.py"], "create_paths": [], "update_paths": [],
 "delete_paths": [], "move_pairs": [], "test_paths": [], "forbidden_paths": [], "forbidden_globs": [],
@@ -71,6 +73,9 @@ def agentic_templates() -> list[WorkerInstanceTemplate]:
         "git_diff",
         "diff_summary",
         "mutation_scope_check",
+        "resume_from_kernel_memory",
+        "classify_file_management_candidates",
+        "verify_file_state_against_manifest",
     )
     write_tools = repo_tools + ("write_file", "write_many_files", "write_json_manifest", "apply_file_operations", "replace_in_file")
     return [

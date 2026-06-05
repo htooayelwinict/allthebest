@@ -1,0 +1,448 @@
+{
+  "envelope": {
+    "ambiguity": [
+      "\"current status\" is not concretely defined.",
+      "The exact README target path/extension is unspecified.",
+      "\"verify the final file state\" lacks explicit success criteria."
+    ],
+    "artifacts": [
+      {
+        "source": "user_input",
+        "type": "repository_root",
+        "value": "live_appv2_probe_repo"
+      },
+      {
+        "source": "user_input",
+        "type": "file",
+        "value": "README"
+      }
+    ],
+    "assumptions": [
+      "The user intends a documentation-only change rather than source-code changes.",
+      "A README target is expected, but its exact location/name is not confirmed."
+    ],
+    "complexity_hint": "medium",
+    "confidence": 0.94,
+    "constraints": [
+      "Operate within the repository rooted at live_appv2_probe_repo.",
+      "Make only a small, safe README update.",
+      "Record current status information in the README.",
+      "Verify the final file state after the update."
+    ],
+    "context_needed": [
+      "Exact README path and filename (for example README.md vs alternative).",
+      "Definition of \"current status\" to record (project health, build state, TODOs, etc.).",
+      "Expected verification method for final file state (content check, diff check, or checksum)."
+    ],
+    "domains": [
+      "software_engineering",
+      "repository_maintenance",
+      "documentation"
+    ],
+    "input_type": "repository_documentation_update_and_state_verification",
+    "intents": [
+      "inspect_workspace",
+      "update_readme",
+      "record_current_status",
+      "verify_final_file_state"
+    ],
+    "literal_contract": [
+      {
+        "kind": "json_key",
+        "source": "user_input",
+        "value": "live_appv2_probe_repo"
+      }
+    ],
+    "metadata": {
+      "appv2_decomposer": {
+        "mode": "gated_prompt_chain",
+        "model_calls": 1,
+        "redacted_prompt_input": false,
+        "stages": [
+          "decompose_request"
+        ],
+        "validation_issue_count": 0
+      },
+      "appv2_decomposer_runtime": {
+        "elapsed_ms": 24915.178
+      },
+      "chain_position": "stage_1_of_decomposer_prompt_chain",
+      "role": "appv2_decomposer",
+      "runtime_matrix": {
+        "row_count": 6,
+        "rows": [
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_runtime",
+            "details": {
+              "input_chars": 165
+            },
+            "elapsed_ms": null,
+            "event": "run_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 1,
+            "stage": "decompose_request",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T17:54:23.983437+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "schema": "Envelope"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 2,
+            "stage": "decompose_request",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T17:54:23.983513+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 3,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T17:54:48.896820+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "input_type": "repository_documentation_update_and_state_verification"
+            },
+            "elapsed_ms": null,
+            "event": "response_parsed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 4,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T17:54:48.898348+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "blocking_issue_count": 0,
+              "issue_count": 0
+            },
+            "elapsed_ms": null,
+            "event": "validation_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 5,
+            "stage": "validate_envelope",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T17:54:48.898861+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_runtime",
+            "details": {
+              "ambiguity_count": 3,
+              "confidence": 0.94,
+              "input_type": "repository_documentation_update_and_state_verification"
+            },
+            "elapsed_ms": 24915.178,
+            "event": "run_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 6,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T17:54:48.898897+00:00",
+            "worker_type": null
+          }
+        ],
+        "started_at": "2026-06-05T17:54:23.709831+00:00",
+        "trace_id": "trace_0001"
+      }
+    },
+    "normalized_input": "Inspect the repository at live_appv2_probe_repo, apply a minimal safe update to the README to reflect current status, and confirm the resulting file state.",
+    "raw_input": "In the repo rooted at live_appv2_probe_repo, inspect the workspace, make a small safe README update that records the current status, and verify the final file state.",
+    "request_id": "v2_req_001",
+    "risks": [
+      "file_modification_risk",
+      "potential_incorrect_status_reporting_without_runtime_evidence",
+      "verification_overclaim_risk"
+    ],
+    "user_goal": "Have the repository workspace reviewed, its README updated safely with current status information, and the final README state verified."
+  },
+  "generated_at": "2026-06-05T17:57:22.065972+00:00",
+  "phase_plan": null,
+  "probe_error": {
+    "message": "AppV2 phase planner prompt chain failed",
+    "traceback": "Traceback (most recent call last):\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpx/_transports/default.py\", line 101, in map_httpcore_exceptions\n    yield\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpx/_transports/default.py\", line 127, in __iter__\n    for part in self._httpcore_stream:\n                ^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpcore/_sync/connection_pool.py\", line 407, in __iter__\n    raise exc from None\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpcore/_sync/connection_pool.py\", line 403, in __iter__\n    for part in self._stream:\n                ^^^^^^^^^^^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpcore/_sync/http11.py\", line 342, in __iter__\n    raise exc\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpcore/_sync/http11.py\", line 334, in __iter__\n    for chunk in self._connection._receive_response_body(**kwargs):\n                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpcore/_sync/http11.py\", line 203, in _receive_response_body\n    event = self._receive_event(timeout=timeout)\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpcore/_sync/http11.py\", line 217, in _receive_event\n    data = self._network_stream.read(\n        self.READ_NUM_BYTES, timeout=timeout\n    )\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpcore/_backends/sync.py\", line 126, in read\n    with map_exceptions(exc_map):\n         ~~~~~~~~~~~~~~^^^^^^^^^\n  File \"/Users/htooayelwin/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/contextlib.py\", line 162, in __exit__\n    self.gen.throw(value)\n    ~~~~~~~~~~~~~~^^^^^^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpcore/_exceptions.py\", line 14, in map_exceptions\n    raise to_exc(exc) from exc\nhttpcore.ReadTimeout: The read operation timed out\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/appV2/model_client.py\", line 53, in complete_json\n    response = self._client.chat.send(**kwargs)\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/openrouter/chat.py\", line 560, in send\n    http_res_text = utils.stream_to_text(http_res)\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/openrouter/utils/serializers.py\", line 201, in stream_to_text\n    return \"\".join(stream.iter_text())\n           ~~~~~~~^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpx/_models.py\", line 916, in iter_text\n    for byte_content in self.iter_bytes():\n                        ~~~~~~~~~~~~~~~^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpx/_models.py\", line 897, in iter_bytes\n    for raw_bytes in self.iter_raw():\n                     ~~~~~~~~~~~~~^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpx/_models.py\", line 951, in iter_raw\n    for raw_stream_bytes in self.stream:\n                            ^^^^^^^^^^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpx/_client.py\", line 153, in __iter__\n    for chunk in self._stream:\n                 ^^^^^^^^^^^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpx/_transports/default.py\", line 126, in __iter__\n    with map_httpcore_exceptions():\n         ~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/Users/htooayelwin/.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/contextlib.py\", line 162, in __exit__\n    self.gen.throw(value)\n    ~~~~~~~~~~~~~~^^^^^^^\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/.venv/lib/python3.13/site-packages/httpx/_transports/default.py\", line 118, in map_httpcore_exceptions\n    raise mapped_exc(message) from exc\nhttpx.ReadTimeout: The read operation timed out\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/appV2/planner/prompt_chain.py\", line 54, in run\n    draft_response = self._model_client.complete_json(\n        stage=\"draft_phase_plan\",\n        prompt=self._phase_plan_prompt(envelope=envelope, skeleton=skeleton, contracts=contracts),\n        schema=self._plan_schema,\n    )\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/appV2/model_client.py\", line 55, in complete_json\n    raise RuntimeError(f\"Model request for stage {stage} failed before receiving a response.\") from exc\nRuntimeError: Model request for stage draft_phase_plan failed before receiving a response.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/scripts/live_appv2_runtime_probe.py\", line 47, in main\n    plan = planner.run(envelope, trace=trace)\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/appV2/planner/runtime.py\", line 56, in run\n    plan = self._prompt_chain.run(envelope, trace=trace)\n  File \"/Users/htooayelwin/Documents/VScode/allthebest/appV2/planner/prompt_chain.py\", line 71, in run\n    raise PhasePlannerPromptChainError(\"AppV2 phase planner prompt chain failed\") from exc\nappV2.planner.prompt_chain.PhasePlannerPromptChainError: AppV2 phase planner prompt chain failed\n",
+    "type": "PhasePlannerPromptChainError"
+  },
+  "prompt": "In the repo rooted at live_appv2_probe_repo, inspect the workspace, make a small safe README update that records the current status, and verify the final file state.",
+  "repo_path": "/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_probe_repo",
+  "result": null,
+  "runtime_matrix": {
+    "row_count": 13,
+    "rows": [
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_runtime",
+        "details": {
+          "input_chars": 165
+        },
+        "elapsed_ms": null,
+        "event": "run_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 1,
+        "stage": "decompose_request",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:23.983437+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_chain",
+        "details": {
+          "schema": "Envelope"
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 2,
+        "stage": "decompose_request",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:23.983513+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_chain",
+        "details": {},
+        "elapsed_ms": null,
+        "event": "model_call_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 3,
+        "stage": "decompose_request",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:48.896820+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_chain",
+        "details": {
+          "input_type": "repository_documentation_update_and_state_verification"
+        },
+        "elapsed_ms": null,
+        "event": "response_parsed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 4,
+        "stage": "decompose_request",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:48.898348+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_chain",
+        "details": {
+          "blocking_issue_count": 0,
+          "issue_count": 0
+        },
+        "elapsed_ms": null,
+        "event": "validation_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 5,
+        "stage": "validate_envelope",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:48.898861+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_runtime",
+        "details": {
+          "ambiguity_count": 3,
+          "confidence": 0.94,
+          "input_type": "repository_documentation_update_and_state_verification"
+        },
+        "elapsed_ms": 24915.178,
+        "event": "run_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 6,
+        "stage": "decompose_request",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:48.898897+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_runtime",
+        "details": {},
+        "elapsed_ms": null,
+        "event": "run_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 7,
+        "stage": "draft_phase_plan",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:48.899457+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "schema": "PhaseSkeleton"
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 8,
+        "stage": "draft_phase_skeleton",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:48.899505+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "phase_count": 5
+        },
+        "elapsed_ms": null,
+        "event": "model_call_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 9,
+        "stage": "draft_phase_skeleton",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:55.056472+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "schema": "ArtifactContractBundle"
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 10,
+        "stage": "draft_artifact_contracts",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:54:55.056559+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "artifact_contract_count": 8
+        },
+        "elapsed_ms": null,
+        "event": "model_call_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 11,
+        "stage": "draft_artifact_contracts",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:55:24.212607+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "schema": "PhasePlan"
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 12,
+        "stage": "draft_phase_plan",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:55:24.212745+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "error": "Model request for stage draft_phase_plan failed before receiving a response."
+        },
+        "elapsed_ms": null,
+        "event": "chain_failed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 13,
+        "stage": "draft_phase_plan",
+        "status": "failed",
+        "step_id": null,
+        "timestamp": "2026-06-05T17:57:22.050364+00:00",
+        "worker_type": null
+      }
+    ],
+    "started_at": "2026-06-05T17:54:23.709831+00:00",
+    "trace_id": "trace_0001"
+  }
+}

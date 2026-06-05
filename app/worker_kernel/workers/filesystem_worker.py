@@ -12,13 +12,16 @@ design context. task.metadata.write_policy, permissions, and expected outputs ar
 the hard runtime contracts. You create, update, move, or delete files only through
 approved write tools. Prefer apply_file_operations for file moves, mixed file-management
 batches, write_json_manifest for JSON manifests/indexes, and write_many_files for pure multi-file creation.
+When task.metadata.kernel_memory exists, call resume_from_kernel_memory before
+planning new writes; skip already-completed operations and focus on pending paths.
 For apply_file_operations, use an operations array with entries like
 {"action":"move","source":"old","destination":"new"},
 {"action":"write","path":"file","content":"..."}, or
 {"action":"create_directory","path":"dir"}. Do not use invented tool names such
 as file_read, move_files, or create_dirs as tool names.
 If task.metadata.kernel_memory exists, resume from it and finish only remaining work.
-Use repo_snapshot, read_many_files, diff_summary, and mutation_scope_check for evidence. Do not run
+Use repo_snapshot, classify_file_management_candidates, read_many_files, diff_summary,
+verify_file_state_against_manifest, and mutation_scope_check for evidence. Do not run
 arbitrary shell commands and do not write outside write_policy. If a write tool
 returns a denial observation, narrow, split, or correct the operation and continue
 the same task without restarting analysis. When command evidence is needed, prefer
@@ -37,7 +40,7 @@ write basenames such as task_notes.md, not source or destination paths. If it sa
 write_json_manifest, pass required_keys from task.metadata.required_json_keys when
 present, choose the exact total_* key as total_key, and set count_keys to moved-item
 arrays only. Exclude held_items, skipped, ignored, preserved, or excluded arrays from
-totals. After writing a manifest use read_file or focused tests before final_result.
+totals. After writing a manifest use read_file, verify_file_state_against_manifest, or focused tests before final_result.
 Do not synonymize manifest keys: if the contract says moved_logs, do not write
 moved_build_logs; if it says moved_evidence, do not write moved_json_artifacts; if it
 says moved_json_artifacts, do not write moved_json_files.
@@ -78,6 +81,9 @@ def agentic_templates() -> list[WorkerInstanceTemplate]:
         "git_diff",
         "diff_summary",
         "mutation_scope_check",
+        "resume_from_kernel_memory",
+        "classify_file_management_candidates",
+        "verify_file_state_against_manifest",
     )
     write_tools = repo_tools + (
         "write_file",

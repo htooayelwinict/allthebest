@@ -32,6 +32,12 @@ from app.schemas import (
     extract_repo_path_candidates,
     resolve_mutation_scope_proposal,
 )
+from app.worker_kernel.worker_quality_tools import (
+    classify_file_management_candidates as classify_file_management_candidates_payload,
+    normalize_required_verification_result,
+    resume_from_kernel_memory as resume_from_kernel_memory_payload,
+    verify_file_state_against_manifest as verify_file_state_against_manifest_payload,
+)
 
 
 STRICT_WRITE_SCOPE_ARTIFACT_IDS = {"mutation_scope", "allowed_write_paths", "writable_targets", "patch_scope"}
@@ -111,6 +117,9 @@ class WorkerToolbox:
                     _tool_spec("git_diff", "Return git diff for the repo or one path.", "read_files", {"path": "string"}),
                     _tool_spec("diff_summary", "Return changed file names and bounded git diff text.", "read_files", {"path": "string"}),
                     _tool_spec("mutation_scope_check", "Check changed files against mutation_scope input artifacts or task write scope.", "read_files", {}),
+                    _tool_spec("resume_from_kernel_memory", "Summarize kernel retry memory into completed paths, pending paths, denied operations, and next-tool guidance.", "read_files", {}),
+                    _tool_spec("classify_file_management_candidates", "Classify move/hold/unknown file-management candidates with manifest-key and destination evidence.", "read_files", {"path": "string"}),
+                    _tool_spec("verify_file_state_against_manifest", "Verify manifest keys/counts, moved file destinations, source removal, and held-file preservation.", "read_files", {"manifest_path": "string"}),
                 ]
             )
         if task.permissions.write_files:
@@ -137,6 +146,7 @@ class WorkerToolbox:
                     _tool_spec("run_readonly_command", "Run an allowlisted readonly verification command.", "run_commands", {"command": "string_or_string_array"}),
                     _tool_spec("run_focused_tests", "Run pytest for selected repo-relative test paths with PYTHONPATH set to the repo root.", "run_commands", {"paths": "string_or_string_array"}),
                     _tool_spec("run_project_tests", "Run the repository's pytest command using the detected package manager and dev extras when needed.", "run_commands", {"paths": "string_or_string_array"}),
+                    _tool_spec("run_required_verification", "Run the required project verification and return artifact-ready test_results with command provenance.", "run_commands", {"paths": "string_or_string_array"}),
                 ]
             )
         if task.permissions.web_research:
@@ -200,6 +210,15 @@ class WorkerToolbox:
         if tool_name == "mutation_scope_check":
             self._require(task.permissions.read_files, "read_files", tool_name)
             return self._mutation_scope_check(task)
+        if tool_name == "resume_from_kernel_memory":
+            self._require(task.permissions.read_files, "read_files", tool_name)
+            return self._resume_from_kernel_memory(task)
+        if tool_name == "classify_file_management_candidates":
+            self._require(task.permissions.read_files, "read_files", tool_name)
+            return self._classify_file_management_candidates(task, arguments)
+        if tool_name == "verify_file_state_against_manifest":
+            self._require(task.permissions.read_files, "read_files", tool_name)
+            return self._verify_file_state_against_manifest(task, arguments)
         if tool_name == "write_file":
             self._require(task.permissions.write_files, "write_files", tool_name)
             return self._write_file(task, arguments)
@@ -233,6 +252,9 @@ class WorkerToolbox:
         if tool_name == "run_project_tests":
             self._require(task.permissions.run_commands, "run_commands", tool_name)
             return self._run_project_tests(arguments)
+        if tool_name == "run_required_verification":
+            self._require(task.permissions.run_commands, "run_commands", tool_name)
+            return self._run_required_verification(arguments)
         if tool_name == "web_search":
             self._require(task.permissions.web_research, "web_research", tool_name)
             return self._web_search(arguments)
@@ -951,6 +973,10 @@ class WorkerToolbox:
         result["detected_command_source"] = self._project_test_command_source(command)
         return result
 
+    def _run_required_verification(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = self._run_project_tests(arguments)
+        return normalize_required_verification_result(result)
+
     def _diff_summary(self, arguments: dict[str, Any]) -> dict[str, Any]:
         path = str(arguments.get("path") or "")
         command_suffix = ["--", path] if path else []
@@ -1005,6 +1031,32 @@ class WorkerToolbox:
             "forbidden_changes": forbidden_changes,
             "passed": not out_of_scope and not forbidden_changes,
         }
+
+    def _resume_from_kernel_memory(self, task: Task) -> dict[str, Any]:
+        try:
+            return resume_from_kernel_memory_payload(root=self._root, task=task)
+        except ValueError as exc:
+            raise ToolPermissionError(f"kernel memory path escapes worker root: {exc}") from exc
+
+    def _classify_file_management_candidates(self, task: Task, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return classify_file_management_candidates_payload(
+                root=self._root,
+                task=task,
+                path=str(arguments.get("path") or "."),
+            )
+        except ValueError as exc:
+            raise ToolPermissionError(f"classification path escapes worker root: {exc}") from exc
+
+    def _verify_file_state_against_manifest(self, task: Task, arguments: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return verify_file_state_against_manifest_payload(
+                root=self._root,
+                task=task,
+                manifest_path=str(arguments.get("manifest_path") or ""),
+            )
+        except ValueError as exc:
+            raise ToolPermissionError(f"verification path escapes worker root: {exc}") from exc
 
     def _changed_file_names(self, *, path: str = "") -> list[str]:
         command_suffix = ["--", path] if path else []

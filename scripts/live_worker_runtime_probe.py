@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import tomllib
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -43,6 +44,16 @@ FILE_WORKSPACE_MANAGEMENT_PROMPT = (
     "Keep edits limited to file moves/creation and leave source code untouched. "
     "Run tests, then summarize exactly what you moved and any risk of data loss."
 )
+FILE_POLICY_ARCHIVE_PROMPT = (
+    "In the repo rooted at live_worker_policy_archive_repo, I need you to prep a messy policy handoff "
+    "workspace for an internal compliance review. Please inspect the README and current folders first. "
+    "Move eligible markdown policy/client notes into records/policies, json evidence packets into "
+    "records/evidence, log files into records/logs, and csv exports into records/exports. Leave any file "
+    "marked hold, keep, or do_not_move exactly where it is, even if it looks like a document. Create or update "
+    "records/archive_index.json with exact keys moved_documents, moved_evidence, moved_logs, moved_exports, "
+    "held_items, and total_moved; list file names, not paths, in those arrays. Keep source code and tests "
+    "untouched, avoid deleting content, run tests, and tell me what moved plus anything you intentionally left alone."
+)
 GREENFIELD_CALCULATOR_API_PROMPT = (
     "In the repo rooted at live_worker_greenfield_calculator_api, I need you to create a small calculator API "
     "from scratch that is ready to deploy. The repository is intentionally empty except for git metadata, so first "
@@ -59,7 +70,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--scenario",
-        choices=["payment_retry", "webhook_fulfillment", "file_workspace_cleanup", "greenfield_calculator_api"],
+        choices=[
+            "payment_retry",
+            "webhook_fulfillment",
+            "file_workspace_cleanup",
+            "file_policy_archive_reorg",
+            "greenfield_calculator_api",
+        ],
         default="payment_retry",
     )
     parser.add_argument("--repo", default=None)
@@ -91,34 +108,48 @@ def main() -> int:
     trace = RuntimeMatrixLogger()
     reporter = _LiveMatrixReporter(trace=trace, poll_interval_seconds=args.matrix_poll_interval)
     reporter.start()
+    baseline: dict[str, object] = _probe_not_run_result("before")
+    after: dict[str, object] = _probe_not_run_result("after")
+    envelope = None
+    plan = None
+    result = None
+    run_error: dict[str, object] | None = None
 
     try:
-        baseline = _run_pytest(repo_path, "before")
-        print(f"PHASE baseline_pytest returncode={baseline['returncode']}", flush=True)
+        try:
+            baseline = _run_pytest(repo_path, "before")
+            print(f"PHASE baseline_pytest returncode={baseline['returncode']}", flush=True)
 
-        decompressor = DecompressorRuntime.from_env(args.dotenv)
-        planner = PlannerRuntime.from_env(args.dotenv, fallback_on_error=False)
-        worker = WorkerKernelRuntime.from_env(
-            args.dotenv,
-            planner_runtime=planner,
-            root_path=str(repo_path),
-            fallback_to_stub_workers=False,
-        )
+            decompressor = DecompressorRuntime.from_env(args.dotenv)
+            planner = PlannerRuntime.from_env(args.dotenv, fallback_on_error=False)
+            worker = WorkerKernelRuntime.from_env(
+                args.dotenv,
+                planner_runtime=planner,
+                root_path=str(repo_path),
+                fallback_to_stub_workers=False,
+            )
 
-        print("PHASE decompressor start", flush=True)
-        envelope = decompressor.run(prompt, trace=trace)
-        print(f"PHASE decompressor done request_id={envelope.request_id}", flush=True)
+            print("PHASE decompressor start", flush=True)
+            envelope = decompressor.run(prompt, trace=trace)
+            print(f"PHASE decompressor done request_id={envelope.request_id}", flush=True)
 
-        print("PHASE planner start", flush=True)
-        plan = planner.run(envelope, trace=trace)
-        print(f"PHASE planner done plan_id={plan.plan_id} steps={len(plan.steps)}", flush=True)
+            print("PHASE planner start", flush=True)
+            plan = planner.run(envelope, trace=trace)
+            print(f"PHASE planner done plan_id={plan.plan_id} steps={len(plan.steps)}", flush=True)
 
-        print("PHASE worker start", flush=True)
-        result = worker.run(plan, envelope=envelope, trace=trace)
-        print(f"PHASE worker done status={result.status}", flush=True)
+            print("PHASE worker start", flush=True)
+            result = worker.run(plan, envelope=envelope, trace=trace)
+            print(f"PHASE worker done status={result.status}", flush=True)
 
-        after = _run_pytest(repo_path, "after")
-        print(f"PHASE after_pytest returncode={after['returncode']}", flush=True)
+            after = _run_pytest(repo_path, "after")
+            print(f"PHASE after_pytest returncode={after['returncode']}", flush=True)
+        except Exception as exc:
+            run_error = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+            print(f"PHASE probe_error type={type(exc).__name__} message={exc}", flush=True)
     finally:
         reporter.stop()
         reporter.join(timeout=2)
@@ -132,12 +163,13 @@ def main() -> int:
         "worker_env": _worker_env_snapshot(),
         "runtime_matrix": trace.snapshot(),
         "baseline_pytest": baseline,
-        "envelope": envelope.model_dump(mode="json"),
-        "plan": plan.model_dump(mode="json"),
-        "result": result.model_dump(mode="json"),
+        "envelope": envelope.model_dump(mode="json") if envelope is not None else None,
+        "plan": plan.model_dump(mode="json") if plan is not None else None,
+        "result": result.model_dump(mode="json") if result is not None else None,
         "after_pytest": after,
         "git_status": _run(["git", "status", "--short"], cwd=repo_path),
         "final_files": _snapshot_repo_files(repo_path),
+        "probe_error": run_error,
     }
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -146,9 +178,9 @@ def main() -> int:
         json.dumps(
             {
                 "baseline_returncode": baseline["returncode"],
-                "result_status": result.status,
+                "result_status": result.status if result is not None else "probe_error",
                 "after_returncode": after["returncode"],
-                "step_count": len(plan.steps),
+                "step_count": len(plan.steps) if plan is not None else 0,
                 "runtime_matrix_rows": trace.snapshot()["row_count"],
             },
             sort_keys=True,
@@ -249,6 +281,11 @@ def _scenario_config(scenario: str) -> dict[str, str]:
             "repo": "live_worker_workspace_repo",
             "prompt": FILE_WORKSPACE_MANAGEMENT_PROMPT,
         }
+    if scenario == "file_policy_archive_reorg":
+        return {
+            "repo": "live_worker_policy_archive_repo",
+            "prompt": FILE_POLICY_ARCHIVE_PROMPT,
+        }
     if scenario == "greenfield_calculator_api":
         return {
             "repo": "live_worker_greenfield_calculator_api",
@@ -263,6 +300,9 @@ def _ensure_mock_repo(repo_path: Path, *, scenario: str) -> None:
         return
     if scenario == "file_workspace_cleanup":
         _ensure_file_workspace_repo(repo_path)
+        return
+    if scenario == "file_policy_archive_reorg":
+        _ensure_policy_archive_repo(repo_path)
         return
     if scenario == "greenfield_calculator_api":
         _ensure_greenfield_repo(repo_path)
@@ -624,6 +664,179 @@ def test_workspace_manifest_lists_moved_artifacts() -> None:
     _ensure_probe_git_baseline(repo_path)
 
 
+def _ensure_policy_archive_repo(repo_path: Path) -> None:
+    _reset_seeded_probe_repo(repo_path)
+    _remove_generated_runtime_dirs(repo_path)
+
+    for directory in (
+        "incoming/client_notes",
+        "incoming/policies",
+        "incoming/evidence",
+        "exports",
+        "logs/raw",
+        "records/policies",
+        "records/evidence",
+        "records/logs",
+        "records/exports",
+        "src",
+        "tests",
+    ):
+        (repo_path / directory).mkdir(parents=True, exist_ok=True)
+
+    (repo_path / "README.md").write_text(
+        """# Policy Archive Handoff Probe
+
+This repo simulates a messy internal compliance handoff workspace. The handoff
+rules are intentionally specific:
+
+- Move eligible markdown policy/client notes into `records/policies/`.
+- Move JSON evidence packets into `records/evidence/`.
+- Move `.log` files into `records/logs/`.
+- Move CSV exports into `records/exports/`.
+- Leave any file marked `hold`, `keep`, or `do_not_move` in place.
+- `records/archive_index.json` must contain exact keys:
+  `moved_documents`, `moved_evidence`, `moved_logs`, `moved_exports`,
+  `held_items`, and `total_moved`.
+- Archive index arrays contain file names only, not paths.
+- Source code and tests are not part of the archive cleanup.
+""",
+        encoding="utf-8",
+    )
+    (repo_path / "incoming" / "client_notes" / "client_alpha_notes.md").write_text(
+        "# Client Alpha Notes\n\nReady for compliance handoff.\n",
+        encoding="utf-8",
+    )
+    (repo_path / "incoming" / "client_notes" / "client_beta_followup.md").write_text(
+        "# Client Beta Followup\n\nReady for compliance handoff.\n",
+        encoding="utf-8",
+    )
+    (repo_path / "incoming" / "client_notes" / "client_gamma_hold.md").write_text(
+        "# Client Gamma Notes\n\nhold: true\nReason: legal review pending.\n",
+        encoding="utf-8",
+    )
+    (repo_path / "incoming" / "policies" / "retention_policy.md").write_text(
+        "# Retention Policy\n\nApproved policy notes.\n",
+        encoding="utf-8",
+    )
+    (repo_path / "incoming" / "policies" / "draft_policy_do_not_move.md").write_text(
+        "# Draft Policy\n\ndo_not_move: pending owner approval.\n",
+        encoding="utf-8",
+    )
+    (repo_path / "incoming" / "evidence" / "access_review.json").write_text(
+        '{"kind":"access_review","status":"ready"}\n',
+        encoding="utf-8",
+    )
+    (repo_path / "incoming" / "evidence" / "vendor_exception.json").write_text(
+        '{"kind":"vendor_exception","status":"ready"}\n',
+        encoding="utf-8",
+    )
+    (repo_path / "incoming" / "evidence" / "keep_local.json").write_text(
+        '{"keep": true, "reason": "contains draft annotations"}\n',
+        encoding="utf-8",
+    )
+    (repo_path / "logs" / "raw" / "audit_2026_06.log").write_text(
+        "2026-06-05 policy handoff audit event\n",
+        encoding="utf-8",
+    )
+    (repo_path / "logs" / "raw" / "debug_keep.log").write_text(
+        "keep: local debug scratch\n",
+        encoding="utf-8",
+    )
+    (repo_path / "exports" / "policy_matrix.csv").write_text(
+        "policy,status\nretention,approved\n",
+        encoding="utf-8",
+    )
+    (repo_path / "exports" / "owner_map.csv").write_text(
+        "owner,policy\ncompliance,retention\n",
+        encoding="utf-8",
+    )
+    (repo_path / "src" / "__init__.py").write_text(
+        '"""Source package that must stay untouched by file archive probes."""\n',
+        encoding="utf-8",
+    )
+    (repo_path / "src" / "archive_guard.py").write_text(
+        '''"""Tiny guard module for probe tests."""
+
+SOURCE_CODE_SENTINEL = "do-not-edit-source"
+''',
+        encoding="utf-8",
+    )
+    (repo_path / "tests" / "test_policy_archive.py").write_text(
+        '''from pathlib import Path
+import json
+
+
+BASE = Path(__file__).resolve().parent.parent
+
+
+def test_policy_archive_moves_eligible_files_only() -> None:
+    expected_policy_docs = {
+        "client_alpha_notes.md",
+        "client_beta_followup.md",
+        "retention_policy.md",
+    }
+    for name in expected_policy_docs:
+        assert (BASE / "records" / "policies" / name).exists()
+
+    assert (BASE / "records" / "evidence" / "access_review.json").exists()
+    assert (BASE / "records" / "evidence" / "vendor_exception.json").exists()
+    assert (BASE / "records" / "logs" / "audit_2026_06.log").exists()
+    assert (BASE / "records" / "exports" / "policy_matrix.csv").exists()
+    assert (BASE / "records" / "exports" / "owner_map.csv").exists()
+
+    assert not (BASE / "incoming" / "client_notes" / "client_alpha_notes.md").exists()
+    assert not (BASE / "incoming" / "client_notes" / "client_beta_followup.md").exists()
+    assert not (BASE / "incoming" / "policies" / "retention_policy.md").exists()
+    assert not (BASE / "incoming" / "evidence" / "access_review.json").exists()
+    assert not (BASE / "logs" / "raw" / "audit_2026_06.log").exists()
+    assert not (BASE / "exports" / "policy_matrix.csv").exists()
+
+
+def test_policy_archive_preserves_hold_and_keep_items() -> None:
+    assert (BASE / "incoming" / "client_notes" / "client_gamma_hold.md").exists()
+    assert (BASE / "incoming" / "policies" / "draft_policy_do_not_move.md").exists()
+    assert (BASE / "incoming" / "evidence" / "keep_local.json").exists()
+    assert (BASE / "logs" / "raw" / "debug_keep.log").exists()
+    assert 'SOURCE_CODE_SENTINEL = "do-not-edit-source"' in (
+        BASE / "src" / "archive_guard.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_archive_index_schema_and_counts() -> None:
+    payload = json.loads((BASE / "records" / "archive_index.json").read_text(encoding="utf-8"))
+    assert set(payload) == {
+        "moved_documents",
+        "moved_evidence",
+        "moved_logs",
+        "moved_exports",
+        "held_items",
+        "total_moved",
+    }
+    assert sorted(payload["moved_documents"]) == [
+        "client_alpha_notes.md",
+        "client_beta_followup.md",
+        "retention_policy.md",
+    ]
+    assert sorted(payload["moved_evidence"]) == ["access_review.json", "vendor_exception.json"]
+    assert payload["moved_logs"] == ["audit_2026_06.log"]
+    assert sorted(payload["moved_exports"]) == ["owner_map.csv", "policy_matrix.csv"]
+    assert sorted(payload["held_items"]) == [
+        "client_gamma_hold.md",
+        "debug_keep.log",
+        "draft_policy_do_not_move.md",
+        "keep_local.json",
+    ]
+    assert payload["total_moved"] == 8
+    for values in payload.values():
+        if isinstance(values, list):
+            assert all("/" not in value for value in values)
+'''
+        ,
+        encoding="utf-8",
+    )
+    _ensure_probe_git_baseline(repo_path)
+
+
 def _reset_seeded_probe_repo(repo_path: Path) -> None:
     repo_path.mkdir(parents=True, exist_ok=True)
     children = list(repo_path.iterdir())
@@ -676,6 +889,8 @@ def _remove_generated_runtime_dirs(repo_path: Path) -> None:
 
 def _snapshot_repo_files(repo_path: Path) -> dict[str, str]:
     files: dict[str, str] = {}
+    if not repo_path.exists():
+        return files
     for path in sorted(repo_path.rglob("*")):
         if not path.is_file() or ".git" in path.parts:
             continue
@@ -692,6 +907,14 @@ def _snapshot_repo_files(repo_path: Path) -> dict[str, str]:
 
 
 def _run_pytest(repo_path: Path, label: str) -> dict[str, object]:
+    if not repo_path.exists():
+        return {
+            "label": label,
+            "command": [sys.executable, "-m", "pytest", "-q"],
+            "returncode": 127,
+            "stdout": "",
+            "stderr": f"repo path does not exist: {repo_path}",
+        }
     command = [sys.executable, "-m", "pytest", "-q"]
     if (repo_path / "pyproject.toml").exists():
         command = ["uv", "run", "pytest", "-q"]
@@ -738,6 +961,13 @@ def _pyproject_pytest_extra(repo_path: Path) -> str | None:
 
 
 def _run(command: list[str], *, cwd: Path) -> dict[str, object]:
+    if not cwd.exists():
+        return {
+            "command": command,
+            "returncode": 127,
+            "stdout": "",
+            "stderr": f"cwd does not exist: {cwd}",
+        }
     completed = subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
     return {
         "command": command,
@@ -749,6 +979,16 @@ def _run(command: list[str], *, cwd: Path) -> dict[str, object]:
 
 def _slug(value: str) -> str:
     return "".join(char if char.isalnum() else "-" for char in value.lower()).strip("-")
+
+
+def _probe_not_run_result(label: str) -> dict[str, object]:
+    return {
+        "label": label,
+        "command": [],
+        "returncode": None,
+        "stdout": "",
+        "stderr": "not run",
+    }
 
 
 if __name__ == "__main__":

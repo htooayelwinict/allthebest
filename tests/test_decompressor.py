@@ -10,7 +10,7 @@ from app.decompressor.model_client import OpenAICompatibleJSONClient
 from app.decompressor.contracts import RequestClassification
 from app.decompressor.redaction import redact_secrets
 from app.decompressor.runtime import DecompressorRuntime
-from app.schemas import Envelope
+from app.schemas import Envelope, extract_literal_contract
 
 
 class FakePromptChainClient:
@@ -123,6 +123,48 @@ def _question_responses() -> dict[str, Any]:
 
 def test_decompressor_contract_schema_is_available() -> None:
     assert RequestClassification.model_json_schema()["title"] == "RequestClassification"
+
+
+def test_literal_contract_extractor_preserves_manifest_keys_and_paths() -> None:
+    literals = extract_literal_contract(
+        "Move files and write docs/workspace_manifest.json with moved_documents, "
+        "moved_logs, moved_json_artifacts, and total_artifacts."
+    )
+    by_value = {literal.value: literal.kind for literal in literals}
+
+    assert by_value["docs/workspace_manifest.json"] == "path"
+    assert by_value["moved_documents"] == "json_key"
+    assert by_value["moved_logs"] == "json_key"
+    assert by_value["moved_json_artifacts"] == "json_key"
+    assert by_value["total_artifacts"] == "json_key"
+
+
+def test_prompt_chain_merges_deterministic_literal_contract_and_flags_generated_placeholders() -> None:
+    responses = _valid_chain_responses()
+    responses["decompress_request"] = {
+        **responses["decompress_request"],
+        "normalized_input": "Move files and write manifest with moved_documents, [ADDRESS], moved_json_artifacts.",
+        "constraints": ["manifest_must_include_moved_documents_[ADDRESS]_moved_json_artifacts"],
+        "artifacts": [{"name": "[ADDRESS]", "type": "json_key"}],
+        "literal_contract": [
+            {"value": "moved_documents", "kind": "json_key", "source": "model"},
+            {"value": "[ADDRESS]", "kind": "json_key", "source": "model"},
+        ],
+    }
+
+    envelope = DecompressorRuntime(model_client=FakePromptChainClient(responses)).run(
+        "Move files and write docs/workspace_manifest.json with moved_documents, "
+        "moved_logs, moved_json_artifacts, and total_artifacts."
+    )
+
+    literals = {literal.value: literal.kind for literal in envelope.literal_contract}
+    assert literals["moved_logs"] == "json_key"
+    assert literals["docs/workspace_manifest.json"] == "path"
+    assert "[ADDRESS]" not in literals
+    assert "[ADDRESS]" in envelope.metadata["invalid_generated_placeholders"]
+    assert "[ADDRESS]" not in envelope.normalized_input
+    assert "[ADDRESS]" not in json.dumps(envelope.artifacts, sort_keys=True)
+    assert "[ADDRESS]" not in json.dumps(envelope.constraints, sort_keys=True)
 
 
 def test_dotenv_loader_reads_values_without_exporting_secrets(tmp_path: Path) -> None:
@@ -723,9 +765,15 @@ def test_model_client_sends_expected_kwargs_and_extracts_string(monkeypatch: pyt
     assert captured_init["timeout_ms"] == 12500
     assert captured_send["model"] == "test-model"
     assert captured_send["temperature"] == 0.1
-    assert captured_send["max_tokens"] == 321
-    assert captured_send["provider"] == {"sort": "latency"}
+    assert captured_send["max_completion_tokens"] == 321
+    assert captured_send["timeout_ms"] == 12500
+    assert captured_send["provider"] == {
+        "sort": "latency",
+        "allow_fallbacks": True,
+    }
+    assert captured_send["plugins"] == [{"id": "response-healing"}]
     assert captured_send["response_format"]["type"] == "json_schema"
+    assert captured_send["response_format"]["json_schema"]["strict"] is False
 
 
 def test_model_client_extracts_list_content_parts(monkeypatch: pytest.MonkeyPatch) -> None:
