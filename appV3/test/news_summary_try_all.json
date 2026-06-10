@@ -1,0 +1,235 @@
+{
+  "source": "appV3/test/news.txt",
+  "generated_at_utc": "2026-06-10T14:57:28Z",
+  "title": "Single 20-somethings using AI to make first move on dating apps, says Hinge boss",
+  "summary": "Single 20-somethings using AI to start conversations on dating apps, as Hinge boss, Jackie Jantos, revealed in a BBC interview. Despite the lack of confidence among older generations, they are seeking \"love\" and are struggling to find the confidence to engage in long-term relationships. They argue that AI tools like Hinge's prompts help them express themselves more authentically.\n\nJantos, speaking from experience, believes Hinge's AI is more about helping users express themselves than about writing words for others. She warns that this feature could lead to \"dating app burnout\" and a return to more organic, in-person interactions.\n\nHinge, founded in 2012 and owned by Match Group, has grown its user base by targeting younger demographics. It has become the most-used dating app in the UK, with Tinder and Grindr leading the charge. However, usage has declined, dropping from 1.5 million in May 2025 to 1.4 million in the same period.\n\nThe boss of Hinge emphasized the importance of staying true to the platform's mission of \"deleting\" users, highlighting its commitment to authenticity and long-term relationships.",
+  "summary_source": "model",
+  "selected_model": "mlx-community/Falcon-H1-Tiny-90M-Instruct-bf16",
+  "selected_prompt_style": "extractive",
+  "selected_model_failure_reason": null,
+  "parameters": {
+    "models": [
+      "mlx-community/Falcon-H1-Tiny-Multilingual-100M-Instruct-bf16",
+      "mlx-community/Falcon-H1-Tiny-90M-Instruct-bf16"
+    ],
+    "prompt_styles": [
+      "structured",
+      "brief",
+      "extractive"
+    ],
+    "max_input_chars": 1800,
+    "max_tokens": 320,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "raw_prompt": false,
+    "max_links": 25
+  },
+  "stats": {
+    "raw_chars": 263344,
+    "cleaned_line_count": 54,
+    "cleaned_chars": 4688,
+    "cleaned_chars_sent_to_model": 1690,
+    "link_count": 9,
+    "input_looks_like_html": true
+  },
+  "links": [
+    {
+      "label": "were spending around 1,000 fewer hours a year in person",
+      "url": "https://www.bls.gov/tus/",
+      "kind": "page"
+    },
+    {
+      "label": "feel lonely \"often or always\".",
+      "url": "https://www.oxfam.org.uk/media/press-releases/new-survey-finds-nearly-half-of-gen-z-are-lonely-as-oxfam-encourages-people-to-volunteer/",
+      "kind": "page"
+    },
+    {
+      "label": "Dating apps could be in trouble – here's what might take their place",
+      "url": "https://www.bbc.co.uk/news/articles/cg7zxgxdggjo",
+      "kind": "page"
+    },
+    {
+      "label": "Hinge bans BBC star after 300 wrong catfish reports",
+      "url": "https://www.bbc.co.uk/news/articles/c4g9vvm3583o",
+      "kind": "page"
+    },
+    {
+      "label": "I've seen her name and photo - but we can't talk before the date. Will it work out?",
+      "url": "https://www.bbc.co.uk/news/articles/c9w1we5gz5qo",
+      "kind": "page"
+    },
+    {
+      "label": "20260128-how-to-make-google-put-trusted-sources-up-top-when-you-search",
+      "url": "https://www.bbc.com/future/article/20260128-how-to-make-google-put-trusted-sources-up-top-when-you-search",
+      "kind": "page"
+    },
+    {
+      "label": "20250207-bbc-podcasts-are-now-available-on-the-bbc-website-and-app",
+      "url": "https://www.bbc.com/future/article/20250207-bbc-podcasts-are-now-available-on-the-bbc-website-and-app",
+      "kind": "page"
+    },
+    {
+      "label": "BBC_HaveYourSay",
+      "url": "https://x.com/BBC_HaveYourSay",
+      "kind": "page"
+    },
+    {
+      "label": "uk-66041359",
+      "url": "https://www.bbc.co.uk/news/uk-66041359",
+      "kind": "page"
+    }
+  ],
+  "attempts": [
+    {
+      "model": "mlx-community/Falcon-H1-Tiny-Multilingual-100M-Instruct-bf16",
+      "prompt_style": "structured",
+      "summary": "Summary: \nHinge, a dating app, uses AI to create first-move conversations on its platform. The AI features are designed to help users express interest in a match, offering a \"helping\" experience rather than a \"writing\" message. Hinge has grown significantly since its inception, with a focus on user engagement and a commitment to long-term relationships. The app has expanded its user base, with over 1.5 million active users in the year following May 2025. Hinge has also introduced a new dating service, Tinder, which has seen a decline in user count over the past three years.",
+      "raw_model_output": "Summary:  \nHinge, a dating app, uses AI to create first-move conversations on its platform. The AI features are designed to help users express interest in a match, offering a \"helping\" experience rather than a \"writing\" message. Hinge has grown significantly since its inception, with a focus on user engagement and a commitment to long-term relationships. The app has expanded its user base, with over 1.5 million active users in the year following May 2025. Hinge has also introduced a new dating service, Tinder, which has seen a decline in user count over the past three years.",
+      "failure_reason": null,
+      "stats": {
+        "prompt_chars": 2129,
+        "rendered_prompt_chars": 2200,
+        "prompt_sha256": "9c57650d5c021a48f002a5e236a6151c029cd7d27bddf164c3dfa11f1c7bcffa",
+        "prompt_tokens_estimate": 576,
+        "generation_chunk_count": 134,
+        "nonempty_generation_chunk_count": 129,
+        "raw_model_output_chars": 581,
+        "elapsed_seconds": 9.12421295799868,
+        "finish_reason": "stop",
+        "generation_tokens": 134,
+        "prompt_tps": 268.8481223620555,
+        "generation_tps": 19.924504959322544,
+        "prompt_style": "structured",
+        "raw_prompt": false,
+        "max_tokens": 320,
+        "model_summary_usable": true
+      }
+    },
+    {
+      "model": "mlx-community/Falcon-H1-Tiny-Multilingual-100M-Instruct-bf16",
+      "prompt_style": "brief",
+      "summary": "Hinge has made a significant leap in AI-driven dating app development, with AI creating prompts to start conversations on platforms like Hinge. The AI features help users express their feelings and interests, offering a more personalized and engaging experience. Hinge's AI has also improved its user base, with users reporting \"struggling to have the confidence to put themselves out there\" as they socialize less in person. The platform's focus on \"designed to be deleted\" suggests it aims to help users find long-term relationships rather remain on the platform indefinitely.",
+      "raw_model_output": "Hinge has made a significant leap in AI-driven dating app development, with AI creating prompts to start conversations on platforms like Hinge. The AI features help users express their feelings and interests, offering a more personalized and engaging experience. Hinge's AI has also improved its user base, with users reporting \"struggling to have the confidence to put themselves out there\" as they socialize less in person. The platform's focus on \"designed to be deleted\" suggests it aims to help users find long-term relationships rather remain on the platform indefinitely.",
+      "failure_reason": null,
+      "stats": {
+        "prompt_chars": 1901,
+        "rendered_prompt_chars": 1972,
+        "prompt_sha256": "e4272cc1e5482223cf0a30822e7ba7c051f915b8ecbdd1d816bed3c61c9a9c0e",
+        "prompt_tokens_estimate": 516,
+        "generation_chunk_count": 120,
+        "nonempty_generation_chunk_count": 117,
+        "raw_model_output_chars": 578,
+        "elapsed_seconds": 6.355943790997117,
+        "finish_reason": "stop",
+        "generation_tokens": 120,
+        "prompt_tps": 397.56141774375163,
+        "generation_tps": 25.256091064977916,
+        "prompt_style": "brief",
+        "raw_prompt": false,
+        "max_tokens": 320,
+        "model_summary_usable": true
+      }
+    },
+    {
+      "model": "mlx-community/Falcon-H1-Tiny-Multilingual-100M-Instruct-bf16",
+      "prompt_style": "extractive",
+      "summary": "Single 20-somethings using AI to make first move on dating apps, says Hinge boss\nHealth\nVideo\nSingle 20-somethings are using AI to start conversations on dating apps because they lack the confidence of older generations, says the boss of Hinge.\nJackie Jantos told the BBC Gen Z daters \"absolutely want love\" but were \"struggling to have the confidence to put themselves out there\" as they socialise less in person.\nShe defended Hinge's AI feature which creates prompts to start chatting with a match as \"not about writing words for you\" but \"helping you express who you are\".\nHinge has continued to grow its UK users despite some relationship experts warning of \"dating app burnout\" and a return to more organic in person meetings.\nFounded in 2012 and owned by Match Group, which also owns Tinder and Match.com, Hinge has built its brand around the slogan \"designed to be deleted\".\nJantos dismisses accusations that this is \"just a marketing line\", saying it wants to help users find long-term relationships rather stay on the platform indefinitely.\nTinder is the most visited dating app, but over the past three years usage has been dropping and it's now only marginally ahead of nearest competitor Hinge. Bumble and Grindr follow Hinge in the most used dating services.\nSome 1.",
+      "raw_model_output": "Single 20-somethings using AI to make first move on dating apps, says Hinge boss\nHealth\nVideo\nSingle 20-somethings are using AI to start conversations on dating apps because they lack the confidence of older generations, says the boss of Hinge.\nJackie Jantos told the BBC Gen Z daters \"absolutely want love\" but were \"struggling to have the confidence to put themselves out there\" as they socialise less in person.\nShe defended Hinge's AI feature which creates prompts to start chatting with a match as \"not about writing words for you\" but \"helping you express who you are\".\nHinge has continued to grow its UK users despite some relationship experts warning of \"dating app burnout\" and a return to more organic in person meetings.\nFounded in 2012 and owned by Match Group, which also owns Tinder and Match.com, Hinge has built its brand around the slogan \"designed to be deleted\".\nJantos dismisses accusations that this is \"just a marketing line\", saying it wants to help users find long-term relationships rather stay on the platform indefinitely.\nTinder is the most visited dating app, but over the past three years usage has been dropping and it's now only marginally ahead of nearest competitor Hinge. Bumble and Grindr follow Hinge in the most used dating services.\nSome 1.",
+      "failure_reason": null,
+      "stats": {
+        "prompt_chars": 1759,
+        "rendered_prompt_chars": 1830,
+        "prompt_sha256": "1a0f6060927c59c81bf1b34e8799943a5ebd58a4d3cd639ebdb78fa1ed91406a",
+        "prompt_tokens_estimate": 476,
+        "generation_chunk_count": 320,
+        "nonempty_generation_chunk_count": 309,
+        "raw_model_output_chars": 1279,
+        "elapsed_seconds": 12.754582166999171,
+        "finish_reason": "length",
+        "generation_tokens": 320,
+        "prompt_tps": 420.18274847692635,
+        "generation_tps": 27.754665554661713,
+        "prompt_style": "extractive",
+        "raw_prompt": false,
+        "max_tokens": 320,
+        "model_summary_usable": true
+      }
+    },
+    {
+      "model": "mlx-community/Falcon-H1-Tiny-90M-Instruct-bf16",
+      "prompt_style": "structured",
+      "summary": "Summary:\nSingle 20-somethings using AI to initiate conversations on dating apps, with Hinge boss Jackie Jantos asserting confidence in older generations. Despite challenges such as dating app burnout and a reluctance to stay on the platform indefinitely, Hinge has steadily grown its user base, with 1.5 million active users in the past three years. The company has transitioned from Tinder to other platforms like Hinge, Tinder, and Grindr, maintaining its slogan of \"designed to be deleted.\"",
+      "raw_model_output": "Summary:\nSingle 20-somethings using AI to initiate conversations on dating apps, with Hinge boss Jackie Jantos asserting confidence in older generations. Despite challenges such as dating app burnout and a reluctance to stay on the platform indefinitely, Hinge has steadily grown its user base, with 1.5 million active users in the past three years. The company has transitioned from Tinder to other platforms like Hinge, Tinder, and Grindr, maintaining its slogan of \"designed to be deleted.\"",
+      "failure_reason": null,
+      "stats": {
+        "prompt_chars": 2129,
+        "rendered_prompt_chars": 2180,
+        "prompt_sha256": "6fd4a097b506bfecb69996eda5537846dcaf0c4949b0fe1aa9dffb04f9a90920",
+        "prompt_tokens_estimate": 584,
+        "generation_chunk_count": 122,
+        "nonempty_generation_chunk_count": 118,
+        "raw_model_output_chars": 493,
+        "elapsed_seconds": 5.16030837499784,
+        "finish_reason": "stop",
+        "generation_tokens": 122,
+        "prompt_tps": 364.72545861034376,
+        "generation_tps": 35.10165934127851,
+        "prompt_style": "structured",
+        "raw_prompt": false,
+        "max_tokens": 320,
+        "model_summary_usable": true
+      }
+    },
+    {
+      "model": "mlx-community/Falcon-H1-Tiny-90M-Instruct-bf16",
+      "prompt_style": "brief",
+      "summary": "Single 20-somethings using AI to start conversations on dating apps, Hinge boss Jackie Jantos highlights the challenges of younger generations lacking confidence in online interactions. Despite growing popularity, Hinge's AI feature, which suggests prompts for meaningful conversations, is seen as a potential solution to these concerns, though it's also noted for burnout and the need for more organic, in-person dating experiences.",
+      "raw_model_output": "Single 20-somethings using AI to start conversations on dating apps, Hinge boss Jackie Jantos highlights the challenges of younger generations lacking confidence in online interactions. Despite growing popularity, Hinge's AI feature, which suggests prompts for meaningful conversations, is seen as a potential solution to these concerns, though it's also noted for burnout and the need for more organic, in-person dating experiences.",
+      "failure_reason": null,
+      "stats": {
+        "prompt_chars": 1901,
+        "rendered_prompt_chars": 1952,
+        "prompt_sha256": "86d10ad5c3d33a4e3c5701900c2613e52220ee6eda67b26808afb811cb534d72",
+        "prompt_tokens_estimate": 524,
+        "generation_chunk_count": 91,
+        "nonempty_generation_chunk_count": 89,
+        "raw_model_output_chars": 433,
+        "elapsed_seconds": 3.716729166000732,
+        "finish_reason": "stop",
+        "generation_tokens": 91,
+        "prompt_tps": 507.37145020344656,
+        "generation_tps": 34.50079397282419,
+        "prompt_style": "brief",
+        "raw_prompt": false,
+        "max_tokens": 320,
+        "model_summary_usable": true
+      }
+    },
+    {
+      "model": "mlx-community/Falcon-H1-Tiny-90M-Instruct-bf16",
+      "prompt_style": "extractive",
+      "summary": "Single 20-somethings using AI to start conversations on dating apps, as Hinge boss, Jackie Jantos, revealed in a BBC interview. Despite the lack of confidence among older generations, they are seeking \"love\" and are struggling to find the confidence to engage in long-term relationships. They argue that AI tools like Hinge's prompts help them express themselves more authentically.\n\nJantos, speaking from experience, believes Hinge's AI is more about helping users express themselves than about writing words for others. She warns that this feature could lead to \"dating app burnout\" and a return to more organic, in-person interactions.\n\nHinge, founded in 2012 and owned by Match Group, has grown its user base by targeting younger demographics. It has become the most-used dating app in the UK, with Tinder and Grindr leading the charge. However, usage has declined, dropping from 1.5 million in May 2025 to 1.4 million in the same period.\n\nThe boss of Hinge emphasized the importance of staying true to the platform's mission of \"deleting\" users, highlighting its commitment to authenticity and long-term relationships.",
+      "raw_model_output": "Single 20-somethings using AI to start conversations on dating apps, as Hinge boss, Jackie Jantos, revealed in a BBC interview. Despite the lack of confidence among older generations, they are seeking \"love\" and are struggling to find the confidence to engage in long-term relationships. They argue that AI tools like Hinge's prompts help them express themselves more authentically.\n\nJantos, speaking from experience, believes Hinge's AI is more about helping users express themselves than about writing words for others. She warns that this feature could lead to \"dating app burnout\" and a return to more organic, in-person interactions.\n\nHinge, founded in 2012 and owned by Match Group, has grown its user base by targeting younger demographics. It has become the most-used dating app in the UK, with Tinder and Grindr leading the charge. However, usage has declined, dropping from 1.5 million in May 2025 to 1.4 million in the same period.\n\nThe boss of Hinge emphasized the importance of staying true to the platform's mission of \"deleting\" users, highlighting its commitment to authenticity and long-term relationships.",
+      "failure_reason": null,
+      "stats": {
+        "prompt_chars": 1759,
+        "rendered_prompt_chars": 1810,
+        "prompt_sha256": "33cb0b86984e2b5c06a09bd88c84cba422d061dc9caf087c58bd319299b8749f",
+        "prompt_tokens_estimate": 485,
+        "generation_chunk_count": 269,
+        "nonempty_generation_chunk_count": 260,
+        "raw_model_output_chars": 1123,
+        "elapsed_seconds": 9.07612141700156,
+        "finish_reason": "stop",
+        "generation_tokens": 269,
+        "prompt_tps": 571.9262904927225,
+        "generation_tps": 32.88042266034389,
+        "prompt_style": "extractive",
+        "raw_prompt": false,
+        "max_tokens": 320,
+        "model_summary_usable": true
+      }
+    }
+  ],
+  "cleaned_text_sent_to_model": "Single 20-somethings using AI to make first move on dating apps, says Hinge boss\nHealth\nVideo\nSingle 20-somethings using AI to make first move on dating apps - Hinge boss\n6 days ago\nYasmin Rufo\nSean Farrington\npresenter, Big Boss Interview podcast\nEmer Moreau\nSingle 20-somethings are using AI to start conversations on dating apps because they lack the confidence of older generations, says the boss of Hinge.\nJackie Jantos told the BBC Gen Z daters \"absolutely want love\" but were \"struggling to have the confidence to put themselves out there\" as they socialise less in person.\nShe defended Hinge's AI feature which creates prompts to start chatting with a match as \"not about writing words for you\" but \"helping you express who you are\".\nHinge has continued to grow its UK users despite some relationship experts warning of \"dating app burnout\" and a return to more organic in person meetings.\nFounded in 2012 and owned by Match Group, which also owns Tinder and Match.com, Hinge has built its brand around the slogan \"designed to be deleted\".\nJantos dismisses accusations that this is \"just a marketing line\", saying it wants to help users find long-term relationships rather stay on the platform indefinitely.\nTinder is the most visited dating app, but over the past three years usage has been dropping and it's now only marginally ahead of nearest competitor Hinge. Bumble and Grindr follow Hinge in the most used dating services.\nSome 1.5 million adults used Hinge in the year up to May 2025, up from 1.4 million a year earlier.\nOver the same period, Tinder's audience fell from 1.9 million to 1.5 million, according to Ipsos iris data.\nHinge boss on her green and red flags in life"
+}

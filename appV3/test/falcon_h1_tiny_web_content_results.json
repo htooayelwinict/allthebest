@@ -1,0 +1,130 @@
+{
+  "model": "mlx-community/Falcon-H1-Tiny-R-90M-bf16",
+  "generated_at_utc": "2026-06-10T11:53:49Z",
+  "max_tokens": 320,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "results": [
+    {
+      "name": "web_scrape_noise_filter",
+      "capacity": "scraped-page extraction and boilerplate filtering",
+      "prompt": "You are given raw scraped webpage text. Extract only the main article facts as exactly four bullets: title, date, price, and call to action. Ignore nav, cookie, footer, ads, and related links.\n\nRAW SCRAPE:\nHome | Reviews | Subscribe | Cookie settings | Accept all cookies\nADVERTISEMENT: Save 40% on garden lights\nARTICLE TITLE: SolarLeaf Home Battery launches for renters\nBy Priya Nair | Published March 18, 2026\nSolarLeaf announced a compact balcony battery for apartment renters. The unit stores solar energy from clip-on panels and starts at $3,499. Pre-orders open April 2 in California, Oregon, and Washington.\nRelated: Best window planters | Footer: Contact Privacy Careers",
+      "output": "<think>\nThe user says: \"You are given raw scraped webpage text. Extract only the main article facts as exactly four bullets: title, date, price, and call to action. Ignore nav, cookie, footer, ads, and related links.\"\n\nThen they give a snippet of raw text:\n\nHome | Reviews | Subscribe | Cookie settings | Accept all cookies\nADVERTISEMENT: Save 40% on garden lights\nARTICLE TITLE: SolarLeaf Home Battery launches for renters\nBy Priya Nair | Published March 18, 2026\nSolarLeaf announced a compact balcony battery for apartment renters. The unit stores solar energy from clip-on panels and starts at $3,499. Pre-orders open April 2 in California, Oregon, and Washington.\nRelated: Best window planters | Footer: Contact Privacy Careers\n\nWe need to extract exactly four bullet points: title, date, price, and call to action.\n\nWe need to parse the text.\n\nFirst, we need to parse the raw text. Let's rewrite the raw text:\n\n\"Home | Reviews | Subscribe | Cookie settings | Accept all cookies\"\n\nThat's a snippet.\n\n\"ADVERTISEMENT: Save 40% on garden lights\"\n\n\"ADVERTISEMENT: Save 40% on garden lights\"\n\n\"ARTICLE T",
+      "elapsed_seconds": 5.872057958000369,
+      "prompt_tokens": 204,
+      "generation_tokens": 320,
+      "prompt_tps": 475.969240487954,
+      "generation_tps": 59.1084606270874,
+      "peak_memory_gb": 0.40518023,
+      "finish_reason": "length",
+      "checks": [
+        {
+          "name": "no_think_tags",
+          "passed": false
+        },
+        {
+          "name": "has_four_bullets",
+          "passed": false
+        },
+        {
+          "name": "extracts_title",
+          "passed": true
+        },
+        {
+          "name": "extracts_date",
+          "passed": true
+        },
+        {
+          "name": "extracts_price",
+          "passed": true
+        },
+        {
+          "name": "extracts_call_to_action",
+          "passed": true
+        },
+        {
+          "name": "filters_boilerplate",
+          "passed": false
+        }
+      ]
+    },
+    {
+      "name": "web_content_synthesis",
+      "capacity": "multi-source scraped-content synthesis",
+      "prompt": "Synthesize these scraped source snippets into three bullets. Include one shared conclusion and one disagreement. Mention Source A and Source B where relevant.\n\nSOURCE A SCRAPE:\nQuickCart pilot update: The new curbside pickup system reduced average wait time from 22 minutes to 15 minutes in the downtown store. Managers said staff training was the main bottleneck.\n\nSOURCE B SCRAPE:\nQuickCart driver forum: Several drivers said pickup windows are still unpredictable. They agreed the downtown store is faster, but said the suburban store often takes 30 minutes.",
+      "output": "<think>\nThe user wants to \"Synthesize these scraped source snippets into three bullets. Include one shared conclusion and one disagreement. Mention Source A and Source B where relevant.\"\n\nWe need to produce a response that includes three bullet points (bullets) for each of the three scraped source snippets. The user wants to \"Synthesize these scraped source snippets into three bullets.\" So we need to produce three bullet points, each containing a snippet (maybe a short description) and a shared conclusion and a disagreement.\n\nWe need to include Source A and Source B where relevant. So we need to mention Source A and Source B where relevant. Possibly we can mention that Source A is the new curbside pickup system, Source B is the driver forum.\n\nWe need to incorporate the three bullet points.\n\nWe need to be mindful of the content: The user gave three snippet examples:\n\n- \"QuickCart pilot update: The new curbside pickup system reduced average wait time from 22 minutes to 15 minutes in the downtown store. Managers said staff training was the main bottleneck.\"\n\n- \"QuickCart driver forum: Several drivers said pickup windows are still unpredictable. They agreed the downtown store is faster, but said the suburban store often takes 30 minutes.\"\n\nWe need to produce three bullet points.\n\nWe need to include one shared conclusion and one disagreement.\n\nWe need to mention Source A and Source B where relevant",
+      "elapsed_seconds": 3.097226750000118,
+      "prompt_tokens": 145,
+      "generation_tokens": 320,
+      "prompt_tps": 443.4224213403725,
+      "generation_tps": 117.12182629492199,
+      "peak_memory_gb": 0.40518023,
+      "finish_reason": "length",
+      "checks": [
+        {
+          "name": "no_think_tags",
+          "passed": false
+        },
+        {
+          "name": "has_three_bullets",
+          "passed": false
+        },
+        {
+          "name": "mentions_shared_faster_downtown",
+          "passed": true
+        },
+        {
+          "name": "mentions_disagreement_or_unpredictable",
+          "passed": true
+        },
+        {
+          "name": "mentions_sources",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "web_content_summarization",
+      "capacity": "scraped-content summarization",
+      "prompt": "Summarize the useful content from this noisy scrape in one sentence under 35 words. Ignore cookie text, navigation, and newsletter copy.\n\nRAW SCRAPE:\nSkip to content | Newsletter signup | We value your privacy | Accept\nClearTrail 2.0 adds offline hiking maps and a battery saver mode. The update lets hikers download regional trail packs before trips, then switch to low-power GPS tracking when cell service disappears. The company says the battery saver can extend phone life by up to six hours during long routes. Popular links: Gear deals, Login, Ads.",
+      "output": "<think>\nThe user asks: \"Summarize the useful content from this noisy scrape in one sentence under 35 words. Ignore cookie text, navigation, and newsletter copy.\"\n\nWe need to summarize the useful content from the scrape, but we must keep it under 35 words. The content is:\n\n\"Skip to content | Newsletter signup | We value privacy | Accept\nClearTrail 2.0 adds offline hiking maps and a battery saver mode. The update lets hikers download regional trail packs before trips, then switch to low-power GPS tracking when cell service disappears. The company says the battery saver can extend phone life by up to six hours during long routes. Popular links: Gear deals, Login, Ads.\"\n\nWe need to condense to <35 words.\n\nWe must ignore cookie text, navigation, and newsletter copy. So we can't mention them. We can mention \"offline hiking maps\" and \"battery saver mode\" but not mention them.\n\nWe need to keep it under 35 words. Let's count.\n\n\"Skip to content | Newsletter signup | We value privacy | Accept\nClearTrail 2.0 adds offline hiking maps and a battery saver mode. The update lets hikers download regional trail packs before trips, then switch to low-power GPS tracking when cell service disappears. The company says the battery saver",
+      "elapsed_seconds": 2.684066667003208,
+      "prompt_tokens": 151,
+      "generation_tokens": 320,
+      "prompt_tps": 1835.4868902932287,
+      "generation_tps": 124.7426938302135,
+      "peak_memory_gb": 0.40518023,
+      "finish_reason": "length",
+      "checks": [
+        {
+          "name": "no_think_tags",
+          "passed": false
+        },
+        {
+          "name": "mentions_cleartrail",
+          "passed": true
+        },
+        {
+          "name": "mentions_offline_maps",
+          "passed": true
+        },
+        {
+          "name": "mentions_battery_saver",
+          "passed": true
+        },
+        {
+          "name": "under_35_words",
+          "passed": false
+        },
+        {
+          "name": "one_sentence",
+          "passed": false
+        },
+        {
+          "name": "filters_boilerplate",
+          "passed": false
+        }
+      ]
+    }
+  ]
+}
