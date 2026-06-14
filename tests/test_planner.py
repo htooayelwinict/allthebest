@@ -327,6 +327,69 @@ def test_validator_accepts_observe_patch_verify_plan() -> None:
     assert validated.steps[-1].phase == "FINALIZE"
 
 
+def test_validator_rejects_generated_placeholder_not_present_in_user_input() -> None:
+    payload = _complex_multi_intent_plan()
+    payload["steps"][0]["instruction"] += " Preserve [ADDRESS] as a manifest key."
+
+    with pytest.raises(Exception, match="generated placeholders"):
+        PlannerPlanValidator().validate(_envelope(), Plan.model_validate(payload))
+
+
+def test_validator_ignores_generated_placeholders_in_runtime_metadata() -> None:
+    payload = _complex_multi_intent_plan()
+    payload["metadata"] = {
+        "llm_planner": {
+            "resolved_validation_errors": [
+                {
+                    "type": "planner_validation",
+                    "msg": "plan must not introduce generated placeholders not present in user input: [ADDRESS]",
+                }
+            ]
+        }
+    }
+
+    validated = PlannerPlanValidator().validate(_envelope(), Plan.model_validate(payload))
+
+    assert validated.metadata["llm_planner"]["resolved_validation_errors"][0]["msg"].endswith("[ADDRESS]")
+
+
+def test_validator_requires_manifest_json_literals_in_mutation_plan_context() -> None:
+    envelope = _envelope(
+        raw_input=(
+            "scan the repo and write docs/workspace_manifest.json with moved_documents, "
+            "moved_logs, moved_json_artifacts, and total_artifacts"
+        ),
+        normalized_input="Write workspace manifest JSON with exact moved item keys.",
+        constraints=["manifest_schema_must_be_preserved"],
+        literal_contract=[
+            {"value": "moved_documents", "kind": "json_key", "source": "user_input"},
+            {"value": "moved_logs", "kind": "json_key", "source": "user_input"},
+            {"value": "moved_json_artifacts", "kind": "json_key", "source": "user_input"},
+            {"value": "total_artifacts", "kind": "json_key", "source": "user_input"},
+        ],
+    )
+
+    with pytest.raises(Exception, match="literal_contract JSON keys"):
+        PlannerPlanValidator().validate(envelope, Plan.model_validate(_complex_multi_intent_plan()))
+
+
+def test_validator_canonicalizes_known_artifact_aliases_before_dependency_checks() -> None:
+    payload = _complex_multi_intent_plan()
+    payload["steps"][4]["output_artifacts"].append("manifest_update_result")
+    payload["steps"][5]["input_artifacts"].append("manifest_update_result")
+
+    validated = PlannerPlanValidator().validate(_envelope(), Plan.model_validate(payload))
+
+    mutate_step = validated.steps[4]
+    verify_step = validated.steps[5]
+    assert "manifest_update_record" in mutate_step.output_artifacts
+    assert "manifest_update_result" not in mutate_step.output_artifacts
+    assert "manifest_update_record" in verify_step.input_artifacts
+    assert "manifest_update_result" not in verify_step.input_artifacts
+    alias_entries = validated.metadata["canonical_artifact_aliases"]
+    assert any(entry["field"] == "output_artifacts" for entry in alias_entries)
+
+
 def test_validator_accepts_phase_aware_direct_support_plan() -> None:
     envelope = _envelope(
         raw_input="my transit card is not working",
@@ -449,7 +512,7 @@ def test_validator_rejects_mutation_without_root_cause_or_design_context() -> No
     payload = _complex_multi_intent_plan()
     payload["steps"][4]["input_artifacts"] = ["mutation_scope", "rollback_plan"]
 
-    with pytest.raises(ValueError, match="root-cause, evidence, or fix-design context"):
+    with pytest.raises(ValueError, match="evidence/design context"):
         PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
 
 
@@ -458,8 +521,57 @@ def test_validator_rejects_verify_without_evidence_context() -> None:
     payload = _complex_multi_intent_plan()
     payload["steps"][5]["input_artifacts"] = ["patch_result", "change_summary", "rollback_patch", "mutation_scope", "rollback_plan"]
 
-    with pytest.raises(ValueError, match="consume evidence/root-cause artifacts"):
+    with pytest.raises(ValueError, match="consume evidence/design context artifacts"):
         PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+
+def test_validator_accepts_file_management_design_context_for_verification() -> None:
+    envelope = _envelope()
+    payload = _complex_multi_intent_plan()
+    payload["objective"] = "Reorganize policy workspace and update archive index."
+    payload["strategy"] = "discover_classify_move_verify"
+    payload["steps"][3]["worker_type"] = "filesystem_worker"
+    payload["steps"][3]["instruction"] = "Design safe file moves and manifest update."
+    payload["steps"][3]["input_artifacts"] = ["target_files", "repo_inventory"]
+    payload["steps"][3]["output_artifacts"] = [
+        "mutation_scope",
+        "classification_report",
+        "manifest_update_plan",
+        "moved_items_plan",
+        "rollback_plan",
+        "verification_plan",
+    ]
+    payload["steps"][4]["worker_type"] = "filesystem_worker"
+    payload["steps"][4]["instruction"] = "Move eligible files and update archive index within mutation scope."
+    payload["steps"][4]["input_artifacts"] = [
+        "mutation_scope",
+        "classification_report",
+        "manifest_update_plan",
+        "moved_items_plan",
+        "rollback_plan",
+    ]
+    payload["steps"][4]["output_artifacts"] = [
+        "manifest_update_record",
+        "moved_items_record",
+        "change_summary",
+        "rollback_patch",
+    ]
+    payload["steps"][5]["instruction"] = "Verify file movement, manifest keys, held items, and tests."
+    payload["steps"][5]["input_artifacts"] = [
+        "manifest_update_record",
+        "moved_items_record",
+        "change_summary",
+        "rollback_patch",
+        "mutation_scope",
+        "classification_report",
+        "verification_plan",
+        "rollback_plan",
+    ]
+    payload["steps"][5]["output_artifacts"] = ["manifest_validation", "verification_result"]
+
+    validated = PlannerPlanValidator().validate(envelope, Plan.model_validate(payload))
+
+    assert validated.steps[5].input_artifacts[5] == "classification_report"
 
 
 def test_validator_rejects_unscoped_write_permissions() -> None:
@@ -906,6 +1018,7 @@ def test_prompt_contains_worker_catalog_and_envelope() -> None:
     assert "filesystem_worker" in draft_prompt
     assert "runtime_capabilities" in draft_prompt
     assert "write_many_files" in draft_prompt
+    assert "literal_contract" in draft_prompt
     assert "Only safe on code_worker." not in draft_prompt
     assert "async_sdk_performance_refactor_request" in draft_prompt
 

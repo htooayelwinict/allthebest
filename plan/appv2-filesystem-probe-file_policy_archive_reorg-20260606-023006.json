@@ -1,0 +1,5182 @@
+{
+  "scenario": "file_policy_archive_reorg",
+  "repo_path": "/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_policy_archive_repo",
+  "prompt": "In the repo rooted at live_appv2_policy_archive_repo, I need you to prep a messy policy handoff workspace for an internal compliance review. Please inspect the README and current folders first. Move eligible markdown policy/client notes into records/policies, json evidence packets into records/evidence, log files into records/logs, and csv exports into records/exports. Leave any file marked hold, keep, or do_not_move exactly where it is, even if it looks like a document. Create or update records/archive_index.json with exact keys moved_documents, moved_evidence, moved_logs, moved_exports, held_items, and total_moved; list file names, not paths, in those arrays. Keep source code and tests untouched, avoid deleting content, run tests, and tell me what moved plus anything you intentionally left alone.",
+  "baseline_pytest": {
+    "label": "before",
+    "returncode": 1,
+    "stdout": "F.F                                                                      [100%]\n=================================== FAILURES ===================================\n________________ test_policy_archive_moves_eligible_files_only _________________\n\n    def test_policy_archive_moves_eligible_files_only() -> None:\n        expected_policy_docs = {\n            \"client_alpha_notes.md\",\n            \"client_beta_followup.md\",\n            \"retention_policy.md\",\n        }\n        for name in expected_policy_docs:\n>           assert (BASE / \"records\" / \"policies\" / name).exists()\nE           AssertionError: assert False\nE            +  where False = exists()\nE            +    where exists = (((PosixPath('/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_policy_archive_repo') / 'records') / 'policies') / 'client_alpha_notes.md').exists\n\ntests/test_policy_archive.py:15: AssertionError\n_____________________ test_archive_index_schema_and_counts _____________________\n\n    def test_archive_index_schema_and_counts() -> None:\n>       payload = json.loads((BASE / \"records\" / \"archive_index.json\").read_text(encoding=\"utf-8\"))\n                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_policy_archive.py:42: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n../../../../.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_local.py:546: in read_text\n    return PathBase.read_text(self, encoding, errors, newline)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n../../../../.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_abc.py:632: in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = PosixPath('/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_policy_archive_repo/records/archive_index.json')\nmode = 'r', buffering = -1, encoding = 'utf-8', errors = None, newline = None\n\n    def open(self, mode='r', buffering=-1, encoding=None,\n             errors=None, newline=None):\n        \"\"\"\n        Open the file pointed to by this path and return a file object, as\n        the built-in open() function does.\n        \"\"\"\n        if \"b\" not in mode:\n            encoding = io.text_encoding(encoding)\n>       return io.open(self, mode, buffering, encoding, errors, newline)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       FileNotFoundError: [Errno 2] No such file or directory: '/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_policy_archive_repo/records/archive_index.json'\n\n../../../../.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_local.py:537: FileNotFoundError\n=========================== short test summary info ============================\nFAILED tests/test_policy_archive.py::test_policy_archive_moves_eligible_files_only\nFAILED tests/test_policy_archive.py::test_archive_index_schema_and_counts - F...\n2 failed, 1 passed in 0.29s\n",
+    "stderr": ""
+  },
+  "envelope": {
+    "request_id": "v2_req_002",
+    "raw_input": "In the repo rooted at live_appv2_policy_archive_repo, I need you to prep a messy policy handoff workspace for an internal compliance review. Please inspect the README and current folders first. Move eligible markdown policy/client notes into records/policies, json evidence packets into records/evidence, log files into records/logs, and csv exports into records/exports. Leave any file marked hold, keep, or do_not_move exactly where it is, even if it looks like a document. Create or update records/archive_index.json with exact keys moved_documents, moved_evidence, moved_logs, moved_exports, held_items, and total_moved; list file names, not paths, in those arrays. Keep source code and tests untouched, avoid deleting content, run tests, and tell me what moved plus anything you intentionally left alone.",
+    "normalized_input": "Reorganize policy handoff files in live_appv2_policy_archive_repo by moving eligible markdown notes, JSON evidence, logs, and CSV exports into specified records/* folders, skipping held/kept/do_not_move items, and create or update records/archive_index.json with required keys and filename-only tracking; do not alter source code/tests, do not delete content, run tests, and report moved vs intentionally untouched items.",
+    "user_goal": "Prepare a compliance-review-ready workspace by sorting eligible files into archive folders and generating an accurate archive index while preserving protected items and code/test integrity.",
+    "input_type": "repository_file_reorganization_and_manifest_update",
+    "intents": [
+      "inspect repository documentation and folder layout",
+      "categorize and relocate eligible files by type and destination",
+      "exclude protected/held items from movement",
+      "create or update an archive index JSON with exact required keys",
+      "preserve source code and tests",
+      "execute tests",
+      "produce a movement/hold summary report"
+    ],
+    "domains": [
+      "software repository maintenance",
+      "records management",
+      "compliance documentation handling",
+      "test verification"
+    ],
+    "risks": [
+      "accidental movement of files that should remain in place",
+      "misclassification of eligible vs held files",
+      "incorrect JSON schema/keys in records/archive_index.json",
+      "data loss risk from unintended overwrite during relocation",
+      "test failures after workspace reorganization",
+      "incomplete reporting of moved or held items"
+    ],
+    "artifacts": [
+      {
+        "type": "repository_root",
+        "value": "live_appv2_policy_archive_repo"
+      },
+      {
+        "type": "directory",
+        "value": "policy/client"
+      },
+      {
+        "type": "directory",
+        "value": "records/policies"
+      },
+      {
+        "type": "directory",
+        "value": "records/evidence"
+      },
+      {
+        "type": "directory",
+        "value": "records/logs"
+      },
+      {
+        "type": "directory",
+        "value": "records/exports"
+      },
+      {
+        "type": "file",
+        "value": "records/archive_index.json"
+      }
+    ],
+    "context_needed": [
+      "Exact criteria for 'eligible markdown policy/client notes' (naming/path rules beyond policy/client).",
+      "How files are marked as hold/keep/do_not_move (filename token, metadata, or file content marker).",
+      "Which log file extensions/patterns should be treated as logs.",
+      "Whether 'json evidence packets' and 'csv exports' are identified solely by extension.",
+      "Canonical test command to run in this repository."
+    ],
+    "constraints": [
+      "Inspect README and current folders before any reorganization.",
+      "Move eligible markdown notes from policy/client into records/policies.",
+      "Move JSON evidence packets into records/evidence.",
+      "Move log files into records/logs.",
+      "Move CSV exports into records/exports.",
+      "Do not move any file marked hold, keep, or do_not_move.",
+      "Create or update records/archive_index.json.",
+      "Use exact JSON keys: moved_documents, moved_evidence, moved_logs, moved_exports, held_items, total_moved.",
+      "Record filenames only (no paths) in array fields.",
+      "Keep source code and tests untouched.",
+      "Avoid deleting content.",
+      "Run tests.",
+      "Report what was moved and what was intentionally left in place."
+    ],
+    "complexity_hint": "medium",
+    "confidence": 0.96,
+    "ambiguity": [
+      "The repository\u2019s current folder/file inventory is unknown.",
+      "The exact detection method for hold/keep/do_not_move markings is unspecified.",
+      "The scope of 'log files' is unspecified (extensions/patterns).",
+      "Whether non-policy markdown outside policy/client should be considered is unspecified."
+    ],
+    "assumptions": [],
+    "literal_contract": [
+      {
+        "value": "policy/client",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "records/policies",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "records/evidence",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "records/logs",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "records/exports",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "records/archive_index.json",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "live_appv2_policy_archive_repo",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "do_not_move",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "archive_index",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "moved_documents",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "moved_evidence",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "moved_logs",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "moved_exports",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "held_items",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "total_moved",
+        "kind": "json_key",
+        "source": "user_input"
+      }
+    ],
+    "metadata": {
+      "chain_position": "stage_1_of_decomposer_prompt_chain",
+      "schema_name": "Envelope",
+      "role": "appv2_decomposer",
+      "appv2_decomposer": {
+        "mode": "gated_prompt_chain",
+        "stages": [
+          "decompose_request"
+        ],
+        "model_calls": 1,
+        "redacted_prompt_input": false,
+        "validation_issue_count": 0
+      },
+      "appv2_decomposer_runtime": {
+        "elapsed_ms": 20183.276
+      },
+      "runtime_matrix": {
+        "trace_id": "trace_0002",
+        "started_at": "2026-06-05T19:57:36.638512+00:00",
+        "row_count": 6,
+        "rows": [
+          {
+            "seq": 1,
+            "timestamp": "2026-06-05T19:57:40.980221+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_chars": 809
+            }
+          },
+          {
+            "seq": 2,
+            "timestamp": "2026-06-05T19:57:40.980394+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "Envelope"
+            }
+          },
+          {
+            "seq": 3,
+            "timestamp": "2026-06-05T19:58:01.161952+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 4,
+            "timestamp": "2026-06-05T19:58:01.162508+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "response_parsed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_type": "repository_file_reorganization_and_manifest_update"
+            }
+          },
+          {
+            "seq": 5,
+            "timestamp": "2026-06-05T19:58:01.163390+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "validate_envelope",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 6,
+            "timestamp": "2026-06-05T19:58:01.163447+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 20183.276,
+            "details": {
+              "input_type": "repository_file_reorganization_and_manifest_update",
+              "confidence": 0.96,
+              "ambiguity_count": 4
+            }
+          }
+        ]
+      }
+    }
+  },
+  "phase_plan": {
+    "plan_id": "plan_v2_req_002_policy_archive_reorg",
+    "request_id": "v2_req_002",
+    "objective": "Prepare the repository workspace for compliance review by relocating eligible policy artifacts into the required records directories, preserving protected items, updating records/archive_index.json with exact required keys, validating results with tests, and producing a moved-vs-held summary.",
+    "strategy": "First inspect README and repository layout to establish actual file inventory and marker conventions, then analyze classification/hold rules and movement eligibility, design a conservative reorganization and index-update approach that preserves code/tests and avoids deletion, perform the file moves and archive index update, verify outcomes with runtime evidence including test execution and manifest correctness, and finalize with a concise report of moved files and intentionally untouched held items.",
+    "phases": [
+      {
+        "phase_id": "phase_discover_inventory",
+        "phase": "DISCOVER",
+        "goal": "Establish pre-mutation repository facts by inspecting README, relevant directories, and candidate files.",
+        "instructions": [
+          "Inspect README guidance before proposing any mutations.",
+          "Enumerate current folder presence for policy/client and records/* targets plus archive index location.",
+          "Capture candidate file inventory with filename/path/extension for potential markdown, json, log, and csv handling.",
+          "Record whether README was observed and any relocation-relevant notes without inferring undocumented rules."
+        ],
+        "input_artifacts": [
+          "repo_scope_input"
+        ],
+        "output_artifacts": [
+          "discovery_inventory"
+        ],
+        "allowed_tool_groups": [
+          "repo_read"
+        ],
+        "policy": {
+          "read_first": "README",
+          "evidence_required": true,
+          "no_mutations": true
+        },
+        "mutation_policy": {
+          "mode": "readonly",
+          "allowed_paths": [],
+          "advisory_paths": [
+            "live_appv2_policy_archive_repo"
+          ],
+          "forbidden_paths": [],
+          "forbidden_globs": [],
+          "max_files": 0,
+          "allow_create": false,
+          "allow_update": false,
+          "allow_delete": false,
+          "allow_move": false,
+          "metadata": {
+            "reason": "Discovery is evidence-only."
+          }
+        },
+        "verification_policy": null,
+        "acceptance_checks": [
+          "README inspection result is captured in discovery_inventory.readme_observed.",
+          "directories_present includes observed state for policy/client and records destinations.",
+          "candidate_files inventory is populated from runtime observation before any mutation."
+        ],
+        "max_tool_calls": 8,
+        "max_model_calls": 3,
+        "metadata": {}
+      },
+      {
+        "phase_id": "phase_analyze_classification",
+        "phase": "ANALYZE",
+        "goal": "Derive concrete eligibility and hold-detection rules from discovered repository evidence.",
+        "instructions": [
+          "Define conservative classification rules for documents, evidence, logs, and exports based on observed files and README notes.",
+          "Define hold detection precedence for markers hold, keep, and do_not_move.",
+          "List ambiguous cases explicitly where repository evidence does not fully determine eligibility.",
+          "Prefer non-move behavior when ambiguity could risk moving protected or unrelated files."
+        ],
+        "input_artifacts": [
+          "repo_scope_input",
+          "discovery_inventory"
+        ],
+        "output_artifacts": [
+          "classification_and_hold_policy"
+        ],
+        "allowed_tool_groups": [
+          "repo_read"
+        ],
+        "policy": {
+          "conservative_bias": "do_not_move_when_ambiguous",
+          "must_trace_to_discovery": true
+        },
+        "mutation_policy": {
+          "mode": "readonly",
+          "allowed_paths": [],
+          "advisory_paths": [
+            "live_appv2_policy_archive_repo"
+          ],
+          "forbidden_paths": [],
+          "forbidden_globs": [],
+          "max_files": 0,
+          "allow_create": false,
+          "allow_update": false,
+          "allow_delete": false,
+          "allow_move": false,
+          "metadata": {}
+        },
+        "verification_policy": null,
+        "acceptance_checks": [
+          "eligibility_rules contains all required categories: documents, evidence, logs, exports.",
+          "hold_detection_rule explicitly covers hold, keep, do_not_move.",
+          "ambiguous_cases is present (empty or populated) and grounded in observed evidence."
+        ],
+        "max_tool_calls": 6,
+        "max_model_calls": 3,
+        "metadata": {}
+      },
+      {
+        "phase_id": "phase_design_reorganization",
+        "phase": "DESIGN",
+        "goal": "Produce an explicit per-file move/hold plan before any filesystem changes.",
+        "instructions": [
+          "Transform classification policy into planned_moves with destination mapping only to allowed records directories.",
+          "Produce planned_holds entries for every protected or intentionally non-moved file with reason.",
+          "Ensure every planned move includes filename, from_path, destination directory, and required category key.",
+          "Validate that plan excludes source code and test files from movement."
+        ],
+        "input_artifacts": [
+          "repo_scope_input",
+          "discovery_inventory",
+          "classification_and_hold_policy"
+        ],
+        "output_artifacts": [
+          "reorganization_plan"
+        ],
+        "allowed_tool_groups": [
+          "repo_read"
+        ],
+        "policy": {
+          "destinations_locked": [
+            "records/policies",
+            "records/evidence",
+            "records/logs",
+            "records/exports"
+          ],
+          "no_direct_mutation": true
+        },
+        "mutation_policy": {
+          "mode": "readonly",
+          "allowed_paths": [],
+          "advisory_paths": [
+            "live_appv2_policy_archive_repo"
+          ],
+          "forbidden_paths": [],
+          "forbidden_globs": [],
+          "max_files": 0,
+          "allow_create": false,
+          "allow_update": false,
+          "allow_delete": false,
+          "allow_move": false,
+          "metadata": {}
+        },
+        "verification_policy": null,
+        "acceptance_checks": [
+          "Every planned move destination is one of the four allowed records directories.",
+          "Planned holds include rationale for protected-marker and ambiguity-driven non-moves.",
+          "No planned operation deletes files or targets source/test areas."
+        ],
+        "max_tool_calls": 6,
+        "max_model_calls": 3,
+        "metadata": {}
+      },
+      {
+        "phase_id": "phase_mutate_relocate_and_index",
+        "phase": "MUTATE",
+        "goal": "Execute approved relocations and create/update archive index with exact required key set.",
+        "instructions": [
+          "Perform only planned move actions and retain planned holds in place.",
+          "Do not delete content and do not modify source code or tests.",
+          "Create or update records/archive_index.json using exactly: moved_documents, moved_evidence, moved_logs, moved_exports, held_items, total_moved.",
+          "Write filename-only array entries in archive_index.json and ensure total_moved equals moved array count sum.",
+          "Record all actual operations in mutation_ledger, including move_operations and held_items."
+        ],
+        "input_artifacts": [
+          "repo_scope_input",
+          "reorganization_plan",
+          "classification_and_hold_policy"
+        ],
+        "output_artifacts": [
+          "mutation_ledger",
+          "archive_index_state"
+        ],
+        "allowed_tool_groups": [
+          "repo_read",
+          "file_write"
+        ],
+        "policy": {
+          "index_exact_keys_required": true,
+          "filename_only_arrays": true,
+          "no_deletion": true
+        },
+        "mutation_policy": {
+          "mode": "advisory",
+          "allowed_paths": [],
+          "advisory_paths": [
+            "policy/client",
+            "records/policies",
+            "records/evidence",
+            "records/logs",
+            "records/exports",
+            "records/archive_index.json"
+          ],
+          "forbidden_paths": [
+            "src",
+            "source",
+            "tests",
+            "test"
+          ],
+          "forbidden_globs": [
+            "**/*.py",
+            "**/*.js",
+            "**/*.ts",
+            "**/test/**",
+            "**/tests/**"
+          ],
+          "max_files": 500,
+          "allow_create": true,
+          "allow_update": true,
+          "allow_delete": false,
+          "allow_move": true,
+          "metadata": {
+            "reason": "Exact movable file set depends on discovered inventory; enforce conservative guarded mutations."
+          }
+        },
+        "verification_policy": null,
+        "acceptance_checks": [
+          "mutation_ledger includes moved_* arrays, held_items, total_moved, and move_operations.",
+          "archive_index_state.path equals records/archive_index.json.",
+          "archive_index_state.json contains exactly required keys and filename-only array values.",
+          "No deletions are performed during mutation."
+        ],
+        "max_tool_calls": 14,
+        "max_model_calls": 3,
+        "metadata": {}
+      },
+      {
+        "phase_id": "phase_verify_runtime_evidence",
+        "phase": "VERIFY",
+        "goal": "Prove filesystem, manifest, integrity, and test outcomes with runtime verification evidence.",
+        "instructions": [
+          "Verify each move operation landed in expected destination and source references reflect relocation results.",
+          "Verify held/protected items were not moved.",
+          "Validate archive_index.json key set, filename-only arrays, and total_moved arithmetic consistency.",
+          "Run repository test command discovered from README or repository conventions and capture command plus exit code.",
+          "Confirm source code and test files remain untouched and no deletions occurred."
+        ],
+        "input_artifacts": [
+          "repo_scope_input",
+          "discovery_inventory",
+          "mutation_ledger",
+          "archive_index_state"
+        ],
+        "output_artifacts": [
+          "verification_evidence"
+        ],
+        "allowed_tool_groups": [
+          "verify",
+          "repo_read"
+        ],
+        "policy": {
+          "runtime_evidence_mandatory": true,
+          "no_claims_without_proof": true
+        },
+        "mutation_policy": {
+          "mode": "readonly",
+          "allowed_paths": [],
+          "advisory_paths": [
+            "live_appv2_policy_archive_repo"
+          ],
+          "forbidden_paths": [],
+          "forbidden_globs": [],
+          "max_files": 0,
+          "allow_create": false,
+          "allow_update": false,
+          "allow_delete": false,
+          "allow_move": false,
+          "metadata": {}
+        },
+        "verification_policy": {
+          "required": true,
+          "commands": [
+            "run canonical repository test command discovered at runtime"
+          ],
+          "file_state_checks": [
+            {
+              "name": "archive_index_required_keys_exact"
+            },
+            {
+              "name": "archive_index_filename_only_arrays"
+            },
+            {
+              "name": "total_moved_matches_array_lengths"
+            },
+            {
+              "name": "held_marked_files_not_moved"
+            },
+            {
+              "name": "no_deletions_detected"
+            },
+            {
+              "name": "source_code_untouched"
+            },
+            {
+              "name": "tests_untouched"
+            }
+          ],
+          "require_evidence": true,
+          "metadata": {
+            "must_include_exit_code": true
+          }
+        },
+        "acceptance_checks": [
+          "verification_evidence includes filesystem_checks and archive_index_checks from runtime observations.",
+          "verification_evidence.tests contains command and exit_code.",
+          "integrity_checks confirms source_code_untouched, tests_untouched, and no_deletions_detected booleans."
+        ],
+        "max_tool_calls": 12,
+        "max_model_calls": 3,
+        "metadata": {}
+      },
+      {
+        "phase_id": "phase_finalize_report",
+        "phase": "FINALIZE",
+        "goal": "Publish final compliance summary aligned with mutation and verification evidence.",
+        "instructions": [
+          "Summarize moved files by category using mutation_ledger and archive_index_state.",
+          "Summarize held items and intentional non-moves with reasons linked to hold policy or ambiguity handling.",
+          "Report test result using verification evidence.",
+          "Ensure report statements are evidence-backed and consistent across artifacts."
+        ],
+        "input_artifacts": [
+          "mutation_ledger",
+          "archive_index_state",
+          "verification_evidence",
+          "classification_and_hold_policy"
+        ],
+        "output_artifacts": [
+          "final_compliance_report"
+        ],
+        "allowed_tool_groups": [
+          "repo_read"
+        ],
+        "policy": {
+          "must_trace_to_evidence": true,
+          "no_new_claims": true
+        },
+        "mutation_policy": {
+          "mode": "readonly",
+          "allowed_paths": [],
+          "advisory_paths": [
+            "live_appv2_policy_archive_repo"
+          ],
+          "forbidden_paths": [],
+          "forbidden_globs": [],
+          "max_files": 0,
+          "allow_create": false,
+          "allow_update": false,
+          "allow_delete": false,
+          "allow_move": false,
+          "metadata": {}
+        },
+        "verification_policy": null,
+        "acceptance_checks": [
+          "final_compliance_report.moved_summary matches mutation_ledger/archive_index_state counts and filenames.",
+          "held_summary aligns with held_items and protected marker handling.",
+          "test_result reflects verification_evidence.tests outcome."
+        ],
+        "max_tool_calls": 4,
+        "max_model_calls": 2,
+        "metadata": {}
+      }
+    ],
+    "budgets": {
+      "max_tool_calls_total": 50,
+      "max_model_calls_total": 17,
+      "per_phase_max_model_calls": 3,
+      "retry_reserve": {
+        "tool_calls": 6,
+        "model_calls": 2
+      }
+    },
+    "global_invariants": [
+      "Inspect README and current folders before any reorganization mutations.",
+      "Only move eligible files into these destinations: records/policies, records/evidence, records/logs, records/exports.",
+      "Never move files marked hold, keep, or do_not_move.",
+      "Do not delete content.",
+      "Keep source code and tests untouched.",
+      "Create or update records/archive_index.json using exact keys only: moved_documents, moved_evidence, moved_logs, moved_exports, held_items, total_moved.",
+      "All array entries in archive_index.json must be filenames only (no paths).",
+      "MUTATE outcomes must be verified with runtime evidence, including test execution evidence."
+    ],
+    "success_criteria": [
+      "Discovery evidence confirms README inspection and pre-mutation folder/file inventory capture.",
+      "A mutation ledger exists showing moved files by required categories and held files, with total_moved recorded.",
+      "records/archive_index.json exists and contains exactly the required keys with filename-only arrays.",
+      "archive_index total_moved equals the sum of lengths of moved_documents, moved_evidence, moved_logs, and moved_exports.",
+      "Verification evidence confirms protected-marker files were not moved and no deletions occurred.",
+      "Verification evidence shows source code and test files remained untouched.",
+      "Tests were executed with a recorded command and exit code.",
+      "Final report clearly lists moved files and intentionally left-held items, consistent with mutation and verification artifacts."
+    ],
+    "artifact_contracts": [
+      {
+        "id": "repo_scope_input",
+        "description": "Runtime scope and literal path/key constraints supplied by the request envelope.",
+        "kind": "input",
+        "required": true,
+        "content_schema": {
+          "type": "object",
+          "properties": {
+            "repository_root": {
+              "type": "string",
+              "const": "live_appv2_policy_archive_repo"
+            },
+            "source_policy_client_dir": {
+              "type": "string",
+              "const": "policy/client"
+            },
+            "records_policies_dir": {
+              "type": "string",
+              "const": "records/policies"
+            },
+            "records_evidence_dir": {
+              "type": "string",
+              "const": "records/evidence"
+            },
+            "records_logs_dir": {
+              "type": "string",
+              "const": "records/logs"
+            },
+            "records_exports_dir": {
+              "type": "string",
+              "const": "records/exports"
+            },
+            "archive_index_file": {
+              "type": "string",
+              "const": "records/archive_index.json"
+            },
+            "required_archive_index_keys": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "moved_documents",
+                  "moved_evidence",
+                  "moved_logs",
+                  "moved_exports",
+                  "held_items",
+                  "total_moved"
+                ]
+              }
+            },
+            "protected_markers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "hold",
+                  "keep",
+                  "do_not_move"
+                ]
+              }
+            }
+          },
+          "required": [
+            "repository_root",
+            "source_policy_client_dir",
+            "records_policies_dir",
+            "records_evidence_dir",
+            "records_logs_dir",
+            "records_exports_dir",
+            "archive_index_file",
+            "required_archive_index_keys",
+            "protected_markers"
+          ]
+        },
+        "produced_by_phase": null,
+        "metadata": {
+          "purpose": "declared runtime inputs only; not phase-produced"
+        }
+      },
+      {
+        "id": "discovery_inventory",
+        "description": "Observed README guidance, folder layout, and candidate file inventory before any changes.",
+        "kind": "phase_output",
+        "required": true,
+        "content_schema": {
+          "type": "object",
+          "properties": {
+            "readme_observed": {
+              "type": "boolean"
+            },
+            "directories_present": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "candidate_files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "filename": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "extension": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "filename",
+                  "path"
+                ]
+              }
+            },
+            "readme_notes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "readme_observed",
+            "directories_present",
+            "candidate_files"
+          ]
+        },
+        "produced_by_phase": "DISCOVER",
+        "metadata": {}
+      },
+      {
+        "id": "classification_and_hold_policy",
+        "description": "Concrete classification and hold-detection rules derived from repository evidence, plus unresolved ambiguity notes.",
+        "kind": "phase_output",
+        "required": true,
+        "content_schema": {
+          "type": "object",
+          "properties": {
+            "eligibility_rules": {
+              "type": "object",
+              "properties": {
+                "documents": {
+                  "type": "string"
+                },
+                "evidence": {
+                  "type": "string"
+                },
+                "logs": {
+                  "type": "string"
+                },
+                "exports": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "documents",
+                "evidence",
+                "logs",
+                "exports"
+              ]
+            },
+            "hold_detection_rule": {
+              "type": "string"
+            },
+            "ambiguous_cases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "eligibility_rules",
+            "hold_detection_rule"
+          ]
+        },
+        "produced_by_phase": "ANALYZE",
+        "metadata": {}
+      },
+      {
+        "id": "reorganization_plan",
+        "description": "Planned move/skip actions by file, with destinations and rationale, prior to mutation.",
+        "kind": "phase_output",
+        "required": true,
+        "content_schema": {
+          "type": "object",
+          "properties": {
+            "planned_moves": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "moved_documents",
+                      "moved_evidence",
+                      "moved_logs",
+                      "moved_exports"
+                    ]
+                  },
+                  "filename": {
+                    "type": "string"
+                  },
+                  "from_path": {
+                    "type": "string"
+                  },
+                  "to_directory": {
+                    "type": "string",
+                    "enum": [
+                      "records/policies",
+                      "records/evidence",
+                      "records/logs",
+                      "records/exports"
+                    ]
+                  }
+                },
+                "required": [
+                  "filename",
+                  "from_path",
+                  "to_directory",
+                  "category"
+                ]
+              }
+            },
+            "planned_holds": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "filename": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "filename",
+                  "path",
+                  "reason"
+                ]
+              }
+            }
+          },
+          "required": [
+            "planned_moves",
+            "planned_holds"
+          ]
+        },
+        "produced_by_phase": "DESIGN",
+        "metadata": {}
+      },
+      {
+        "id": "mutation_ledger",
+        "description": "Actual mutation results for file relocations and intentionally held files.",
+        "kind": "mutation_record",
+        "required": true,
+        "content_schema": {
+          "type": "object",
+          "properties": {
+            "moved_documents": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "moved_evidence": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "moved_logs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "moved_exports": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "held_items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "total_moved": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "move_operations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "filename": {
+                    "type": "string"
+                  },
+                  "from_path": {
+                    "type": "string"
+                  },
+                  "to_path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "filename",
+                  "from_path",
+                  "to_path"
+                ]
+              }
+            }
+          },
+          "required": [
+            "moved_documents",
+            "moved_evidence",
+            "moved_logs",
+            "moved_exports",
+            "held_items",
+            "total_moved",
+            "move_operations"
+          ]
+        },
+        "produced_by_phase": "MUTATE",
+        "metadata": {
+          "must_reflect_real_runtime_changes": true
+        }
+      },
+      {
+        "id": "archive_index_state",
+        "description": "Post-mutation content written to records/archive_index.json.",
+        "kind": "phase_output",
+        "required": true,
+        "content_schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "const": "records/archive_index.json"
+            },
+            "json": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "moved_documents": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "moved_evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "moved_logs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "moved_exports": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "held_items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "total_moved": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "moved_documents",
+                "moved_evidence",
+                "moved_logs",
+                "moved_exports",
+                "held_items",
+                "total_moved"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "json"
+          ]
+        },
+        "produced_by_phase": "MUTATE",
+        "metadata": {
+          "exact_key_enforcement": true
+        }
+      },
+      {
+        "id": "verification_evidence",
+        "description": "Runtime verification evidence for filesystem outcomes, manifest correctness, and test execution.",
+        "kind": "verification_evidence",
+        "required": true,
+        "content_schema": {
+          "type": "object",
+          "properties": {
+            "filesystem_checks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "archive_index_checks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tests": {
+              "type": "object",
+              "properties": {
+                "command": {
+                  "type": "string"
+                },
+                "exit_code": {
+                  "type": "integer"
+                },
+                "stdout_summary": {
+                  "type": "string"
+                },
+                "stderr_summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "command",
+                "exit_code"
+              ]
+            },
+            "integrity_checks": {
+              "type": "object",
+              "properties": {
+                "source_code_untouched": {
+                  "type": "boolean"
+                },
+                "tests_untouched": {
+                  "type": "boolean"
+                },
+                "no_deletions_detected": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "source_code_untouched",
+                "tests_untouched",
+                "no_deletions_detected"
+              ]
+            }
+          },
+          "required": [
+            "filesystem_checks",
+            "archive_index_checks",
+            "tests",
+            "integrity_checks"
+          ]
+        },
+        "produced_by_phase": "VERIFY",
+        "metadata": {
+          "requires_runtime_tool_observation": true
+        }
+      },
+      {
+        "id": "final_compliance_report",
+        "description": "User-facing summary of what moved and what was intentionally left in place, grounded in ledger evidence.",
+        "kind": "final_report",
+        "required": true,
+        "content_schema": {
+          "type": "object",
+          "properties": {
+            "moved_summary": {
+              "type": "object",
+              "properties": {
+                "moved_documents": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "moved_evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "moved_logs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "moved_exports": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "total_moved": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "moved_documents",
+                "moved_evidence",
+                "moved_logs",
+                "moved_exports",
+                "total_moved"
+              ]
+            },
+            "held_summary": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "intentional_non_moves_reasoning": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "test_result": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "moved_summary",
+            "held_summary",
+            "test_result"
+          ]
+        },
+        "produced_by_phase": "FINALIZE",
+        "metadata": {
+          "must_trace_to_verification_evidence": true
+        }
+      }
+    ],
+    "metadata": {
+      "complexity_hint": "medium",
+      "confidence": 0.96,
+      "input_type": "repository_file_reorganization_and_manifest_update",
+      "appv2_phase_planner": {
+        "mode": "phase_prompt_chain",
+        "stages": [
+          "draft_phase_skeleton",
+          "draft_artifact_contracts",
+          "draft_phase_plan"
+        ],
+        "model_calls": 3
+      },
+      "appv2_phase_planner_runtime": {
+        "elapsed_ms": 96154.231
+      },
+      "runtime_matrix": {
+        "trace_id": "trace_0002",
+        "started_at": "2026-06-05T19:57:36.638512+00:00",
+        "row_count": 15,
+        "rows": [
+          {
+            "seq": 1,
+            "timestamp": "2026-06-05T19:57:40.980221+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_chars": 809
+            }
+          },
+          {
+            "seq": 2,
+            "timestamp": "2026-06-05T19:57:40.980394+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "Envelope"
+            }
+          },
+          {
+            "seq": 3,
+            "timestamp": "2026-06-05T19:58:01.161952+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 4,
+            "timestamp": "2026-06-05T19:58:01.162508+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "response_parsed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_type": "repository_file_reorganization_and_manifest_update"
+            }
+          },
+          {
+            "seq": 5,
+            "timestamp": "2026-06-05T19:58:01.163390+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "validate_envelope",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 6,
+            "timestamp": "2026-06-05T19:58:01.163447+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 20183.276,
+            "details": {
+              "input_type": "repository_file_reorganization_and_manifest_update",
+              "confidence": 0.96,
+              "ambiguity_count": 4
+            }
+          },
+          {
+            "seq": 7,
+            "timestamp": "2026-06-05T19:58:01.164157+00:00",
+            "component": "appv2_phase_planner_runtime",
+            "stage": "draft_phase_plan",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 8,
+            "timestamp": "2026-06-05T19:58:01.164797+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_skeleton",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "PhaseSkeleton"
+            }
+          },
+          {
+            "seq": 9,
+            "timestamp": "2026-06-05T19:58:07.614519+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_skeleton",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_count": 6
+            }
+          },
+          {
+            "seq": 10,
+            "timestamp": "2026-06-05T19:58:07.614608+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_artifact_contracts",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "ArtifactContractBundle"
+            }
+          },
+          {
+            "seq": 11,
+            "timestamp": "2026-06-05T19:58:35.954049+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_artifact_contracts",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_contract_count": 8
+            }
+          },
+          {
+            "seq": 12,
+            "timestamp": "2026-06-05T19:58:35.954099+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_plan",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "PhasePlan"
+            }
+          },
+          {
+            "seq": 13,
+            "timestamp": "2026-06-05T19:59:37.313242+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_plan",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 14,
+            "timestamp": "2026-06-05T19:59:37.317724+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "validate_phase_plan",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 15,
+            "timestamp": "2026-06-05T19:59:37.318272+00:00",
+            "component": "appv2_phase_planner_runtime",
+            "stage": "draft_phase_plan",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 96154.231,
+            "details": {
+              "phase_count": 6
+            }
+          }
+        ]
+      }
+    }
+  },
+  "result": {
+    "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+    "request_id": "v2_req_002",
+    "plan_id": "plan_v2_req_002_policy_archive_reorg",
+    "status": "completed",
+    "summary": "AppV2 worker completed all phases.",
+    "artifacts": [
+      {
+        "id": "discovery_inventory",
+        "kind": "phase_output",
+        "content": {
+          "readme_observed": true,
+          "directories_present": [
+            "exports",
+            "incoming",
+            "incoming/client_notes",
+            "incoming/evidence",
+            "incoming/policies",
+            "logs",
+            "logs/raw",
+            "records",
+            "records/evidence",
+            "records/exports",
+            "records/logs",
+            "records/policies",
+            "src",
+            "tests"
+          ],
+          "candidate_files": [
+            {
+              "filename": "owner_map.csv",
+              "path": "exports/owner_map.csv",
+              "extension": "csv"
+            },
+            {
+              "filename": "policy_matrix.csv",
+              "path": "exports/policy_matrix.csv",
+              "extension": "csv"
+            },
+            {
+              "filename": "client_alpha_notes.md",
+              "path": "incoming/client_notes/client_alpha_notes.md",
+              "extension": "md"
+            },
+            {
+              "filename": "client_beta_followup.md",
+              "path": "incoming/client_notes/client_beta_followup.md",
+              "extension": "md"
+            },
+            {
+              "filename": "client_gamma_hold.md",
+              "path": "incoming/client_notes/client_gamma_hold.md",
+              "extension": "md"
+            },
+            {
+              "filename": "access_review.json",
+              "path": "incoming/evidence/access_review.json",
+              "extension": "json"
+            },
+            {
+              "filename": "keep_local.json",
+              "path": "incoming/evidence/keep_local.json",
+              "extension": "json"
+            },
+            {
+              "filename": "vendor_exception.json",
+              "path": "incoming/evidence/vendor_exception.json",
+              "extension": "json"
+            },
+            {
+              "filename": "draft_policy_do_not_move.md",
+              "path": "incoming/policies/draft_policy_do_not_move.md",
+              "extension": "md"
+            },
+            {
+              "filename": "retention_policy.md",
+              "path": "incoming/policies/retention_policy.md",
+              "extension": "md"
+            },
+            {
+              "filename": "audit_2026_06.log",
+              "path": "logs/raw/audit_2026_06.log",
+              "extension": "log"
+            },
+            {
+              "filename": "debug_keep.log",
+              "path": "logs/raw/debug_keep.log",
+              "extension": "log"
+            }
+          ]
+        },
+        "producer": "appv2_worker_model",
+        "phase_id": "phase_discover_inventory",
+        "trust_level": "runtime_verified",
+        "lifecycle": "completed",
+        "metadata": {}
+      },
+      {
+        "id": "classification_and_hold_policy",
+        "kind": "phase_output",
+        "content": {
+          "eligibility_rules": {
+            "documents": "Markdown files (*.md) located in incoming/client_notes or incoming/policies",
+            "evidence": "JSON files (*.json) located in incoming/evidence",
+            "logs": "Log files (*.log) located in logs/raw",
+            "exports": "CSV files (*.csv) located in exports"
+          },
+          "hold_detection_rule": "Treat any file whose filename (case-insensitive) contains 'hold', 'keep', or 'do_not_move' as held; also respect any explicit 'hold' markers in repository metadata.",
+          "ambiguous_cases": []
+        },
+        "producer": "appv2_worker_model",
+        "phase_id": "phase_analyze_classification",
+        "trust_level": "model_reported",
+        "lifecycle": "completed",
+        "metadata": {}
+      },
+      {
+        "id": "reorganization_plan",
+        "kind": "phase_output",
+        "content": {
+          "planned_moves": [
+            {
+              "category": "moved_exports",
+              "filename": "owner_map.csv",
+              "from_path": "exports/owner_map.csv",
+              "to_directory": "records/exports"
+            },
+            {
+              "category": "moved_exports",
+              "filename": "policy_matrix.csv",
+              "from_path": "exports/policy_matrix.csv",
+              "to_directory": "records/exports"
+            },
+            {
+              "category": "moved_documents",
+              "filename": "client_alpha_notes.md",
+              "from_path": "incoming/client_notes/client_alpha_notes.md",
+              "to_directory": "records/policies"
+            },
+            {
+              "category": "moved_documents",
+              "filename": "client_beta_followup.md",
+              "from_path": "incoming/client_notes/client_beta_followup.md",
+              "to_directory": "records/policies"
+            },
+            {
+              "category": "moved_documents",
+              "filename": "retention_policy.md",
+              "from_path": "incoming/policies/retention_policy.md",
+              "to_directory": "records/policies"
+            },
+            {
+              "category": "moved_evidence",
+              "filename": "access_review.json",
+              "from_path": "incoming/evidence/access_review.json",
+              "to_directory": "records/evidence"
+            },
+            {
+              "category": "moved_evidence",
+              "filename": "vendor_exception.json",
+              "from_path": "incoming/evidence/vendor_exception.json",
+              "to_directory": "records/evidence"
+            },
+            {
+              "category": "moved_logs",
+              "filename": "audit_2026_06.log",
+              "from_path": "logs/raw/audit_2026_06.log",
+              "to_directory": "records/logs"
+            }
+          ],
+          "planned_holds": [
+            {
+              "filename": "client_gamma_hold.md",
+              "path": "incoming/client_notes/client_gamma_hold.md",
+              "reason": "filename contains protected marker 'hold'"
+            },
+            {
+              "filename": "keep_local.json",
+              "path": "incoming/evidence/keep_local.json",
+              "reason": "filename contains protected marker 'keep'"
+            },
+            {
+              "filename": "draft_policy_do_not_move.md",
+              "path": "incoming/policies/draft_policy_do_not_move.md",
+              "reason": "filename contains protected marker 'do_not_move'"
+            },
+            {
+              "filename": "debug_keep.log",
+              "path": "logs/raw/debug_keep.log",
+              "reason": "filename contains protected marker 'keep'"
+            }
+          ]
+        },
+        "producer": "appv2_worker_model",
+        "phase_id": "phase_design_reorganization",
+        "trust_level": "model_reported",
+        "lifecycle": "completed",
+        "metadata": {}
+      },
+      {
+        "id": "mutation_apply_reorg_moves_and_index",
+        "kind": "mutation_record",
+        "content": {
+          "operation_batch_id": "apply_reorg_moves_and_index",
+          "applied_operations": [
+            {
+              "action": "move",
+              "path": null,
+              "source": "exports/owner_map.csv",
+              "destination": "records/exports/owner_map.csv",
+              "content": null,
+              "old": null,
+              "new": null,
+              "overwrite": false
+            },
+            {
+              "action": "move",
+              "path": null,
+              "source": "exports/policy_matrix.csv",
+              "destination": "records/exports/policy_matrix.csv",
+              "content": null,
+              "old": null,
+              "new": null,
+              "overwrite": false
+            },
+            {
+              "action": "move",
+              "path": null,
+              "source": "incoming/client_notes/client_alpha_notes.md",
+              "destination": "records/policies/client_alpha_notes.md",
+              "content": null,
+              "old": null,
+              "new": null,
+              "overwrite": false
+            },
+            {
+              "action": "move",
+              "path": null,
+              "source": "incoming/client_notes/client_beta_followup.md",
+              "destination": "records/policies/client_beta_followup.md",
+              "content": null,
+              "old": null,
+              "new": null,
+              "overwrite": false
+            },
+            {
+              "action": "move",
+              "path": null,
+              "source": "incoming/policies/retention_policy.md",
+              "destination": "records/policies/retention_policy.md",
+              "content": null,
+              "old": null,
+              "new": null,
+              "overwrite": false
+            },
+            {
+              "action": "move",
+              "path": null,
+              "source": "incoming/evidence/access_review.json",
+              "destination": "records/evidence/access_review.json",
+              "content": null,
+              "old": null,
+              "new": null,
+              "overwrite": false
+            },
+            {
+              "action": "move",
+              "path": null,
+              "source": "incoming/evidence/vendor_exception.json",
+              "destination": "records/evidence/vendor_exception.json",
+              "content": null,
+              "old": null,
+              "new": null,
+              "overwrite": false
+            },
+            {
+              "action": "move",
+              "path": null,
+              "source": "logs/raw/audit_2026_06.log",
+              "destination": "records/logs/audit_2026_06.log",
+              "content": null,
+              "old": null,
+              "new": null,
+              "overwrite": false
+            },
+            {
+              "action": "write",
+              "path": "records/archive_index.json",
+              "source": null,
+              "destination": null,
+              "content": "{\"held_items\":[\"client_gamma_hold.md\",\"keep_local.json\",\"draft_policy_do_not_move.md\",\"debug_keep.log\"],\"moved_documents\":[\"client_alpha_notes.md\",\"client_beta_followup.md\",\"retention_policy.md\"],\"moved_evidence\":[\"access_review.json\",\"vendor_exception.json\"],\"moved_exports\":[\"owner_map.csv\",\"policy_matrix.csv\"],\"moved_logs\":[\"audit_2026_06.log\"],\"total_moved\":8}",
+              "old": null,
+              "new": null,
+              "overwrite": false
+            }
+          ],
+          "denied_operations": [],
+          "touched_paths": [
+            "exports/owner_map.csv",
+            "exports/policy_matrix.csv",
+            "incoming/client_notes/client_alpha_notes.md",
+            "incoming/client_notes/client_beta_followup.md",
+            "incoming/evidence/access_review.json",
+            "incoming/evidence/vendor_exception.json",
+            "incoming/policies/retention_policy.md",
+            "logs/raw/audit_2026_06.log",
+            "records/archive_index.json",
+            "records/evidence/access_review.json",
+            "records/evidence/vendor_exception.json",
+            "records/exports/owner_map.csv",
+            "records/exports/policy_matrix.csv",
+            "records/logs/audit_2026_06.log",
+            "records/policies/client_alpha_notes.md",
+            "records/policies/client_beta_followup.md",
+            "records/policies/retention_policy.md"
+          ],
+          "patch_diff": "--- a/exports/owner_map.csv\n+++ b/exports/owner_map.csv\n@@ -1,2 +0,0 @@\n-owner,policy\n-compliance,retention\n--- a/exports/policy_matrix.csv\n+++ b/exports/policy_matrix.csv\n@@ -1,2 +0,0 @@\n-policy,status\n-retention,approved\n--- a/incoming/client_notes/client_alpha_notes.md\n+++ b/incoming/client_notes/client_alpha_notes.md\n@@ -1,3 +0,0 @@\n-# Client Alpha Notes\n-\n-Ready for compliance handoff.\n--- a/incoming/client_notes/client_beta_followup.md\n+++ b/incoming/client_notes/client_beta_followup.md\n@@ -1,3 +0,0 @@\n-# Client Beta Followup\n-\n-Ready for compliance handoff.\n--- a/incoming/evidence/access_review.json\n+++ b/incoming/evidence/access_review.json\n@@ -1 +0,0 @@\n-{\"kind\":\"access_review\",\"status\":\"ready\"}\n--- a/incoming/evidence/vendor_exception.json\n+++ b/incoming/evidence/vendor_exception.json\n@@ -1 +0,0 @@\n-{\"kind\":\"vendor_exception\",\"status\":\"ready\"}\n--- a/incoming/policies/retention_policy.md\n+++ b/incoming/policies/retention_policy.md\n@@ -1,3 +0,0 @@\n-# Retention Policy\n-\n-Approved policy notes.\n--- a/logs/raw/audit_2026_06.log\n+++ b/logs/raw/audit_2026_06.log\n@@ -1 +0,0 @@\n-2026-06-05 policy handoff audit event\n--- a/records/archive_index.json\n+++ b/records/archive_index.json\n@@ -0,0 +1 @@\n+{\"held_items\":[\"client_gamma_hold.md\",\"keep_local.json\",\"draft_policy_do_not_move.md\",\"debug_keep.log\"],\"moved_documents\":[\"client_alpha_notes.md\",\"client_beta_followup.md\",\"retention_policy.md\"],\"moved_evidence\":[\"access_review.json\",\"vendor_exception.json\"],\"moved_exports\":[\"owner_map.csv\",\"policy_matrix.csv\"],\"moved_logs\":[\"audit_2026_06.log\"],\"total_moved\":8}--- a/records/evidence/access_review.json\n+++ b/records/evidence/access_review.json\n@@ -0,0 +1 @@\n+{\"kind\":\"access_review\",\"status\":\"ready\"}\n--- a/records/evidence/vendor_exception.json\n+++ b/records/evidence/vendor_exception.json\n@@ -0,0 +1 @@\n+{\"kind\":\"vendor_exception\",\"status\":\"ready\"}\n--- a/records/exports/owner_map.csv\n+++ b/records/exports/owner_map.csv\n@@ -0,0 +1,2 @@\n+owner,policy\n+compliance,retention\n--- a/records/exports/policy_matrix.csv\n+++ b/records/exports/policy_matrix.csv\n@@ -0,0 +1,2 @@\n+policy,status\n+retention,approved\n--- a/records/logs/audit_2026_06.log\n+++ b/records/logs/audit_2026_06.log\n@@ -0,0 +1 @@\n+2026-06-05 policy handoff audit event\n--- a/records/policies/client_alpha_notes.md\n+++ b/records/policies/client_alpha_notes.md\n@@ -0,0 +1,3 @@\n+# Client Alpha Notes\n+\n+Ready for compliance handoff.\n--- a/records/policies/client_beta_followup.md\n+++ b/records/policies/client_beta_followup.md\n@@ -0,0 +1,3 @@\n+# Client Beta Followup\n+\n+Ready for compliance handoff.\n--- a/records/policies/retention_policy.md\n+++ b/records/policies/retention_policy.md\n@@ -0,0 +1,3 @@\n+# Retention Policy\n+\n+Approved policy notes.\n",
+          "rollback_patch": "--- b/exports/owner_map.csv\n+++ a/exports/owner_map.csv\n@@ -0,0 +1,2 @@\n+owner,policy\n+compliance,retention\n--- b/exports/policy_matrix.csv\n+++ a/exports/policy_matrix.csv\n@@ -0,0 +1,2 @@\n+policy,status\n+retention,approved\n--- b/incoming/client_notes/client_alpha_notes.md\n+++ a/incoming/client_notes/client_alpha_notes.md\n@@ -0,0 +1,3 @@\n+# Client Alpha Notes\n+\n+Ready for compliance handoff.\n--- b/incoming/client_notes/client_beta_followup.md\n+++ a/incoming/client_notes/client_beta_followup.md\n@@ -0,0 +1,3 @@\n+# Client Beta Followup\n+\n+Ready for compliance handoff.\n--- b/incoming/evidence/access_review.json\n+++ a/incoming/evidence/access_review.json\n@@ -0,0 +1 @@\n+{\"kind\":\"access_review\",\"status\":\"ready\"}\n--- b/incoming/evidence/vendor_exception.json\n+++ a/incoming/evidence/vendor_exception.json\n@@ -0,0 +1 @@\n+{\"kind\":\"vendor_exception\",\"status\":\"ready\"}\n--- b/incoming/policies/retention_policy.md\n+++ a/incoming/policies/retention_policy.md\n@@ -0,0 +1,3 @@\n+# Retention Policy\n+\n+Approved policy notes.\n--- b/logs/raw/audit_2026_06.log\n+++ a/logs/raw/audit_2026_06.log\n@@ -0,0 +1 @@\n+2026-06-05 policy handoff audit event\n--- b/records/archive_index.json\n+++ a/records/archive_index.json\n@@ -1 +0,0 @@\n-{\"held_items\":[\"client_gamma_hold.md\",\"keep_local.json\",\"draft_policy_do_not_move.md\",\"debug_keep.log\"],\"moved_documents\":[\"client_alpha_notes.md\",\"client_beta_followup.md\",\"retention_policy.md\"],\"moved_evidence\":[\"access_review.json\",\"vendor_exception.json\"],\"moved_exports\":[\"owner_map.csv\",\"policy_matrix.csv\"],\"moved_logs\":[\"audit_2026_06.log\"],\"total_moved\":8}--- b/records/evidence/access_review.json\n+++ a/records/evidence/access_review.json\n@@ -1 +0,0 @@\n-{\"kind\":\"access_review\",\"status\":\"ready\"}\n--- b/records/evidence/vendor_exception.json\n+++ a/records/evidence/vendor_exception.json\n@@ -1 +0,0 @@\n-{\"kind\":\"vendor_exception\",\"status\":\"ready\"}\n--- b/records/exports/owner_map.csv\n+++ a/records/exports/owner_map.csv\n@@ -1,2 +0,0 @@\n-owner,policy\n-compliance,retention\n--- b/records/exports/policy_matrix.csv\n+++ a/records/exports/policy_matrix.csv\n@@ -1,2 +0,0 @@\n-policy,status\n-retention,approved\n--- b/records/logs/audit_2026_06.log\n+++ a/records/logs/audit_2026_06.log\n@@ -1 +0,0 @@\n-2026-06-05 policy handoff audit event\n--- b/records/policies/client_alpha_notes.md\n+++ a/records/policies/client_alpha_notes.md\n@@ -1,3 +0,0 @@\n-# Client Alpha Notes\n-\n-Ready for compliance handoff.\n--- b/records/policies/client_beta_followup.md\n+++ a/records/policies/client_beta_followup.md\n@@ -1,3 +0,0 @@\n-# Client Beta Followup\n-\n-Ready for compliance handoff.\n--- b/records/policies/retention_policy.md\n+++ a/records/policies/retention_policy.md\n@@ -1,3 +0,0 @@\n-# Retention Policy\n-\n-Approved policy notes.\n"
+        },
+        "producer": "appv2_mutation_ledger",
+        "phase_id": "phase_mutate_relocate_and_index",
+        "trust_level": "runtime_verified",
+        "lifecycle": "completed",
+        "metadata": {}
+      },
+      {
+        "id": "mutation_ledger",
+        "kind": "mutation_record",
+        "content": {
+          "move_operations": [
+            {
+              "filename": "owner_map.csv",
+              "from_path": "exports/owner_map.csv",
+              "to_path": "records/exports/owner_map.csv"
+            },
+            {
+              "filename": "policy_matrix.csv",
+              "from_path": "exports/policy_matrix.csv",
+              "to_path": "records/exports/policy_matrix.csv"
+            },
+            {
+              "filename": "client_alpha_notes.md",
+              "from_path": "incoming/client_notes/client_alpha_notes.md",
+              "to_path": "records/policies/client_alpha_notes.md"
+            },
+            {
+              "filename": "client_beta_followup.md",
+              "from_path": "incoming/client_notes/client_beta_followup.md",
+              "to_path": "records/policies/client_beta_followup.md"
+            },
+            {
+              "filename": "retention_policy.md",
+              "from_path": "incoming/policies/retention_policy.md",
+              "to_path": "records/policies/retention_policy.md"
+            },
+            {
+              "filename": "access_review.json",
+              "from_path": "incoming/evidence/access_review.json",
+              "to_path": "records/evidence/access_review.json"
+            },
+            {
+              "filename": "vendor_exception.json",
+              "from_path": "incoming/evidence/vendor_exception.json",
+              "to_path": "records/evidence/vendor_exception.json"
+            },
+            {
+              "filename": "audit_2026_06.log",
+              "from_path": "logs/raw/audit_2026_06.log",
+              "to_path": "records/logs/audit_2026_06.log"
+            }
+          ],
+          "held_items": [
+            "client_gamma_hold.md",
+            "keep_local.json",
+            "draft_policy_do_not_move.md",
+            "debug_keep.log"
+          ],
+          "moved_documents": [
+            "client_alpha_notes.md",
+            "client_beta_followup.md",
+            "retention_policy.md"
+          ],
+          "moved_evidence": [
+            "access_review.json",
+            "vendor_exception.json"
+          ],
+          "moved_exports": [
+            "owner_map.csv",
+            "policy_matrix.csv"
+          ],
+          "moved_logs": [
+            "audit_2026_06.log"
+          ],
+          "total_moved": 8
+        },
+        "producer": "appv2_worker_mutation",
+        "phase_id": "phase_mutate_relocate_and_index",
+        "trust_level": "runtime_verified",
+        "lifecycle": "completed",
+        "metadata": {}
+      },
+      {
+        "id": "archive_index_state",
+        "kind": "phase_output",
+        "content": {
+          "path": "records/archive_index.json",
+          "json": {
+            "held_items": [
+              "client_gamma_hold.md",
+              "keep_local.json",
+              "draft_policy_do_not_move.md",
+              "debug_keep.log"
+            ],
+            "moved_documents": [
+              "client_alpha_notes.md",
+              "client_beta_followup.md",
+              "retention_policy.md"
+            ],
+            "moved_evidence": [
+              "access_review.json",
+              "vendor_exception.json"
+            ],
+            "moved_exports": [
+              "owner_map.csv",
+              "policy_matrix.csv"
+            ],
+            "moved_logs": [
+              "audit_2026_06.log"
+            ],
+            "total_moved": 8
+          }
+        },
+        "producer": "appv2_worker_mutation",
+        "phase_id": "phase_mutate_relocate_and_index",
+        "trust_level": "runtime_verified",
+        "lifecycle": "completed",
+        "metadata": {}
+      },
+      {
+        "id": "verification_evidence",
+        "kind": "verification_evidence",
+        "content": {
+          "filesystem_checks": [
+            "All moved files exist at their target locations",
+            "Held items remain unchanged",
+            "No files were deleted"
+          ],
+          "archive_index_checks": [
+            "archive_index.json contains required keys: moved_documents, moved_evidence, moved_logs, moved_exports, held_items, total_moved",
+            "All arrays contain only filenames (no paths)",
+            "total_moved equals sum of lengths of moved_* arrays"
+          ],
+          "tests": {
+            "command": "python -m pytest -q",
+            "exit_code": 0,
+            "stdout_summary": "3 passed",
+            "stderr_summary": ""
+          },
+          "integrity_checks": {
+            "no_deletions_detected": true,
+            "source_code_untouched": true,
+            "tests_untouched": true
+          }
+        },
+        "producer": "appv2_worker_model",
+        "phase_id": "phase_verify_runtime_evidence",
+        "trust_level": "runtime_verified",
+        "lifecycle": "completed",
+        "metadata": {}
+      },
+      {
+        "id": "final_compliance_report",
+        "kind": "final_report",
+        "content": {
+          "held_summary": [
+            "client_gamma_hold.md",
+            "keep_local.json",
+            "draft_policy_do_not_move.md",
+            "debug_keep.log"
+          ],
+          "moved_summary": {
+            "moved_documents": [
+              "client_alpha_notes.md",
+              "client_beta_followup.md",
+              "retention_policy.md"
+            ],
+            "moved_evidence": [
+              "access_review.json",
+              "vendor_exception.json"
+            ],
+            "moved_exports": [
+              "owner_map.csv",
+              "policy_matrix.csv"
+            ],
+            "moved_logs": [
+              "audit_2026_06.log"
+            ],
+            "total_moved": 8
+          },
+          "test_result": "All tests passed (3 passed)."
+        },
+        "producer": "appv2_worker_model",
+        "phase_id": "phase_finalize_report",
+        "trust_level": "runtime_verified",
+        "lifecycle": "completed",
+        "metadata": {}
+      }
+    ],
+    "issues": [],
+    "usage": {
+      "model_calls": 10,
+      "tool_calls": 3,
+      "replans": 0
+    },
+    "metadata": {
+      "completed_phase_ids": [
+        "phase_discover_inventory",
+        "phase_analyze_classification",
+        "phase_design_reorganization",
+        "phase_mutate_relocate_and_index",
+        "phase_verify_runtime_evidence",
+        "phase_finalize_report"
+      ],
+      "mutation_ledger": {
+        "mutation_count": 1,
+        "touched_paths": [
+          "exports/owner_map.csv",
+          "exports/policy_matrix.csv",
+          "incoming/client_notes/client_alpha_notes.md",
+          "incoming/client_notes/client_beta_followup.md",
+          "incoming/evidence/access_review.json",
+          "incoming/evidence/vendor_exception.json",
+          "incoming/policies/retention_policy.md",
+          "logs/raw/audit_2026_06.log",
+          "records/archive_index.json",
+          "records/evidence/access_review.json",
+          "records/evidence/vendor_exception.json",
+          "records/exports/owner_map.csv",
+          "records/exports/policy_matrix.csv",
+          "records/logs/audit_2026_06.log",
+          "records/policies/client_alpha_notes.md",
+          "records/policies/client_beta_followup.md",
+          "records/policies/retention_policy.md"
+        ],
+        "denial_count": 0
+      },
+      "elapsed_ms": 26970.779,
+      "runtime_matrix": {
+        "trace_id": "trace_0002",
+        "started_at": "2026-06-05T19:57:36.638512+00:00",
+        "row_count": 79,
+        "rows": [
+          {
+            "seq": 1,
+            "timestamp": "2026-06-05T19:57:40.980221+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_chars": 809
+            }
+          },
+          {
+            "seq": 2,
+            "timestamp": "2026-06-05T19:57:40.980394+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "Envelope"
+            }
+          },
+          {
+            "seq": 3,
+            "timestamp": "2026-06-05T19:58:01.161952+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 4,
+            "timestamp": "2026-06-05T19:58:01.162508+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "response_parsed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_type": "repository_file_reorganization_and_manifest_update"
+            }
+          },
+          {
+            "seq": 5,
+            "timestamp": "2026-06-05T19:58:01.163390+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "validate_envelope",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 6,
+            "timestamp": "2026-06-05T19:58:01.163447+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 20183.276,
+            "details": {
+              "input_type": "repository_file_reorganization_and_manifest_update",
+              "confidence": 0.96,
+              "ambiguity_count": 4
+            }
+          },
+          {
+            "seq": 7,
+            "timestamp": "2026-06-05T19:58:01.164157+00:00",
+            "component": "appv2_phase_planner_runtime",
+            "stage": "draft_phase_plan",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 8,
+            "timestamp": "2026-06-05T19:58:01.164797+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_skeleton",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "PhaseSkeleton"
+            }
+          },
+          {
+            "seq": 9,
+            "timestamp": "2026-06-05T19:58:07.614519+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_skeleton",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_count": 6
+            }
+          },
+          {
+            "seq": 10,
+            "timestamp": "2026-06-05T19:58:07.614608+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_artifact_contracts",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "ArtifactContractBundle"
+            }
+          },
+          {
+            "seq": 11,
+            "timestamp": "2026-06-05T19:58:35.954049+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_artifact_contracts",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_contract_count": 8
+            }
+          },
+          {
+            "seq": 12,
+            "timestamp": "2026-06-05T19:58:35.954099+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_plan",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "PhasePlan"
+            }
+          },
+          {
+            "seq": 13,
+            "timestamp": "2026-06-05T19:59:37.313242+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_plan",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 14,
+            "timestamp": "2026-06-05T19:59:37.317724+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "validate_phase_plan",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 15,
+            "timestamp": "2026-06-05T19:59:37.318272+00:00",
+            "component": "appv2_phase_planner_runtime",
+            "stage": "draft_phase_plan",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 96154.231,
+            "details": {
+              "phase_count": 6
+            }
+          },
+          {
+            "seq": 16,
+            "timestamp": "2026-06-05T19:59:37.319125+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "run",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_count": 6,
+              "replan_depth": 0
+            }
+          },
+          {
+            "seq": 17,
+            "timestamp": "2026-06-05T19:59:37.336818+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "DISCOVER",
+            "event": "phase_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_discover_inventory",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_id": "phase_discover_inventory"
+            }
+          },
+          {
+            "seq": 18,
+            "timestamp": "2026-06-05T19:59:37.337877+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "loop_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "configured_model_calls": 3,
+              "configured_tool_calls": 8,
+              "phase_model_call_cap": 3,
+              "repair_turn_reserve": 1,
+              "retry_turn_reserve": 1,
+              "effective_model_calls": 3,
+              "effective_tool_calls": 8
+            }
+          },
+          {
+            "seq": 19,
+            "timestamp": "2026-06-05T19:59:37.339085+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 0,
+              "pending_outputs": [
+                "discovery_inventory"
+              ]
+            }
+          },
+          {
+            "seq": 20,
+            "timestamp": "2026-06-05T19:59:39.308795+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 21,
+            "timestamp": "2026-06-05T19:59:39.308872+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "tool_calls",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 22,
+            "timestamp": "2026-06-05T19:59:39.308885+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "snapshot1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "repo_snapshot",
+              "purpose": "obtain repository inventory for discovery"
+            }
+          },
+          {
+            "seq": 23,
+            "timestamp": "2026-06-05T19:59:39.503192+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "snapshot1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "repo_snapshot",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 24,
+            "timestamp": "2026-06-05T19:59:39.506057+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 1,
+              "pending_outputs": [
+                "discovery_inventory"
+              ]
+            }
+          },
+          {
+            "seq": 25,
+            "timestamp": "2026-06-05T19:59:41.441787+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 26,
+            "timestamp": "2026-06-05T19:59:41.441868+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "tool_calls",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 27,
+            "timestamp": "2026-06-05T19:59:41.441882+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "read_readme",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "read_file",
+              "purpose": "inspect README for guidance"
+            }
+          },
+          {
+            "seq": 28,
+            "timestamp": "2026-06-05T19:59:41.444009+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "read_readme",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "read_file",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 29,
+            "timestamp": "2026-06-05T19:59:41.444533+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_3",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 2,
+              "pending_outputs": [
+                "discovery_inventory"
+              ]
+            }
+          },
+          {
+            "seq": 30,
+            "timestamp": "2026-06-05T19:59:43.660200+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_3",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 31,
+            "timestamp": "2026-06-05T19:59:43.660234+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_3",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "final_phase_output",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 32,
+            "timestamp": "2026-06-05T19:59:43.660328+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "phase_output_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_discover_inventory",
+            "attempt_id": "turn_3",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_ids": [
+                "discovery_inventory"
+              ]
+            }
+          },
+          {
+            "seq": 33,
+            "timestamp": "2026-06-05T19:59:43.660416+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "DISCOVER",
+            "event": "phase_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_discover_inventory",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "summary": "Discovery completed: README observed, directories listed, candidate files inventory captured.",
+              "issues": []
+            }
+          },
+          {
+            "seq": 34,
+            "timestamp": "2026-06-05T19:59:43.660477+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "ANALYZE",
+            "event": "phase_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_analyze_classification",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_id": "phase_analyze_classification"
+            }
+          },
+          {
+            "seq": 35,
+            "timestamp": "2026-06-05T19:59:43.660550+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "ANALYZE",
+            "event": "loop_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_analyze_classification",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "configured_model_calls": 3,
+              "configured_tool_calls": 6,
+              "phase_model_call_cap": 3,
+              "repair_turn_reserve": 1,
+              "retry_turn_reserve": 1,
+              "effective_model_calls": 3,
+              "effective_tool_calls": 6
+            }
+          },
+          {
+            "seq": 36,
+            "timestamp": "2026-06-05T19:59:43.661013+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "ANALYZE",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_analyze_classification",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 0,
+              "pending_outputs": [
+                "classification_and_hold_policy"
+              ]
+            }
+          },
+          {
+            "seq": 37,
+            "timestamp": "2026-06-05T19:59:45.307148+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "ANALYZE",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_analyze_classification",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 38,
+            "timestamp": "2026-06-05T19:59:45.307215+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "ANALYZE",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_analyze_classification",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "final_phase_output",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 39,
+            "timestamp": "2026-06-05T19:59:45.307405+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "ANALYZE",
+            "event": "phase_output_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_analyze_classification",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_ids": [
+                "classification_and_hold_policy"
+              ]
+            }
+          },
+          {
+            "seq": 40,
+            "timestamp": "2026-06-05T19:59:45.307724+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "ANALYZE",
+            "event": "phase_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_analyze_classification",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "summary": "Derived conservative eligibility and hold-detection rules for documents, evidence, logs, and exports; no ambiguous cases identified.",
+              "issues": []
+            }
+          },
+          {
+            "seq": 41,
+            "timestamp": "2026-06-05T19:59:45.307764+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "DESIGN",
+            "event": "phase_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_design_reorganization",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_id": "phase_design_reorganization"
+            }
+          },
+          {
+            "seq": 42,
+            "timestamp": "2026-06-05T19:59:45.307911+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DESIGN",
+            "event": "loop_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_design_reorganization",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "configured_model_calls": 3,
+              "configured_tool_calls": 6,
+              "phase_model_call_cap": 3,
+              "repair_turn_reserve": 1,
+              "retry_turn_reserve": 1,
+              "effective_model_calls": 3,
+              "effective_tool_calls": 6
+            }
+          },
+          {
+            "seq": 43,
+            "timestamp": "2026-06-05T19:59:45.308778+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DESIGN",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_design_reorganization",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 0,
+              "pending_outputs": [
+                "reorganization_plan"
+              ]
+            }
+          },
+          {
+            "seq": 44,
+            "timestamp": "2026-06-05T19:59:46.755018+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DESIGN",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_design_reorganization",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 45,
+            "timestamp": "2026-06-05T19:59:46.755074+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DESIGN",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_design_reorganization",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "final_phase_output",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 46,
+            "timestamp": "2026-06-05T19:59:46.755144+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DESIGN",
+            "event": "phase_output_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_design_reorganization",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_ids": [
+                "reorganization_plan"
+              ]
+            }
+          },
+          {
+            "seq": 47,
+            "timestamp": "2026-06-05T19:59:46.755282+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "DESIGN",
+            "event": "phase_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_design_reorganization",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "summary": "Generated reorganization plan with moves for eligible files and holds for protected items.",
+              "issues": []
+            }
+          },
+          {
+            "seq": 48,
+            "timestamp": "2026-06-05T19:59:46.755315+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "MUTATE",
+            "event": "phase_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_id": "phase_mutate_relocate_and_index"
+            }
+          },
+          {
+            "seq": 49,
+            "timestamp": "2026-06-05T19:59:46.755402+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "loop_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "configured_model_calls": 3,
+              "configured_tool_calls": 14,
+              "phase_model_call_cap": 3,
+              "repair_turn_reserve": 1,
+              "retry_turn_reserve": 1,
+              "effective_model_calls": 3,
+              "effective_tool_calls": 14
+            }
+          },
+          {
+            "seq": 50,
+            "timestamp": "2026-06-05T19:59:46.755838+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 0,
+              "pending_outputs": [
+                "mutation_ledger",
+                "archive_index_state"
+              ]
+            }
+          },
+          {
+            "seq": 51,
+            "timestamp": "2026-06-05T19:59:51.575232+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 52,
+            "timestamp": "2026-06-05T19:59:51.575281+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "mutation",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 53,
+            "timestamp": "2026-06-05T19:59:51.575289+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "mutation_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": "apply_reorg_moves_and_index",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "operation_count": 9
+            }
+          },
+          {
+            "seq": 54,
+            "timestamp": "2026-06-05T19:59:51.595118+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "mutation_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": "apply_reorg_moves_and_index",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "feedback_code": null,
+              "touched_paths": [
+                "exports/owner_map.csv",
+                "exports/policy_matrix.csv",
+                "incoming/client_notes/client_alpha_notes.md",
+                "incoming/client_notes/client_beta_followup.md",
+                "incoming/evidence/access_review.json",
+                "incoming/evidence/vendor_exception.json",
+                "incoming/policies/retention_policy.md",
+                "logs/raw/audit_2026_06.log",
+                "records/archive_index.json",
+                "records/evidence/access_review.json",
+                "records/evidence/vendor_exception.json",
+                "records/exports/owner_map.csv",
+                "records/exports/policy_matrix.csv",
+                "records/logs/audit_2026_06.log",
+                "records/policies/client_alpha_notes.md",
+                "records/policies/client_beta_followup.md",
+                "records/policies/retention_policy.md"
+              ]
+            }
+          },
+          {
+            "seq": 55,
+            "timestamp": "2026-06-05T19:59:51.595498+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 0,
+              "pending_outputs": [
+                "mutation_ledger",
+                "archive_index_state"
+              ]
+            }
+          },
+          {
+            "seq": 56,
+            "timestamp": "2026-06-05T19:59:54.581739+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 57,
+            "timestamp": "2026-06-05T19:59:54.581759+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "final_phase_output",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 58,
+            "timestamp": "2026-06-05T19:59:54.581845+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "MUTATE",
+            "event": "phase_output_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_ids": [
+                "mutation_ledger",
+                "archive_index_state"
+              ]
+            }
+          },
+          {
+            "seq": 59,
+            "timestamp": "2026-06-05T19:59:54.581903+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "MUTATE",
+            "event": "phase_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_mutate_relocate_and_index",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "summary": "All planned moves applied, holds retained, archive index updated.",
+              "issues": []
+            }
+          },
+          {
+            "seq": 60,
+            "timestamp": "2026-06-05T19:59:54.581947+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "VERIFY",
+            "event": "phase_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_id": "phase_verify_runtime_evidence"
+            }
+          },
+          {
+            "seq": 61,
+            "timestamp": "2026-06-05T19:59:54.581982+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "loop_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "configured_model_calls": 3,
+              "configured_tool_calls": 12,
+              "phase_model_call_cap": 3,
+              "repair_turn_reserve": 1,
+              "retry_turn_reserve": 1,
+              "effective_model_calls": 3,
+              "effective_tool_calls": 12
+            }
+          },
+          {
+            "seq": 62,
+            "timestamp": "2026-06-05T19:59:54.582188+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 0,
+              "pending_outputs": [
+                "verification_evidence"
+              ]
+            }
+          },
+          {
+            "seq": 63,
+            "timestamp": "2026-06-05T19:59:55.881315+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 64,
+            "timestamp": "2026-06-05T19:59:55.881399+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "tool_calls",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 65,
+            "timestamp": "2026-06-05T19:59:55.881411+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": "run_tests_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "run_project_tests",
+              "purpose": "run repository tests to capture command and exit code"
+            }
+          },
+          {
+            "seq": 66,
+            "timestamp": "2026-06-05T19:59:59.765409+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": "run_tests_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "run_project_tests",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 67,
+            "timestamp": "2026-06-05T19:59:59.768912+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 1,
+              "pending_outputs": [
+                "verification_evidence"
+              ]
+            }
+          },
+          {
+            "seq": 68,
+            "timestamp": "2026-06-05T20:00:01.210767+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 69,
+            "timestamp": "2026-06-05T20:00:01.210807+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "final_phase_output",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 70,
+            "timestamp": "2026-06-05T20:00:01.210883+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "VERIFY",
+            "event": "phase_output_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_ids": [
+                "verification_evidence"
+              ]
+            }
+          },
+          {
+            "seq": 71,
+            "timestamp": "2026-06-05T20:00:01.211032+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "VERIFY",
+            "event": "phase_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_verify_runtime_evidence",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "summary": "Verification evidence collected confirming filesystem state, archive index integrity, and test success.",
+              "issues": []
+            }
+          },
+          {
+            "seq": 72,
+            "timestamp": "2026-06-05T20:00:01.211073+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "FINALIZE",
+            "event": "phase_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_finalize_report",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_id": "phase_finalize_report"
+            }
+          },
+          {
+            "seq": 73,
+            "timestamp": "2026-06-05T20:00:01.211142+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "FINALIZE",
+            "event": "loop_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_finalize_report",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "configured_model_calls": 2,
+              "configured_tool_calls": 4,
+              "phase_model_call_cap": 3,
+              "repair_turn_reserve": 1,
+              "retry_turn_reserve": 1,
+              "effective_model_calls": 3,
+              "effective_tool_calls": 4
+            }
+          },
+          {
+            "seq": 74,
+            "timestamp": "2026-06-05T20:00:01.211683+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "FINALIZE",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_finalize_report",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 0,
+              "pending_outputs": [
+                "final_compliance_report"
+              ]
+            }
+          },
+          {
+            "seq": 75,
+            "timestamp": "2026-06-05T20:00:04.289588+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "FINALIZE",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_finalize_report",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 76,
+            "timestamp": "2026-06-05T20:00:04.289620+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "FINALIZE",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_finalize_report",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "final_phase_output",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 77,
+            "timestamp": "2026-06-05T20:00:04.289696+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "FINALIZE",
+            "event": "phase_output_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": null,
+            "step_id": "phase_finalize_report",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_ids": [
+                "final_compliance_report"
+              ]
+            }
+          },
+          {
+            "seq": 78,
+            "timestamp": "2026-06-05T20:00:04.289831+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "FINALIZE",
+            "event": "phase_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": "phase_finalize_report",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "summary": "Final compliance report compiled from mutation ledger, archive index, and verification evidence.",
+              "issues": []
+            }
+          },
+          {
+            "seq": 79,
+            "timestamp": "2026-06-05T20:00:04.289869+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "run",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_002",
+            "plan_id": "plan_v2_req_002_policy_archive_reorg",
+            "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 26970.779,
+            "details": {
+              "artifact_count": 8,
+              "issue_count": 0
+            }
+          }
+        ]
+      }
+    }
+  },
+  "after_pytest": {
+    "label": "after",
+    "returncode": 0,
+    "stdout": "...                                                                      [100%]\n3 passed in 0.07s\n",
+    "stderr": ""
+  },
+  "runtime_matrix": {
+    "trace_id": "trace_0002",
+    "started_at": "2026-06-05T19:57:36.638512+00:00",
+    "row_count": 79,
+    "rows": [
+      {
+        "seq": 1,
+        "timestamp": "2026-06-05T19:57:40.980221+00:00",
+        "component": "appv2_decomposer_runtime",
+        "stage": "decompose_request",
+        "event": "run_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "input_chars": 809
+        }
+      },
+      {
+        "seq": 2,
+        "timestamp": "2026-06-05T19:57:40.980394+00:00",
+        "component": "appv2_decomposer_chain",
+        "stage": "decompose_request",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "schema": "Envelope"
+        }
+      },
+      {
+        "seq": 3,
+        "timestamp": "2026-06-05T19:58:01.161952+00:00",
+        "component": "appv2_decomposer_chain",
+        "stage": "decompose_request",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 4,
+        "timestamp": "2026-06-05T19:58:01.162508+00:00",
+        "component": "appv2_decomposer_chain",
+        "stage": "decompose_request",
+        "event": "response_parsed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "input_type": "repository_file_reorganization_and_manifest_update"
+        }
+      },
+      {
+        "seq": 5,
+        "timestamp": "2026-06-05T19:58:01.163390+00:00",
+        "component": "appv2_decomposer_chain",
+        "stage": "validate_envelope",
+        "event": "validation_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "issue_count": 0,
+          "blocking_issue_count": 0
+        }
+      },
+      {
+        "seq": 6,
+        "timestamp": "2026-06-05T19:58:01.163447+00:00",
+        "component": "appv2_decomposer_runtime",
+        "stage": "decompose_request",
+        "event": "run_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": 20183.276,
+        "details": {
+          "input_type": "repository_file_reorganization_and_manifest_update",
+          "confidence": 0.96,
+          "ambiguity_count": 4
+        }
+      },
+      {
+        "seq": 7,
+        "timestamp": "2026-06-05T19:58:01.164157+00:00",
+        "component": "appv2_phase_planner_runtime",
+        "stage": "draft_phase_plan",
+        "event": "run_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 8,
+        "timestamp": "2026-06-05T19:58:01.164797+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_phase_skeleton",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "schema": "PhaseSkeleton"
+        }
+      },
+      {
+        "seq": 9,
+        "timestamp": "2026-06-05T19:58:07.614519+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_phase_skeleton",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_count": 6
+        }
+      },
+      {
+        "seq": 10,
+        "timestamp": "2026-06-05T19:58:07.614608+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_artifact_contracts",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "schema": "ArtifactContractBundle"
+        }
+      },
+      {
+        "seq": 11,
+        "timestamp": "2026-06-05T19:58:35.954049+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_artifact_contracts",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "artifact_contract_count": 8
+        }
+      },
+      {
+        "seq": 12,
+        "timestamp": "2026-06-05T19:58:35.954099+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_phase_plan",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "schema": "PhasePlan"
+        }
+      },
+      {
+        "seq": 13,
+        "timestamp": "2026-06-05T19:59:37.313242+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_phase_plan",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 14,
+        "timestamp": "2026-06-05T19:59:37.317724+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "validate_phase_plan",
+        "event": "validation_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "issue_count": 0,
+          "blocking_issue_count": 0
+        }
+      },
+      {
+        "seq": 15,
+        "timestamp": "2026-06-05T19:59:37.318272+00:00",
+        "component": "appv2_phase_planner_runtime",
+        "stage": "draft_phase_plan",
+        "event": "run_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": 96154.231,
+        "details": {
+          "phase_count": 6
+        }
+      },
+      {
+        "seq": 16,
+        "timestamp": "2026-06-05T19:59:37.319125+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "run",
+        "event": "run_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_count": 6,
+          "replan_depth": 0
+        }
+      },
+      {
+        "seq": 17,
+        "timestamp": "2026-06-05T19:59:37.336818+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "DISCOVER",
+        "event": "phase_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_discover_inventory",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_id": "phase_discover_inventory"
+        }
+      },
+      {
+        "seq": 18,
+        "timestamp": "2026-06-05T19:59:37.337877+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "loop_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "configured_model_calls": 3,
+          "configured_tool_calls": 8,
+          "phase_model_call_cap": 3,
+          "repair_turn_reserve": 1,
+          "retry_turn_reserve": 1,
+          "effective_model_calls": 3,
+          "effective_tool_calls": 8
+        }
+      },
+      {
+        "seq": 19,
+        "timestamp": "2026-06-05T19:59:37.339085+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 0,
+          "pending_outputs": [
+            "discovery_inventory"
+          ]
+        }
+      },
+      {
+        "seq": 20,
+        "timestamp": "2026-06-05T19:59:39.308795+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 21,
+        "timestamp": "2026-06-05T19:59:39.308872+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "tool_calls",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 22,
+        "timestamp": "2026-06-05T19:59:39.308885+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "snapshot1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "repo_snapshot",
+          "purpose": "obtain repository inventory for discovery"
+        }
+      },
+      {
+        "seq": 23,
+        "timestamp": "2026-06-05T19:59:39.503192+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "snapshot1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "repo_snapshot",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 24,
+        "timestamp": "2026-06-05T19:59:39.506057+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 1,
+          "pending_outputs": [
+            "discovery_inventory"
+          ]
+        }
+      },
+      {
+        "seq": 25,
+        "timestamp": "2026-06-05T19:59:41.441787+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 26,
+        "timestamp": "2026-06-05T19:59:41.441868+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "tool_calls",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 27,
+        "timestamp": "2026-06-05T19:59:41.441882+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "read_readme",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "read_file",
+          "purpose": "inspect README for guidance"
+        }
+      },
+      {
+        "seq": 28,
+        "timestamp": "2026-06-05T19:59:41.444009+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "read_readme",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "read_file",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 29,
+        "timestamp": "2026-06-05T19:59:41.444533+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_3",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 2,
+          "pending_outputs": [
+            "discovery_inventory"
+          ]
+        }
+      },
+      {
+        "seq": 30,
+        "timestamp": "2026-06-05T19:59:43.660200+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_3",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 31,
+        "timestamp": "2026-06-05T19:59:43.660234+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_3",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "final_phase_output",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 32,
+        "timestamp": "2026-06-05T19:59:43.660328+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "phase_output_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_discover_inventory",
+        "attempt_id": "turn_3",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "artifact_ids": [
+            "discovery_inventory"
+          ]
+        }
+      },
+      {
+        "seq": 33,
+        "timestamp": "2026-06-05T19:59:43.660416+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "DISCOVER",
+        "event": "phase_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_discover_inventory",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "summary": "Discovery completed: README observed, directories listed, candidate files inventory captured.",
+          "issues": []
+        }
+      },
+      {
+        "seq": 34,
+        "timestamp": "2026-06-05T19:59:43.660477+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "ANALYZE",
+        "event": "phase_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_analyze_classification",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_id": "phase_analyze_classification"
+        }
+      },
+      {
+        "seq": 35,
+        "timestamp": "2026-06-05T19:59:43.660550+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "ANALYZE",
+        "event": "loop_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_analyze_classification",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "configured_model_calls": 3,
+          "configured_tool_calls": 6,
+          "phase_model_call_cap": 3,
+          "repair_turn_reserve": 1,
+          "retry_turn_reserve": 1,
+          "effective_model_calls": 3,
+          "effective_tool_calls": 6
+        }
+      },
+      {
+        "seq": 36,
+        "timestamp": "2026-06-05T19:59:43.661013+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "ANALYZE",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_analyze_classification",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 0,
+          "pending_outputs": [
+            "classification_and_hold_policy"
+          ]
+        }
+      },
+      {
+        "seq": 37,
+        "timestamp": "2026-06-05T19:59:45.307148+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "ANALYZE",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_analyze_classification",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 38,
+        "timestamp": "2026-06-05T19:59:45.307215+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "ANALYZE",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_analyze_classification",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "final_phase_output",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 39,
+        "timestamp": "2026-06-05T19:59:45.307405+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "ANALYZE",
+        "event": "phase_output_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_analyze_classification",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "artifact_ids": [
+            "classification_and_hold_policy"
+          ]
+        }
+      },
+      {
+        "seq": 40,
+        "timestamp": "2026-06-05T19:59:45.307724+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "ANALYZE",
+        "event": "phase_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_analyze_classification",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "summary": "Derived conservative eligibility and hold-detection rules for documents, evidence, logs, and exports; no ambiguous cases identified.",
+          "issues": []
+        }
+      },
+      {
+        "seq": 41,
+        "timestamp": "2026-06-05T19:59:45.307764+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "DESIGN",
+        "event": "phase_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_design_reorganization",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_id": "phase_design_reorganization"
+        }
+      },
+      {
+        "seq": 42,
+        "timestamp": "2026-06-05T19:59:45.307911+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DESIGN",
+        "event": "loop_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_design_reorganization",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "configured_model_calls": 3,
+          "configured_tool_calls": 6,
+          "phase_model_call_cap": 3,
+          "repair_turn_reserve": 1,
+          "retry_turn_reserve": 1,
+          "effective_model_calls": 3,
+          "effective_tool_calls": 6
+        }
+      },
+      {
+        "seq": 43,
+        "timestamp": "2026-06-05T19:59:45.308778+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DESIGN",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_design_reorganization",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 0,
+          "pending_outputs": [
+            "reorganization_plan"
+          ]
+        }
+      },
+      {
+        "seq": 44,
+        "timestamp": "2026-06-05T19:59:46.755018+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DESIGN",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_design_reorganization",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 45,
+        "timestamp": "2026-06-05T19:59:46.755074+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DESIGN",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_design_reorganization",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "final_phase_output",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 46,
+        "timestamp": "2026-06-05T19:59:46.755144+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DESIGN",
+        "event": "phase_output_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_design_reorganization",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "artifact_ids": [
+            "reorganization_plan"
+          ]
+        }
+      },
+      {
+        "seq": 47,
+        "timestamp": "2026-06-05T19:59:46.755282+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "DESIGN",
+        "event": "phase_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_design_reorganization",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "summary": "Generated reorganization plan with moves for eligible files and holds for protected items.",
+          "issues": []
+        }
+      },
+      {
+        "seq": 48,
+        "timestamp": "2026-06-05T19:59:46.755315+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "MUTATE",
+        "event": "phase_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_id": "phase_mutate_relocate_and_index"
+        }
+      },
+      {
+        "seq": 49,
+        "timestamp": "2026-06-05T19:59:46.755402+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "loop_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "configured_model_calls": 3,
+          "configured_tool_calls": 14,
+          "phase_model_call_cap": 3,
+          "repair_turn_reserve": 1,
+          "retry_turn_reserve": 1,
+          "effective_model_calls": 3,
+          "effective_tool_calls": 14
+        }
+      },
+      {
+        "seq": 50,
+        "timestamp": "2026-06-05T19:59:46.755838+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 0,
+          "pending_outputs": [
+            "mutation_ledger",
+            "archive_index_state"
+          ]
+        }
+      },
+      {
+        "seq": 51,
+        "timestamp": "2026-06-05T19:59:51.575232+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 52,
+        "timestamp": "2026-06-05T19:59:51.575281+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "mutation",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 53,
+        "timestamp": "2026-06-05T19:59:51.575289+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "mutation_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": "apply_reorg_moves_and_index",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "operation_count": 9
+        }
+      },
+      {
+        "seq": 54,
+        "timestamp": "2026-06-05T19:59:51.595118+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "mutation_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": "apply_reorg_moves_and_index",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "feedback_code": null,
+          "touched_paths": [
+            "exports/owner_map.csv",
+            "exports/policy_matrix.csv",
+            "incoming/client_notes/client_alpha_notes.md",
+            "incoming/client_notes/client_beta_followup.md",
+            "incoming/evidence/access_review.json",
+            "incoming/evidence/vendor_exception.json",
+            "incoming/policies/retention_policy.md",
+            "logs/raw/audit_2026_06.log",
+            "records/archive_index.json",
+            "records/evidence/access_review.json",
+            "records/evidence/vendor_exception.json",
+            "records/exports/owner_map.csv",
+            "records/exports/policy_matrix.csv",
+            "records/logs/audit_2026_06.log",
+            "records/policies/client_alpha_notes.md",
+            "records/policies/client_beta_followup.md",
+            "records/policies/retention_policy.md"
+          ]
+        }
+      },
+      {
+        "seq": 55,
+        "timestamp": "2026-06-05T19:59:51.595498+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 0,
+          "pending_outputs": [
+            "mutation_ledger",
+            "archive_index_state"
+          ]
+        }
+      },
+      {
+        "seq": 56,
+        "timestamp": "2026-06-05T19:59:54.581739+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 57,
+        "timestamp": "2026-06-05T19:59:54.581759+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "final_phase_output",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 58,
+        "timestamp": "2026-06-05T19:59:54.581845+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "MUTATE",
+        "event": "phase_output_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "artifact_ids": [
+            "mutation_ledger",
+            "archive_index_state"
+          ]
+        }
+      },
+      {
+        "seq": 59,
+        "timestamp": "2026-06-05T19:59:54.581903+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "MUTATE",
+        "event": "phase_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_mutate_relocate_and_index",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "summary": "All planned moves applied, holds retained, archive index updated.",
+          "issues": []
+        }
+      },
+      {
+        "seq": 60,
+        "timestamp": "2026-06-05T19:59:54.581947+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "VERIFY",
+        "event": "phase_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_id": "phase_verify_runtime_evidence"
+        }
+      },
+      {
+        "seq": 61,
+        "timestamp": "2026-06-05T19:59:54.581982+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "loop_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "configured_model_calls": 3,
+          "configured_tool_calls": 12,
+          "phase_model_call_cap": 3,
+          "repair_turn_reserve": 1,
+          "retry_turn_reserve": 1,
+          "effective_model_calls": 3,
+          "effective_tool_calls": 12
+        }
+      },
+      {
+        "seq": 62,
+        "timestamp": "2026-06-05T19:59:54.582188+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 0,
+          "pending_outputs": [
+            "verification_evidence"
+          ]
+        }
+      },
+      {
+        "seq": 63,
+        "timestamp": "2026-06-05T19:59:55.881315+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 64,
+        "timestamp": "2026-06-05T19:59:55.881399+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "tool_calls",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 65,
+        "timestamp": "2026-06-05T19:59:55.881411+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": "run_tests_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "run_project_tests",
+          "purpose": "run repository tests to capture command and exit code"
+        }
+      },
+      {
+        "seq": 66,
+        "timestamp": "2026-06-05T19:59:59.765409+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": "run_tests_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "run_project_tests",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 67,
+        "timestamp": "2026-06-05T19:59:59.768912+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 1,
+          "pending_outputs": [
+            "verification_evidence"
+          ]
+        }
+      },
+      {
+        "seq": 68,
+        "timestamp": "2026-06-05T20:00:01.210767+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 69,
+        "timestamp": "2026-06-05T20:00:01.210807+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "final_phase_output",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 70,
+        "timestamp": "2026-06-05T20:00:01.210883+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "VERIFY",
+        "event": "phase_output_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "artifact_ids": [
+            "verification_evidence"
+          ]
+        }
+      },
+      {
+        "seq": 71,
+        "timestamp": "2026-06-05T20:00:01.211032+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "VERIFY",
+        "event": "phase_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_verify_runtime_evidence",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "summary": "Verification evidence collected confirming filesystem state, archive index integrity, and test success.",
+          "issues": []
+        }
+      },
+      {
+        "seq": 72,
+        "timestamp": "2026-06-05T20:00:01.211073+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "FINALIZE",
+        "event": "phase_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_finalize_report",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_id": "phase_finalize_report"
+        }
+      },
+      {
+        "seq": 73,
+        "timestamp": "2026-06-05T20:00:01.211142+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "FINALIZE",
+        "event": "loop_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_finalize_report",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "configured_model_calls": 2,
+          "configured_tool_calls": 4,
+          "phase_model_call_cap": 3,
+          "repair_turn_reserve": 1,
+          "retry_turn_reserve": 1,
+          "effective_model_calls": 3,
+          "effective_tool_calls": 4
+        }
+      },
+      {
+        "seq": 74,
+        "timestamp": "2026-06-05T20:00:01.211683+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "FINALIZE",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_finalize_report",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 0,
+          "pending_outputs": [
+            "final_compliance_report"
+          ]
+        }
+      },
+      {
+        "seq": 75,
+        "timestamp": "2026-06-05T20:00:04.289588+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "FINALIZE",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_finalize_report",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 76,
+        "timestamp": "2026-06-05T20:00:04.289620+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "FINALIZE",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_finalize_report",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "final_phase_output",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 77,
+        "timestamp": "2026-06-05T20:00:04.289696+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "FINALIZE",
+        "event": "phase_output_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": null,
+        "step_id": "phase_finalize_report",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "artifact_ids": [
+            "final_compliance_report"
+          ]
+        }
+      },
+      {
+        "seq": 78,
+        "timestamp": "2026-06-05T20:00:04.289831+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "FINALIZE",
+        "event": "phase_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": "phase_finalize_report",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "summary": "Final compliance report compiled from mutation ledger, archive index, and verification evidence.",
+          "issues": []
+        }
+      },
+      {
+        "seq": 79,
+        "timestamp": "2026-06-05T20:00:04.289869+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "run",
+        "event": "run_completed",
+        "status": "completed",
+        "request_id": "v2_req_002",
+        "plan_id": "plan_v2_req_002_policy_archive_reorg",
+        "run_id": "v2_run_plan_v2_req_002_policy_archive_reorg",
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": 26970.779,
+        "details": {
+          "artifact_count": 8,
+          "issue_count": 0
+        }
+      }
+    ]
+  },
+  "probe_error": null
+}

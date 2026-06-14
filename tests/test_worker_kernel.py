@@ -1,8 +1,10 @@
 import pytest
 
+from app.repair_policy import WORKER_STAGE_REPAIR_ATTEMPTS
 from app.schemas import Envelope, Plan, PlanStep, ReplanRequest, Result, Task
 from app.worker_kernel.agentic import AgenticWorkerGroupRunner, WorkerInstanceTemplate, WorkerLLMController
 from app.worker_kernel.group import SequentialWorkerGroupRunner
+from app.worker_kernel.execution_plan import retry_envelope_call_budget
 from app.worker_kernel.registry import WorkerRegistry, build_default_registry
 from app.worker_kernel.runtime import WorkerKernelRuntime
 from app.worker_kernel.tools import WorkerToolConfig, WorkerToolbox
@@ -293,7 +295,8 @@ def test_worker_kernel_dispatches_bounded_mutation_with_oversized_advisory_scope
     result = WorkerKernelRuntime(registry=registry).run(_mutation_scope_block_plan())
 
     assert result.status == "completed"
-    assert CodeWorker.mutation_policy["mode"] == "advisory"
+    assert CodeWorker.mutation_policy["mode"] == "strict"
+    assert CodeWorker.mutation_policy["strict_allowed_paths"] == ["src/a.py", "src/b.py", "src/c.py"]
     assert CodeWorker.mutation_policy["advisory_paths"] == ["src/a.py", "src/b.py", "src/c.py"]
     assert "exceeding max_files" in CodeWorker.mutation_policy["validation_warnings"][0]["message"]
 
@@ -366,6 +369,314 @@ def test_worker_kernel_marks_failed_verify_after_mutation_as_completed_with_fail
 
     assert result.status == "completed_with_failed_verification"
     assert result.errors == ["pytest failed"]
+
+
+def test_worker_kernel_repairs_mutation_once_from_verification_feedback() -> None:
+    class CodeWorker:
+        worker_type = "code_worker"
+        calls = 0
+        saw_feedback = False
+
+        def run(self, task: Task) -> Result:
+            type(self).calls += 1
+            if "verification_feedback" in task.metadata:
+                type(self).saw_feedback = True
+                assert task.metadata["verification_feedback"]["verify_step_id"] == "verify"
+                assert task.metadata["runtime_retry_reason_code"] == "verification_feedback_repair"
+                summary = "repair applied from verification feedback"
+            else:
+                summary = "initial mutation applied"
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary=summary,
+                artifacts=[
+                    {"id": "change_summary", "content": {"summary": summary}},
+                    {"id": "rollback_patch", "content": {"diff": "rollback"}},
+                ],
+                usage={"tool_calls": 0, "model_calls": 1},
+            )
+
+    class VerifyWorker:
+        worker_type = "verify_worker"
+        calls = 0
+
+        def run(self, task: Task) -> Result:
+            type(self).calls += 1
+            if type(self).calls == 1:
+                return Result(
+                    run_id=task.run_id,
+                    producer=self.worker_type,
+                    status="failed",
+                    summary="pytest failed after mutation",
+                    artifacts=[
+                        {
+                            "id": "verify_tool",
+                            "kind": "tool_observation",
+                            "content": {
+                                "tool_name": "run_project_tests",
+                                "observation": {"command": ["pytest", "-q"], "returncode": 1},
+                            },
+                            "metadata": {"tool_name": "run_project_tests"},
+                        }
+                    ],
+                    usage={"tool_calls": 1, "model_calls": 1},
+                )
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="verification passed after targeted repair",
+                artifacts=[
+                    {
+                        "id": "verification_results",
+                        "content": {"status": "passed", "commands": [{"returncode": 0}]},
+                    }
+                ],
+                usage={"tool_calls": 1, "model_calls": 1},
+            )
+
+    registry = WorkerRegistry()
+    registry.register(CodeWorker())
+    registry.register(VerifyWorker())
+    plan = Plan(
+        plan_id="plan_verify_feedback_repair",
+        request_id="req_verify_feedback_repair",
+        planner="test",
+        objective="mutate and verify",
+        strategy="repair from failed verification once",
+        steps=[
+            PlanStep(
+                step_id="mutate",
+                worker_type="code_worker",
+                phase="MUTATE",
+                mode="bounded_mutation",
+                instruction="apply scoped mutation",
+                output_artifacts=["change_summary", "rollback_patch"],
+                max_tool_calls=0,
+                max_model_calls=1,
+                permissions=_permissions(read_files=True),
+            ),
+            PlanStep(
+                step_id="verify",
+                worker_type="verify_worker",
+                phase="VERIFY",
+                mode="verify_only",
+                instruction="run verification",
+                input_artifacts=["change_summary", "rollback_patch"],
+                output_artifacts=["verification_results"],
+                max_tool_calls=1,
+                max_model_calls=1,
+                permissions=_permissions(run_commands=True),
+            ),
+        ],
+        budget={"max_tool_calls": 6, "max_model_calls": 8, "max_workers": 2, "max_retries": 1},
+    )
+
+    result = WorkerKernelRuntime(registry=registry).run(plan)
+
+    assert result.status == "completed"
+    assert CodeWorker.calls == 2
+    assert CodeWorker.saw_feedback is True
+    assert VerifyWorker.calls == 2
+    assert result.metadata["retry_count"] == 1
+    assert any(artifact.id == "verification_results" for artifact in result.artifacts)
+    events = [row["event"] for row in result.metadata["runtime_matrix"]["rows"]]
+    assert "verification_feedback_repair_started" in events
+    assert "verification_feedback_repair_completed" in events
+
+
+def test_worker_kernel_allows_configured_verification_feedback_repairs() -> None:
+    class CodeWorker:
+        worker_type = "code_worker"
+        repair_calls = 0
+
+        def run(self, task: Task) -> Result:
+            if "verification_feedback" not in task.metadata:
+                return Result(
+                    run_id=task.run_id,
+                    producer=self.worker_type,
+                    status="completed",
+                    summary="initial mutation applied",
+                    artifacts=[
+                        {"id": "change_summary", "content": {"summary": "initial"}},
+                        {"id": "rollback_patch", "content": {"diff": "rollback"}},
+                    ],
+                    usage={"tool_calls": 0, "model_calls": 1},
+                )
+            type(self).repair_calls += 1
+            if type(self).repair_calls < WORKER_STAGE_REPAIR_ATTEMPTS:
+                return Result(
+                    run_id=task.run_id,
+                    producer=self.worker_type,
+                    status="failed",
+                    summary="repair instance missed output contract",
+                    usage={"tool_calls": 0, "model_calls": 1},
+                    metadata={
+                        "issues": [
+                            {
+                                "issue_type": "instance_failure",
+                                "code": "worker_output_contract_miss",
+                                "message": "missing expected repair artifacts",
+                                "retryable": True,
+                            }
+                        ]
+                    },
+                )
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="third repair fixed verification failure",
+                artifacts=[
+                    {"id": "change_summary", "content": {"summary": "repair"}},
+                    {"id": "rollback_patch", "content": {"diff": "rollback"}},
+                ],
+                usage={"tool_calls": 0, "model_calls": 1},
+            )
+
+    class VerifyWorker:
+        worker_type = "verify_worker"
+        calls = 0
+
+        def run(self, task: Task) -> Result:
+            type(self).calls += 1
+            if type(self).calls == 1:
+                return Result(
+                    run_id=task.run_id,
+                    producer=self.worker_type,
+                    status="failed",
+                    summary="pytest failed after mutation",
+                    artifacts=[
+                        {
+                            "id": "verify_tool",
+                            "kind": "tool_observation",
+                            "content": {
+                                "tool_name": "run_project_tests",
+                                "observation": {"command": ["pytest", "-q"], "returncode": 1},
+                            },
+                            "metadata": {"tool_name": "run_project_tests"},
+                        }
+                    ],
+                    usage={"tool_calls": 1, "model_calls": 1},
+                )
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="verification passed after repair",
+                artifacts=[{"id": "verification_results", "content": {"status": "passed"}}],
+                usage={"tool_calls": 1, "model_calls": 1},
+            )
+
+    registry = WorkerRegistry()
+    registry.register(CodeWorker())
+    registry.register(VerifyWorker())
+    plan = Plan(
+        plan_id="plan_verify_feedback_three_repairs",
+        request_id="req_verify_feedback_three_repairs",
+        planner="test",
+        objective="mutate and verify",
+        strategy="repair from failed verification until fixed",
+        steps=[
+            PlanStep(
+                step_id="mutate",
+                worker_type="code_worker",
+                phase="MUTATE",
+                mode="bounded_mutation",
+                instruction="apply scoped mutation",
+                output_artifacts=["change_summary", "rollback_patch"],
+                max_tool_calls=0,
+                max_model_calls=1,
+                permissions=_permissions(read_files=True),
+            ),
+            PlanStep(
+                step_id="verify",
+                worker_type="verify_worker",
+                phase="VERIFY",
+                mode="verify_only",
+                instruction="run verification",
+                input_artifacts=["change_summary", "rollback_patch"],
+                output_artifacts=["verification_results"],
+                max_tool_calls=1,
+                max_model_calls=1,
+                permissions=_permissions(run_commands=True),
+            ),
+        ],
+        budget={"max_tool_calls": 8, "max_model_calls": 8, "max_workers": 2, "max_retries": 0},
+    )
+
+    result = WorkerKernelRuntime(registry=registry).run(plan)
+
+    assert result.status == "completed"
+    assert CodeWorker.repair_calls == WORKER_STAGE_REPAIR_ATTEMPTS
+    assert VerifyWorker.calls == 2
+    assert result.metadata["retry_count"] == WORKER_STAGE_REPAIR_ATTEMPTS
+    assert result.metadata["instance_attempts_used"] == 3 + WORKER_STAGE_REPAIR_ATTEMPTS
+    events = [row["event"] for row in result.metadata["runtime_matrix"]["rows"]]
+    assert events.count("verification_feedback_repair_started") == WORKER_STAGE_REPAIR_ATTEMPTS
+    assert events.count("verification_feedback_repair_failed") == WORKER_STAGE_REPAIR_ATTEMPTS - 1
+    assert events.count("verification_feedback_repair_completed") == 1
+
+
+def test_worker_kernel_reconciles_completed_verify_artifact_failure() -> None:
+    class CodeWorker:
+        worker_type = "code_worker"
+
+        def run(self, task: Task) -> Result:
+            if task.step_id == "design_step":
+                return Result(
+                    run_id=task.run_id,
+                    producer=self.worker_type,
+                    status="completed",
+                    summary="designed scoped mutation",
+                    artifacts=[
+                        {
+                            "id": "mutation_scope",
+                            "content": {"target_paths": ["src/events.py"], "reason": "one file", "max_files": 1},
+                        },
+                        {"id": "rollback_plan", "content": "revert"},
+                        {"id": "fix_design", "content": "fix"},
+                    ],
+                )
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="patched",
+                artifacts=[
+                    {"id": "change_summary", "content": "changed"},
+                    {"id": "rollback_patch", "content": "rollback"},
+                ],
+            )
+
+    class VerifyWorker:
+        worker_type = "verify_worker"
+
+        def run(self, task: Task) -> Result:
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="verification artifact reports failure",
+                artifacts=[
+                    {
+                        "id": "verification_results",
+                        "content": {"status": "failed", "scope_audit": {"passed": False}},
+                    },
+                    {"id": "test_results", "content": {"status": "passed", "failed_commands": []}},
+                ],
+            )
+
+    registry = WorkerRegistry()
+    registry.register(CodeWorker())
+    registry.register(VerifyWorker())
+
+    result = WorkerKernelRuntime(registry=registry).run(_mutation_with_verify_plan())
+
+    assert result.status == "completed_with_failed_verification"
+    assert "verification artifact reports failure" in result.summary
 
 
 def test_worker_kernel_retries_verify_failure_before_command_evidence() -> None:
@@ -1394,9 +1705,19 @@ def test_worker_kernel_normalizes_budget_for_retry_envelope_without_step_changes
     assert result.status == "completed"
     adjustments = result.metadata["control_plane_adjustments"]
     assert any(
+        adjustment["field"] == "budget.max_retries"
+        and adjustment["from"] == 2
+        and adjustment["to"] == WORKER_STAGE_REPAIR_ATTEMPTS
+        for adjustment in adjustments
+    )
+    assert any(
         adjustment["field"] == "budget.max_model_calls"
         and adjustment["from"] == 1
-        and adjustment["to"] == 7
+        and adjustment["to"] == retry_envelope_call_budget(
+            1,
+            WORKER_STAGE_REPAIR_ATTEMPTS,
+            kind="model",
+        )
         for adjustment in adjustments
     )
 
@@ -1698,6 +2019,9 @@ def test_worker_exception_retries_and_records_attempts() -> None:
     assert result.metadata["retry_count"] == 1
     assert result.metadata["instance_attempts_used"] == 2
     assert result.metadata["issues"][0]["issue_type"] == "instance_failure"
+    assert result.metadata["loop_decisions"][0]["action"] == "retry_step"
+    assert result.metadata["loop_decisions"][0]["reason_code"] == "worker_exception"
+    assert any(row["event"] == "loop_decision" for row in result.metadata["runtime_matrix"]["rows"])
 
 
 def test_worker_runtime_owned_needs_replan_retries_same_step_without_planner_replan() -> None:
@@ -1845,6 +2169,110 @@ def test_worker_budget_exceeded_retries_same_step_with_adjusted_task() -> None:
     assert result.status == "completed"
     assert result.metadata["retry_count"] == 1
     assert result.metadata["instance_attempts_used"] == 2
+
+
+def test_worker_kernel_injects_memory_into_retry_after_partial_write() -> None:
+    class PartialMutationWorker:
+        worker_type = "filesystem_worker"
+        runs = 0
+        retry_memory: dict | None = None
+
+        def run(self, task: Task) -> Result:
+            type(self).runs += 1
+            if type(self).runs == 1:
+                return Result(
+                    run_id=task.run_id,
+                    producer=self.worker_type,
+                    status="budget_exceeded",
+                    summary="worker requested more tool calls than the task budget allows",
+                    artifacts=[
+                        {
+                            "id": "mutate_filesystem_operator_tool_1",
+                            "kind": "tool_observation",
+                            "content": {
+                                "instance": "filesystem_operator",
+                                "tool_name": "apply_file_operations",
+                                "arguments": {
+                                    "operations": [
+                                        {
+                                            "action": "move",
+                                            "source": "incoming/A.md",
+                                            "destination": "docs/a.md",
+                                        }
+                                    ]
+                                },
+                                "observation": {
+                                    "operation_count": 1,
+                                    "applied_count": 1,
+                                    "operations": [
+                                        {
+                                            "action": "move",
+                                            "status": "applied",
+                                            "paths": ["incoming/A.md", "docs/a.md"],
+                                            "summary": "file moved",
+                                        }
+                                    ],
+                                },
+                            },
+                        }
+                    ],
+                    usage={"tool_calls": task.max_tool_calls, "model_calls": 1},
+                    metadata={
+                        "issues": [
+                            {
+                                "issue_type": "instance_failure",
+                                "code": "tool_budget_exceeded",
+                                "message": "tool budget exhausted",
+                                "retryable": False,
+                            }
+                        ]
+                    },
+                )
+            type(self).retry_memory = task.metadata.get("kernel_memory")
+            assert any(artifact.id == "kernel_memory_mutate" for artifact in task.input_artifacts)
+            assert type(self).retry_memory["successful_write_count"] == 1
+            return Result(
+                run_id=task.run_id,
+                producer=self.worker_type,
+                status="completed",
+                summary="completed from memory",
+                artifacts=[{"id": "change_summary", "content": "done"}],
+                usage={"tool_calls": 0, "model_calls": 1},
+            )
+
+    registry = WorkerRegistry()
+    registry.register(PartialMutationWorker())
+    plan = Plan(
+        plan_id="plan_retry_memory",
+        request_id="req_retry_memory",
+        planner="test",
+        objective="finish partial mutation",
+        strategy="retry with memory",
+        steps=[
+            PlanStep(
+                step_id="mutate",
+                worker_type="filesystem_worker",
+                phase="MUTATE",
+                mode="bounded_mutation",
+                instruction="move docs",
+                output_artifacts=["change_summary"],
+                max_tool_calls=1,
+                max_model_calls=1,
+                permissions=_permissions(read_files=True, write_files=True),
+            )
+        ],
+        budget={"max_tool_calls": 4, "max_model_calls": 4, "max_workers": 1, "max_retries": 1},
+    )
+
+    result = WorkerKernelRuntime(registry=registry).run(plan)
+
+    assert result.status == "completed"
+    assert PartialMutationWorker.retry_memory is not None
+    assert result.metadata["worker_memory"]["mutate"]["successful_write_count"] == 1
+    assert any(
+        row["event"] == "attempt_retry_scheduled" and row["details"]["memory_injected"] is True
+        for row in result.metadata["runtime_matrix"]["rows"]
+    )
 
 
 def test_worker_empty_expected_artifact_retries_same_step_with_adjusted_task(tmp_path) -> None:
@@ -2124,9 +2552,9 @@ def test_worker_exception_exhausts_retry_budget() -> None:
     result = WorkerKernelRuntime(registry=registry).run(plan)
 
     assert result.status == "failed"
-    assert result.metadata["retry_count"] == 2
-    assert result.metadata["instance_attempts_used"] == 3
-    assert len(result.metadata["issues"]) == 3
+    assert result.metadata["retry_count"] == WORKER_STAGE_REPAIR_ATTEMPTS
+    assert result.metadata["instance_attempts_used"] == WORKER_STAGE_REPAIR_ATTEMPTS + 1
+    assert len(result.metadata["issues"]) == WORKER_STAGE_REPAIR_ATTEMPTS + 1
 
 
 def test_sequential_worker_group_produces_one_step_result() -> None:

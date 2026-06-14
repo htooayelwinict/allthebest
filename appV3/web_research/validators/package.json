@@ -1,0 +1,12 @@
+{
+  "name": "appv3-web-research-validators",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TypeScript AST safety validator for appV3 web_research",
+  "scripts": {
+    "validate": "node typescript_validator.js"
+  },
+  "dependencies": {
+    "@typescript-eslint/typescript-estree": "^6.21.0"
+  }
+}

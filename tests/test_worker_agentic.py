@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from app.schemas import ArtifactPayload, MutationScope, Plan, PlanStep, Task, resolve_mutation_scope_proposal
+from app.schemas import ArtifactPayload, Envelope, MutationScope, Plan, PlanStep, Task, resolve_mutation_scope_proposal
 from app.runtime_matrix import RuntimeMatrixLogger
 from app.worker_kernel.compiler import TaskCompiler
 from app.worker_kernel.agentic import (
@@ -14,9 +14,12 @@ from app.worker_kernel.agentic import (
     WorkerLLMController,
     _normalize_worker_decision,
 )
+from app.worker_kernel.artifact_contracts import artifact_contract, evaluate_artifact_quality
+from app.worker_kernel.model_adapter import WorkerModelDecisionError
 from app.worker_kernel.env_config import build_worker_model_client, load_worker_runtime_config
 from app.worker_kernel.runtime import WorkerKernelRuntime
 from app.worker_kernel.tools import (
+    MutationOperationDeniedError,
     ToolExecutionError,
     ToolPermissionError,
     WorkerToolConfig,
@@ -72,6 +75,18 @@ class QueueClient:
         return json.dumps(self.responses.pop(0))
 
 
+class RawQueueClient:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.prompts: list[str] = []
+        self.stages: list[str] = []
+
+    def complete_json(self, *, stage: str, prompt: str, schema: dict[str, Any]) -> str:
+        self.stages.append(stage)
+        self.prompts.append(prompt)
+        return self.responses.pop(0)
+
+
 def test_worker_env_config_builds_openrouter_compatible_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("WORKER_LLM_ENABLED", raising=False)
     monkeypatch.delenv("WORKER_LLM_API_KEY", raising=False)
@@ -91,6 +106,10 @@ def test_worker_env_config_builds_openrouter_compatible_client(tmp_path: Path, m
                 "WORKER_WEB_SEARCH_PROVIDER=duckduckgo",
                 "WORKER_WEB_SEARCH_API_KEY=brave-key",
                 "WORKER_WEB_SEARCH_MAX_RESULTS=7",
+                "WORKER_RETRY_ADVISOR_ENABLED=true",
+                "WORKER_RETRY_ADVISOR_MODEL=advisor-model",
+                "WORKER_RETRY_ADVISOR_MAX_TOKENS=321",
+                "WORKER_RETRY_ADVISOR_TIMEOUT_SECONDS=12",
             ]
         ),
         encoding="utf-8",
@@ -107,6 +126,10 @@ def test_worker_env_config_builds_openrouter_compatible_client(tmp_path: Path, m
     assert config.web_search_provider == "duckduckgo"
     assert config.web_search_api_key == "brave-key"
     assert config.web_search_max_results == 7
+    assert config.retry_advisor_enabled is True
+    assert config.retry_advisor_model == "advisor-model"
+    assert config.retry_advisor_max_tokens == 321
+    assert config.retry_advisor_timeout_seconds == 12
     assert FakeConfiguredClient.configs[-1]["api_key"] == "test-key"
     assert FakeConfiguredClient.configs[-1]["model"] == "test-model"
     assert FakeConfiguredClient.configs[-1]["base_url"] == "https://worker.example/v1"
@@ -155,6 +178,8 @@ def test_repo_worker_agentic_templates_are_split_by_role() -> None:
 
     assert [template.name for template in templates] == ["repo_locator", "repo_reader", "repo_summarizer"]
     assert templates[0].allowed_tools
+    assert "classify_file_management_candidates" in templates[0].allowed_tools
+    assert "resume_from_kernel_memory" in templates[0].allowed_tools
     assert "read_file" in templates[1].allowed_tools
     assert templates[2].allowed_tools == ()
     assert "Every artifact must be an object" in templates[2].system_prompt
@@ -164,19 +189,57 @@ def test_filesystem_worker_template_exposes_scoped_file_tools() -> None:
     templates = get_agentic_worker_templates()["filesystem_worker"]
 
     assert [template.name for template in templates] == ["filesystem_operator"]
+    assert "apply_file_operations" in templates[0].allowed_tools
     assert "write_many_files" in templates[0].allowed_tools
+    assert "write_json_manifest" in templates[0].allowed_tools
+    assert "resume_from_kernel_memory" in templates[0].allowed_tools
+    assert "verify_file_state_against_manifest" in templates[0].allowed_tools
     assert "move_file" in templates[0].allowed_tools
     assert "delete_file" in templates[0].allowed_tools
     assert "runtime_capabilities" in templates[0].allowed_tools
     assert "shell chaining" in templates[0].system_prompt
     assert "hatchling" in templates[0].system_prompt
+    assert "write_json_manifest" in templates[0].system_prompt
+    assert "use an operations array" in templates[0].system_prompt
+    assert "never return completed final_result" in templates[0].system_prompt.lower()
     assert 'packages = ["app"]' in templates[0].system_prompt
+
+
+def test_file_management_worker_prompts_preserve_exact_file_type_classification() -> None:
+    templates = get_agentic_worker_templates()
+    repo_prompt = templates["repo_worker"][0].system_prompt
+    research_prompt = templates["research_worker"][0].system_prompt
+    filesystem_prompt = templates["filesystem_worker"][0].system_prompt
+    code_prompt = templates["code_worker"][0].system_prompt
+    verify_prompt = templates["verify_worker"][0].system_prompt
+
+    assert "Capture exact manifest/report key" in repo_prompt
+    assert "classify_file_management_candidates" in repo_prompt
+    assert "file_read" in repo_prompt
+    assert "batch_read" in repo_prompt
+    assert '"markdown" means Markdown files such as .md or .markdown' in research_prompt
+    assert "not arbitrary .txt files" in research_prompt
+    assert "Do not leave a" in research_prompt
+    assert "discovered JSON/log candidate at its source path" in research_prompt
+    assert "Respect exact file-type words from the prompt" in filesystem_prompt
+    assert "not .txt" in filesystem_prompt
+    assert "kept as-is" in filesystem_prompt
+    assert "moved_build_logs" in filesystem_prompt
+    assert "Never return needs_replan solely because write_files=false" in filesystem_prompt
+    assert "summarize success without evidence" in filesystem_prompt
+    assert "resume_from_kernel_memory" in filesystem_prompt
+    assert "moved_json_files" in code_prompt
+    assert "Do not invent synonym tool names" in code_prompt
+    assert "mutation_scope_missing_required_path" in verify_prompt
+    assert "kernel_memory alone" in verify_prompt
 
 
 def test_verify_worker_template_exposes_project_test_tool() -> None:
     templates = get_agentic_worker_templates()["verify_worker"]
 
     assert [template.name for template in templates] == ["verification_runner"]
+    assert "run_required_verification" in templates[0].allowed_tools
+    assert "verify_file_state_against_manifest" in templates[0].allowed_tools
     assert "run_project_tests" in templates[0].allowed_tools
     assert "release-gate verification worker" in templates[0].system_prompt
     assert "uv run --extra dev pytest -q" in templates[0].system_prompt
@@ -201,6 +264,71 @@ def test_worker_decision_normalizes_implementation_failure_issue_type() -> None:
     )
 
     assert normalized["final_result"]["issues"][0]["issue_type"] == "instance_failure"
+
+
+def test_worker_decision_drops_provider_thoughts_field() -> None:
+    normalized = _normalize_worker_decision(
+        {
+            "thoughts": "I should now finish.",
+            "final_result": {
+                "status": "completed",
+                "summary": "Done.",
+                "artifacts": [{"id": "final_artifact", "content": "ok"}],
+            },
+        }
+    )
+
+    assert "thoughts" not in normalized
+    assert normalized["final_result"]["summary"] == "Done."
+
+
+def test_worker_prompt_keeps_readonly_synthesis_from_becoming_replan(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "Synthesized from artifacts.",
+                    "artifacts": [{"id": "analysis_evidence", "content": {"evidence": ["from input"]}}],
+                }
+            }
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="research_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="context_synthesizer",
+                role="synthesize",
+                system_prompt="synthesize from artifacts",
+                allowed_tools=(),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="research_worker",
+        expected_outputs=["analysis_evidence"],
+        permissions={
+            "read_files": True,
+            "write_files": False,
+            "run_commands": False,
+            "web_research": False,
+        },
+        max_tool_calls=0,
+        max_model_calls=1,
+    ).model_copy(
+        update={
+            "metadata": {"phase": "ANALYZE", "mode": "observe_only"},
+            "input_artifacts": [ArtifactPayload(id="repo_inventory", content={"files": ["README.md"]})],
+        }
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "completed"
+    assert "do not return needs_replan solely because tools or write permissions are unavailable" in client.prompts[0]
 
 
 def test_toolbox_enforces_read_write_command_and_web_permissions(tmp_path: Path) -> None:
@@ -697,6 +825,483 @@ def test_toolbox_batch_write_move_and_delete_are_scoped(tmp_path: Path) -> None:
     assert not (tmp_path / "src" / "app.py").exists()
 
 
+def test_toolbox_apply_file_operations_batches_real_file_management_paths(tmp_path: Path) -> None:
+    (tmp_path / "incoming" / "desk dump").mkdir(parents=True)
+    (tmp_path / "incoming" / "finance").mkdir(parents=True)
+    (tmp_path / "handoff" / "documents").mkdir(parents=True)
+    (tmp_path / "handoff" / "finance" / "2026").mkdir(parents=True)
+    (tmp_path / "incoming" / "desk dump" / "Kickoff Notes.md").write_text("notes\n", encoding="utf-8")
+    (tmp_path / "incoming" / "finance" / "Receipt May 2026.txt").write_text("paid\n", encoding="utf-8")
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        worker_type="filesystem_worker",
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": [
+                "incoming/desk dump/Kickoff Notes.md",
+                "incoming/finance/Receipt May 2026.txt",
+                "handoff/documents/kickoff_notes.md",
+                "handoff/finance/2026/receipt_may_2026.txt",
+                "handoff/archive_index.json",
+            ],
+        },
+    )
+
+    result = toolbox.execute(
+        task=task,
+        tool_name="apply_file_operations",
+        arguments={
+            "operations": [
+                {
+                    "action": "move",
+                    "source": "incoming/desk dump/Kickoff Notes.md",
+                    "destination": "handoff/documents/kickoff_notes.md",
+                },
+                {
+                    "action": "move",
+                    "source": "incoming/finance/Receipt May 2026.txt",
+                    "destination": "handoff/finance/2026/receipt_may_2026.txt",
+                },
+                {
+                    "action": "write",
+                    "path": "handoff/archive_index.json",
+                    "content": '{"total_moved": 2}\n',
+                },
+            ]
+        },
+    )
+    replay = toolbox.execute(
+        task=task,
+        tool_name="move_file",
+        arguments={
+            "source": "incoming/desk dump/Kickoff Notes.md",
+            "destination": "handoff/documents/kickoff_notes.md",
+        },
+    )
+
+    assert result["applied_count"] == 3
+    assert result["operation_count"] == 3
+    assert (tmp_path / "handoff" / "documents" / "kickoff_notes.md").read_text(encoding="utf-8") == "notes\n"
+    assert (tmp_path / "handoff" / "finance" / "2026" / "receipt_may_2026.txt").read_text(encoding="utf-8") == "paid\n"
+    assert not (tmp_path / "incoming" / "finance" / "Receipt May 2026.txt").exists()
+    assert replay["already_done"] is True
+
+
+def test_toolbox_apply_file_operations_accepts_grouped_operation_aliases(tmp_path: Path) -> None:
+    (tmp_path / "incoming").mkdir()
+    (tmp_path / "incoming" / "policy.md").write_text("policy\n", encoding="utf-8")
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        worker_type="filesystem_worker",
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": [
+                "incoming/policy.md",
+                "records/policies",
+                "records/policies/policy.md",
+                "records/archive_index.json",
+            ],
+        },
+    )
+
+    result = toolbox.execute(
+        task=task,
+        tool_name="apply_file_operations",
+        arguments={
+            "create_dirs": ["records/policies"],
+            "move_files": [
+                {"source": "incoming/policy.md", "destination": "records/policies/policy.md"},
+            ],
+            "update_files": [
+                {"path": "records/archive_index.json", "content": '{"total_moved": 1}\n'},
+            ],
+        },
+    )
+
+    assert result["applied_count"] == 3
+    assert (tmp_path / "records" / "policies" / "policy.md").read_text(encoding="utf-8") == "policy\n"
+    assert (tmp_path / "records" / "archive_index.json").read_text(encoding="utf-8") == '{"total_moved": 1}\n'
+
+
+def test_toolbox_write_json_manifest_preserves_required_keys_and_counts(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        worker_type="filesystem_worker",
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["docs/workspace_manifest.json"],
+        },
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "required_json_keys": [
+                    "moved_documents",
+                    "moved_logs",
+                    "moved_json_artifacts",
+                    "total_artifacts",
+                ],
+            }
+        }
+    )
+
+    result = toolbox.execute(
+        task=task,
+        tool_name="write_json_manifest",
+        arguments={
+            "path": "docs/workspace_manifest.json",
+            "payload": {
+                "moved_documents": ["task_notes.md"],
+                "moved_logs": ["old_build.log"],
+                "moved_json_artifacts": ["error_dump.json"],
+                "total_artifacts": 3,
+            },
+            "required_keys": [],
+            "total_key": "total_artifacts",
+            "count_keys": ["moved_documents", "moved_logs", "moved_json_artifacts"],
+        },
+    )
+
+    assert result["counts_match"] is True
+    assert result["fields_present"] == [
+        "moved_documents",
+        "moved_json_artifacts",
+        "moved_logs",
+        "total_artifacts",
+    ]
+    assert json.loads((tmp_path / "docs" / "workspace_manifest.json").read_text(encoding="utf-8"))[
+        "moved_logs"
+    ] == ["old_build.log"]
+
+    with pytest.raises(MutationOperationDeniedError) as exc_info:
+        toolbox.execute(
+            task=task,
+            tool_name="write_json_manifest",
+            arguments={
+                "path": "docs/workspace_manifest.json",
+                "payload": {
+                    "moved_documents": ["task_notes.md"],
+                    "moved_json_artifacts": ["error_dump.json"],
+                    "total_artifacts": 2,
+                },
+                "required_keys": [],
+                "total_key": "total_artifacts",
+                "count_keys": ["moved_documents", "moved_logs", "moved_json_artifacts"],
+            },
+        )
+
+    assert exc_info.value.denial.code == "manifest_missing_required_keys"
+    assert exc_info.value.denial.metadata["missing_keys"] == ["moved_logs"]
+
+
+def test_toolbox_write_json_manifest_infers_literal_total_and_excludes_held_items(tmp_path: Path) -> None:
+    (tmp_path / "records").mkdir()
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        worker_type="filesystem_worker",
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["records/archive_index.json"],
+        },
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "required_json_keys": [
+                    "moved_documents",
+                    "moved_evidence",
+                    "moved_logs",
+                    "moved_exports",
+                    "held_items",
+                    "total_moved",
+                ],
+            }
+        }
+    )
+
+    result = toolbox.execute(
+        task=task,
+        tool_name="write_json_manifest",
+        arguments={
+            "path": "records/archive_index.json",
+            "payload": {
+                "moved_documents": ["client_alpha_notes.md", "client_beta_followup.md", "retention_policy.md"],
+                "moved_evidence": ["access_review.json", "vendor_exception.json"],
+                "moved_logs": ["audit_2026_06.log"],
+                "moved_exports": ["owner_map.csv", "policy_matrix.csv"],
+                "held_items": [
+                    "client_gamma_hold.md",
+                    "debug_keep.log",
+                    "draft_policy_do_not_move.md",
+                    "keep_local.json",
+                ],
+                "total_moved": 8,
+            },
+        },
+    )
+
+    assert result["counts_match"] is True
+    assert result["total_key"] == "total_moved"
+    assert result["count_keys"] == ["moved_documents", "moved_evidence", "moved_logs", "moved_exports"]
+    assert result["counted_total"] == 8
+    payload = json.loads((tmp_path / "records" / "archive_index.json").read_text(encoding="utf-8"))
+    assert set(payload) == {
+        "moved_documents",
+        "moved_evidence",
+        "moved_logs",
+        "moved_exports",
+        "held_items",
+        "total_moved",
+    }
+
+
+def test_toolbox_classifies_file_management_candidates_with_held_items(tmp_path: Path) -> None:
+    for directory in [
+        "incoming/policies",
+        "incoming/client_notes",
+        "incoming/evidence",
+        "logs/raw",
+        "exports",
+    ]:
+        (tmp_path / directory).mkdir(parents=True)
+    (tmp_path / "incoming/policies/retention_policy.md").write_text("policy", encoding="utf-8")
+    (tmp_path / "incoming/client_notes/client_alpha_notes.md").write_text("note", encoding="utf-8")
+    (tmp_path / "incoming/client_notes/client_gamma_hold.md").write_text("hold this one", encoding="utf-8")
+    (tmp_path / "incoming/evidence/access_review.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "logs/raw/audit_2026_06.log").write_text("audit", encoding="utf-8")
+    (tmp_path / "exports/owner_map.csv").write_text("owner,path\n", encoding="utf-8")
+
+    task = _task(
+        worker_type="repo_worker",
+        expected_outputs=["file_classification_report"],
+        permissions={"read_files": True, "write_files": False, "run_commands": False, "web_research": False},
+    ).model_copy(
+        update={
+            "instruction": (
+                "Move markdown to records/policies, JSON evidence to records/evidence, "
+                "logs to records/logs, CSV exports to records/exports, and write archive index."
+            ),
+            "metadata": {
+                "required_json_keys": [
+                    "moved_documents",
+                    "moved_evidence",
+                    "moved_logs",
+                    "moved_exports",
+                    "held_items",
+                    "total_moved",
+                ]
+            },
+        }
+    )
+
+    result = WorkerToolbox(WorkerToolConfig(root_path=tmp_path)).execute(
+        task=task,
+        tool_name="classify_file_management_candidates",
+        arguments={"path": "."},
+    )
+
+    sources = {item["source"] for item in result["candidates"]}
+    destinations = {item["destination"] for item in result["candidates"]}
+    assert "incoming/client_notes/client_alpha_notes.md" in sources
+    assert "incoming/evidence/access_review.json" in sources
+    assert "logs/raw/audit_2026_06.log" in sources
+    assert "exports/owner_map.csv" in sources
+    assert "records/policies/client_alpha_notes.md" in destinations
+    assert "records/evidence/access_review.json" in destinations
+    assert "records/logs/audit_2026_06.log" in destinations
+    assert "records/exports/owner_map.csv" in destinations
+    assert result["manifest_payload_seed"]["total_moved"] == 5
+    assert result["held_items"][0]["path"] == "incoming/client_notes/client_gamma_hold.md"
+
+
+def test_toolbox_verify_file_state_against_manifest_detects_source_and_count_failures(tmp_path: Path) -> None:
+    (tmp_path / "incoming").mkdir()
+    (tmp_path / "records/policies").mkdir(parents=True)
+    (tmp_path / "incoming/client_alpha_notes.md").write_text("note", encoding="utf-8")
+    (tmp_path / "incoming/client_hold.md").write_text("hold", encoding="utf-8")
+    (tmp_path / "records/policies/client_alpha_notes.md").write_text("note", encoding="utf-8")
+    (tmp_path / "records/archive_index.json").write_text(
+        json.dumps(
+            {
+                "moved_documents": ["client_alpha_notes.md"],
+                "held_items": ["client_hold.md"],
+                "total_moved": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    task = _task(
+        worker_type="verify_worker",
+        expected_outputs=["file_state_verification"],
+        permissions={"read_files": True, "write_files": False, "run_commands": False, "web_research": False},
+    ).model_copy(
+        update={
+            "metadata": {"required_json_keys": ["moved_documents", "held_items", "total_moved"]},
+            "input_artifacts": [
+                ArtifactPayload(
+                    id="file_classification_report",
+                    content={
+                        "candidates": [
+                            {
+                                "source": "incoming/client_alpha_notes.md",
+                                "destination": "records/policies/client_alpha_notes.md",
+                            }
+                        ],
+                        "held_items": [{"path": "incoming/client_hold.md"}],
+                    },
+                )
+            ],
+        }
+    )
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+
+    failed = toolbox.execute(
+        task=task,
+        tool_name="verify_file_state_against_manifest",
+        arguments={"manifest_path": "records/archive_index.json"},
+    )
+    assert failed["status"] == "failed"
+    assert {error["code"] for error in failed["errors"]} == {
+        "manifest_count_mismatch",
+        "move_state_mismatch",
+    }
+
+    (tmp_path / "incoming/client_alpha_notes.md").unlink()
+    payload = json.loads((tmp_path / "records/archive_index.json").read_text(encoding="utf-8"))
+    payload["total_moved"] = 1
+    (tmp_path / "records/archive_index.json").write_text(json.dumps(payload), encoding="utf-8")
+    passed = toolbox.execute(
+        task=task,
+        tool_name="verify_file_state_against_manifest",
+        arguments={"manifest_path": "records/archive_index.json"},
+    )
+    assert passed["status"] == "passed"
+    assert passed["counts_match"] is True
+
+
+def test_toolbox_resume_from_kernel_memory_returns_next_action_plan(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/finished.md").write_text("done", encoding="utf-8")
+    task = _task(
+        worker_type="filesystem_worker",
+        permissions={"read_files": True, "write_files": True, "run_commands": False, "web_research": False},
+    ).model_copy(
+        update={
+            "metadata": {
+                "kernel_memory": {
+                    "step_id": "mutate",
+                    "attempt_count": 2,
+                    "successful_write_operations": [
+                        {
+                            "tool_name": "apply_file_operations",
+                            "action": "move",
+                            "status": "applied",
+                            "paths": ["docs/finished.md"],
+                        }
+                    ],
+                    "pending_required_write_paths": ["docs/archive_index.json"],
+                    "denied_operations": [{"tool_name": "write_json_manifest", "denial": {"code": "bad_total"}}],
+                    "retry_guidance": ["finish pending manifest"],
+                }
+            }
+        }
+    )
+
+    result = WorkerToolbox(WorkerToolConfig(root_path=tmp_path)).execute(
+        task=task,
+        tool_name="resume_from_kernel_memory",
+        arguments={},
+    )
+
+    assert result["already_completed_paths"] == ["docs/finished.md"]
+    assert result["pending_required_write_paths"] == ["docs/archive_index.json"]
+    assert result["path_state"]["docs/finished.md"]["exists"] is True
+    assert "write_json_manifest" in result["recommended_next_tools"]
+
+
+def test_toolbox_run_required_verification_returns_artifact_ready_test_results(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_sample.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    task = _task(
+        worker_type="verify_worker",
+        permissions={"read_files": False, "write_files": False, "run_commands": True, "web_research": False},
+    )
+
+    result = WorkerToolbox(WorkerToolConfig(root_path=tmp_path)).execute(
+        task=task,
+        tool_name="run_required_verification",
+        arguments={"paths": ["tests/test_sample.py"]},
+    )
+
+    assert result["status"] == "passed"
+    assert result["commands"][0]["returncode"] == 0
+    assert result["failed_commands"] == []
+
+
+def test_apply_file_operations_uses_step_blast_radius_not_write_batch_limit(tmp_path: Path) -> None:
+    (tmp_path / "incoming").mkdir()
+    (tmp_path / "docs").mkdir()
+    for index in range(4):
+        (tmp_path / "incoming" / f"File {index}.md").write_text(f"file {index}\n", encoding="utf-8")
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+    task = _task(
+        worker_type="filesystem_worker",
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+        },
+        max_tool_calls=1,
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "write_policy": {"batch_max_files": 1, "step_max_files": 8},
+            }
+        }
+    )
+
+    result = toolbox.execute(
+        task=task,
+        tool_name="apply_file_operations",
+        arguments={
+            "operations": [
+                {
+                    "action": "move",
+                    "source": f"incoming/File {index}.md",
+                    "destination": f"docs/file_{index}.md",
+                }
+                for index in range(4)
+            ]
+        },
+    )
+
+    assert result["applied_count"] == 4
+    assert sorted(path.name for path in (tmp_path / "docs").glob("*.md")) == [
+        "file_0.md",
+        "file_1.md",
+        "file_2.md",
+        "file_3.md",
+    ]
+
+
 def test_toolbox_reports_empty_repo_snapshot(tmp_path: Path) -> None:
     (tmp_path / ".git").mkdir()
     toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
@@ -706,6 +1311,21 @@ def test_toolbox_reports_empty_repo_snapshot(tmp_path: Path) -> None:
     assert snapshot["is_empty"] is True
     assert snapshot["files"] == []
     assert snapshot["directories"] == []
+
+
+def test_readonly_tools_return_missing_path_observations(tmp_path: Path) -> None:
+    toolbox = WorkerToolbox(WorkerToolConfig(root_path=tmp_path))
+
+    snapshot = toolbox.execute(task=_task(), tool_name="repo_snapshot", arguments={"path": "missing"})
+    listing = toolbox.execute(task=_task(), tool_name="list_dir", arguments={"path": "missing"})
+    file_result = toolbox.execute(task=_task(), tool_name="read_file", arguments={"path": "missing/report.md"})
+
+    assert snapshot["exists"] is False
+    assert snapshot["error"] == "not_found"
+    assert listing == {"path": "missing", "exists": False, "entries": [], "error": "not_found"}
+    assert file_result["exists"] is False
+    assert file_result["error"] == "not_found"
+    assert file_result["content"] == ""
 
 
 def test_diff_summary_and_scope_check_include_untracked_new_files(tmp_path: Path) -> None:
@@ -955,6 +1575,26 @@ def test_mutation_scope_move_pairs_authorize_source_and_destination(tmp_path: Pa
     assert (tmp_path / "artifacts" / "logs" / "error_dump.json").is_file()
 
 
+def test_mutation_scope_accepts_move_pairs_with_spaces() -> None:
+    scope = MutationScope.model_validate(
+        {
+            "move_pairs": [
+                {
+                    "source": "incoming/desk dump/Kickoff Notes.md",
+                    "destination": "handoff/documents/kickoff_notes.md",
+                }
+            ],
+            "reason": "real user file names may contain spaces",
+            "max_files": 2,
+        }
+    )
+
+    assert set(scope.write_scope_paths) == {
+        "incoming/desk dump/Kickoff Notes.md",
+        "handoff/documents/kickoff_notes.md",
+    }
+
+
 def test_mutation_scope_normalizes_forbidden_globs() -> None:
     scope = MutationScope.model_validate(
         {
@@ -993,15 +1633,18 @@ def test_mutation_scope_rejects_escaping_path() -> None:
         )
 
 
-def test_mutation_scope_rejects_too_many_files() -> None:
-    with pytest.raises(ValueError, match="exceeding max_files"):
-        MutationScope.model_validate(
-            {
-                "target_paths": ["src/a.py", "src/b.py", "src/c.py"],
-                "reason": "too broad",
-                "max_files": 2,
-            }
-        )
+def test_mutation_scope_widens_low_max_files_hint() -> None:
+    scope = MutationScope.model_validate(
+        {
+            "target_paths": ["src/a.py", "src/b.py", "src/c.py"],
+            "reason": "broad but concrete scope",
+            "max_files": 2,
+        }
+    )
+
+    assert scope.max_files == 3
+    assert scope.metadata["declared_max_files"] == 2
+    assert scope.metadata["validation_warnings"][0]["code"] == "max_files_widened"
 
 
 def test_mutation_scope_extracts_move_endpoints_and_skips_manifest_noise() -> None:
@@ -1235,6 +1878,82 @@ def test_task_compiler_merge_scope_ceiling_tracks_merged_paths() -> None:
     assert task.metadata["write_scope"]["metadata"]["source_artifact_ids"] == ["mutation_scope"]
 
 
+def test_task_compiler_propagates_literal_contract_to_worker_metadata() -> None:
+    step = PlanStep(
+        step_id="finalize",
+        worker_type="filesystem_worker",
+        phase="FINALIZE",
+        mode="summarize_only",
+        instruction="summarize manifest",
+        output_artifacts=["final_report"],
+        permissions={
+            "read_files": False,
+            "write_files": False,
+            "run_commands": False,
+            "web_research": False,
+        },
+    )
+    envelope = Envelope(
+        request_id="req_literal",
+        raw_input="write manifest with moved_logs and total_artifacts",
+        normalized_input="write manifest",
+        user_goal="write manifest",
+        input_type="file_management_request",
+        literal_contract=[
+            {"value": "moved_logs", "kind": "json_key", "source": "user_input"},
+            {"value": "total_artifacts", "kind": "json_key", "source": "user_input"},
+        ],
+    )
+
+    task = TaskCompiler().compile("run", step, {}, envelope=envelope)
+
+    assert task.metadata["required_json_keys"] == ["moved_logs", "total_artifacts"]
+    assert task.metadata["literal_contract"][0]["value"] == "moved_logs"
+
+
+def test_task_compiler_merges_input_allowed_write_paths_for_bounded_mutation() -> None:
+    step = PlanStep(
+        step_id="mutate",
+        worker_type="filesystem_worker",
+        phase="MUTATE",
+        mode="bounded_mutation",
+        instruction="apply scoped moves",
+        input_artifacts=["mutation_scope", "allowed_write_paths"],
+        output_artifacts=["change_summary"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths_from_artifacts": ["mutation_scope"],
+        },
+    )
+    artifact_store = {
+        "mutation_scope": ArtifactPayload(
+            id="mutation_scope",
+            content={
+                "target_paths": ["docs/task_notes.md"],
+                "move_pairs": [{"source": "notes/task_notes.md", "destination": "docs/task_notes.md"}],
+                "reason": "document move",
+                "max_files": 1,
+            },
+        ),
+        "allowed_write_paths": ArtifactPayload(
+            id="allowed_write_paths",
+            content=["artifacts/tmp/old_build.log", "artifacts/logs/old_build.log"],
+        ),
+    }
+
+    task = TaskCompiler().compile("run", step, artifact_store)
+
+    assert "artifacts/tmp/old_build.log" in task.permissions.write_paths
+    assert "artifacts/logs/old_build.log" in task.permissions.write_paths
+    assert task.metadata["write_policy"]["metadata"]["write_paths_from_artifacts"] == [
+        "mutation_scope",
+        "allowed_write_paths",
+    ]
+
+
 def test_agentic_group_blocks_missing_write_scope_before_model_call(tmp_path: Path) -> None:
     client = QueueClient(
         [
@@ -1306,7 +2025,7 @@ def test_bounded_mutation_denial_observation_allows_repaired_write(tmp_path: Pat
                 "final_result": {
                     "status": "completed",
                     "summary": "wrote narrowed file",
-                    "artifacts": [{"id": "change_summary", "content": "wrote src/a.py"}],
+                        "artifacts": [{"id": "change_summary", "content": {"summary": "wrote src/a.py"}}],
                 }
             },
         ]
@@ -1381,7 +2100,7 @@ def test_bounded_mutation_strict_scope_denial_can_be_repaired(tmp_path: Path) ->
                 "final_result": {
                     "status": "completed",
                     "summary": "repaired strict scope",
-                    "artifacts": [{"id": "change_summary", "content": "updated allowed file"}],
+                        "artifacts": [{"id": "change_summary", "content": {"summary": "updated allowed file"}}],
                 }
             },
         ]
@@ -1457,7 +2176,7 @@ def test_bounded_mutation_move_destination_exists_can_be_repaired(tmp_path: Path
                 "final_result": {
                     "status": "completed",
                     "summary": "moved with explicit overwrite",
-                    "artifacts": [{"id": "change_summary", "content": "moved docs/task.md"}],
+                        "artifacts": [{"id": "change_summary", "content": {"summary": "moved docs/task.md"}}],
                 }
             },
         ]
@@ -1663,6 +2382,90 @@ def test_code_worker_synthesizes_mutation_artifacts_after_write_budget_exhaustio
     assert result.metadata["fallback"] == "mutation_observation_synthesis"
 
 
+def test_mutation_completion_requires_scoped_create_paths_to_be_written(tmp_path: Path) -> None:
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "notes" / "task_notes.md").write_text("notes\n", encoding="utf-8")
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "apply_file_operations",
+                        "arguments": {
+                            "operations": [
+                                {
+                                    "action": "move",
+                                    "source": "notes/task_notes.md",
+                                    "destination": "docs/task_notes.md",
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "moved file and created manifest",
+                    "artifacts": [
+                        {"id": "change_summary", "content": {"summary": "done"}},
+                        {"id": "manifest_update_result", "content": {"status": "created"}},
+                    ],
+                }
+            },
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="filesystem_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="filesystem_operator",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("apply_file_operations",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="filesystem_worker",
+        expected_outputs=["change_summary", "manifest_update_result"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["notes/task_notes.md", "docs/task_notes.md", "docs/workspace_manifest.json"],
+        },
+        max_tool_calls=1,
+        max_model_calls=2,
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "write_scope": {
+                    "target_paths": ["notes/task_notes.md", "docs/task_notes.md", "docs/workspace_manifest.json"],
+                    "create_paths": ["docs/workspace_manifest.json"],
+                    "reason": "move plus manifest",
+                    "max_files": 3,
+                },
+            }
+        }
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "failed"
+    assert result.metadata["issue_code"] == "mutation_completed_missing_required_writes"
+    assert result.metadata["issues"][0]["metadata"]["missing_required_write_paths"] == [
+        "docs/workspace_manifest.json"
+    ]
+    assert not (tmp_path / "docs" / "workspace_manifest.json").exists()
+
+
 def test_filesystem_worker_synthesizes_mutation_artifacts_after_batch_write_budget_exhaustion(tmp_path: Path) -> None:
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
     client = QueueClient(
@@ -1721,7 +2524,64 @@ def test_filesystem_worker_synthesizes_mutation_artifacts_after_batch_write_budg
     assert {"change_summary", "rollback_patch", "patch_diff"} <= artifact_ids
     patch_diff = next(artifact for artifact in result.artifacts if artifact.id == "patch_diff")
     assert "src/calculator.py" in patch_diff.content["diff"]
+    change_summary = next(artifact for artifact in result.artifacts if artifact.id == "change_summary")
+    assert change_summary.content["summary"]
     assert result.metadata["fallback"] == "mutation_observation_synthesis"
+
+
+def test_mutation_fallback_rejects_domain_artifact_without_manifest_tool_evidence(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_many_files",
+                        "arguments": {
+                            "files": [
+                                {
+                                    "path": "docs/workspace_manifest.json",
+                                    "content": '{"moved_documents": [], "total_artifacts": 0}\n',
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="filesystem_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="filesystem_operator",
+                role="manifest",
+                system_prompt="manifest",
+                allowed_tools=("write_many_files", "diff_summary"),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="filesystem_worker",
+        expected_outputs=["moved_items_record"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["docs/workspace_manifest.json"],
+        },
+        max_tool_calls=1,
+        max_model_calls=1,
+    ).model_copy(update={"metadata": {"phase": "MUTATE", "mode": "bounded_mutation"}})
+
+    result = runner.run(task)
+
+    assert result.status == "failed"
+    assert result.metadata["issue_code"] == "artifact_synthesis_incomplete"
+    assert result.metadata["issues"][0]["metadata"]["unsynthesizable_artifacts"] == ["moved_items_record"]
 
 
 def test_bounded_mutation_denial_is_observed_and_repaired(tmp_path: Path) -> None:
@@ -1758,7 +2618,7 @@ def test_bounded_mutation_denial_is_observed_and_repaired(tmp_path: Path) -> Non
                 "final_result": {
                     "status": "completed",
                     "summary": "Wrote narrowed batch.",
-                    "artifacts": [{"id": "change_summary", "content": "wrote two files"}],
+                    "artifacts": [{"id": "change_summary", "content": {"summary": "wrote two files"}}],
                 }
             },
         ]
@@ -1919,6 +2779,79 @@ def test_code_worker_rejects_completed_mutation_without_write_observation(tmp_pa
     assert result.metadata["issue_code"] == "mutation_completed_without_write"
     assert result.metadata["retryable"] is True
     assert "old" in (tmp_path / "src" / "checkout.py").read_text(encoding="utf-8")
+
+
+def test_completed_mutation_without_current_write_allows_same_step_kernel_memory(tmp_path: Path) -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "Finalized resumed mutation.",
+                    "artifacts": [
+                            {"id": "change_summary", "content": {"summary": "finished from prior writes"}},
+                                {
+                                    "id": "rollback_patch",
+                                    "content": {
+                                        "changed_paths": ["src/checkout.py"],
+                                        "diff": "prior attempt supplied rollback evidence",
+                                    },
+                                },
+                    ],
+                }
+            }
+        ]
+    )
+    runner = AgenticWorkerGroupRunner(
+        worker_type="code_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="code_agent",
+                role="mutate",
+                system_prompt="mutate",
+                allowed_tools=("read_file", "replace_in_file"),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = _task(
+        worker_type="code_worker",
+        expected_outputs=["change_summary", "rollback_patch"],
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["src/checkout.py"],
+        },
+        max_tool_calls=0,
+        max_model_calls=1,
+    ).model_copy(
+        update={
+            "metadata": {
+                "phase": "MUTATE",
+                "mode": "bounded_mutation",
+                "kernel_memory": {
+                    "step_id": "step_1",
+                    "successful_write_count": 1,
+                    "successful_write_operations": [
+                        {
+                            "tool_name": "replace_in_file",
+                            "action": "replace",
+                            "status": "applied",
+                            "paths": ["src/checkout.py"],
+                        }
+                    ],
+                },
+            }
+        }
+    )
+
+    result = runner.run(task)
+
+    assert result.status == "completed"
+    assert result.metadata["artifact_quality"]["missing_count"] == 0
 
 
 def test_verify_worker_synthesizes_failed_verification_after_model_budget_exhaustion(tmp_path: Path) -> None:
@@ -2263,6 +3196,41 @@ def test_worker_llm_controller_normalizes_common_tool_call_aliases() -> None:
     assert decision.tool_calls[1].tool_name == "text_search"
 
 
+def test_worker_llm_controller_normalizes_provider_tool_call_variants() -> None:
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "repo_snapshot",
+                        "tool_args": {"path": ".", "max_depth": 2},
+                        "call_id": "snapshot_1",
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "list_dir",
+                        "input": {"path": "src"},
+                    },
+                    {
+                        "toolName": "text_search",
+                        "parameters": {"pattern": "idempotency"},
+                    },
+                ]
+            }
+        ]
+    )
+
+    decision = WorkerLLMController(client).decide(stage="repo_worker_repo_locator", prompt="{}")
+
+    assert decision.tool_calls[0].tool_name == "repo_snapshot"
+    assert decision.tool_calls[0].arguments == {"path": ".", "max_depth": 2}
+    assert decision.tool_calls[1].tool_name == "list_dir"
+    assert decision.tool_calls[1].arguments == {"path": "src"}
+    assert decision.tool_calls[2].tool_name == "text_search"
+    assert decision.tool_calls[2].arguments == {"pattern": "idempotency"}
+
+
 def test_worker_llm_controller_normalizes_root_level_tool_call() -> None:
     client = QueueClient([{"name": "list_dir", "arguments": {"path": "."}}])
 
@@ -2314,6 +3282,42 @@ def test_worker_llm_controller_normalizes_root_level_final_status() -> None:
     assert decision.final_result.summary == "Discovery did not produce target files."
     assert decision.final_result.issues[0].issue_type == "plan_failure"
     assert decision.final_result.issues[0].metadata["missing_artifacts"] == ["target_files", "test_command"]
+
+
+def test_worker_llm_controller_normalizes_stringified_final_result() -> None:
+    client = QueueClient(
+        [
+            {
+                "final_result": (
+                    '{"status":"completed","summary":"Report written.",'
+                    '"artifacts":[{"id":"bug_report","content":{"path":"REPORT.md"}}]}'
+                )
+            }
+        ]
+    )
+
+    decision = WorkerLLMController(client).decide(stage="filesystem_worker_filesystem_operator", prompt="{}")
+
+    assert decision.final_result is not None
+    assert decision.final_result.status == "completed"
+    assert decision.final_result.artifacts[0].id == "bug_report"
+
+
+def test_worker_llm_controller_normalizes_stringified_tool_calls() -> None:
+    client = QueueClient(
+        [
+            {
+                "tool_calls": (
+                    '[{"tool_name":"read_file","arguments":{"path":"src/app.py"}}]'
+                )
+            }
+        ]
+    )
+
+    decision = WorkerLLMController(client).decide(stage="repo_worker_repo_reader", prompt="{}")
+
+    assert decision.tool_calls[0].tool_name == "read_file"
+    assert decision.tool_calls[0].arguments == {"path": "src/app.py"}
 
 
 def test_worker_llm_controller_converts_final_result_fields_to_artifacts() -> None:
@@ -2493,6 +3497,8 @@ def test_agentic_prompt_uses_worker_system_prompt_and_function_tool_specs(tmp_pa
     assert payload["instance"]["system_prompt"] == "You are the repository discovery worker."
     assert payload["available_tools"][0]["type"] == "function"
     assert payload["available_tools"][0]["function"]["name"] == "list_dir"
+    assert any("expected_output_contract.artifact_shape" in item for item in payload["instructions"])
+    assert any("issue_type must be exactly" in item for item in payload["instructions"])
 
 
 def test_agentic_prompt_hides_tools_after_tool_budget_is_spent(tmp_path: Path) -> None:
@@ -2599,6 +3605,465 @@ def test_tool_observation_without_final_model_budget_is_kernel_budget_issue(tmp_
     assert result.metadata["issues"][0]["issue_type"] == "instance_failure"
     assert result.metadata["issues"][0]["code"] == "model_budget_exhausted_before_final_result"
     assert any(artifact.kind == "tool_observation_summary" for artifact in result.artifacts)
+
+
+def test_worker_llm_controller_raises_model_decision_error_for_invalid_json() -> None:
+    controller = WorkerLLMController(RawQueueClient(["not-json"]))
+
+    with pytest.raises(WorkerModelDecisionError):
+        controller.decide(stage="repo_worker_repo_locator", prompt="{}")
+
+
+def test_agent_run_loop_repairs_one_malformed_model_decision_locally(tmp_path: Path) -> None:
+    client = RawQueueClient(
+        [
+            "not-json",
+            json.dumps(
+                {
+                    "final_result": {
+                        "status": "completed",
+                        "summary": "Recovered after schema repair feedback.",
+                        "artifacts": [{"id": "final_artifact", "content": {"ok": True}}],
+                    }
+                }
+            ),
+        ]
+    )
+    group = AgenticWorkerGroupRunner(
+        worker_type="repo_worker",
+        templates=[WorkerInstanceTemplate(name="repo_locator", role="locate files")],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    trace = RuntimeMatrixLogger()
+
+    result = group.run(_task(worker_type="repo_worker", max_tool_calls=0, max_model_calls=2), trace=trace)
+
+    assert result.status == "completed"
+    assert result.usage["model_calls"] == 2
+    assert len(client.prompts) == 2
+    assert "model_behavior_error" in client.prompts[1]
+    assert any(
+        row["event"] == "worker_model_decision_repair_scheduled"
+        for row in trace.snapshot()["rows"]
+    )
+
+
+def test_artifact_contract_quality_reports_invalid_core_artifact_separately() -> None:
+    quality = evaluate_artifact_quality(
+        expected_outputs=["mutation_scope", "final_report"],
+        artifacts=[
+            ArtifactPayload(id="mutation_scope", content={"reason": "missing target paths"}),
+            ArtifactPayload(id="final_report", content="Human-readable report is valid."),
+        ],
+    )
+
+    assert quality["missing_artifacts"] == []
+    assert quality["empty_artifacts"] == []
+    assert quality["invalid_count"] == 1
+    assert quality["invalid_artifacts"][0]["artifact_id"] == "mutation_scope"
+    assert quality["invalid_artifacts"][0]["field"] == "target_paths"
+
+
+def test_file_management_artifact_contracts_preserve_manifest_schema() -> None:
+    manifest_contract = artifact_contract("manifest_file")
+    update_contract = artifact_contract("manifest_update_record")
+    record_contract = artifact_contract("moved_items_record")
+
+    manifest_payload = manifest_contract["artifact_shape"]["content"]["payload"]
+    update_payload = update_contract["artifact_shape"]["content"]["payload"]
+    record_payload = record_contract["artifact_shape"]["content"]
+    assert "moved_logs" in manifest_payload
+    assert "moved_logs" in update_payload
+    assert "moved_build_logs" not in manifest_payload
+    assert "moved_json_artifacts" in record_payload
+    assert "moved_json_files" not in record_payload
+
+    quality = evaluate_artifact_quality(
+        expected_outputs=["manifest_file"],
+        artifacts=[ArtifactPayload(id="manifest_file", content={"payload": {"moved_logs": []}})],
+    )
+
+    assert quality["invalid_artifacts"][0]["field"] == "manifest_path"
+
+    missing_log_quality = evaluate_artifact_quality(
+        expected_outputs=["moved_items_record"],
+        artifacts=[
+            ArtifactPayload(
+                id="moved_items_record",
+                content={
+                    "moved_documents": ["task_notes.md"],
+                    "moved_json_artifacts": ["error_dump.json"],
+                    "total_artifacts": 2,
+                },
+            )
+        ],
+    )
+    assert missing_log_quality["invalid_artifacts"][0]["field"] == "moved_logs"
+
+    bad_total_quality = evaluate_artifact_quality(
+        expected_outputs=["manifest_update_record"],
+        artifacts=[
+            ArtifactPayload(
+                id="manifest_update_record",
+                content={
+                    "manifest_path": "docs/workspace_manifest.json",
+                    "payload": {
+                        "moved_documents": ["task_notes.md"],
+                        "moved_logs": ["old_build.log"],
+                        "moved_json_artifacts": [],
+                        "total_artifacts": 1,
+                    },
+                    "fields_present": ["moved_documents", "moved_logs", "moved_json_artifacts", "total_artifacts"],
+                    "missing_fields": [],
+                    "counts_match": True,
+                    "total_artifacts": 1,
+                },
+            )
+        ],
+    )
+    assert any(item["code"] == "artifact_total_mismatch" for item in bad_total_quality["invalid_artifacts"])
+
+    alias_quality = evaluate_artifact_quality(
+        expected_outputs=["manifest_update_result"],
+        artifacts=[
+            ArtifactPayload(
+                id="manifest_update_result",
+                content={
+                    "manifest_path": "docs/workspace_manifest.json",
+                    "payload": {
+                        "moved_documents": ["task_notes.md"],
+                        "moved_logs": ["old_build.log"],
+                        "moved_json_artifacts": ["error_dump.json"],
+                        "total_artifacts": 3,
+                    },
+                    "fields_present": ["moved_documents", "moved_logs", "moved_json_artifacts", "total_artifacts"],
+                    "missing_fields": [],
+                    "counts_match": True,
+                    "total_artifacts": 3,
+                },
+            )
+        ],
+    )
+    assert alias_quality["missing_artifacts"] == []
+    assert alias_quality["invalid_artifacts"] == []
+    assert alias_quality["canonical_aliases"]["expected_outputs"][0]["canonical"] == "manifest_update_record"
+    assert alias_quality["canonical_aliases"]["produced_artifacts"][0]["canonical"] == "manifest_update_record"
+
+
+def test_verification_artifact_contracts_require_provenance_for_passing_status() -> None:
+    context = {"phase": "VERIFY", "mode": "verify_only", "worker_type": "verify_worker"}
+    weak_quality = evaluate_artifact_quality(
+        expected_outputs=["verification_results", "test_results"],
+        artifacts=[
+            ArtifactPayload(id="verification_results", content={"status": "passed"}),
+            ArtifactPayload(id="test_results", content={"status": "passed", "failed_commands": []}),
+        ],
+        contract_context=context,
+    )
+
+    codes = {item["code"] for item in weak_quality["invalid_artifacts"]}
+    assert "artifact_missing_verification_evidence" in codes
+    assert "artifact_missing_command_evidence" in codes
+
+    strong_quality = evaluate_artifact_quality(
+        expected_outputs=["verification_results", "test_results"],
+        artifacts=[
+            ArtifactPayload(
+                id="verification_results",
+                content={
+                    "status": "passed",
+                    "file_state_verification": {"status": "passed", "errors": []},
+                },
+            ),
+            ArtifactPayload(
+                id="test_results",
+                content={
+                    "status": "passed",
+                    "commands": [{"command": ["pytest", "-q"], "returncode": 0}],
+                    "failed_commands": [],
+                },
+            ),
+        ],
+        contract_context=context,
+    )
+
+    assert strong_quality["invalid_artifacts"] == []
+
+
+def test_file_management_artifact_contract_uses_literal_manifest_schema() -> None:
+    context = {
+        "required_json_keys": [
+            "moved_documents",
+            "moved_evidence",
+            "moved_logs",
+            "moved_exports",
+            "held_items",
+            "total_moved",
+        ]
+    }
+    record_contract = artifact_contract("moved_items_record", contract_context=context)
+
+    assert "moved_evidence" in record_contract["artifact_shape"]["content"]
+    assert "moved_json_artifacts" not in record_contract["artifact_shape"]["content"]
+
+    quality = evaluate_artifact_quality(
+        expected_outputs=["moved_items_record", "manifest_update_record"],
+        artifacts=[
+            ArtifactPayload(
+                id="moved_items_record",
+                content={
+                    "moved_documents": ["client_alpha_notes.md", "client_beta_followup.md", "retention_policy.md"],
+                    "moved_evidence": ["access_review.json", "vendor_exception.json"],
+                    "moved_logs": ["audit_2026_06.log"],
+                    "moved_exports": ["owner_map.csv", "policy_matrix.csv"],
+                    "held_items": ["client_gamma_hold.md", "debug_keep.log"],
+                    "total_moved": 8,
+                },
+            ),
+            ArtifactPayload(
+                id="manifest_update_record",
+                content={
+                    "manifest_path": "records/archive_index.json",
+                    "payload": {
+                        "moved_documents": ["client_alpha_notes.md", "client_beta_followup.md", "retention_policy.md"],
+                        "moved_evidence": ["access_review.json", "vendor_exception.json"],
+                        "moved_logs": ["audit_2026_06.log"],
+                        "moved_exports": ["owner_map.csv", "policy_matrix.csv"],
+                        "held_items": ["client_gamma_hold.md", "debug_keep.log"],
+                        "total_moved": 8,
+                    },
+                    "fields_present": [
+                        "held_items",
+                        "moved_documents",
+                        "moved_evidence",
+                        "moved_exports",
+                        "moved_logs",
+                        "total_moved",
+                    ],
+                    "missing_fields": [],
+                    "counts_match": True,
+                    "total_value": 8,
+                },
+            ),
+        ],
+        contract_context=context,
+    )
+
+    assert quality["invalid_artifacts"] == []
+
+    bad_quality = evaluate_artifact_quality(
+        expected_outputs=["moved_items_record"],
+        artifacts=[
+            ArtifactPayload(
+                id="moved_items_record",
+                content={
+                    "moved_documents": [],
+                    "moved_json_artifacts": ["access_review.json"],
+                    "moved_logs": [],
+                    "moved_exports": [],
+                    "held_items": [],
+                    "total_moved": 1,
+                },
+            )
+        ],
+        contract_context=context,
+    )
+
+    assert bad_quality["invalid_artifacts"][0]["field"] == "moved_evidence"
+
+
+def test_manifest_literal_contract_is_stage_aware_for_analysis_evidence() -> None:
+    analyze_context = {
+        "phase": "ANALYZE",
+        "mode": "observe_only",
+        "worker_type": "research_worker",
+        "required_json_keys": [
+            "moved_documents",
+            "moved_evidence",
+            "moved_logs",
+            "moved_exports",
+            "held_items",
+            "total_moved",
+        ],
+    }
+    artifacts = [
+        ArtifactPayload(
+            id="moved_items_record",
+            content={
+                "moved_documents": ["client_alpha_notes.md", "client_beta_followup.md", "retention_policy.md"],
+                "moved_json_artifacts": ["access_review.json", "vendor_exception.json"],
+                "moved_logs": ["audit_2026_06.log"],
+                "total_artifacts": 6,
+            },
+        ),
+        ArtifactPayload(
+            id="manifest_validation",
+            content={
+                "manifest_exists": True,
+                "fields_present": [
+                    "moved_documents",
+                    "moved_logs",
+                    "moved_json_artifacts",
+                    "total_artifacts",
+                ],
+                "counts_match": True,
+                "total_artifacts": 6,
+            },
+        ),
+    ]
+
+    analyze_quality = evaluate_artifact_quality(
+        expected_outputs=["moved_items_record", "manifest_validation"],
+        artifacts=artifacts,
+        contract_context=analyze_context,
+    )
+    mutate_quality = evaluate_artifact_quality(
+        expected_outputs=["moved_items_record", "manifest_validation"],
+        artifacts=artifacts,
+        contract_context={**analyze_context, "phase": "MUTATE", "worker_type": "filesystem_worker"},
+    )
+
+    assert analyze_quality["invalid_artifacts"] == []
+    assert {item["field"] for item in mutate_quality["invalid_artifacts"]} >= {
+        "moved_evidence",
+        "held_items",
+    }
+
+
+def test_mutation_quality_repair_synthesizes_manifest_artifacts_from_tool_output(tmp_path: Path) -> None:
+    manifest_payload = {
+        "held_items": ["client_gamma_hold.md", "debug_keep.log"],
+        "moved_documents": ["client_alpha_notes.md"],
+        "moved_evidence": ["access_review.json"],
+        "moved_exports": ["owner_map.csv"],
+        "moved_logs": ["audit_2026_06.log"],
+        "total_moved": 4,
+    }
+    client = QueueClient(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "tool_name": "write_json_manifest",
+                        "arguments": {
+                            "path": "records/archive_index.json",
+                            "payload": manifest_payload,
+                            "required_keys": [
+                                "held_items",
+                                "moved_documents",
+                                "moved_evidence",
+                                "moved_exports",
+                                "moved_logs",
+                            ],
+                            "total_key": "total_moved",
+                            "count_keys": [
+                                "moved_documents",
+                                "moved_evidence",
+                                "moved_exports",
+                                "moved_logs",
+                            ],
+                        },
+                    }
+                ]
+            },
+            {
+                "final_result": {
+                    "status": "completed",
+                    "summary": "legacy summary",
+                    "artifacts": [
+                        {
+                            "id": "moved_items_record",
+                            "content": {
+                                "moved_documents": ["client_alpha_notes.md"],
+                                "moved_json_artifacts": ["access_review.json"],
+                                "moved_logs": ["audit_2026_06.log"],
+                                "total_artifacts": 3,
+                            },
+                        },
+                        {
+                            "id": "manifest_update_record",
+                            "content": {
+                                "manifest_path": "records/archive_index.json",
+                                "payload": manifest_payload,
+                                "fields_present": sorted(manifest_payload),
+                                "missing_fields": [],
+                                "counts_match": True,
+                                "total_artifacts": 4,
+                            },
+                        },
+                        {"id": "change_summary", "content": {"summary": "changed"}},
+                        {"id": "rollback_patch", "content": {"diff": ""}},
+                        {"id": "patch_diff", "content": {"diff": ""}},
+                    ],
+                }
+            },
+        ]
+    )
+    group = AgenticWorkerGroupRunner(
+        worker_type="filesystem_worker",
+        templates=[
+            WorkerInstanceTemplate(
+                name="filesystem_operator",
+                role="mutate files",
+                allowed_tools=("write_json_manifest",),
+            )
+        ],
+        controller=WorkerLLMController(client),
+        toolbox=WorkerToolbox(WorkerToolConfig(root_path=tmp_path)),
+    )
+    task = Task(
+        task_id="task_1",
+        run_id="run_1",
+        step_id="mutate",
+        worker_type="filesystem_worker",
+        instruction="write archive manifest",
+        expected_outputs=[
+            "change_summary",
+            "moved_items_record",
+            "manifest_update_record",
+        ],
+        max_tool_calls=2,
+        max_model_calls=2,
+        permissions={
+            "read_files": True,
+            "write_files": True,
+            "run_commands": False,
+            "web_research": False,
+            "write_paths": ["records/archive_index.json"],
+            "write_paths_from_artifacts": [],
+        },
+        metadata={
+            "phase": "MUTATE",
+            "mode": "bounded_mutation",
+            "required_json_keys": [
+                "held_items",
+                "moved_documents",
+                "moved_evidence",
+                "moved_exports",
+                "moved_logs",
+                "total_moved",
+            ],
+        },
+    )
+
+    result = group.run(task)
+    by_id = {artifact.id: artifact for artifact in result.artifacts}
+
+    assert result.status == "completed"
+    assert by_id["moved_items_record"].content == manifest_payload
+    assert by_id["manifest_update_record"].content["payload"] == manifest_payload
+    assert result.metadata["artifact_quality_repaired_after_model_output"] is True
+    assert evaluate_artifact_quality(
+        expected_outputs=task.expected_outputs,
+        artifacts=result.artifacts,
+        contract_context={
+            "phase": "MUTATE",
+            "mode": "bounded_mutation",
+            "worker_type": "filesystem_worker",
+            "required_json_keys": task.metadata["required_json_keys"],
+        },
+    )["invalid_artifacts"] == []
 
 
 def test_agentic_worker_rejects_disallowed_tool_as_retryable_instance_failure(tmp_path: Path) -> None:

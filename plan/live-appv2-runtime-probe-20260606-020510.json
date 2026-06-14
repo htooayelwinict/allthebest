@@ -1,0 +1,2508 @@
+{
+  "envelope": {
+    "ambiguity": [
+      "\"current status\" is not explicitly defined.",
+      "\"verify the final file state\" does not specify acceptance criteria or verification mechanism.",
+      "The exact README filename/extension is unspecified."
+    ],
+    "artifacts": [
+      {
+        "kind": "repository_root",
+        "value": "live_appv2_probe_repo_budget3"
+      },
+      {
+        "kind": "filename",
+        "value": "README"
+      }
+    ],
+    "assumptions": [
+      "The request targets a README file within the specified repository root.",
+      "A minimal documentation-only change is desired."
+    ],
+    "complexity_hint": "medium",
+    "confidence": 0.95,
+    "constraints": [
+      "Use repository rooted at live_appv2_probe_repo_budget3.",
+      "Make only a small safe README update.",
+      "Verify the final file state after the update."
+    ],
+    "context_needed": [
+      "Exact README path/filename convention (e.g., README, README.md, or other).",
+      "Definition of \"current status\" content to record.",
+      "Expected verification method for final file state (content check, diff check, or other)."
+    ],
+    "domains": [
+      "software_engineering",
+      "repository_maintenance",
+      "documentation"
+    ],
+    "input_type": "repository_readme_update_and_state_verification",
+    "intents": [
+      "inspect_workspace",
+      "update_documentation",
+      "record_current_status",
+      "verify_final_file_state"
+    ],
+    "literal_contract": [
+      {
+        "kind": "json_key",
+        "source": "user_input",
+        "value": "live_appv2_probe_repo_budget3"
+      },
+      {
+        "kind": "filename",
+        "source": "user_input",
+        "value": "README"
+      }
+    ],
+    "metadata": {
+      "appv2_decomposer": {
+        "mode": "gated_prompt_chain",
+        "model_calls": 1,
+        "redacted_prompt_input": false,
+        "stages": [
+          "decompose_request"
+        ],
+        "validation_issue_count": 0
+      },
+      "appv2_decomposer_runtime": {
+        "elapsed_ms": 14555.476
+      },
+      "runtime_matrix": {
+        "row_count": 6,
+        "rows": [
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_runtime",
+            "details": {
+              "input_chars": 173
+            },
+            "elapsed_ms": null,
+            "event": "run_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 1,
+            "stage": "decompose_request",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:32:46.098848+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "schema": "Envelope"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 2,
+            "stage": "decompose_request",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:32:46.098902+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 3,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.653171+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "input_type": "repository_readme_update_and_state_verification"
+            },
+            "elapsed_ms": null,
+            "event": "response_parsed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 4,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.653843+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "blocking_issue_count": 0,
+              "issue_count": 0
+            },
+            "elapsed_ms": null,
+            "event": "validation_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 5,
+            "stage": "validate_envelope",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654219+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_runtime",
+            "details": {
+              "ambiguity_count": 3,
+              "confidence": 0.95,
+              "input_type": "repository_readme_update_and_state_verification"
+            },
+            "elapsed_ms": 14555.476,
+            "event": "run_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 6,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654250+00:00",
+            "worker_type": null
+          }
+        ],
+        "started_at": "2026-06-05T19:32:45.948141+00:00",
+        "trace_id": "trace_0001"
+      }
+    },
+    "normalized_input": "Inspect the repository rooted at live_appv2_probe_repo_budget3, make a minimal safe update to README documenting current status, and confirm the resulting file state.",
+    "raw_input": "In the repo rooted at live_appv2_probe_repo_budget3, inspect the workspace, make a small safe README update that records the current status, and verify the final file state.",
+    "request_id": "v2_req_001",
+    "risks": [
+      "file_modification_risk",
+      "inaccurate_status_documentation_risk",
+      "verification_criteria_ambiguity"
+    ],
+    "user_goal": "Have README updated safely with current status information and verify the final state of the file in the specified repository."
+  },
+  "generated_at": "2026-06-05T19:35:10.542466+00:00",
+  "phase_plan": {
+    "artifact_contracts": [
+      {
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "repository_root": {
+              "const": "live_appv2_probe_repo_budget3",
+              "type": "string"
+            }
+          },
+          "required": [
+            "repository_root"
+          ],
+          "type": "object"
+        },
+        "description": "Runtime-scoped repository root for all inspection and update actions.",
+        "id": "input_repository_root",
+        "kind": "input",
+        "metadata": {
+          "literal_preservation": true,
+          "source": "envelope.artifacts"
+        },
+        "produced_by_phase": null,
+        "required": true
+      },
+      {
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "filename": {
+              "const": "README",
+              "type": "string"
+            }
+          },
+          "required": [
+            "filename"
+          ],
+          "type": "object"
+        },
+        "description": "Runtime-scoped README filename literal to preserve from user input.",
+        "id": "input_readme_filename",
+        "kind": "input",
+        "metadata": {
+          "literal_preservation": true,
+          "source": "envelope.artifacts"
+        },
+        "produced_by_phase": null,
+        "required": true
+      },
+      {
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "file_exists": {
+              "type": "boolean"
+            },
+            "pre_change_fingerprint": {
+              "type": "string"
+            },
+            "pre_change_line_count": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "repository_root": {
+              "type": "string"
+            },
+            "resolution_basis": {
+              "enum": [
+                "exact_filename_match",
+                "convention_fallback"
+              ],
+              "type": "string"
+            },
+            "resolved_readme_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repository_root",
+            "resolved_readme_path",
+            "resolution_basis",
+            "file_exists"
+          ],
+          "type": "object"
+        },
+        "description": "Resolved README target path and baseline file facts discovered in the repository.",
+        "id": "discover_readme_target",
+        "kind": "phase_output",
+        "metadata": {
+          "depends_on": [
+            "input_repository_root",
+            "input_readme_filename"
+          ]
+        },
+        "produced_by_phase": "DISCOVER",
+        "required": true
+      },
+      {
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence_refs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "status_facts": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "status_summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status_summary",
+            "status_facts"
+          ],
+          "type": "object"
+        },
+        "description": "Observed current repository/workspace status facts to be documented in README.",
+        "id": "discover_current_status_snapshot",
+        "kind": "phase_output",
+        "metadata": {
+          "ambiguity_managed": "current status definition captured as explicit observed facts"
+        },
+        "produced_by_phase": "DISCOVER",
+        "required": true
+      },
+      {
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "change_type": {
+              "enum": [
+                "append_section",
+                "update_existing_section"
+              ],
+              "type": "string"
+            },
+            "expected_scope": {
+              "enum": [
+                "readme_only"
+              ],
+              "type": "string"
+            },
+            "planned_text": {
+              "type": "string"
+            },
+            "safety_constraints": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "target_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_path",
+            "change_type",
+            "planned_text",
+            "safety_constraints",
+            "expected_scope"
+          ],
+          "type": "object"
+        },
+        "description": "Minimal documentation-only edit design for recording current status in README.",
+        "id": "design_readme_minimal_update",
+        "kind": "contract",
+        "metadata": {
+          "depends_on": [
+            "discover_readme_target",
+            "discover_current_status_snapshot"
+          ]
+        },
+        "produced_by_phase": "DESIGN",
+        "required": true
+      },
+      {
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "after_fingerprint": {
+              "type": "string"
+            },
+            "before_fingerprint": {
+              "type": "string"
+            },
+            "changed_line_count": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "diff_excerpt": {
+              "type": "string"
+            },
+            "mutation_applied": {
+              "type": "boolean"
+            },
+            "operation": {
+              "enum": [
+                "append",
+                "replace_block",
+                "insert_block"
+              ],
+              "type": "string"
+            },
+            "target_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_path",
+            "mutation_applied",
+            "operation",
+            "before_fingerprint",
+            "after_fingerprint",
+            "changed_line_count"
+          ],
+          "type": "object"
+        },
+        "description": "Record of the applied README mutation with before/after state evidence.",
+        "id": "mutate_readme_update_record",
+        "kind": "mutation_record",
+        "metadata": {
+          "depends_on": [
+            "design_readme_minimal_update"
+          ],
+          "scope_limit": "documentation_only"
+        },
+        "produced_by_phase": "MUTATE",
+        "required": true
+      },
+      {
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "contains_planned_status_text": {
+              "type": "boolean"
+            },
+            "evidence_refs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "matches_design_target": {
+              "type": "boolean"
+            },
+            "non_readme_files_changed": {
+              "type": "boolean"
+            },
+            "post_change_exists": {
+              "type": "boolean"
+            },
+            "post_change_fingerprint": {
+              "type": "string"
+            },
+            "target_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_path",
+            "post_change_exists",
+            "post_change_fingerprint",
+            "contains_planned_status_text",
+            "matches_design_target",
+            "non_readme_files_changed"
+          ],
+          "type": "object"
+        },
+        "description": "Verification evidence confirming final README file state after mutation.",
+        "id": "verify_readme_final_state_evidence",
+        "kind": "verification_evidence",
+        "metadata": {
+          "depends_on": [
+            "mutate_readme_update_record",
+            "design_readme_minimal_update"
+          ],
+          "requires_runtime_evidence": true
+        },
+        "produced_by_phase": "VERIFY",
+        "required": true
+      },
+      {
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "artifacts_cited": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "readme_path": {
+              "type": "string"
+            },
+            "repository_root": {
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "completed",
+                "blocked",
+                "failed"
+              ],
+              "type": "string"
+            },
+            "update_summary": {
+              "type": "string"
+            },
+            "verification_summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repository_root",
+            "readme_path",
+            "update_summary",
+            "verification_summary",
+            "artifacts_cited",
+            "status"
+          ],
+          "type": "object"
+        },
+        "description": "Concise final report summarizing update outcome and verification-backed file state.",
+        "id": "final_outcome_report",
+        "kind": "final_report",
+        "metadata": {
+          "must_cite": [
+            "verify_readme_final_state_evidence"
+          ]
+        },
+        "produced_by_phase": "FINALIZE",
+        "required": true
+      }
+    ],
+    "budgets": {
+      "max_model_calls_total": 14,
+      "max_tool_calls_total": 15,
+      "notes": "Includes limited repair capacity while keeping bounded execution.",
+      "per_phase_model_calls_ceiling": 3
+    },
+    "global_invariants": [
+      "Use repository rooted at live_appv2_probe_repo_budget3.",
+      "Preserve exact filename literal README from user input during discovery/resolution.",
+      "Apply only a small safe documentation-focused README update.",
+      "Do not claim file modifications or verification success without runtime evidence.",
+      "If README path is ambiguous, discovery must resolve and record basis before design/mutation.",
+      "MUTATE scope is limited to the resolved README target and must be followed by VERIFY evidence."
+    ],
+    "metadata": {
+      "appv2_phase_planner": {
+        "mode": "phase_prompt_chain",
+        "model_calls": 3,
+        "stages": [
+          "draft_phase_skeleton",
+          "draft_artifact_contracts",
+          "draft_phase_plan"
+        ]
+      },
+      "appv2_phase_planner_runtime": {
+        "elapsed_ms": 77168.976
+      },
+      "complexity_hint": "medium",
+      "confidence": 0.95,
+      "role": "appv2_phase_plan_assembler",
+      "runtime_matrix": {
+        "row_count": 15,
+        "rows": [
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_runtime",
+            "details": {
+              "input_chars": 173
+            },
+            "elapsed_ms": null,
+            "event": "run_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 1,
+            "stage": "decompose_request",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:32:46.098848+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "schema": "Envelope"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 2,
+            "stage": "decompose_request",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:32:46.098902+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 3,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.653171+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "input_type": "repository_readme_update_and_state_verification"
+            },
+            "elapsed_ms": null,
+            "event": "response_parsed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 4,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.653843+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "blocking_issue_count": 0,
+              "issue_count": 0
+            },
+            "elapsed_ms": null,
+            "event": "validation_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 5,
+            "stage": "validate_envelope",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654219+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_runtime",
+            "details": {
+              "ambiguity_count": 3,
+              "confidence": 0.95,
+              "input_type": "repository_readme_update_and_state_verification"
+            },
+            "elapsed_ms": 14555.476,
+            "event": "run_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 6,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654250+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_runtime",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "run_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 7,
+            "stage": "draft_phase_plan",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654460+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "schema": "PhaseSkeleton"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 8,
+            "stage": "draft_phase_skeleton",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654510+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "phase_count": 5
+            },
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 9,
+            "stage": "draft_phase_skeleton",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:05.599883+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "schema": "ArtifactContractBundle"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 10,
+            "stage": "draft_artifact_contracts",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:05.599965+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "artifact_contract_count": 8
+            },
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 11,
+            "stage": "draft_artifact_contracts",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:29.584192+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "schema": "PhasePlan"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 12,
+            "stage": "draft_phase_plan",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:29.584310+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 13,
+            "stage": "draft_phase_plan",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:34:17.821771+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "blocking_issue_count": 0,
+              "issue_count": 0
+            },
+            "elapsed_ms": null,
+            "event": "validation_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 14,
+            "stage": "validate_phase_plan",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:34:17.822929+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_runtime",
+            "details": {
+              "phase_count": 5
+            },
+            "elapsed_ms": 77168.976,
+            "event": "run_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 15,
+            "stage": "draft_phase_plan",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:34:17.823063+00:00",
+            "worker_type": null
+          }
+        ],
+        "started_at": "2026-06-05T19:32:45.948141+00:00",
+        "trace_id": "trace_0001"
+      },
+      "source_input_type": "repository_readme_update_and_state_verification",
+      "trace_id": "trace_0001"
+    },
+    "objective": "Safely update the README in live_appv2_probe_repo_budget3 to document current status, then confirm the resulting file state with evidence.",
+    "phases": [
+      {
+        "acceptance_checks": [
+          "All input_artifacts are available before phase execution.",
+          "Resolved README path, resolution basis, and existence flag are produced.",
+          "Baseline file facts are captured when file exists.",
+          "Current status facts are explicit and evidence-backed.",
+          "No file mutations are performed."
+        ],
+        "allowed_tool_groups": [
+          "repo_read"
+        ],
+        "goal": "Resolve the README target path and capture baseline file facts plus current observed status facts.",
+        "input_artifacts": [
+          "input_repository_root",
+          "input_readme_filename"
+        ],
+        "instructions": [
+          "Use repository rooted at live_appv2_probe_repo_budget3.",
+          "Preserve the exact filename literal README while resolving path.",
+          "Determine whether README exists, record resolution basis, and collect baseline fingerprint/line count when available.",
+          "Capture explicit observable current-status facts for later documentation text.",
+          "Do not mutate any files in this phase."
+        ],
+        "max_model_calls": 3,
+        "max_tool_calls": 6,
+        "metadata": {
+          "priority": "high",
+          "risk_focus": [
+            "path_ambiguity",
+            "status_definition_ambiguity"
+          ]
+        },
+        "mutation_policy": {
+          "advisory_paths": [],
+          "allow_create": false,
+          "allow_delete": false,
+          "allow_move": false,
+          "allow_update": false,
+          "allowed_paths": [],
+          "forbidden_globs": [
+            "**/*"
+          ],
+          "forbidden_paths": [],
+          "max_files": 0,
+          "metadata": {
+            "reason": "Discovery is inspection-only."
+          },
+          "mode": "readonly"
+        },
+        "output_artifacts": [
+          "discover_readme_target",
+          "discover_current_status_snapshot"
+        ],
+        "phase": "DISCOVER",
+        "phase_id": "phase_discover_readme_and_status",
+        "policy": {
+          "ambiguity_handling": "If README path is ambiguous, resolve and record explicit basis before proceeding.",
+          "evidence_required": true,
+          "read_only": true
+        },
+        "verification_policy": null
+      },
+      {
+        "acceptance_checks": [
+          "Design artifact targets the resolved README path.",
+          "Planned text reflects discovered status facts only.",
+          "Safety constraints explicitly limit scope to README documentation change.",
+          "Expected scope is readme_only."
+        ],
+        "allowed_tool_groups": [],
+        "goal": "Produce a minimal readme_only update design that documents discovered current status safely.",
+        "input_artifacts": [
+          "discover_readme_target",
+          "discover_current_status_snapshot"
+        ],
+        "instructions": [
+          "Use discovered README target and status snapshot artifacts as the sole content basis.",
+          "Plan a minimal append/update section only; avoid broad rewrites.",
+          "Include safety constraints that keep scope documentation-only and target-bound.",
+          "If discovery indicates blocking ambiguity, encode conservative design constraints rather than inventing facts."
+        ],
+        "max_model_calls": 3,
+        "max_tool_calls": 0,
+        "metadata": {
+          "change_minimization": true
+        },
+        "mutation_policy": null,
+        "output_artifacts": [
+          "design_readme_minimal_update"
+        ],
+        "phase": "DESIGN",
+        "phase_id": "phase_design_minimal_readme_update",
+        "policy": {
+          "design_scope": "readme_only",
+          "must_reference_discovery_artifacts": true,
+          "no_unverified_claims": true
+        },
+        "verification_policy": null
+      },
+      {
+        "acceptance_checks": [
+          "Mutation record includes target_path, operation, and mutation_applied flag.",
+          "Before/after fingerprints are populated.",
+          "Changed line count is recorded.",
+          "No out-of-scope file mutation is performed."
+        ],
+        "allowed_tool_groups": [
+          "repo_read",
+          "file_write"
+        ],
+        "goal": "Apply the planned minimal README mutation and record before/after evidence.",
+        "input_artifacts": [
+          "design_readme_minimal_update",
+          "discover_readme_target"
+        ],
+        "instructions": [
+          "Execute only the designed README mutation at the resolved target path.",
+          "Capture before and after fingerprints and changed line count.",
+          "Record operation type and concise diff excerpt.",
+          "Do not modify non-README files."
+        ],
+        "max_model_calls": 3,
+        "max_tool_calls": 4,
+        "metadata": {
+          "requires_followup_verify": true
+        },
+        "mutation_policy": {
+          "advisory_paths": [
+            "${discover_readme_target.resolved_readme_path}"
+          ],
+          "allow_create": true,
+          "allow_delete": false,
+          "allow_move": false,
+          "allow_update": true,
+          "allowed_paths": [],
+          "forbidden_globs": [
+            "**/*.py",
+            "**/*.js",
+            "**/*.ts",
+            "**/*.json",
+            "**/*.yml",
+            "**/*.yaml",
+            "**/*.toml",
+            "**/*.ini",
+            "**/package-lock.json",
+            "**/poetry.lock",
+            "**/Pipfile.lock"
+          ],
+          "forbidden_paths": [],
+          "max_files": 1,
+          "metadata": {
+            "rationale": "Resolved target path is discovered at runtime; mutation remains constrained to one README-focused file."
+          },
+          "mode": "advisory"
+        },
+        "output_artifacts": [
+          "mutate_readme_update_record"
+        ],
+        "phase": "MUTATE",
+        "phase_id": "phase_mutate_apply_readme_update",
+        "policy": {
+          "evidence_required": true,
+          "mutation_must_follow_design": true,
+          "scope_limit": "documentation_only"
+        },
+        "verification_policy": null
+      },
+      {
+        "acceptance_checks": [
+          "Verification evidence artifact is produced with all required booleans.",
+          "Evidence confirms planned status text presence.",
+          "Evidence confirms design target match.",
+          "Evidence confirms no non-README file changes.",
+          "Verification conclusions are evidence-backed."
+        ],
+        "allowed_tool_groups": [
+          "verify",
+          "repo_read"
+        ],
+        "goal": "Verify final README state matches design intent and confirm scope containment.",
+        "input_artifacts": [
+          "mutate_readme_update_record",
+          "design_readme_minimal_update",
+          "discover_readme_target"
+        ],
+        "instructions": [
+          "Validate target README exists after mutation and capture post-change fingerprint.",
+          "Check that planned status text is present in final README content.",
+          "Confirm verification target matches designed path.",
+          "Confirm no non-README files changed for this task and record evidence references."
+        ],
+        "max_model_calls": 3,
+        "max_tool_calls": 5,
+        "metadata": {
+          "blocks_finalize_on_failure": true
+        },
+        "mutation_policy": null,
+        "output_artifacts": [
+          "verify_readme_final_state_evidence"
+        ],
+        "phase": "VERIFY",
+        "phase_id": "phase_verify_final_readme_state",
+        "policy": {
+          "no_success_claim_without_evidence": true,
+          "require_runtime_evidence": true,
+          "verification_gate": true
+        },
+        "verification_policy": {
+          "commands": [
+            "verify_readme_exists_and_fingerprint",
+            "verify_planned_status_text_present",
+            "verify_scope_no_non_readme_changes"
+          ],
+          "file_state_checks": [
+            {
+              "check": "exists",
+              "path_from_artifact": "discover_readme_target.resolved_readme_path"
+            },
+            {
+              "check": "fingerprint_recorded",
+              "path_from_artifact": "discover_readme_target.resolved_readme_path"
+            },
+            {
+              "check": "content_contains",
+              "text_from_artifact": "design_readme_minimal_update.planned_text"
+            },
+            {
+              "check": "path_matches_design",
+              "lhs": "verify_readme_final_state_evidence.target_path",
+              "rhs": "design_readme_minimal_update.target_path"
+            },
+            {
+              "allowed_path_from_artifact": "discover_readme_target.resolved_readme_path",
+              "check": "no_non_readme_changes"
+            }
+          ],
+          "metadata": {
+            "strictness": "high"
+          },
+          "require_evidence": true,
+          "required": true
+        }
+      },
+      {
+        "acceptance_checks": [
+          "Final report includes repository_root, readme_path, summaries, cited artifacts, and status.",
+          "Report cites verify_readme_final_state_evidence.",
+          "No unsupported claims are included."
+        ],
+        "allowed_tool_groups": [],
+        "goal": "Produce concise final outcome report citing verification evidence.",
+        "input_artifacts": [
+          "verify_readme_final_state_evidence",
+          "mutate_readme_update_record",
+          "discover_readme_target"
+        ],
+        "instructions": [
+          "Summarize README update outcome and verification result.",
+          "Cite artifact ids used for claims, especially verification evidence.",
+          "Set status to completed only when verification evidence satisfies success criteria; otherwise blocked or failed."
+        ],
+        "max_model_calls": 2,
+        "max_tool_calls": 0,
+        "metadata": {
+          "final_gate": true
+        },
+        "mutation_policy": null,
+        "output_artifacts": [
+          "final_outcome_report"
+        ],
+        "phase": "FINALIZE",
+        "phase_id": "phase_finalize_outcome_report",
+        "policy": {
+          "must_cite_evidence": true,
+          "reporting_only": true,
+          "status_discipline": "no_completed_without_verify_success"
+        },
+        "verification_policy": null
+      }
+    ],
+    "plan_id": "plan_v2_req_001_readme_status_update",
+    "request_id": "v2_req_001",
+    "strategy": "Discover the actual README file/path and present status context, design a minimal documentation-only edit, apply the small safe mutation, verify the final README state via post-change checks, and finalize with a concise outcome report.",
+    "success_criteria": [
+      "A resolved README target path is produced with baseline file facts in discover_readme_target.",
+      "A minimal readme_only update plan is produced in design_readme_minimal_update using discovered status facts.",
+      "Mutation record shows a README change was applied with before/after fingerprints in mutate_readme_update_record.",
+      "Verification evidence confirms final README exists, includes planned status text, and matches the design target.",
+      "Verification evidence indicates no non-README file changes for this task.",
+      "Final report status is completed and cites verification evidence artifact ids."
+    ]
+  },
+  "probe_error": null,
+  "prompt": "In the repo rooted at live_appv2_probe_repo_budget3, inspect the workspace, make a small safe README update that records the current status, and verify the final file state.",
+  "repo_path": "/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_probe_repo_budget3",
+  "result": {
+    "artifacts": [],
+    "issues": [
+      {
+        "code": "model_budget_exceeded",
+        "message": "Worker phase exceeded max_model_calls",
+        "metadata": {
+          "max_model_calls": 3,
+          "phase_id": "phase_discover_readme_and_status"
+        },
+        "owner": "worker",
+        "path": null,
+        "severity": "blocking"
+      }
+    ],
+    "metadata": {
+      "completed_phase_ids": [],
+      "elapsed_ms": 52716.325,
+      "mutation_ledger": {
+        "denial_count": 0,
+        "mutation_count": 0,
+        "touched_paths": []
+      },
+      "runtime_matrix": {
+        "row_count": 35,
+        "rows": [
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_runtime",
+            "details": {
+              "input_chars": 173
+            },
+            "elapsed_ms": null,
+            "event": "run_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 1,
+            "stage": "decompose_request",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:32:46.098848+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "schema": "Envelope"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 2,
+            "stage": "decompose_request",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:32:46.098902+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 3,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.653171+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "input_type": "repository_readme_update_and_state_verification"
+            },
+            "elapsed_ms": null,
+            "event": "response_parsed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 4,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.653843+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_chain",
+            "details": {
+              "blocking_issue_count": 0,
+              "issue_count": 0
+            },
+            "elapsed_ms": null,
+            "event": "validation_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 5,
+            "stage": "validate_envelope",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654219+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_decomposer_runtime",
+            "details": {
+              "ambiguity_count": 3,
+              "confidence": 0.95,
+              "input_type": "repository_readme_update_and_state_verification"
+            },
+            "elapsed_ms": 14555.476,
+            "event": "run_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 6,
+            "stage": "decompose_request",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654250+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_runtime",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "run_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 7,
+            "stage": "draft_phase_plan",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654460+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "schema": "PhaseSkeleton"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 8,
+            "stage": "draft_phase_skeleton",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:00.654510+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "phase_count": 5
+            },
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 9,
+            "stage": "draft_phase_skeleton",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:05.599883+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "schema": "ArtifactContractBundle"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 10,
+            "stage": "draft_artifact_contracts",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:05.599965+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "artifact_contract_count": 8
+            },
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 11,
+            "stage": "draft_artifact_contracts",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:29.584192+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "schema": "PhasePlan"
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 12,
+            "stage": "draft_phase_plan",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:33:29.584310+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": null,
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 13,
+            "stage": "draft_phase_plan",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:34:17.821771+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_chain",
+            "details": {
+              "blocking_issue_count": 0,
+              "issue_count": 0
+            },
+            "elapsed_ms": null,
+            "event": "validation_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 14,
+            "stage": "validate_phase_plan",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:34:17.822929+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_phase_planner_runtime",
+            "details": {
+              "phase_count": 5
+            },
+            "elapsed_ms": 77168.976,
+            "event": "run_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 15,
+            "stage": "draft_phase_plan",
+            "status": "completed",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:34:17.823063+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_worker_runtime",
+            "details": {
+              "phase_count": 5,
+              "replan_depth": 0
+            },
+            "elapsed_ms": null,
+            "event": "run_started",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": "v2_run_plan_v2_req_001_readme_status_update",
+            "seq": 16,
+            "stage": "run",
+            "status": "started",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:34:17.823428+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_worker_runtime",
+            "details": {
+              "phase_id": "phase_discover_readme_and_status"
+            },
+            "elapsed_ms": null,
+            "event": "phase_started",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": "v2_run_plan_v2_req_001_readme_status_update",
+            "seq": 17,
+            "stage": "DISCOVER",
+            "status": "started",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:17.829342+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_worker_loop",
+            "details": {
+              "configured_model_calls": 3,
+              "configured_tool_calls": 6,
+              "effective_model_calls": 3,
+              "effective_tool_calls": 6,
+              "phase_model_call_cap": 3,
+              "repair_turn_reserve": 1,
+              "retry_turn_reserve": 1
+            },
+            "elapsed_ms": null,
+            "event": "loop_started",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 18,
+            "stage": "DISCOVER",
+            "status": "started",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:17.829485+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "turn_1",
+            "component": "appv2_worker_loop",
+            "details": {
+              "pending_outputs": [
+                "discover_readme_target",
+                "discover_current_status_snapshot"
+              ],
+              "tool_calls_used": 0
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 19,
+            "stage": "DISCOVER",
+            "status": "started",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:17.829873+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "turn_1",
+            "component": "appv2_worker_loop",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 20,
+            "stage": "DISCOVER",
+            "status": "completed",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:47.427607+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "turn_1",
+            "component": "appv2_worker_loop",
+            "details": {
+              "branch": "tool_calls",
+              "issue_count": 0
+            },
+            "elapsed_ms": null,
+            "event": "loop_decision",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 21,
+            "stage": "DISCOVER",
+            "status": "completed",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:47.429084+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "find_readme",
+            "component": "appv2_worker_loop",
+            "details": {
+              "purpose": "Locate README files in the repository root",
+              "tool_name": "file_search"
+            },
+            "elapsed_ms": null,
+            "event": "tool_call_started",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 22,
+            "stage": "DISCOVER",
+            "status": "started",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:47.429107+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "find_readme",
+            "component": "appv2_worker_loop",
+            "details": {
+              "feedback_code": null,
+              "tool_name": "file_search"
+            },
+            "elapsed_ms": null,
+            "event": "tool_call_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 23,
+            "stage": "DISCOVER",
+            "status": "completed",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:47.446564+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "check_git_status",
+            "component": "appv2_worker_loop",
+            "details": {
+              "purpose": "Obtain current git status for status facts",
+              "tool_name": "git_status"
+            },
+            "elapsed_ms": null,
+            "event": "tool_call_started",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 24,
+            "stage": "DISCOVER",
+            "status": "started",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:47.446602+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "check_git_status",
+            "component": "appv2_worker_loop",
+            "details": {
+              "feedback_code": null,
+              "tool_name": "git_status"
+            },
+            "elapsed_ms": null,
+            "event": "tool_call_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 25,
+            "stage": "DISCOVER",
+            "status": "completed",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:47.898309+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "turn_2",
+            "component": "appv2_worker_loop",
+            "details": {
+              "pending_outputs": [
+                "discover_readme_target",
+                "discover_current_status_snapshot"
+              ],
+              "tool_calls_used": 2
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 26,
+            "stage": "DISCOVER",
+            "status": "started",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:47.899714+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "turn_2",
+            "component": "appv2_worker_loop",
+            "details": {},
+            "elapsed_ms": null,
+            "event": "model_call_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 27,
+            "stage": "DISCOVER",
+            "status": "completed",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:50.834996+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "turn_2",
+            "component": "appv2_worker_loop",
+            "details": {
+              "branch": "tool_calls",
+              "issue_count": 0
+            },
+            "elapsed_ms": null,
+            "event": "loop_decision",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 28,
+            "stage": "DISCOVER",
+            "status": "completed",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:50.835036+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "read_readme_baseline",
+            "component": "appv2_worker_loop",
+            "details": {
+              "purpose": "Read README.md baseline content and size for fingerprint",
+              "tool_name": "read_file"
+            },
+            "elapsed_ms": null,
+            "event": "tool_call_started",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 29,
+            "stage": "DISCOVER",
+            "status": "started",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:50.835046+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "read_readme_baseline",
+            "component": "appv2_worker_loop",
+            "details": {
+              "feedback_code": null,
+              "tool_name": "read_file"
+            },
+            "elapsed_ms": null,
+            "event": "tool_call_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 30,
+            "stage": "DISCOVER",
+            "status": "completed",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:50.835898+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "turn_3",
+            "component": "appv2_worker_loop",
+            "details": {
+              "pending_outputs": [
+                "discover_readme_target",
+                "discover_current_status_snapshot"
+              ],
+              "tool_calls_used": 3
+            },
+            "elapsed_ms": null,
+            "event": "model_call_started",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 31,
+            "stage": "DISCOVER",
+            "status": "started",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:34:50.836294+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": "turn_3",
+            "component": "appv2_worker_loop",
+            "details": {
+              "error": "4 validation errors for WorkerDecision\nfinal_phase_output.summary\n  Field required [type=missing, input_value={'completionState': 'comp....\"}]], 'type': 'Object'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nfinal_phase_output.completionState\n  Extra inputs are not permitted [type=extra_forbidden, input_value='complete', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden\nfinal_phase_output.entries\n  Extra inputs are not permitted [type=extra_forbidden, input_value=[['artifacts', {'completi...y tool observations.\"}]], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden\nfinal_phase_output.type\n  Extra inputs are not permitted [type=extra_forbidden, input_value='Object', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+            },
+            "elapsed_ms": null,
+            "event": "model_decision_invalid",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 32,
+            "stage": "DISCOVER",
+            "status": "failed",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:35:10.539029+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_worker_loop",
+            "details": {
+              "max_model_calls": 3,
+              "tool_calls_used": 3
+            },
+            "elapsed_ms": null,
+            "event": "model_budget_exceeded",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": null,
+            "seq": 33,
+            "stage": "DISCOVER",
+            "status": "budget_exceeded",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:35:10.539131+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_worker_runtime",
+            "details": {
+              "issues": [
+                "model_budget_exceeded"
+              ],
+              "summary": "Phase phase_discover_readme_and_status exhausted model budget before valid completion."
+            },
+            "elapsed_ms": null,
+            "event": "phase_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": "v2_run_plan_v2_req_001_readme_status_update",
+            "seq": 34,
+            "stage": "DISCOVER",
+            "status": "budget_exceeded",
+            "step_id": "phase_discover_readme_and_status",
+            "timestamp": "2026-06-05T19:35:10.539422+00:00",
+            "worker_type": null
+          },
+          {
+            "attempt_id": null,
+            "component": "appv2_worker_runtime",
+            "details": {
+              "artifact_count": 0,
+              "issue_count": 1
+            },
+            "elapsed_ms": 52716.325,
+            "event": "run_completed",
+            "plan_id": "plan_v2_req_001_readme_status_update",
+            "request_id": "v2_req_001",
+            "run_id": "v2_run_plan_v2_req_001_readme_status_update",
+            "seq": 35,
+            "stage": "run",
+            "status": "budget_exceeded",
+            "step_id": null,
+            "timestamp": "2026-06-05T19:35:10.539496+00:00",
+            "worker_type": null
+          }
+        ],
+        "started_at": "2026-06-05T19:32:45.948141+00:00",
+        "trace_id": "trace_0001"
+      }
+    },
+    "plan_id": "plan_v2_req_001_readme_status_update",
+    "request_id": "v2_req_001",
+    "run_id": "v2_run_plan_v2_req_001_readme_status_update",
+    "status": "budget_exceeded",
+    "summary": "Phase phase_discover_readme_and_status exhausted model budget before valid completion.",
+    "usage": {
+      "model_calls": 3,
+      "replans": 0,
+      "tool_calls": 3
+    }
+  },
+  "runtime_matrix": {
+    "row_count": 35,
+    "rows": [
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_runtime",
+        "details": {
+          "input_chars": 173
+        },
+        "elapsed_ms": null,
+        "event": "run_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 1,
+        "stage": "decompose_request",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:32:46.098848+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_chain",
+        "details": {
+          "schema": "Envelope"
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 2,
+        "stage": "decompose_request",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:32:46.098902+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_chain",
+        "details": {},
+        "elapsed_ms": null,
+        "event": "model_call_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 3,
+        "stage": "decompose_request",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:00.653171+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_chain",
+        "details": {
+          "input_type": "repository_readme_update_and_state_verification"
+        },
+        "elapsed_ms": null,
+        "event": "response_parsed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 4,
+        "stage": "decompose_request",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:00.653843+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_chain",
+        "details": {
+          "blocking_issue_count": 0,
+          "issue_count": 0
+        },
+        "elapsed_ms": null,
+        "event": "validation_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 5,
+        "stage": "validate_envelope",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:00.654219+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_decomposer_runtime",
+        "details": {
+          "ambiguity_count": 3,
+          "confidence": 0.95,
+          "input_type": "repository_readme_update_and_state_verification"
+        },
+        "elapsed_ms": 14555.476,
+        "event": "run_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 6,
+        "stage": "decompose_request",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:00.654250+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_runtime",
+        "details": {},
+        "elapsed_ms": null,
+        "event": "run_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 7,
+        "stage": "draft_phase_plan",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:00.654460+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "schema": "PhaseSkeleton"
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 8,
+        "stage": "draft_phase_skeleton",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:00.654510+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "phase_count": 5
+        },
+        "elapsed_ms": null,
+        "event": "model_call_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 9,
+        "stage": "draft_phase_skeleton",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:05.599883+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "schema": "ArtifactContractBundle"
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 10,
+        "stage": "draft_artifact_contracts",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:05.599965+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "artifact_contract_count": 8
+        },
+        "elapsed_ms": null,
+        "event": "model_call_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 11,
+        "stage": "draft_artifact_contracts",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:29.584192+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "schema": "PhasePlan"
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 12,
+        "stage": "draft_phase_plan",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:33:29.584310+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {},
+        "elapsed_ms": null,
+        "event": "model_call_completed",
+        "plan_id": null,
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 13,
+        "stage": "draft_phase_plan",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:34:17.821771+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_chain",
+        "details": {
+          "blocking_issue_count": 0,
+          "issue_count": 0
+        },
+        "elapsed_ms": null,
+        "event": "validation_completed",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 14,
+        "stage": "validate_phase_plan",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:34:17.822929+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_phase_planner_runtime",
+        "details": {
+          "phase_count": 5
+        },
+        "elapsed_ms": 77168.976,
+        "event": "run_completed",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 15,
+        "stage": "draft_phase_plan",
+        "status": "completed",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:34:17.823063+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_worker_runtime",
+        "details": {
+          "phase_count": 5,
+          "replan_depth": 0
+        },
+        "elapsed_ms": null,
+        "event": "run_started",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": "v2_run_plan_v2_req_001_readme_status_update",
+        "seq": 16,
+        "stage": "run",
+        "status": "started",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:34:17.823428+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_worker_runtime",
+        "details": {
+          "phase_id": "phase_discover_readme_and_status"
+        },
+        "elapsed_ms": null,
+        "event": "phase_started",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": "v2_run_plan_v2_req_001_readme_status_update",
+        "seq": 17,
+        "stage": "DISCOVER",
+        "status": "started",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:17.829342+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_worker_loop",
+        "details": {
+          "configured_model_calls": 3,
+          "configured_tool_calls": 6,
+          "effective_model_calls": 3,
+          "effective_tool_calls": 6,
+          "phase_model_call_cap": 3,
+          "repair_turn_reserve": 1,
+          "retry_turn_reserve": 1
+        },
+        "elapsed_ms": null,
+        "event": "loop_started",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 18,
+        "stage": "DISCOVER",
+        "status": "started",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:17.829485+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "turn_1",
+        "component": "appv2_worker_loop",
+        "details": {
+          "pending_outputs": [
+            "discover_readme_target",
+            "discover_current_status_snapshot"
+          ],
+          "tool_calls_used": 0
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 19,
+        "stage": "DISCOVER",
+        "status": "started",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:17.829873+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "turn_1",
+        "component": "appv2_worker_loop",
+        "details": {},
+        "elapsed_ms": null,
+        "event": "model_call_completed",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 20,
+        "stage": "DISCOVER",
+        "status": "completed",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:47.427607+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "turn_1",
+        "component": "appv2_worker_loop",
+        "details": {
+          "branch": "tool_calls",
+          "issue_count": 0
+        },
+        "elapsed_ms": null,
+        "event": "loop_decision",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 21,
+        "stage": "DISCOVER",
+        "status": "completed",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:47.429084+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "find_readme",
+        "component": "appv2_worker_loop",
+        "details": {
+          "purpose": "Locate README files in the repository root",
+          "tool_name": "file_search"
+        },
+        "elapsed_ms": null,
+        "event": "tool_call_started",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 22,
+        "stage": "DISCOVER",
+        "status": "started",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:47.429107+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "find_readme",
+        "component": "appv2_worker_loop",
+        "details": {
+          "feedback_code": null,
+          "tool_name": "file_search"
+        },
+        "elapsed_ms": null,
+        "event": "tool_call_completed",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 23,
+        "stage": "DISCOVER",
+        "status": "completed",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:47.446564+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "check_git_status",
+        "component": "appv2_worker_loop",
+        "details": {
+          "purpose": "Obtain current git status for status facts",
+          "tool_name": "git_status"
+        },
+        "elapsed_ms": null,
+        "event": "tool_call_started",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 24,
+        "stage": "DISCOVER",
+        "status": "started",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:47.446602+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "check_git_status",
+        "component": "appv2_worker_loop",
+        "details": {
+          "feedback_code": null,
+          "tool_name": "git_status"
+        },
+        "elapsed_ms": null,
+        "event": "tool_call_completed",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 25,
+        "stage": "DISCOVER",
+        "status": "completed",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:47.898309+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "turn_2",
+        "component": "appv2_worker_loop",
+        "details": {
+          "pending_outputs": [
+            "discover_readme_target",
+            "discover_current_status_snapshot"
+          ],
+          "tool_calls_used": 2
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 26,
+        "stage": "DISCOVER",
+        "status": "started",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:47.899714+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "turn_2",
+        "component": "appv2_worker_loop",
+        "details": {},
+        "elapsed_ms": null,
+        "event": "model_call_completed",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 27,
+        "stage": "DISCOVER",
+        "status": "completed",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:50.834996+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "turn_2",
+        "component": "appv2_worker_loop",
+        "details": {
+          "branch": "tool_calls",
+          "issue_count": 0
+        },
+        "elapsed_ms": null,
+        "event": "loop_decision",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 28,
+        "stage": "DISCOVER",
+        "status": "completed",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:50.835036+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "read_readme_baseline",
+        "component": "appv2_worker_loop",
+        "details": {
+          "purpose": "Read README.md baseline content and size for fingerprint",
+          "tool_name": "read_file"
+        },
+        "elapsed_ms": null,
+        "event": "tool_call_started",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 29,
+        "stage": "DISCOVER",
+        "status": "started",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:50.835046+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "read_readme_baseline",
+        "component": "appv2_worker_loop",
+        "details": {
+          "feedback_code": null,
+          "tool_name": "read_file"
+        },
+        "elapsed_ms": null,
+        "event": "tool_call_completed",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 30,
+        "stage": "DISCOVER",
+        "status": "completed",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:50.835898+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "turn_3",
+        "component": "appv2_worker_loop",
+        "details": {
+          "pending_outputs": [
+            "discover_readme_target",
+            "discover_current_status_snapshot"
+          ],
+          "tool_calls_used": 3
+        },
+        "elapsed_ms": null,
+        "event": "model_call_started",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 31,
+        "stage": "DISCOVER",
+        "status": "started",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:34:50.836294+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": "turn_3",
+        "component": "appv2_worker_loop",
+        "details": {
+          "error": "4 validation errors for WorkerDecision\nfinal_phase_output.summary\n  Field required [type=missing, input_value={'completionState': 'comp....\"}]], 'type': 'Object'}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nfinal_phase_output.completionState\n  Extra inputs are not permitted [type=extra_forbidden, input_value='complete', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden\nfinal_phase_output.entries\n  Extra inputs are not permitted [type=extra_forbidden, input_value=[['artifacts', {'completi...y tool observations.\"}]], input_type=list]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden\nfinal_phase_output.type\n  Extra inputs are not permitted [type=extra_forbidden, input_value='Object', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.13/v/extra_forbidden"
+        },
+        "elapsed_ms": null,
+        "event": "model_decision_invalid",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 32,
+        "stage": "DISCOVER",
+        "status": "failed",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:35:10.539029+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_worker_loop",
+        "details": {
+          "max_model_calls": 3,
+          "tool_calls_used": 3
+        },
+        "elapsed_ms": null,
+        "event": "model_budget_exceeded",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": null,
+        "seq": 33,
+        "stage": "DISCOVER",
+        "status": "budget_exceeded",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:35:10.539131+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_worker_runtime",
+        "details": {
+          "issues": [
+            "model_budget_exceeded"
+          ],
+          "summary": "Phase phase_discover_readme_and_status exhausted model budget before valid completion."
+        },
+        "elapsed_ms": null,
+        "event": "phase_completed",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": "v2_run_plan_v2_req_001_readme_status_update",
+        "seq": 34,
+        "stage": "DISCOVER",
+        "status": "budget_exceeded",
+        "step_id": "phase_discover_readme_and_status",
+        "timestamp": "2026-06-05T19:35:10.539422+00:00",
+        "worker_type": null
+      },
+      {
+        "attempt_id": null,
+        "component": "appv2_worker_runtime",
+        "details": {
+          "artifact_count": 0,
+          "issue_count": 1
+        },
+        "elapsed_ms": 52716.325,
+        "event": "run_completed",
+        "plan_id": "plan_v2_req_001_readme_status_update",
+        "request_id": "v2_req_001",
+        "run_id": "v2_run_plan_v2_req_001_readme_status_update",
+        "seq": 35,
+        "stage": "run",
+        "status": "budget_exceeded",
+        "step_id": null,
+        "timestamp": "2026-06-05T19:35:10.539496+00:00",
+        "worker_type": null
+      }
+    ],
+    "started_at": "2026-06-05T19:32:45.948141+00:00",
+    "trace_id": "trace_0001"
+  }
+}

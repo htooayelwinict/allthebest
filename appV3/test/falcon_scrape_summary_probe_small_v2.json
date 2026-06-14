@@ -1,0 +1,204 @@
+{
+  "model": "mlx-community/Falcon-H1-Tiny-R-90M-bf16",
+  "generated_at_utc": "2026-06-10T14:15:10Z",
+  "case_count": 4,
+  "pass_count": 0,
+  "results": [
+    {
+      "case": {
+        "fixture": "cleartrail_product",
+        "prompt_style": "completion",
+        "raw_prompt": true,
+        "max_input_chars": 300,
+        "max_links": 0,
+        "max_tokens": 96
+      },
+      "title": "ClearTrail 2.0 update",
+      "cleaned_text": "ClearTrail 2.0 update\nClearTrail 2.0 adds offline hiking maps and battery saver mode\nClearTrail 2.0 now lets hikers download regional trail packs before trips.\nThe update switches to low-power GPS tracking when cell service disappears.",
+      "links": [],
+      "model_summary": "- [Paragraph 1]\n- [Paragraph 2]\n- [Paragraph 3]\n- [Paragraph 4]\n- [Paragraph 5]\n- [Paragraph 6]\n- [Paragraph 7]\n- [Paragraph 8]\n- [Paragraph 9]\n- [Paragraph 10]\n- [Paragraph 11]\n- [Paragraph",
+      "raw_model_output": "- [Paragraph 1]\n- [Paragraph 2]\n- [Paragraph 3]\n- [Paragraph 4]\n- [Paragraph 5]\n- [Paragraph 6]\n- [Paragraph 7]\n- [Paragraph 8]\n- [Paragraph 9]\n- [Paragraph 10]\n- [Paragraph 11]\n- [Paragraph",
+      "model_failure_reason": null,
+      "evaluation": {
+        "checks": {
+          "usable_by_harness": true,
+          "has_summary_text": true,
+          "mentions_at_least_three_expected_terms": false,
+          "omits_forbidden_terms": true,
+          "raw_mentions_expected_even_if_summary_failed": false
+        },
+        "passed": false,
+        "expected_hits": [],
+        "raw_expected_hits": [],
+        "forbidden_hits": []
+      },
+      "stats": {
+        "raw_chars": 753,
+        "cleaned_line_count": 6,
+        "cleaned_chars_sent_to_model": 235,
+        "link_count": 0,
+        "input_looks_like_html": true,
+        "prompt_chars": 363,
+        "rendered_prompt_chars": 363,
+        "prompt_sha256": "d917bd18c3c7e4a06c1545e2906dd8f3cc9f1470a499c0ee8577bc62713b659f",
+        "prompt_tokens_estimate": 99,
+        "generation_chunk_count": 96,
+        "nonempty_generation_chunk_count": 73,
+        "raw_model_output_chars": 190,
+        "elapsed_seconds": 3.4860106250016543,
+        "finish_reason": "length",
+        "generation_tokens": 96,
+        "prompt_tps": 153.3131119117123,
+        "generation_tps": 35.00742730703034,
+        "model_summary_usable": true
+      }
+    },
+    {
+      "case": {
+        "fixture": "cleartrail_product",
+        "prompt_style": "completion",
+        "raw_prompt": true,
+        "max_input_chars": 300,
+        "max_links": 0,
+        "max_tokens": 160
+      },
+      "title": "ClearTrail 2.0 update",
+      "cleaned_text": "ClearTrail 2.0 update\nClearTrail 2.0 adds offline hiking maps and battery saver mode\nClearTrail 2.0 now lets hikers download regional trail packs before trips.\nThe update switches to low-power GPS tracking when cell service disappears.",
+      "links": [],
+      "model_summary": "- [Paragraph 1]\n- [Paragraph 2]\n- [Paragraph 3]\n- [Paragraph 4]\n- [Paragraph 5]\n- [Paragraph 6]\n- [Paragraph 7]\n- [Paragraph 8]\n- [Paragraph 9]\n- [Paragraph 10]\n- [Paragraph 11]\n- [Paragraph 12]\n- [Paragraph 13]\n- [Paragraph 14]\n- [Paragraph 15]\n- [Paragraph 16]\n- [Paragraph 17]\n- [Paragraph 18]\n- [Paragraph 1",
+      "raw_model_output": "- [Paragraph 1]\n- [Paragraph 2]\n- [Paragraph 3]\n- [Paragraph 4]\n- [Paragraph 5]\n- [Paragraph 6]\n- [Paragraph 7]\n- [Paragraph 8]\n- [Paragraph 9]\n- [Paragraph 10]\n- [Paragraph 11]\n- [Paragraph 12]\n- [Paragraph 13]\n- [Paragraph 14]\n- [Paragraph 15]\n- [Paragraph 16]\n- [Paragraph 17]\n- [Paragraph 18]\n- [Paragraph 1",
+      "model_failure_reason": null,
+      "evaluation": {
+        "checks": {
+          "usable_by_harness": true,
+          "has_summary_text": true,
+          "mentions_at_least_three_expected_terms": false,
+          "omits_forbidden_terms": true,
+          "raw_mentions_expected_even_if_summary_failed": false
+        },
+        "passed": false,
+        "expected_hits": [],
+        "raw_expected_hits": [],
+        "forbidden_hits": []
+      },
+      "stats": {
+        "raw_chars": 753,
+        "cleaned_line_count": 6,
+        "cleaned_chars_sent_to_model": 235,
+        "link_count": 0,
+        "input_looks_like_html": true,
+        "prompt_chars": 363,
+        "rendered_prompt_chars": 363,
+        "prompt_sha256": "d917bd18c3c7e4a06c1545e2906dd8f3cc9f1470a499c0ee8577bc62713b659f",
+        "prompt_tokens_estimate": 99,
+        "generation_chunk_count": 160,
+        "nonempty_generation_chunk_count": 122,
+        "raw_model_output_chars": 311,
+        "elapsed_seconds": 7.773869958000432,
+        "finish_reason": "length",
+        "generation_tokens": 160,
+        "prompt_tps": 450.51160302830954,
+        "generation_tps": 21.339550730937347,
+        "model_summary_usable": true
+      }
+    },
+    {
+      "case": {
+        "fixture": "cleartrail_product",
+        "prompt_style": "completion",
+        "raw_prompt": true,
+        "max_input_chars": 600,
+        "max_links": 0,
+        "max_tokens": 96
+      },
+      "title": "ClearTrail 2.0 update",
+      "cleaned_text": "ClearTrail 2.0 update\nClearTrail 2.0 adds offline hiking maps and battery saver mode\nClearTrail 2.0 now lets hikers download regional trail packs before trips.\nThe update switches to low-power GPS tracking when cell service disappears.\nThe company says battery saver mode can extend phone life by up to six hours during long routes.\nRelease notes",
+      "links": [],
+      "model_summary": "- [1]...\n- [2]...\n- [3]...\n- [4]...\n- [5]...\n- [6]...\n- [7]...\n- [8]...\n- [9]...\n- [10]...\n- [11]...\n- [12",
+      "raw_model_output": "- [1]...\n- [2]...\n- [3]...\n- [4]...\n- [5]...\n- [6]...\n- [7]...\n- [8]...\n- [9]...\n- [10]...\n- [11]...\n- [12",
+      "model_failure_reason": null,
+      "evaluation": {
+        "checks": {
+          "usable_by_harness": true,
+          "has_summary_text": true,
+          "mentions_at_least_three_expected_terms": false,
+          "omits_forbidden_terms": true,
+          "raw_mentions_expected_even_if_summary_failed": false
+        },
+        "passed": false,
+        "expected_hits": [],
+        "raw_expected_hits": [],
+        "forbidden_hits": []
+      },
+      "stats": {
+        "raw_chars": 753,
+        "cleaned_line_count": 6,
+        "cleaned_chars_sent_to_model": 346,
+        "link_count": 0,
+        "input_looks_like_html": true,
+        "prompt_chars": 474,
+        "rendered_prompt_chars": 474,
+        "prompt_sha256": "2aa09989c5d014cba7dff9637a3a8882f4812fec40286b906c4c016bd12150a2",
+        "prompt_tokens_estimate": 123,
+        "generation_chunk_count": 96,
+        "nonempty_generation_chunk_count": 73,
+        "raw_model_output_chars": 106,
+        "elapsed_seconds": 2.7478118749968417,
+        "finish_reason": "length",
+        "generation_tokens": 96,
+        "prompt_tps": 407.523559478085,
+        "generation_tps": 40.34623301422448,
+        "model_summary_usable": true
+      }
+    },
+    {
+      "case": {
+        "fixture": "cleartrail_product",
+        "prompt_style": "completion",
+        "raw_prompt": true,
+        "max_input_chars": 600,
+        "max_links": 0,
+        "max_tokens": 160
+      },
+      "title": "ClearTrail 2.0 update",
+      "cleaned_text": "ClearTrail 2.0 update\nClearTrail 2.0 adds offline hiking maps and battery saver mode\nClearTrail 2.0 now lets hikers download regional trail packs before trips.\nThe update switches to low-power GPS tracking when cell service disappears.\nThe company says battery saver mode can extend phone life by up to six hours during long routes.\nRelease notes",
+      "links": [],
+      "model_summary": "- [1]...\n- [2]...\n- [3]...\n- [4]...\n- [5]...\n- [6]...\n- [7]...\n- [8]...\n- [9]...\n- [10]...\n- [11]...\n- [12]...\n- [13]...\n- [14]...\n- [15]...\n- [16]...\n- [17]...\n- [18]...\n- [19]",
+      "raw_model_output": "- [1]...\n- [2]...\n- [3]...\n- [4]...\n- [5]...\n- [6]...\n- [7]...\n- [8]...\n- [9]...\n- [10]...\n- [11]...\n- [12]...\n- [13]...\n- [14]...\n- [15]...\n- [16]...\n- [17]...\n- [18]...\n- [19]",
+      "model_failure_reason": null,
+      "evaluation": {
+        "checks": {
+          "usable_by_harness": true,
+          "has_summary_text": true,
+          "mentions_at_least_three_expected_terms": false,
+          "omits_forbidden_terms": true,
+          "raw_mentions_expected_even_if_summary_failed": false
+        },
+        "passed": false,
+        "expected_hits": [],
+        "raw_expected_hits": [],
+        "forbidden_hits": []
+      },
+      "stats": {
+        "raw_chars": 753,
+        "cleaned_line_count": 6,
+        "cleaned_chars_sent_to_model": 346,
+        "link_count": 0,
+        "input_looks_like_html": true,
+        "prompt_chars": 474,
+        "rendered_prompt_chars": 474,
+        "prompt_sha256": "2aa09989c5d014cba7dff9637a3a8882f4812fec40286b906c4c016bd12150a2",
+        "prompt_tokens_estimate": 123,
+        "generation_chunk_count": 160,
+        "nonempty_generation_chunk_count": 123,
+        "raw_model_output_chars": 177,
+        "elapsed_seconds": 3.9501917919988045,
+        "finish_reason": "length",
+        "generation_tokens": 160,
+        "prompt_tps": 392.84787921990056,
+        "generation_tps": 44.643306615251106,
+        "model_summary_usable": true
+      }
+    }
+  ]
+}

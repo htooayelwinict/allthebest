@@ -1,0 +1,3344 @@
+{
+  "scenario": "file_workspace_cleanup",
+  "repo_path": "/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_workspace_repo",
+  "prompt": "In the repo rooted at live_appv2_workspace_repo, clean up the workspace layout for a release prep. Move markdown notes from notes/drafts, notes/raw, reports, and tmp into docs while preserving file contents; move logs and json artifacts from artifacts/tmp and misc into artifacts/logs; create/update docs/workspace_manifest.json listing moved_documents, moved_logs, and moved_json_artifacts as file names, plus total_artifacts. Keep edits limited to file moves/creation and leave source code untouched. Run tests, then summarize exactly what you moved and any risk of data loss.",
+  "baseline_pytest": {
+    "label": "before",
+    "returncode": 1,
+    "stdout": "FF                                                                       [100%]\n=================================== FAILURES ===================================\n_____________________ test_workspace_files_are_cleaned_up ______________________\n\n    def test_workspace_files_are_cleaned_up() -> None:\n        base = Path(__file__).resolve().parent.parent\n    \n>       assert (base / \"docs\" / \"task_notes.md\").exists()\nE       AssertionError: assert False\nE        +  where False = exists()\nE        +    where exists = ((PosixPath('/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_workspace_repo') / 'docs') / 'task_notes.md').exists\n\ntests/test_workspace_cleanup.py:8: AssertionError\n________________ test_workspace_manifest_lists_moved_artifacts _________________\n\n    def test_workspace_manifest_lists_moved_artifacts() -> None:\n        manifest_path = Path(__file__).resolve().parent.parent / \"docs\" / \"workspace_manifest.json\"\n>       payload = json.loads(manifest_path.read_text(encoding=\"utf-8\"))\n                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_workspace_cleanup.py:26: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n../../../../.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_local.py:546: in read_text\n    return PathBase.read_text(self, encoding, errors, newline)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n../../../../.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_abc.py:632: in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = PosixPath('/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_workspace_repo/docs/workspace_manifest.json')\nmode = 'r', buffering = -1, encoding = 'utf-8', errors = None, newline = None\n\n    def open(self, mode='r', buffering=-1, encoding=None,\n             errors=None, newline=None):\n        \"\"\"\n        Open the file pointed to by this path and return a file object, as\n        the built-in open() function does.\n        \"\"\"\n        if \"b\" not in mode:\n            encoding = io.text_encoding(encoding)\n>       return io.open(self, mode, buffering, encoding, errors, newline)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       FileNotFoundError: [Errno 2] No such file or directory: '/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_workspace_repo/docs/workspace_manifest.json'\n\n../../../../.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_local.py:537: FileNotFoundError\n=========================== short test summary info ============================\nFAILED tests/test_workspace_cleanup.py::test_workspace_files_are_cleaned_up\nFAILED tests/test_workspace_cleanup.py::test_workspace_manifest_lists_moved_artifacts\n2 failed in 0.07s\n",
+    "stderr": ""
+  },
+  "envelope": {
+    "request_id": "v2_req_001",
+    "raw_input": "In the repo rooted at live_appv2_workspace_repo, clean up the workspace layout for a release prep. Move markdown notes from notes/drafts, notes/raw, reports, and tmp into docs while preserving file contents; move logs and json artifacts from artifacts/tmp and misc into artifacts/logs; create/update docs/workspace_manifest.json listing moved_documents, moved_logs, and moved_json_artifacts as file names, plus total_artifacts. Keep edits limited to file moves/creation and leave source code untouched. Run tests, then summarize exactly what you moved and any risk of data loss.",
+    "normalized_input": "Reorganize non-source workspace files in live_appv2_workspace_repo by moving specified notes, logs, and JSON artifacts into target docs/artifacts locations, update docs/workspace_manifest.json with moved file-name lists and total count, keep changes limited to moves/creation, run tests, and report moved items plus any data-loss risk.",
+    "user_goal": "Prepare the repository workspace for release by consolidating notes/logs/artifacts, recording moved files in a manifest, validating with tests, and receiving an exact move summary with data-loss risk notes.",
+    "input_type": "repo_file_reorganization_and_manifest_update",
+    "intents": [
+      "reorganize_repository_files",
+      "move_documents_and_artifacts",
+      "update_or_create_manifest_json",
+      "preserve_file_contents",
+      "limit_scope_to_non_source_files",
+      "run_tests",
+      "produce_change_and_risk_summary"
+    ],
+    "domains": [
+      "repository_maintenance",
+      "release_preparation",
+      "file_system_operations",
+      "test_execution",
+      "json_manifest_management"
+    ],
+    "risks": [
+      "accidental overwrite or collision during moves",
+      "data loss from incorrect move scope or path resolution",
+      "misclassification of files as markdown/log/json artifacts",
+      "incomplete manifest entries or incorrect total_artifacts count",
+      "test failures unrelated to file moves causing completion ambiguity"
+    ],
+    "artifacts": [
+      {
+        "type": "repository_root",
+        "identifier": "live_appv2_workspace_repo"
+      },
+      {
+        "type": "manifest_file",
+        "path": "docs/workspace_manifest.json"
+      },
+      {
+        "type": "manifest_fields",
+        "keys": [
+          "moved_documents",
+          "moved_logs",
+          "moved_json_artifacts",
+          "total_artifacts"
+        ]
+      }
+    ],
+    "context_needed": [
+      "Exact repository-relative locations for reports, tmp, and misc (currently ambiguous).",
+      "Whether docs and artifacts/logs already exist or must be created.",
+      "Definition of which files in source folders qualify as logs and JSON artifacts when mixed content exists.",
+      "Canonical test command(s) to run in this repository.",
+      "Conflict policy if destination already contains files with same names."
+    ],
+    "constraints": [
+      "Keep edits limited to file moves/creation.",
+      "Leave source code untouched.",
+      "Preserve file contents while moving.",
+      "Populate docs/workspace_manifest.json with moved_documents, moved_logs, moved_json_artifacts, and total_artifacts.",
+      "Summarize exactly what was moved and any risk of data loss after running tests."
+    ],
+    "complexity_hint": "medium",
+    "confidence": 0.94,
+    "ambiguity": [
+      "Whether reports, tmp, and misc are top-level directories or relative to other paths.",
+      "Whether 'json artifacts' means all .json files in specified sources or only a subset.",
+      "Expected behavior for duplicate filenames across multiple source directories."
+    ],
+    "assumptions": [],
+    "literal_contract": [
+      {
+        "value": "notes/drafts",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "notes/raw",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "artifacts/tmp",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "artifacts/logs",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "create/update",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "docs/workspace_manifest.json",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "moves/creation",
+        "kind": "path",
+        "source": "user_input"
+      },
+      {
+        "value": "live_appv2_workspace_repo",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "workspace_manifest",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "moved_documents",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "moved_logs",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "moved_json_artifacts",
+        "kind": "json_key",
+        "source": "user_input"
+      },
+      {
+        "value": "total_artifacts",
+        "kind": "json_key",
+        "source": "user_input"
+      }
+    ],
+    "metadata": {
+      "role": "appv2_decomposer",
+      "stage": "stage_1_of_decomposer_prompt_chain",
+      "appv2_decomposer": {
+        "mode": "gated_prompt_chain",
+        "stages": [
+          "decompose_request"
+        ],
+        "model_calls": 1,
+        "redacted_prompt_input": false,
+        "validation_issue_count": 0
+      },
+      "appv2_decomposer_runtime": {
+        "elapsed_ms": 18100.475
+      },
+      "runtime_matrix": {
+        "trace_id": "trace_0001",
+        "started_at": "2026-06-05T19:55:03.876379+00:00",
+        "row_count": 6,
+        "rows": [
+          {
+            "seq": 1,
+            "timestamp": "2026-06-05T19:55:04.831190+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_chars": 578
+            }
+          },
+          {
+            "seq": 2,
+            "timestamp": "2026-06-05T19:55:04.831244+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "Envelope"
+            }
+          },
+          {
+            "seq": 3,
+            "timestamp": "2026-06-05T19:55:22.937591+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 4,
+            "timestamp": "2026-06-05T19:55:22.937874+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "response_parsed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_type": "repo_file_reorganization_and_manifest_update"
+            }
+          },
+          {
+            "seq": 5,
+            "timestamp": "2026-06-05T19:55:22.938294+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "validate_envelope",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 6,
+            "timestamp": "2026-06-05T19:55:22.938321+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 18100.475,
+            "details": {
+              "input_type": "repo_file_reorganization_and_manifest_update",
+              "confidence": 0.94,
+              "ambiguity_count": 3
+            }
+          }
+        ]
+      }
+    }
+  },
+  "phase_plan": {
+    "plan_id": "phaseplan_v2_req_001",
+    "request_id": "v2_req_001",
+    "objective": "Reorganize non-source repository files into target docs/artifacts locations, create or update docs/workspace_manifest.json with required moved-file lists and totals, validate via tests, and deliver an exact move and data-loss-risk summary.",
+    "strategy": "First inspect repository layout and current files to resolve path and classification ambiguities, then define deterministic move and collision-handling rules, perform only scoped file moves/manifest creation-update without touching source code, verify results with manifest/count checks plus test execution evidence, and conclude with a precise report of moved items and residual risk.",
+    "phases": [
+      {
+        "phase_id": "phase_01_discover_workspace",
+        "phase": "DISCOVER",
+        "goal": "Establish repository root scope, enumerate relevant source/destination paths, and collect pre-mutation file inventory evidence.",
+        "instructions": [
+          "Resolve repository root from runtime_repo_scope_input and treat it as the only writable workspace.",
+          "Inspect existence/type of notes/drafts, notes/raw, reports, tmp, artifacts/tmp, misc, docs, artifacts/logs, and docs/workspace_manifest.json.",
+          "Enumerate candidate files from specified source locations with path, extension, and size where available.",
+          "Record missing, mixed, or ambiguous path states explicitly for downstream analysis."
+        ],
+        "input_artifacts": [
+          "runtime_repo_scope_input",
+          "runtime_literals_and_constraints_input"
+        ],
+        "output_artifacts": [
+          "discover_workspace_inventory"
+        ],
+        "allowed_tool_groups": [
+          "repo_read"
+        ],
+        "policy": {
+          "evidence_required": true,
+          "ambiguity_capture_required": true
+        },
+        "mutation_policy": null,
+        "verification_policy": null,
+        "acceptance_checks": [
+          "All required literal paths are observed with existence and kind statuses.",
+          "Candidate file list includes all discoverable files under declared source paths.",
+          "No filesystem mutations are performed in DISCOVER."
+        ],
+        "max_tool_calls": 8,
+        "max_model_calls": 3,
+        "metadata": {
+          "priority": "high"
+        }
+      },
+      {
+        "phase_id": "phase_02_analyze_resolution",
+        "phase": "ANALYZE",
+        "goal": "Resolve path ambiguities, define deterministic classification rules, and set safe collision policy before planning moves.",
+        "instructions": [
+          "Use discovery evidence to resolve whether reports, tmp, and misc are top-level or nested; document assumptions/blockers if unresolved.",
+          "Define deterministic rules for document, log, and json_artifact classification grounded in extensions and path context.",
+          "Define duplicate filename collision policy for destination conflicts without inventing unverified outcomes.",
+          "Produce explicit resolved source path sets for documents and logs_json categories."
+        ],
+        "input_artifacts": [
+          "runtime_literals_and_constraints_input",
+          "discover_workspace_inventory"
+        ],
+        "output_artifacts": [
+          "analyze_path_resolution_and_classification"
+        ],
+        "allowed_tool_groups": [
+          "repo_read"
+        ],
+        "policy": {
+          "must_address_ambiguity": [
+            "reports",
+            "tmp",
+            "misc",
+            "duplicate filenames"
+          ],
+          "determinism_required": true
+        },
+        "mutation_policy": null,
+        "verification_policy": null,
+        "acceptance_checks": [
+          "Classification rules explicitly cover markdown, log, and json artifact assignment.",
+          "Resolved source paths are concrete and bounded by discovered repository structure.",
+          "Collision policy is explicit and safe."
+        ],
+        "max_tool_calls": 6,
+        "max_model_calls": 3,
+        "metadata": {
+          "priority": "high"
+        }
+      },
+      {
+        "phase_id": "phase_03_design_reorg",
+        "phase": "DESIGN",
+        "goal": "Create a complete, constrained reorganization plan and manifest mapping before any mutation.",
+        "instructions": [
+          "Translate analysis decisions into planned directory creations and planned moves with category labels.",
+          "Map planned moves to manifest lists: moved_documents, moved_logs, moved_json_artifacts.",
+          "Ensure destination paths are limited to docs and artifacts/logs and manifest target is docs/workspace_manifest.json.",
+          "Do not execute mutations; output only planned actions."
+        ],
+        "input_artifacts": [
+          "runtime_literals_and_constraints_input",
+          "discover_workspace_inventory",
+          "analyze_path_resolution_and_classification"
+        ],
+        "output_artifacts": [
+          "design_reorganization_plan"
+        ],
+        "allowed_tool_groups": [
+          "repo_read"
+        ],
+        "policy": {
+          "scope_limited_to": "moves/creation_only",
+          "manifest_key_preservation_required": true
+        },
+        "mutation_policy": null,
+        "verification_policy": null,
+        "acceptance_checks": [
+          "Every planned move has source_path, destination_path, and category.",
+          "Manifest mapping keys match required keys for move lists.",
+          "Plan avoids source code paths and non-scoped destinations."
+        ],
+        "max_tool_calls": 5,
+        "max_model_calls": 3,
+        "metadata": {
+          "priority": "high"
+        }
+      },
+      {
+        "phase_id": "phase_04_mutate_reorg_and_manifest",
+        "phase": "MUTATE",
+        "goal": "Execute scoped file moves/creations and create or update docs/workspace_manifest.json according to the approved plan.",
+        "instructions": [
+          "Create required destination directories if missing.",
+          "Execute planned moves while preserving file content, recording preservation checks when available.",
+          "Create or update docs/workspace_manifest.json using required keys and computed totals.",
+          "Record any skipped/failed actions with reasons; do not modify source code files."
+        ],
+        "input_artifacts": [
+          "runtime_repo_scope_input",
+          "runtime_literals_and_constraints_input",
+          "design_reorganization_plan"
+        ],
+        "output_artifacts": [
+          "mutation_file_reorganization_record",
+          "mutation_manifest_record"
+        ],
+        "allowed_tool_groups": [
+          "repo_read",
+          "file_write"
+        ],
+        "policy": {
+          "mutation_scope": "filesystem_reorganization_and_manifest_only",
+          "evidence_required": true
+        },
+        "mutation_policy": {
+          "mode": "advisory",
+          "allowed_paths": [],
+          "advisory_paths": [
+            "notes/drafts",
+            "notes/raw",
+            "reports",
+            "tmp",
+            "artifacts/tmp",
+            "misc",
+            "docs",
+            "artifacts/logs",
+            "docs/workspace_manifest.json"
+          ],
+          "forbidden_paths": [],
+          "forbidden_globs": [
+            "**/*.py",
+            "**/*.js",
+            "**/*.ts",
+            "**/*.tsx",
+            "**/*.jsx",
+            "**/*.java",
+            "**/*.go",
+            "**/*.rs",
+            "**/*.c",
+            "**/*.cpp"
+          ],
+          "max_files": 500,
+          "allow_create": true,
+          "allow_update": true,
+          "allow_delete": true,
+          "allow_move": true,
+          "metadata": {
+            "rationale": "Use advisory mode due runtime-discovered path ambiguity; enforce scope via destination and manifest constraints."
+          }
+        },
+        "verification_policy": null,
+        "acceptance_checks": [
+          "Executed moves correspond to designed planned moves or documented safe skips/failures.",
+          "Manifest record contains required keys and total_artifacts.",
+          "Mutations remain limited to move/create/update actions in scoped paths."
+        ],
+        "max_tool_calls": 14,
+        "max_model_calls": 3,
+        "metadata": {
+          "priority": "high"
+        }
+      },
+      {
+        "phase_id": "phase_05_verify_state_and_tests",
+        "phase": "VERIFY",
+        "goal": "Verify filesystem outcomes, manifest correctness, source-code untouched status, and test execution evidence.",
+        "instructions": [
+          "Check destination existence for moved files and validate that manifest lists match executed move results.",
+          "Verify manifest required keys are present and total_artifacts equals combined moved list lengths.",
+          "Verify source code untouched status using repository state evidence.",
+          "Attempt at least one canonical repository test command (auto-detected if necessary) and record runtime outcome."
+        ],
+        "input_artifacts": [
+          "runtime_literals_and_constraints_input",
+          "mutation_file_reorganization_record",
+          "mutation_manifest_record"
+        ],
+        "output_artifacts": [
+          "verify_filesystem_and_manifest_evidence",
+          "verify_test_execution_evidence"
+        ],
+        "allowed_tool_groups": [
+          "repo_read",
+          "verify"
+        ],
+        "policy": {
+          "must_not_claim_success_without_runtime_output": true,
+          "require_runtime_evidence": true
+        },
+        "mutation_policy": null,
+        "verification_policy": {
+          "required": true,
+          "commands": [
+            "AUTO_DETECT_AND_ATTEMPT_ONE_CANONICAL_TEST_COMMAND"
+          ],
+          "file_state_checks": [
+            {
+              "check": "destination_files_exist_for_each_executed_move"
+            },
+            {
+              "check": "manifest_keys_present_and_lists_match_move_ledger"
+            },
+            {
+              "check": "total_artifacts_matches_manifest_list_lengths"
+            },
+            {
+              "check": "source_code_untouched"
+            }
+          ],
+          "require_evidence": true,
+          "metadata": {
+            "test_outcome_may_be": [
+              "passed",
+              "failed",
+              "blocked",
+              "not_found"
+            ]
+          }
+        },
+        "acceptance_checks": [
+          "Filesystem and manifest verification evidence is complete and internally consistent.",
+          "Test execution evidence includes attempted commands and explicit status.",
+          "Any blocked/not_found test status includes clear reason."
+        ],
+        "max_tool_calls": 10,
+        "max_model_calls": 3,
+        "metadata": {
+          "priority": "high"
+        }
+      },
+      {
+        "phase_id": "phase_06_finalize_report",
+        "phase": "FINALIZE",
+        "goal": "Produce exact user-facing move summary and data-loss risk assessment grounded only in recorded evidence.",
+        "instructions": [
+          "Assemble moved_documents, moved_logs, moved_json_artifacts, and total_artifacts from mutation and manifest records.",
+          "Set test_outcome from verify_test_execution_evidence without extrapolation.",
+          "Provide residual ambiguities and data-loss risk assessment tied to verification results.",
+          "Do not claim unverified success states."
+        ],
+        "input_artifacts": [
+          "mutation_file_reorganization_record",
+          "mutation_manifest_record",
+          "verify_filesystem_and_manifest_evidence",
+          "verify_test_execution_evidence"
+        ],
+        "output_artifacts": [
+          "final_move_and_risk_report"
+        ],
+        "allowed_tool_groups": [],
+        "policy": {
+          "traceability_required": true,
+          "no_new_facts": true
+        },
+        "mutation_policy": null,
+        "verification_policy": null,
+        "acceptance_checks": [
+          "Final report lists exact moved filenames by required categories.",
+          "total_artifacts is consistent with manifest and verification evidence.",
+          "Risk assessment and test outcome are evidence-grounded."
+        ],
+        "max_tool_calls": 0,
+        "max_model_calls": 2,
+        "metadata": {
+          "priority": "high"
+        }
+      }
+    ],
+    "budgets": {
+      "max_total_tool_calls": 43,
+      "max_total_model_calls": 17,
+      "phase_budgets": {
+        "DISCOVER": {
+          "max_tool_calls": 8,
+          "max_model_calls": 3
+        },
+        "ANALYZE": {
+          "max_tool_calls": 6,
+          "max_model_calls": 3
+        },
+        "DESIGN": {
+          "max_tool_calls": 5,
+          "max_model_calls": 3
+        },
+        "MUTATE": {
+          "max_tool_calls": 14,
+          "max_model_calls": 3
+        },
+        "VERIFY": {
+          "max_tool_calls": 10,
+          "max_model_calls": 3
+        },
+        "FINALIZE": {
+          "max_tool_calls": 0,
+          "max_model_calls": 2
+        }
+      }
+    },
+    "global_invariants": [
+      "Restrict changes to file moves/creation and docs/workspace_manifest.json creation/update only.",
+      "Leave source code untouched.",
+      "Preserve file contents while moving.",
+      "Use exact target path docs/workspace_manifest.json.",
+      "Manifest must include exactly moved_documents, moved_logs, moved_json_artifacts, and total_artifacts keys (additional keys not required).",
+      "Do not claim repository state changes, manifest validity, or test success without runtime evidence.",
+      "Preserve exact user literals for paths and JSON key names throughout planning and reporting."
+    ],
+    "success_criteria": [
+      "All markdown notes moved from resolved locations of notes/drafts, notes/raw, reports, and tmp into docs with contents preserved and recorded.",
+      "All logs and JSON artifacts moved from resolved locations of artifacts/tmp and misc into artifacts/logs according to explicit classification rules.",
+      "docs/workspace_manifest.json exists and contains moved_documents, moved_logs, moved_json_artifacts as file-name lists and total_artifacts equal to combined list lengths.",
+      "Verification evidence confirms destination files exist, manifest entries match executed moves, and source code files were not modified.",
+      "At least one canonical test command is attempted and test outcome is reported with runtime evidence (or explicit blocked/not_found reason).",
+      "Final report provides exact moved file-name lists and a clear data-loss risk summary grounded in verification results."
+    ],
+    "artifact_contracts": [
+      {
+        "id": "runtime_repo_scope_input",
+        "description": "Runtime-provided repository scope and root identifier for all file operations.",
+        "kind": "input",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "repo_root_identifier": {
+              "enum": [
+                "live_appv2_workspace_repo"
+              ],
+              "type": "string"
+            },
+            "resolved_repo_root_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_root_identifier",
+            "resolved_repo_root_path"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": null,
+        "metadata": {
+          "source": "envelope.artifacts"
+        }
+      },
+      {
+        "id": "runtime_literals_and_constraints_input",
+        "description": "Runtime-provided literal paths, manifest target, required JSON keys, and hard constraints that must be preserved.",
+        "kind": "input",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "constraints": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "document_destination": {
+              "const": "docs",
+              "type": "string"
+            },
+            "document_sources": {
+              "const": [
+                "notes/drafts",
+                "notes/raw",
+                "reports",
+                "tmp"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "log_destination": {
+              "const": "artifacts/logs",
+              "type": "string"
+            },
+            "log_json_sources": {
+              "const": [
+                "artifacts/tmp",
+                "misc"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "manifest_path": {
+              "const": "docs/workspace_manifest.json",
+              "type": "string"
+            },
+            "manifest_required_keys": {
+              "const": [
+                "moved_documents",
+                "moved_logs",
+                "moved_json_artifacts",
+                "total_artifacts"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "document_sources",
+            "log_json_sources",
+            "document_destination",
+            "log_destination",
+            "manifest_path",
+            "manifest_required_keys",
+            "constraints"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": null,
+        "metadata": {
+          "source": "envelope.literal_contract_and_constraints"
+        }
+      },
+      {
+        "id": "discover_workspace_inventory",
+        "description": "Observed repository file inventory and existence state for all relevant source and destination paths before any mutation.",
+        "kind": "tool_observation",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "candidate_files": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "extension": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "path_observations": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "exists": {
+                    "type": "boolean"
+                  },
+                  "kind": {
+                    "enum": [
+                      "file",
+                      "directory",
+                      "missing",
+                      "mixed",
+                      "unknown"
+                    ],
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "exists",
+                  "kind"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "path_observations",
+            "candidate_files"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": "DISCOVER",
+        "metadata": {
+          "evidence_required": true
+        }
+      },
+      {
+        "id": "analyze_path_resolution_and_classification",
+        "description": "Deterministic decisions for ambiguous path resolution, file-type classification rules, and collision policy used for safe moves.",
+        "kind": "phase_output",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "assumptions_or_blockers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "classification_rules": {
+              "additionalProperties": false,
+              "properties": {
+                "document_rule": {
+                  "type": "string"
+                },
+                "json_artifact_rule": {
+                  "type": "string"
+                },
+                "log_rule": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "document_rule",
+                "log_rule",
+                "json_artifact_rule"
+              ],
+              "type": "object"
+            },
+            "collision_policy": {
+              "type": "string"
+            },
+            "excluded_paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "resolved_source_paths": {
+              "additionalProperties": false,
+              "properties": {
+                "documents": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "logs_json": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "documents",
+                "logs_json"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "resolved_source_paths",
+            "classification_rules",
+            "collision_policy"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": "ANALYZE",
+        "metadata": {
+          "must_address_ambiguity": [
+            "reports",
+            "tmp",
+            "misc",
+            "duplicate filenames"
+          ]
+        }
+      },
+      {
+        "id": "design_reorganization_plan",
+        "description": "Planned move/create actions and manifest population mapping prior to mutation.",
+        "kind": "contract",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "manifest_mapping": {
+              "additionalProperties": false,
+              "properties": {
+                "moved_documents": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "moved_json_artifacts": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "moved_logs": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "moved_documents",
+                "moved_logs",
+                "moved_json_artifacts"
+              ],
+              "type": "object"
+            },
+            "planned_directory_creations": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "planned_moves": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "category": {
+                    "enum": [
+                      "document",
+                      "log",
+                      "json_artifact"
+                    ],
+                    "type": "string"
+                  },
+                  "destination_path": {
+                    "type": "string"
+                  },
+                  "source_path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source_path",
+                  "destination_path",
+                  "category"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "planned_moves",
+            "planned_directory_creations",
+            "manifest_mapping"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": "DESIGN",
+        "metadata": {
+          "scope_limited_to": "moves/creation_only"
+        }
+      },
+      {
+        "id": "mutation_file_reorganization_record",
+        "description": "Ledger of executed file moves and directory/file creations performed during mutation.",
+        "kind": "mutation_record",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "created_paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "executed_moves": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "category": {
+                    "enum": [
+                      "document",
+                      "log",
+                      "json_artifact"
+                    ],
+                    "type": "string"
+                  },
+                  "content_preserved_check": {
+                    "enum": [
+                      "hash_match",
+                      "size_match",
+                      "not_checked"
+                    ],
+                    "type": "string"
+                  },
+                  "destination_path": {
+                    "type": "string"
+                  },
+                  "source_path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source_path",
+                  "destination_path",
+                  "category"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "skipped_or_failed_actions": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "action",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "executed_moves",
+            "created_paths",
+            "skipped_or_failed_actions"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": "MUTATE",
+        "metadata": {
+          "file_write_scope": [
+            "docs",
+            "artifacts/logs",
+            "docs/workspace_manifest.json"
+          ]
+        }
+      },
+      {
+        "id": "mutation_manifest_record",
+        "description": "Final manifest content written to docs/workspace_manifest.json after mutation.",
+        "kind": "mutation_record",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "manifest_path": {
+              "const": "docs/workspace_manifest.json",
+              "type": "string"
+            },
+            "moved_documents": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "moved_json_artifacts": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "moved_logs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "total_artifacts": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "manifest_path",
+            "moved_documents",
+            "moved_logs",
+            "moved_json_artifacts",
+            "total_artifacts"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": "MUTATE",
+        "metadata": {
+          "required_keys": [
+            "moved_documents",
+            "moved_logs",
+            "moved_json_artifacts",
+            "total_artifacts"
+          ]
+        }
+      },
+      {
+        "id": "verify_filesystem_and_manifest_evidence",
+        "description": "Post-mutation verification evidence that moved files exist at destinations, manifest matches actual moves, and counts are correct.",
+        "kind": "verification_evidence",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "destination_existence_checks": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "exists": {
+                    "type": "boolean"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "exists"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "manifest_validation": {
+              "additionalProperties": false,
+              "properties": {
+                "filename_lists_match_moves": {
+                  "type": "boolean"
+                },
+                "keys_present": {
+                  "type": "boolean"
+                },
+                "total_artifacts_matches": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "keys_present",
+                "filename_lists_match_moves",
+                "total_artifacts_matches"
+              ],
+              "type": "object"
+            },
+            "source_code_untouched_check": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "destination_existence_checks",
+            "manifest_validation",
+            "source_code_untouched_check"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": "VERIFY",
+        "metadata": {
+          "evidence_required": true
+        }
+      },
+      {
+        "id": "verify_test_execution_evidence",
+        "description": "Evidence of test command selection/execution and outcome after reorganization.",
+        "kind": "verification_evidence",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "blocking_reason": {
+              "type": "string"
+            },
+            "stderr_summary": {
+              "type": "string"
+            },
+            "stdout_summary": {
+              "type": "string"
+            },
+            "test_commands_attempted": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "test_execution_status": {
+              "enum": [
+                "passed",
+                "failed",
+                "blocked",
+                "not_found"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "test_commands_attempted",
+            "test_execution_status"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": "VERIFY",
+        "metadata": {
+          "must_not_claim_success_without_runtime_output": true
+        }
+      },
+      {
+        "id": "final_move_and_risk_report",
+        "description": "User-facing exact summary of moved items and explicit data-loss risk assessment grounded in verification evidence.",
+        "kind": "final_report",
+        "required": true,
+        "content_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "data_loss_risk_assessment": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "moved_documents": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "moved_json_artifacts": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "moved_logs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "residual_ambiguities": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "test_outcome": {
+              "type": "string"
+            },
+            "total_artifacts": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "moved_documents",
+            "moved_logs",
+            "moved_json_artifacts",
+            "total_artifacts",
+            "test_outcome",
+            "data_loss_risk_assessment"
+          ],
+          "type": "object"
+        },
+        "produced_by_phase": "FINALIZE",
+        "metadata": {
+          "must_trace_to": [
+            "mutation_file_reorganization_record",
+            "mutation_manifest_record",
+            "verify_filesystem_and_manifest_evidence",
+            "verify_test_execution_evidence"
+          ]
+        }
+      }
+    ],
+    "metadata": {
+      "role": "appv2_phase_plan_assembler",
+      "input_type": "repo_file_reorganization_and_manifest_update",
+      "complexity_hint": "medium",
+      "confidence": 0.94,
+      "appv2_phase_planner": {
+        "mode": "phase_prompt_chain",
+        "stages": [
+          "draft_phase_skeleton",
+          "draft_artifact_contracts",
+          "draft_phase_plan"
+        ],
+        "model_calls": 3
+      },
+      "appv2_phase_planner_runtime": {
+        "elapsed_ms": 124790.327
+      },
+      "runtime_matrix": {
+        "trace_id": "trace_0001",
+        "started_at": "2026-06-05T19:55:03.876379+00:00",
+        "row_count": 15,
+        "rows": [
+          {
+            "seq": 1,
+            "timestamp": "2026-06-05T19:55:04.831190+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_chars": 578
+            }
+          },
+          {
+            "seq": 2,
+            "timestamp": "2026-06-05T19:55:04.831244+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "Envelope"
+            }
+          },
+          {
+            "seq": 3,
+            "timestamp": "2026-06-05T19:55:22.937591+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 4,
+            "timestamp": "2026-06-05T19:55:22.937874+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "response_parsed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_type": "repo_file_reorganization_and_manifest_update"
+            }
+          },
+          {
+            "seq": 5,
+            "timestamp": "2026-06-05T19:55:22.938294+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "validate_envelope",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 6,
+            "timestamp": "2026-06-05T19:55:22.938321+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 18100.475,
+            "details": {
+              "input_type": "repo_file_reorganization_and_manifest_update",
+              "confidence": 0.94,
+              "ambiguity_count": 3
+            }
+          },
+          {
+            "seq": 7,
+            "timestamp": "2026-06-05T19:55:22.938508+00:00",
+            "component": "appv2_phase_planner_runtime",
+            "stage": "draft_phase_plan",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 8,
+            "timestamp": "2026-06-05T19:55:22.938527+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_skeleton",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "PhaseSkeleton"
+            }
+          },
+          {
+            "seq": 9,
+            "timestamp": "2026-06-05T19:55:29.380150+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_skeleton",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_count": 6
+            }
+          },
+          {
+            "seq": 10,
+            "timestamp": "2026-06-05T19:55:29.380202+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_artifact_contracts",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "ArtifactContractBundle"
+            }
+          },
+          {
+            "seq": 11,
+            "timestamp": "2026-06-05T19:56:00.497469+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_artifact_contracts",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_contract_count": 10
+            }
+          },
+          {
+            "seq": 12,
+            "timestamp": "2026-06-05T19:56:00.497556+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_plan",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "PhasePlan"
+            }
+          },
+          {
+            "seq": 13,
+            "timestamp": "2026-06-05T19:57:27.727827+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_plan",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 14,
+            "timestamp": "2026-06-05T19:57:27.731248+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "validate_phase_plan",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 15,
+            "timestamp": "2026-06-05T19:57:27.731728+00:00",
+            "component": "appv2_phase_planner_runtime",
+            "stage": "draft_phase_plan",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 124790.327,
+            "details": {
+              "phase_count": 6
+            }
+          }
+        ]
+      }
+    }
+  },
+  "result": {
+    "run_id": "v2_run_phaseplan_v2_req_001",
+    "request_id": "v2_req_001",
+    "plan_id": "phaseplan_v2_req_001",
+    "status": "blocked",
+    "summary": "Cannot complete DISCOVER phase: tool budget exhausted, missing required discover_workspace_inventory artifact.",
+    "artifacts": [],
+    "issues": [],
+    "usage": {
+      "model_calls": 3,
+      "tool_calls": 8,
+      "replans": 0
+    },
+    "metadata": {
+      "completed_phase_ids": [],
+      "mutation_ledger": {
+        "mutation_count": 0,
+        "touched_paths": [],
+        "denial_count": 0
+      },
+      "elapsed_ms": 4562.916,
+      "runtime_matrix": {
+        "trace_id": "trace_0001",
+        "started_at": "2026-06-05T19:55:03.876379+00:00",
+        "row_count": 46,
+        "rows": [
+          {
+            "seq": 1,
+            "timestamp": "2026-06-05T19:55:04.831190+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_chars": 578
+            }
+          },
+          {
+            "seq": 2,
+            "timestamp": "2026-06-05T19:55:04.831244+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "Envelope"
+            }
+          },
+          {
+            "seq": 3,
+            "timestamp": "2026-06-05T19:55:22.937591+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 4,
+            "timestamp": "2026-06-05T19:55:22.937874+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "decompose_request",
+            "event": "response_parsed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "input_type": "repo_file_reorganization_and_manifest_update"
+            }
+          },
+          {
+            "seq": 5,
+            "timestamp": "2026-06-05T19:55:22.938294+00:00",
+            "component": "appv2_decomposer_chain",
+            "stage": "validate_envelope",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 6,
+            "timestamp": "2026-06-05T19:55:22.938321+00:00",
+            "component": "appv2_decomposer_runtime",
+            "stage": "decompose_request",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 18100.475,
+            "details": {
+              "input_type": "repo_file_reorganization_and_manifest_update",
+              "confidence": 0.94,
+              "ambiguity_count": 3
+            }
+          },
+          {
+            "seq": 7,
+            "timestamp": "2026-06-05T19:55:22.938508+00:00",
+            "component": "appv2_phase_planner_runtime",
+            "stage": "draft_phase_plan",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 8,
+            "timestamp": "2026-06-05T19:55:22.938527+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_skeleton",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "PhaseSkeleton"
+            }
+          },
+          {
+            "seq": 9,
+            "timestamp": "2026-06-05T19:55:29.380150+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_skeleton",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_count": 6
+            }
+          },
+          {
+            "seq": 10,
+            "timestamp": "2026-06-05T19:55:29.380202+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_artifact_contracts",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "ArtifactContractBundle"
+            }
+          },
+          {
+            "seq": 11,
+            "timestamp": "2026-06-05T19:56:00.497469+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_artifact_contracts",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_contract_count": 10
+            }
+          },
+          {
+            "seq": 12,
+            "timestamp": "2026-06-05T19:56:00.497556+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_plan",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "schema": "PhasePlan"
+            }
+          },
+          {
+            "seq": 13,
+            "timestamp": "2026-06-05T19:57:27.727827+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "draft_phase_plan",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": null,
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 14,
+            "timestamp": "2026-06-05T19:57:27.731248+00:00",
+            "component": "appv2_phase_planner_chain",
+            "stage": "validate_phase_plan",
+            "event": "validation_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "issue_count": 0,
+              "blocking_issue_count": 0
+            }
+          },
+          {
+            "seq": 15,
+            "timestamp": "2026-06-05T19:57:27.731728+00:00",
+            "component": "appv2_phase_planner_runtime",
+            "stage": "draft_phase_plan",
+            "event": "run_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 124790.327,
+            "details": {
+              "phase_count": 6
+            }
+          },
+          {
+            "seq": 16,
+            "timestamp": "2026-06-05T19:57:27.733889+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "run",
+            "event": "run_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": "v2_run_phaseplan_v2_req_001",
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_count": 6,
+              "replan_depth": 0
+            }
+          },
+          {
+            "seq": 17,
+            "timestamp": "2026-06-05T19:57:27.754594+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "DISCOVER",
+            "event": "phase_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": "v2_run_phaseplan_v2_req_001",
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "phase_id": "phase_01_discover_workspace"
+            }
+          },
+          {
+            "seq": 18,
+            "timestamp": "2026-06-05T19:57:27.755248+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "loop_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "configured_model_calls": 3,
+              "configured_tool_calls": 8,
+              "phase_model_call_cap": 3,
+              "repair_turn_reserve": 1,
+              "retry_turn_reserve": 1,
+              "effective_model_calls": 3,
+              "effective_tool_calls": 8
+            }
+          },
+          {
+            "seq": 19,
+            "timestamp": "2026-06-05T19:57:27.756282+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 0,
+              "pending_outputs": [
+                "discover_workspace_inventory"
+              ]
+            }
+          },
+          {
+            "seq": 20,
+            "timestamp": "2026-06-05T19:57:29.503371+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 21,
+            "timestamp": "2026-06-05T19:57:29.503435+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_1",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "tool_calls",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 22,
+            "timestamp": "2026-06-05T19:57:29.503451+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "snapshot_root",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "repo_snapshot",
+              "purpose": "obtain full repository file and directory listing"
+            }
+          },
+          {
+            "seq": 23,
+            "timestamp": "2026-06-05T19:57:29.659682+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "snapshot_root",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "repo_snapshot",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 24,
+            "timestamp": "2026-06-05T19:57:29.659768+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "read_manifest",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "read_file",
+              "purpose": "read manifest file content for existence and data"
+            }
+          },
+          {
+            "seq": 25,
+            "timestamp": "2026-06-05T19:57:29.660772+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "read_manifest",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "read_file",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 26,
+            "timestamp": "2026-06-05T19:57:29.661736+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 2,
+              "pending_outputs": [
+                "discover_workspace_inventory"
+              ]
+            }
+          },
+          {
+            "seq": 27,
+            "timestamp": "2026-06-05T19:57:31.170077+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 28,
+            "timestamp": "2026-06-05T19:57:31.170153+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_2",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "tool_calls",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 29,
+            "timestamp": "2026-06-05T19:57:31.170167+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_notes_drafts",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "purpose": "list files in notes/drafts"
+            }
+          },
+          {
+            "seq": 30,
+            "timestamp": "2026-06-05T19:57:31.171209+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_notes_drafts",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 31,
+            "timestamp": "2026-06-05T19:57:31.171223+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_notes_raw",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "purpose": "list files in notes/raw"
+            }
+          },
+          {
+            "seq": 32,
+            "timestamp": "2026-06-05T19:57:31.171982+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_notes_raw",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 33,
+            "timestamp": "2026-06-05T19:57:31.171993+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_reports",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "purpose": "list files in reports"
+            }
+          },
+          {
+            "seq": 34,
+            "timestamp": "2026-06-05T19:57:31.172549+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_reports",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 35,
+            "timestamp": "2026-06-05T19:57:31.172559+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_tmp",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "purpose": "list files in tmp"
+            }
+          },
+          {
+            "seq": 36,
+            "timestamp": "2026-06-05T19:57:31.173088+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_tmp",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 37,
+            "timestamp": "2026-06-05T19:57:31.173097+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_artifacts_tmp",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "purpose": "list files in artifacts/tmp"
+            }
+          },
+          {
+            "seq": 38,
+            "timestamp": "2026-06-05T19:57:31.173790+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_artifacts_tmp",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 39,
+            "timestamp": "2026-06-05T19:57:31.173798+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_misc",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "purpose": "list files in misc"
+            }
+          },
+          {
+            "seq": 40,
+            "timestamp": "2026-06-05T19:57:31.174223+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "tool_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "list_misc",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_name": "list_dir",
+              "feedback_code": null
+            }
+          },
+          {
+            "seq": 41,
+            "timestamp": "2026-06-05T19:57:31.174840+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_started",
+            "status": "started",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_3",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "tool_calls_used": 8,
+              "pending_outputs": [
+                "discover_workspace_inventory"
+              ]
+            }
+          },
+          {
+            "seq": 42,
+            "timestamp": "2026-06-05T19:57:32.296534+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "model_call_completed",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_3",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {}
+          },
+          {
+            "seq": 43,
+            "timestamp": "2026-06-05T19:57:32.296585+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "loop_decision",
+            "status": "completed",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_3",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "branch": "final_phase_output",
+              "issue_count": 0
+            }
+          },
+          {
+            "seq": 44,
+            "timestamp": "2026-06-05T19:57:32.296656+00:00",
+            "component": "appv2_worker_loop",
+            "stage": "DISCOVER",
+            "event": "phase_output_completed",
+            "status": "blocked",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": null,
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": "turn_3",
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "artifact_ids": []
+            }
+          },
+          {
+            "seq": 45,
+            "timestamp": "2026-06-05T19:57:32.296750+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "DISCOVER",
+            "event": "phase_completed",
+            "status": "blocked",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": "v2_run_phaseplan_v2_req_001",
+            "step_id": "phase_01_discover_workspace",
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": null,
+            "details": {
+              "summary": "Cannot complete DISCOVER phase: tool budget exhausted, missing required discover_workspace_inventory artifact.",
+              "issues": []
+            }
+          },
+          {
+            "seq": 46,
+            "timestamp": "2026-06-05T19:57:32.296790+00:00",
+            "component": "appv2_worker_runtime",
+            "stage": "run",
+            "event": "run_completed",
+            "status": "blocked",
+            "request_id": "v2_req_001",
+            "plan_id": "phaseplan_v2_req_001",
+            "run_id": "v2_run_phaseplan_v2_req_001",
+            "step_id": null,
+            "attempt_id": null,
+            "worker_type": null,
+            "elapsed_ms": 4562.916,
+            "details": {
+              "artifact_count": 0,
+              "issue_count": 0
+            }
+          }
+        ]
+      }
+    }
+  },
+  "after_pytest": {
+    "label": "after",
+    "returncode": 1,
+    "stdout": "FF                                                                       [100%]\n=================================== FAILURES ===================================\n_____________________ test_workspace_files_are_cleaned_up ______________________\n\n    def test_workspace_files_are_cleaned_up() -> None:\n        base = Path(__file__).resolve().parent.parent\n    \n>       assert (base / \"docs\" / \"task_notes.md\").exists()\nE       AssertionError: assert False\nE        +  where False = exists()\nE        +    where exists = ((PosixPath('/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_workspace_repo') / 'docs') / 'task_notes.md').exists\n\ntests/test_workspace_cleanup.py:8: AssertionError\n________________ test_workspace_manifest_lists_moved_artifacts _________________\n\n    def test_workspace_manifest_lists_moved_artifacts() -> None:\n        manifest_path = Path(__file__).resolve().parent.parent / \"docs\" / \"workspace_manifest.json\"\n>       payload = json.loads(manifest_path.read_text(encoding=\"utf-8\"))\n                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\ntests/test_workspace_cleanup.py:26: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n../../../../.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_local.py:546: in read_text\n    return PathBase.read_text(self, encoding, errors, newline)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n../../../../.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_abc.py:632: in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = PosixPath('/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_workspace_repo/docs/workspace_manifest.json')\nmode = 'r', buffering = -1, encoding = 'utf-8', errors = None, newline = None\n\n    def open(self, mode='r', buffering=-1, encoding=None,\n             errors=None, newline=None):\n        \"\"\"\n        Open the file pointed to by this path and return a file object, as\n        the built-in open() function does.\n        \"\"\"\n        if \"b\" not in mode:\n            encoding = io.text_encoding(encoding)\n>       return io.open(self, mode, buffering, encoding, errors, newline)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       FileNotFoundError: [Errno 2] No such file or directory: '/Users/htooayelwin/Documents/VScode/allthebest/live_appv2_workspace_repo/docs/workspace_manifest.json'\n\n../../../../.local/share/uv/python/cpython-3.13.13-macos-aarch64-none/lib/python3.13/pathlib/_local.py:537: FileNotFoundError\n=========================== short test summary info ============================\nFAILED tests/test_workspace_cleanup.py::test_workspace_files_are_cleaned_up\nFAILED tests/test_workspace_cleanup.py::test_workspace_manifest_lists_moved_artifacts\n2 failed in 0.25s\n",
+    "stderr": ""
+  },
+  "runtime_matrix": {
+    "trace_id": "trace_0001",
+    "started_at": "2026-06-05T19:55:03.876379+00:00",
+    "row_count": 46,
+    "rows": [
+      {
+        "seq": 1,
+        "timestamp": "2026-06-05T19:55:04.831190+00:00",
+        "component": "appv2_decomposer_runtime",
+        "stage": "decompose_request",
+        "event": "run_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "input_chars": 578
+        }
+      },
+      {
+        "seq": 2,
+        "timestamp": "2026-06-05T19:55:04.831244+00:00",
+        "component": "appv2_decomposer_chain",
+        "stage": "decompose_request",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "schema": "Envelope"
+        }
+      },
+      {
+        "seq": 3,
+        "timestamp": "2026-06-05T19:55:22.937591+00:00",
+        "component": "appv2_decomposer_chain",
+        "stage": "decompose_request",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 4,
+        "timestamp": "2026-06-05T19:55:22.937874+00:00",
+        "component": "appv2_decomposer_chain",
+        "stage": "decompose_request",
+        "event": "response_parsed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "input_type": "repo_file_reorganization_and_manifest_update"
+        }
+      },
+      {
+        "seq": 5,
+        "timestamp": "2026-06-05T19:55:22.938294+00:00",
+        "component": "appv2_decomposer_chain",
+        "stage": "validate_envelope",
+        "event": "validation_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "issue_count": 0,
+          "blocking_issue_count": 0
+        }
+      },
+      {
+        "seq": 6,
+        "timestamp": "2026-06-05T19:55:22.938321+00:00",
+        "component": "appv2_decomposer_runtime",
+        "stage": "decompose_request",
+        "event": "run_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": 18100.475,
+        "details": {
+          "input_type": "repo_file_reorganization_and_manifest_update",
+          "confidence": 0.94,
+          "ambiguity_count": 3
+        }
+      },
+      {
+        "seq": 7,
+        "timestamp": "2026-06-05T19:55:22.938508+00:00",
+        "component": "appv2_phase_planner_runtime",
+        "stage": "draft_phase_plan",
+        "event": "run_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 8,
+        "timestamp": "2026-06-05T19:55:22.938527+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_phase_skeleton",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "schema": "PhaseSkeleton"
+        }
+      },
+      {
+        "seq": 9,
+        "timestamp": "2026-06-05T19:55:29.380150+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_phase_skeleton",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_count": 6
+        }
+      },
+      {
+        "seq": 10,
+        "timestamp": "2026-06-05T19:55:29.380202+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_artifact_contracts",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "schema": "ArtifactContractBundle"
+        }
+      },
+      {
+        "seq": 11,
+        "timestamp": "2026-06-05T19:56:00.497469+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_artifact_contracts",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "artifact_contract_count": 10
+        }
+      },
+      {
+        "seq": 12,
+        "timestamp": "2026-06-05T19:56:00.497556+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_phase_plan",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "schema": "PhasePlan"
+        }
+      },
+      {
+        "seq": 13,
+        "timestamp": "2026-06-05T19:57:27.727827+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "draft_phase_plan",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": null,
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 14,
+        "timestamp": "2026-06-05T19:57:27.731248+00:00",
+        "component": "appv2_phase_planner_chain",
+        "stage": "validate_phase_plan",
+        "event": "validation_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "issue_count": 0,
+          "blocking_issue_count": 0
+        }
+      },
+      {
+        "seq": 15,
+        "timestamp": "2026-06-05T19:57:27.731728+00:00",
+        "component": "appv2_phase_planner_runtime",
+        "stage": "draft_phase_plan",
+        "event": "run_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": 124790.327,
+        "details": {
+          "phase_count": 6
+        }
+      },
+      {
+        "seq": 16,
+        "timestamp": "2026-06-05T19:57:27.733889+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "run",
+        "event": "run_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": "v2_run_phaseplan_v2_req_001",
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_count": 6,
+          "replan_depth": 0
+        }
+      },
+      {
+        "seq": 17,
+        "timestamp": "2026-06-05T19:57:27.754594+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "DISCOVER",
+        "event": "phase_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": "v2_run_phaseplan_v2_req_001",
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "phase_id": "phase_01_discover_workspace"
+        }
+      },
+      {
+        "seq": 18,
+        "timestamp": "2026-06-05T19:57:27.755248+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "loop_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "configured_model_calls": 3,
+          "configured_tool_calls": 8,
+          "phase_model_call_cap": 3,
+          "repair_turn_reserve": 1,
+          "retry_turn_reserve": 1,
+          "effective_model_calls": 3,
+          "effective_tool_calls": 8
+        }
+      },
+      {
+        "seq": 19,
+        "timestamp": "2026-06-05T19:57:27.756282+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 0,
+          "pending_outputs": [
+            "discover_workspace_inventory"
+          ]
+        }
+      },
+      {
+        "seq": 20,
+        "timestamp": "2026-06-05T19:57:29.503371+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 21,
+        "timestamp": "2026-06-05T19:57:29.503435+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_1",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "tool_calls",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 22,
+        "timestamp": "2026-06-05T19:57:29.503451+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "snapshot_root",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "repo_snapshot",
+          "purpose": "obtain full repository file and directory listing"
+        }
+      },
+      {
+        "seq": 23,
+        "timestamp": "2026-06-05T19:57:29.659682+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "snapshot_root",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "repo_snapshot",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 24,
+        "timestamp": "2026-06-05T19:57:29.659768+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "read_manifest",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "read_file",
+          "purpose": "read manifest file content for existence and data"
+        }
+      },
+      {
+        "seq": 25,
+        "timestamp": "2026-06-05T19:57:29.660772+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "read_manifest",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "read_file",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 26,
+        "timestamp": "2026-06-05T19:57:29.661736+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 2,
+          "pending_outputs": [
+            "discover_workspace_inventory"
+          ]
+        }
+      },
+      {
+        "seq": 27,
+        "timestamp": "2026-06-05T19:57:31.170077+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 28,
+        "timestamp": "2026-06-05T19:57:31.170153+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_2",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "tool_calls",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 29,
+        "timestamp": "2026-06-05T19:57:31.170167+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_notes_drafts",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "purpose": "list files in notes/drafts"
+        }
+      },
+      {
+        "seq": 30,
+        "timestamp": "2026-06-05T19:57:31.171209+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_notes_drafts",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 31,
+        "timestamp": "2026-06-05T19:57:31.171223+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_notes_raw",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "purpose": "list files in notes/raw"
+        }
+      },
+      {
+        "seq": 32,
+        "timestamp": "2026-06-05T19:57:31.171982+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_notes_raw",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 33,
+        "timestamp": "2026-06-05T19:57:31.171993+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_reports",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "purpose": "list files in reports"
+        }
+      },
+      {
+        "seq": 34,
+        "timestamp": "2026-06-05T19:57:31.172549+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_reports",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 35,
+        "timestamp": "2026-06-05T19:57:31.172559+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_tmp",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "purpose": "list files in tmp"
+        }
+      },
+      {
+        "seq": 36,
+        "timestamp": "2026-06-05T19:57:31.173088+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_tmp",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 37,
+        "timestamp": "2026-06-05T19:57:31.173097+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_artifacts_tmp",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "purpose": "list files in artifacts/tmp"
+        }
+      },
+      {
+        "seq": 38,
+        "timestamp": "2026-06-05T19:57:31.173790+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_artifacts_tmp",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 39,
+        "timestamp": "2026-06-05T19:57:31.173798+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_misc",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "purpose": "list files in misc"
+        }
+      },
+      {
+        "seq": 40,
+        "timestamp": "2026-06-05T19:57:31.174223+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "tool_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "list_misc",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_name": "list_dir",
+          "feedback_code": null
+        }
+      },
+      {
+        "seq": 41,
+        "timestamp": "2026-06-05T19:57:31.174840+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_started",
+        "status": "started",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_3",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "tool_calls_used": 8,
+          "pending_outputs": [
+            "discover_workspace_inventory"
+          ]
+        }
+      },
+      {
+        "seq": 42,
+        "timestamp": "2026-06-05T19:57:32.296534+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "model_call_completed",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_3",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {}
+      },
+      {
+        "seq": 43,
+        "timestamp": "2026-06-05T19:57:32.296585+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "loop_decision",
+        "status": "completed",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_3",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "branch": "final_phase_output",
+          "issue_count": 0
+        }
+      },
+      {
+        "seq": 44,
+        "timestamp": "2026-06-05T19:57:32.296656+00:00",
+        "component": "appv2_worker_loop",
+        "stage": "DISCOVER",
+        "event": "phase_output_completed",
+        "status": "blocked",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": null,
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": "turn_3",
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "artifact_ids": []
+        }
+      },
+      {
+        "seq": 45,
+        "timestamp": "2026-06-05T19:57:32.296750+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "DISCOVER",
+        "event": "phase_completed",
+        "status": "blocked",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": "v2_run_phaseplan_v2_req_001",
+        "step_id": "phase_01_discover_workspace",
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": null,
+        "details": {
+          "summary": "Cannot complete DISCOVER phase: tool budget exhausted, missing required discover_workspace_inventory artifact.",
+          "issues": []
+        }
+      },
+      {
+        "seq": 46,
+        "timestamp": "2026-06-05T19:57:32.296790+00:00",
+        "component": "appv2_worker_runtime",
+        "stage": "run",
+        "event": "run_completed",
+        "status": "blocked",
+        "request_id": "v2_req_001",
+        "plan_id": "phaseplan_v2_req_001",
+        "run_id": "v2_run_phaseplan_v2_req_001",
+        "step_id": null,
+        "attempt_id": null,
+        "worker_type": null,
+        "elapsed_ms": 4562.916,
+        "details": {
+          "artifact_count": 0,
+          "issue_count": 0
+        }
+      }
+    ]
+  },
+  "probe_error": null
+}
