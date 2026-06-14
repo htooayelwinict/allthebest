@@ -1,0 +1,1117 @@
+{
+  "compaction_count": 1,
+  "decision_count": 9,
+  "denied_count": 0,
+  "event_order": [
+    "UserMessageReceived",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "VerificationRecorded",
+    "ArtifactAccepted",
+    "ContextCompactionRequested",
+    "ContextCompacted",
+    "ExtensionTraceRecorded",
+    "RunCompleted"
+  ],
+  "pause_count": 0,
+  "raw": {
+    "artifact_ids": [
+      "final_summary"
+    ],
+    "events": [
+      {
+        "event_id": "evt_1021ea06902f4179ac122f39c0fe507e",
+        "event_type": "UserMessageReceived",
+        "payload": {
+          "constraints": [],
+          "content": "Exercise compaction.",
+          "request_id": "req_51389804ce28432e80f0b1c6eca856d2",
+          "root_path": "/private/tmp/allthebest-appv21-main-publish/live_appv21_context_compaction_repo"
+        },
+        "timestamp": "2026-06-14T22:00:34.168038+00:00"
+      },
+      {
+        "event_id": "evt_c09dfa5f5cd44dadb2023be029854c2e",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.168622+00:00"
+      },
+      {
+        "event_id": "evt_040be5bbf4f24b628e8616229ea5a8ff",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.168740+00:00"
+      },
+      {
+        "event_id": "evt_ad8c678408c34c459a2ca9168100ebd7",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_28deed87a69b42a399be9e76e0212999",
+          "evidence_refs": [],
+          "kind": "tool_call",
+          "payload": {
+            "arguments": {
+              "path": "README.md"
+            },
+            "tool_name": "read_file"
+          },
+          "reason": "Read README repeatedly.",
+          "turn_index": 0
+        },
+        "timestamp": "2026-06-14T22:00:34.168844+00:00"
+      },
+      {
+        "event_id": "evt_bb724ea3d08c40389ce5863533a4ab55",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "OBSERVE"
+        },
+        "timestamp": "2026-06-14T22:00:34.168918+00:00"
+      },
+      {
+        "event_id": "evt_c5264745f90048baabc8b715de6664ac",
+        "event_type": "ToolCallCompleted",
+        "payload": {
+          "evidence_refs": [],
+          "payload": {
+            "bytes": 13,
+            "content": "# Probe repo\n",
+            "path": "README.md"
+          },
+          "prompt_summary": {
+            "path": "README.md",
+            "preview": "# Probe repo\n"
+          },
+          "status": "completed",
+          "tool_name": "read_file",
+          "tool_result_id": "toolres_73b01f4144644366b73b24dbb4a393ef",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.169226+00:00"
+      },
+      {
+        "event_id": "evt_ad834c9c6f194f63a73710696f900abd",
+        "event_type": "WorldRefAdded",
+        "payload": {
+          "kind": "tool_result",
+          "payload": {
+            "evidence_refs": [],
+            "payload": {
+              "bytes": 13,
+              "content": "# Probe repo\n",
+              "path": "README.md"
+            },
+            "prompt_summary": {
+              "path": "README.md",
+              "preview": "# Probe repo\n"
+            },
+            "status": "completed",
+            "tool_name": "read_file",
+            "tool_result_id": "toolres_73b01f4144644366b73b24dbb4a393ef",
+            "trust": "runtime_observed"
+          },
+          "ref_id": "world://tool_result/toolres_73b01f4144644366b73b24dbb4a393ef",
+          "summary": "path=README.md, preview=# Probe repo\n",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.169302+00:00"
+      },
+      {
+        "event_id": "evt_ae1f49f7d99647f7aee7cef9336aca00",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.169383+00:00"
+      },
+      {
+        "event_id": "evt_40601541f9774a03866a18d00ec0350b",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.169461+00:00"
+      },
+      {
+        "event_id": "evt_4ce32b79d8134302a5ad38e5658725a0",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_631d861266a642f3b0da7d883cdc0856",
+          "evidence_refs": [],
+          "kind": "tool_call",
+          "payload": {
+            "arguments": {
+              "path": "README.md"
+            },
+            "tool_name": "read_file"
+          },
+          "reason": "Read README repeatedly.",
+          "turn_index": 1
+        },
+        "timestamp": "2026-06-14T22:00:34.169575+00:00"
+      },
+      {
+        "event_id": "evt_f6665222e62d403b953512e19df36dc4",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "OBSERVE"
+        },
+        "timestamp": "2026-06-14T22:00:34.169639+00:00"
+      },
+      {
+        "event_id": "evt_a802e125b38749ac96920827272629b9",
+        "event_type": "ToolCallCompleted",
+        "payload": {
+          "evidence_refs": [],
+          "payload": {
+            "bytes": 13,
+            "content": "# Probe repo\n",
+            "path": "README.md"
+          },
+          "prompt_summary": {
+            "path": "README.md",
+            "preview": "# Probe repo\n"
+          },
+          "status": "completed",
+          "tool_name": "read_file",
+          "tool_result_id": "toolres_3fab34842a1b47389d4df666091decd1",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.169844+00:00"
+      },
+      {
+        "event_id": "evt_656263097ccc46e78605cecfa3ddde3d",
+        "event_type": "WorldRefAdded",
+        "payload": {
+          "kind": "tool_result",
+          "payload": {
+            "evidence_refs": [],
+            "payload": {
+              "bytes": 13,
+              "content": "# Probe repo\n",
+              "path": "README.md"
+            },
+            "prompt_summary": {
+              "path": "README.md",
+              "preview": "# Probe repo\n"
+            },
+            "status": "completed",
+            "tool_name": "read_file",
+            "tool_result_id": "toolres_3fab34842a1b47389d4df666091decd1",
+            "trust": "runtime_observed"
+          },
+          "ref_id": "world://tool_result/toolres_3fab34842a1b47389d4df666091decd1",
+          "summary": "path=README.md, preview=# Probe repo\n",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.169912+00:00"
+      },
+      {
+        "event_id": "evt_c043314c1b624f3db13e501f92bc621d",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.169988+00:00"
+      },
+      {
+        "event_id": "evt_169929e8901c4121a4f8f3b580dc40ff",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.170056+00:00"
+      },
+      {
+        "event_id": "evt_ebfe459232a74946a245783a64b75514",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_873fa1f5162740d3b0aefeae021bb830",
+          "evidence_refs": [],
+          "kind": "tool_call",
+          "payload": {
+            "arguments": {
+              "path": "README.md"
+            },
+            "tool_name": "read_file"
+          },
+          "reason": "Read README repeatedly.",
+          "turn_index": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.170125+00:00"
+      },
+      {
+        "event_id": "evt_f8490dd749dc4f76addf331e3c51dd8d",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "OBSERVE"
+        },
+        "timestamp": "2026-06-14T22:00:34.170188+00:00"
+      },
+      {
+        "event_id": "evt_3c451ef41c904e9db13a0228d6da2178",
+        "event_type": "ToolCallCompleted",
+        "payload": {
+          "evidence_refs": [],
+          "payload": {
+            "bytes": 13,
+            "content": "# Probe repo\n",
+            "path": "README.md"
+          },
+          "prompt_summary": {
+            "path": "README.md",
+            "preview": "# Probe repo\n"
+          },
+          "status": "completed",
+          "tool_name": "read_file",
+          "tool_result_id": "toolres_01cbd08ef9e7472eb1737d32e8868a2b",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.170378+00:00"
+      },
+      {
+        "event_id": "evt_ca6dfe89030445e18ba4d69f74f7f969",
+        "event_type": "WorldRefAdded",
+        "payload": {
+          "kind": "tool_result",
+          "payload": {
+            "evidence_refs": [],
+            "payload": {
+              "bytes": 13,
+              "content": "# Probe repo\n",
+              "path": "README.md"
+            },
+            "prompt_summary": {
+              "path": "README.md",
+              "preview": "# Probe repo\n"
+            },
+            "status": "completed",
+            "tool_name": "read_file",
+            "tool_result_id": "toolres_01cbd08ef9e7472eb1737d32e8868a2b",
+            "trust": "runtime_observed"
+          },
+          "ref_id": "world://tool_result/toolres_01cbd08ef9e7472eb1737d32e8868a2b",
+          "summary": "path=README.md, preview=# Probe repo\n",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.170466+00:00"
+      },
+      {
+        "event_id": "evt_dae7de9297ab485c8d90690b63bf6f32",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.170531+00:00"
+      },
+      {
+        "event_id": "evt_d797bda7f2e34154bca1148b12b05895",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.170601+00:00"
+      },
+      {
+        "event_id": "evt_fabc22c3a3cd4c09a4615447232684ab",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_9ee2f911b57149978cbc27af938a5546",
+          "evidence_refs": [],
+          "kind": "tool_call",
+          "payload": {
+            "arguments": {
+              "path": "README.md"
+            },
+            "tool_name": "read_file"
+          },
+          "reason": "Read README repeatedly.",
+          "turn_index": 3
+        },
+        "timestamp": "2026-06-14T22:00:34.170668+00:00"
+      },
+      {
+        "event_id": "evt_ffd45401362743b29578f3ce12112dfd",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "OBSERVE"
+        },
+        "timestamp": "2026-06-14T22:00:34.170728+00:00"
+      },
+      {
+        "event_id": "evt_5b5cae2c596d435496a4337799aca00c",
+        "event_type": "ToolCallCompleted",
+        "payload": {
+          "evidence_refs": [],
+          "payload": {
+            "bytes": 13,
+            "content": "# Probe repo\n",
+            "path": "README.md"
+          },
+          "prompt_summary": {
+            "path": "README.md",
+            "preview": "# Probe repo\n"
+          },
+          "status": "completed",
+          "tool_name": "read_file",
+          "tool_result_id": "toolres_f1692bca9c304de99139777e679d471b",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.170920+00:00"
+      },
+      {
+        "event_id": "evt_01be57ab58ed44fb80d9814dbb9ce27c",
+        "event_type": "WorldRefAdded",
+        "payload": {
+          "kind": "tool_result",
+          "payload": {
+            "evidence_refs": [],
+            "payload": {
+              "bytes": 13,
+              "content": "# Probe repo\n",
+              "path": "README.md"
+            },
+            "prompt_summary": {
+              "path": "README.md",
+              "preview": "# Probe repo\n"
+            },
+            "status": "completed",
+            "tool_name": "read_file",
+            "tool_result_id": "toolres_f1692bca9c304de99139777e679d471b",
+            "trust": "runtime_observed"
+          },
+          "ref_id": "world://tool_result/toolres_f1692bca9c304de99139777e679d471b",
+          "summary": "path=README.md, preview=# Probe repo\n",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.170987+00:00"
+      },
+      {
+        "event_id": "evt_308d458f969e43f68336e29984a728ec",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.171074+00:00"
+      },
+      {
+        "event_id": "evt_667fdb3355ca46d1924f5e694aaae999",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.171139+00:00"
+      },
+      {
+        "event_id": "evt_ec41ba1020b94c93ae6470277bdae240",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_a9b307206d114d79b7b76d2edb35540d",
+          "evidence_refs": [],
+          "kind": "tool_call",
+          "payload": {
+            "arguments": {
+              "path": "README.md"
+            },
+            "tool_name": "read_file"
+          },
+          "reason": "Read README repeatedly.",
+          "turn_index": 4
+        },
+        "timestamp": "2026-06-14T22:00:34.171203+00:00"
+      },
+      {
+        "event_id": "evt_bac328f272c745fd85a7712f97b0d0f9",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "OBSERVE"
+        },
+        "timestamp": "2026-06-14T22:00:34.171261+00:00"
+      },
+      {
+        "event_id": "evt_6183566dcc0e4977af319ecedccaa8dd",
+        "event_type": "ToolCallCompleted",
+        "payload": {
+          "evidence_refs": [],
+          "payload": {
+            "bytes": 13,
+            "content": "# Probe repo\n",
+            "path": "README.md"
+          },
+          "prompt_summary": {
+            "path": "README.md",
+            "preview": "# Probe repo\n"
+          },
+          "status": "completed",
+          "tool_name": "read_file",
+          "tool_result_id": "toolres_f510e1b75ca64d7b9cf891d8b4588c81",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.171444+00:00"
+      },
+      {
+        "event_id": "evt_8ea4c277ec0745a1a683717c5dd93933",
+        "event_type": "WorldRefAdded",
+        "payload": {
+          "kind": "tool_result",
+          "payload": {
+            "evidence_refs": [],
+            "payload": {
+              "bytes": 13,
+              "content": "# Probe repo\n",
+              "path": "README.md"
+            },
+            "prompt_summary": {
+              "path": "README.md",
+              "preview": "# Probe repo\n"
+            },
+            "status": "completed",
+            "tool_name": "read_file",
+            "tool_result_id": "toolres_f510e1b75ca64d7b9cf891d8b4588c81",
+            "trust": "runtime_observed"
+          },
+          "ref_id": "world://tool_result/toolres_f510e1b75ca64d7b9cf891d8b4588c81",
+          "summary": "path=README.md, preview=# Probe repo\n",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.171505+00:00"
+      },
+      {
+        "event_id": "evt_880db17ca25b4418865c334ed5b4a467",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.171567+00:00"
+      },
+      {
+        "event_id": "evt_d0323671909c45c4a02078b94258a439",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.171630+00:00"
+      },
+      {
+        "event_id": "evt_baa25ae010fa4acc92a8b982b4fdb67f",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_aed16d82a26d43cda8b8164865c852ad",
+          "evidence_refs": [],
+          "kind": "tool_call",
+          "payload": {
+            "arguments": {
+              "path": "README.md"
+            },
+            "tool_name": "read_file"
+          },
+          "reason": "Read README repeatedly.",
+          "turn_index": 5
+        },
+        "timestamp": "2026-06-14T22:00:34.171719+00:00"
+      },
+      {
+        "event_id": "evt_d5e6dd5d3d47413c98216c6c19bfce94",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "OBSERVE"
+        },
+        "timestamp": "2026-06-14T22:00:34.171780+00:00"
+      },
+      {
+        "event_id": "evt_73ece1fbbfcb405a992d4d9efacecbf2",
+        "event_type": "ToolCallCompleted",
+        "payload": {
+          "evidence_refs": [],
+          "payload": {
+            "bytes": 13,
+            "content": "# Probe repo\n",
+            "path": "README.md"
+          },
+          "prompt_summary": {
+            "path": "README.md",
+            "preview": "# Probe repo\n"
+          },
+          "status": "completed",
+          "tool_name": "read_file",
+          "tool_result_id": "toolres_e542d61e82154729be12aec659c27146",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.171972+00:00"
+      },
+      {
+        "event_id": "evt_564f6f84a7c84b8480de56a060ceebc7",
+        "event_type": "WorldRefAdded",
+        "payload": {
+          "kind": "tool_result",
+          "payload": {
+            "evidence_refs": [],
+            "payload": {
+              "bytes": 13,
+              "content": "# Probe repo\n",
+              "path": "README.md"
+            },
+            "prompt_summary": {
+              "path": "README.md",
+              "preview": "# Probe repo\n"
+            },
+            "status": "completed",
+            "tool_name": "read_file",
+            "tool_result_id": "toolres_e542d61e82154729be12aec659c27146",
+            "trust": "runtime_observed"
+          },
+          "ref_id": "world://tool_result/toolres_e542d61e82154729be12aec659c27146",
+          "summary": "path=README.md, preview=# Probe repo\n",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.172043+00:00"
+      },
+      {
+        "event_id": "evt_481ed860092b4631840fa28f5fdaf578",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.172110+00:00"
+      },
+      {
+        "event_id": "evt_4cee21b3f8e64657a6fe66f646d15dec",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.172173+00:00"
+      },
+      {
+        "event_id": "evt_9443cd207f0a4708990f72d81f6e45c4",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_8a206f7e5a8841e9add13cda35380978",
+          "evidence_refs": [],
+          "kind": "tool_call",
+          "payload": {
+            "arguments": {
+              "path": "README.md"
+            },
+            "tool_name": "read_file"
+          },
+          "reason": "Read README repeatedly.",
+          "turn_index": 6
+        },
+        "timestamp": "2026-06-14T22:00:34.172239+00:00"
+      },
+      {
+        "event_id": "evt_518be86f743542079275e21b01202c82",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "OBSERVE"
+        },
+        "timestamp": "2026-06-14T22:00:34.172300+00:00"
+      },
+      {
+        "event_id": "evt_8f289cbd694c4530b03a5fa7858909f0",
+        "event_type": "ToolCallCompleted",
+        "payload": {
+          "evidence_refs": [],
+          "payload": {
+            "bytes": 13,
+            "content": "# Probe repo\n",
+            "path": "README.md"
+          },
+          "prompt_summary": {
+            "path": "README.md",
+            "preview": "# Probe repo\n"
+          },
+          "status": "completed",
+          "tool_name": "read_file",
+          "tool_result_id": "toolres_628b5ad25ae94e9a9a90d40f37228679",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.172487+00:00"
+      },
+      {
+        "event_id": "evt_a0c757ebe9794668bc6ce8a7d6570bbd",
+        "event_type": "WorldRefAdded",
+        "payload": {
+          "kind": "tool_result",
+          "payload": {
+            "evidence_refs": [],
+            "payload": {
+              "bytes": 13,
+              "content": "# Probe repo\n",
+              "path": "README.md"
+            },
+            "prompt_summary": {
+              "path": "README.md",
+              "preview": "# Probe repo\n"
+            },
+            "status": "completed",
+            "tool_name": "read_file",
+            "tool_result_id": "toolres_628b5ad25ae94e9a9a90d40f37228679",
+            "trust": "runtime_observed"
+          },
+          "ref_id": "world://tool_result/toolres_628b5ad25ae94e9a9a90d40f37228679",
+          "summary": "path=README.md, preview=# Probe repo\n",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.172575+00:00"
+      },
+      {
+        "event_id": "evt_2322b36a3ea64a168bb89acc69c36c46",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.172640+00:00"
+      },
+      {
+        "event_id": "evt_32fb4a78fa54461eb27ca2028cf80e7d",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.172703+00:00"
+      },
+      {
+        "event_id": "evt_f935c0360525411784d894114fb6863f",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_5933473c133e4e668a0dd8e1097ca5b9",
+          "evidence_refs": [],
+          "kind": "tool_call",
+          "payload": {
+            "arguments": {
+              "path": "README.md"
+            },
+            "tool_name": "read_file"
+          },
+          "reason": "Read README repeatedly.",
+          "turn_index": 7
+        },
+        "timestamp": "2026-06-14T22:00:34.172769+00:00"
+      },
+      {
+        "event_id": "evt_a60dab4280ba40c99d1af27cb8f4f3cd",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "OBSERVE"
+        },
+        "timestamp": "2026-06-14T22:00:34.172826+00:00"
+      },
+      {
+        "event_id": "evt_a78cb27caf264d5b9561bc600b9d371f",
+        "event_type": "ToolCallCompleted",
+        "payload": {
+          "evidence_refs": [],
+          "payload": {
+            "bytes": 13,
+            "content": "# Probe repo\n",
+            "path": "README.md"
+          },
+          "prompt_summary": {
+            "path": "README.md",
+            "preview": "# Probe repo\n"
+          },
+          "status": "completed",
+          "tool_name": "read_file",
+          "tool_result_id": "toolres_060279e919ea472ca4630246004c8d92",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.173000+00:00"
+      },
+      {
+        "event_id": "evt_1072e16c1f0849cab692f69afdc8d8a8",
+        "event_type": "WorldRefAdded",
+        "payload": {
+          "kind": "tool_result",
+          "payload": {
+            "evidence_refs": [],
+            "payload": {
+              "bytes": 13,
+              "content": "# Probe repo\n",
+              "path": "README.md"
+            },
+            "prompt_summary": {
+              "path": "README.md",
+              "preview": "# Probe repo\n"
+            },
+            "status": "completed",
+            "tool_name": "read_file",
+            "tool_result_id": "toolres_060279e919ea472ca4630246004c8d92",
+            "trust": "runtime_observed"
+          },
+          "ref_id": "world://tool_result/toolres_060279e919ea472ca4630246004c8d92",
+          "summary": "path=README.md, preview=# Probe repo\n",
+          "trust": "runtime_observed"
+        },
+        "timestamp": "2026-06-14T22:00:34.173062+00:00"
+      },
+      {
+        "event_id": "evt_3fd8dd59a88442588bc2cadbf608642c",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.173147+00:00"
+      },
+      {
+        "event_id": "evt_e7908898c0694616be2252e158ecb7f3",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.173210+00:00"
+      },
+      {
+        "event_id": "evt_d216635db03441dbb39681d8a1a6e3a7",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_f18abd93de64466ba2b8e4e261fb4f27",
+          "evidence_refs": [],
+          "kind": "finalize",
+          "payload": {
+            "explicit_noop": true
+          },
+          "reason": "Verified no-op.",
+          "turn_index": 8
+        },
+        "timestamp": "2026-06-14T22:00:34.173274+00:00"
+      },
+      {
+        "event_id": "evt_6e5bd6123bd74abf94f04901f2513665",
+        "event_type": "VerificationRecorded",
+        "payload": {
+          "checks": [
+            {
+              "name": "explicit_noop",
+              "passed": true
+            }
+          ],
+          "status": "passed",
+          "verification_id": "verify_d8bcf03ac5994885b0870f00f5a57cf8"
+        },
+        "timestamp": "2026-06-14T22:00:34.173342+00:00"
+      },
+      {
+        "event_id": "evt_2af3d415158844a19194d01fdc5b3f89",
+        "event_type": "ArtifactAccepted",
+        "payload": {
+          "artifact_id": "final_summary",
+          "content": {
+            "active_skills": [],
+            "intent": "runtime decision loop",
+            "mutation_receipt_id": null,
+            "status": "completed",
+            "verification_id": "verify_d8bcf03ac5994885b0870f00f5a57cf8"
+          },
+          "evidence_refs": [
+            "verify_d8bcf03ac5994885b0870f00f5a57cf8"
+          ],
+          "kind": "final_report",
+          "lifecycle": "runtime_verified",
+          "producer": "appv21_runtime",
+          "trust": "runtime_verified"
+        },
+        "timestamp": "2026-06-14T22:00:34.173410+00:00"
+      },
+      {
+        "event_id": "evt_6979a101f5444e1c957383795f022f42",
+        "event_type": "ContextCompactionRequested",
+        "payload": {
+          "reason": "runtime_threshold_or_evidence"
+        },
+        "timestamp": "2026-06-14T22:00:34.173483+00:00"
+      },
+      {
+        "event_id": "evt_5e41af5e55de43a48521f5ef048868f5",
+        "event_type": "ContextCompacted",
+        "payload": {
+          "conversation_digest": "Conversation compacted; current request remains active.",
+          "world_digest": {
+            "active_leases": [],
+            "active_request": "Exercise compaction.",
+            "artifact_evidence_refs": {
+              "final_summary": [
+                "verify_d8bcf03ac5994885b0870f00f5a57cf8"
+              ]
+            },
+            "compacted_world_ref_count": 8,
+            "current_mode": "THINK",
+            "latest_world_refs": [
+              "world://tool_result/toolres_e542d61e82154729be12aec659c27146",
+              "world://tool_result/toolres_628b5ad25ae94e9a9a90d40f37228679",
+              "world://tool_result/toolres_060279e919ea472ca4630246004c8d92"
+            ],
+            "mutation_receipts": [],
+            "open_pause": null,
+            "preserved_world_refs": [
+              "world://tool_result/toolres_060279e919ea472ca4630246004c8d92",
+              "world://tool_result/toolres_628b5ad25ae94e9a9a90d40f37228679",
+              "world://tool_result/toolres_e542d61e82154729be12aec659c27146"
+            ],
+            "unresolved_errors": [],
+            "verification_receipts": [
+              "verify_d8bcf03ac5994885b0870f00f5a57cf8"
+            ]
+          }
+        },
+        "timestamp": "2026-06-14T22:00:34.173490+00:00"
+      },
+      {
+        "event_id": "evt_96d9f4bc2e234f6fa20ed42e0c3f041b",
+        "event_type": "ExtensionTraceRecorded",
+        "payload": {
+          "extension_id": "appv21.trace",
+          "hook": "finalize",
+          "mode": "THINK",
+          "payload_keys": [
+            "artifact_id"
+          ]
+        },
+        "timestamp": "2026-06-14T22:00:34.173608+00:00"
+      },
+      {
+        "event_id": "evt_0e02ae756925412283aa17083ce33967",
+        "event_type": "RunCompleted",
+        "payload": {
+          "artifact_ids": [
+            "final_summary"
+          ],
+          "mutation_receipts": [],
+          "run_id": "run_9f86526c1c154a0ba3407741d950823c",
+          "status": "completed",
+          "summary": "AppV2.1 runtime-first decision loop completed.",
+          "verification_receipts": [
+            "verify_d8bcf03ac5994885b0870f00f5a57cf8"
+          ]
+        },
+        "timestamp": "2026-06-14T22:00:34.173689+00:00"
+      }
+    ],
+    "mutation_receipts": [],
+    "run_id": "run_9f86526c1c154a0ba3407741d950823c",
+    "status": "completed",
+    "summary": "AppV2.1 runtime-first decision loop completed.",
+    "verification_receipts": [
+      "verify_d8bcf03ac5994885b0870f00f5a57cf8"
+    ]
+  },
+  "reason": null,
+  "status": "completed",
+  "tool_count": 8
+}

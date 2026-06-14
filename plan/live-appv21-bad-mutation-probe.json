@@ -1,0 +1,129 @@
+{
+  "compaction_count": 0,
+  "decision_count": 1,
+  "denied_count": 1,
+  "event_order": [
+    "UserMessageReceived",
+    "ModeChanged",
+    "PromptContextPrepared",
+    "DecisionProposed",
+    "ToolCallDenied",
+    "RunFailed"
+  ],
+  "pause_count": 0,
+  "raw": {
+    "details": {
+      "errors": [
+        "path_outside_root:../escape.txt"
+      ]
+    },
+    "events": [
+      {
+        "event_id": "evt_32c3d825ece046ea93e7febd59049b63",
+        "event_type": "UserMessageReceived",
+        "payload": {
+          "constraints": [],
+          "content": "Try an unsafe write.",
+          "request_id": "req_e499378b2cff4a77baac95d83c295171",
+          "root_path": "/private/tmp/allthebest-appv21-main-publish/live_appv21_bad_mutation_repo"
+        },
+        "timestamp": "2026-06-14T22:00:34.033481+00:00"
+      },
+      {
+        "event_id": "evt_dfd1342422d34fd3889b358f7c1ba74b",
+        "event_type": "ModeChanged",
+        "payload": {
+          "mode": "THINK"
+        },
+        "timestamp": "2026-06-14T22:00:34.033962+00:00"
+      },
+      {
+        "event_id": "evt_b1f4b4d73b7740128baf264fd852b792",
+        "event_type": "PromptContextPrepared",
+        "payload": {
+          "model": {
+            "model_id": "deterministic-runtime",
+            "provider": "local",
+            "role": "agent",
+            "supports_streaming": true,
+            "supports_tools": true
+          },
+          "sections": [
+            "agent",
+            "decomposition",
+            "output_contract",
+            "skills",
+            "state",
+            "system",
+            "tools",
+            "world"
+          ],
+          "skill_count": 0,
+          "tool_count": 2
+        },
+        "timestamp": "2026-06-14T22:00:34.034073+00:00"
+      },
+      {
+        "event_id": "evt_b6478ff271794504be0d336b80ab27b7",
+        "event_type": "DecisionProposed",
+        "payload": {
+          "decision_id": "dec_b8f5ac29e93e4b91928cd500946422eb",
+          "evidence_refs": [],
+          "kind": "mutation_intent",
+          "payload": {
+            "operation_batch_id": "bad",
+            "operations": [
+              {
+                "action": "write",
+                "content": "no",
+                "path": "../escape.txt"
+              }
+            ]
+          },
+          "reason": "Attempt unsafe write.",
+          "turn_index": 0
+        },
+        "timestamp": "2026-06-14T22:00:34.034164+00:00"
+      },
+      {
+        "event_id": "evt_cf2c623decaa4b4ba9466ed1f79b71e0",
+        "event_type": "ToolCallDenied",
+        "payload": {
+          "evidence_refs": [],
+          "payload": {
+            "errors": [
+              "path_outside_root:../escape.txt"
+            ]
+          },
+          "prompt_summary": {
+            "error_count": 1
+          },
+          "status": "denied",
+          "tool_name": "derive_mutation_lease",
+          "tool_result_id": "toolres_384830c303f14ac8ab63f9d512dc620e",
+          "trust": "runtime_owned"
+        },
+        "timestamp": "2026-06-14T22:00:34.034369+00:00"
+      },
+      {
+        "event_id": "evt_304a894d9f0a44759d365f6a7c37cd5f",
+        "event_type": "RunFailed",
+        "payload": {
+          "details": {
+            "errors": [
+              "path_outside_root:../escape.txt"
+            ]
+          },
+          "reason": "mutation_denied",
+          "status": "failed"
+        },
+        "timestamp": "2026-06-14T22:00:34.034443+00:00"
+      }
+    ],
+    "reason": "mutation_denied",
+    "status": "failed"
+  },
+  "reason": "mutation_denied",
+  "status": "failed",
+  "tool_count": 0
+}
