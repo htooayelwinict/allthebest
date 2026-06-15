@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 
 def apply_event(state, event) -> None:
-    payload = event.payload
+    payload = deepcopy(event.payload)
     if event.event_type == "ModeChanged":
         state.mode = payload["mode"]
     elif event.event_type == "WorldRefAdded":

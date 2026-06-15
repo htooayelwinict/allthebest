@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,20 +29,24 @@ class AppV22AgentRuntime:
             state.active_skill_ids = [card.skill_id for card in resolved.skill_cards]
             selected = self.services.context_selector.select(state, resolved, pre_turn_mode=state.mode)
             prompt = self.services.prompt_builder.build(state, selected)
-            prompt_messages = self.services.gateway_guard.guard(
-                [
-                    {"role": "system", "content": str(prompt["system"])},
-                    {"role": "user", "content": state.request.user_goal},
-                ]
-            )
-            compressed_messages = self.services.compressor.compress(
-                prompt_messages,
-                previous_summary=state.context_summary,
-            )
-            prompt["messages"] = compressed_messages
-            decision = self.services.provider.decide(prompt)
-            self._apply(state, RuntimeEvent("DecisionProposed", {"turn_index": turn_index, **decision.to_dict()}))
-            self._route(state, decision, resolved)
+            provider_prompt = self._provider_bound_prompt(state, prompt)
+            try:
+                decision = self.services.provider.decide(provider_prompt)
+                self._apply(state, RuntimeEvent("DecisionProposed", {"turn_index": turn_index, **decision.to_dict()}))
+                self._route(state, decision, resolved)
+            except Exception as exc:
+                self._apply(
+                    state,
+                    RuntimeEvent(
+                        "RunFailed",
+                        {
+                            "status": "failed",
+                            "reason": "runtime_loop_error",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                        },
+                    ),
+                )
             if state.terminal:
                 return {**state.result, "events": [event.to_dict() for event in self.events]}
         self._apply(state, RuntimeEvent("RunFailed", {"status": "failed", "reason": "max_turns_exceeded"}))
@@ -79,11 +84,13 @@ class AppV22AgentRuntime:
             return
         if decision.kind == "mutation_intent":
             self._apply(state, RuntimeEvent("ModeChanged", {"mode": "ACT"}))
-            policy_id = state.runtime_plan.get("mutation_policy_id") or self._single(
+            policy_id = self._active_capability_id(
+                state.runtime_plan.get("mutation_policy_id"),
                 resolved.mutation_policy_ids,
                 "mutation_policy",
             )
-            executor_id = state.runtime_plan.get("mutation_executor_id") or self._single(
+            executor_id = self._active_capability_id(
+                state.runtime_plan.get("mutation_executor_id"),
                 resolved.mutation_executor_ids,
                 "mutation_executor",
             )
@@ -140,7 +147,8 @@ class AppV22AgentRuntime:
             )
             return
         if decision.kind in {"verify", "finalize"}:
-            verifier_id = state.runtime_plan.get("verifier_id") or self._single(
+            verifier_id = self._active_capability_id(
+                state.runtime_plan.get("verifier_id"),
                 resolved.verifier_ids,
                 "verifier",
             )
@@ -163,8 +171,8 @@ class AppV22AgentRuntime:
                     "RunCompleted",
                     {
                         "status": "completed",
-                        "mutation_receipts": list(state.mutation_receipts),
-                        "verification_receipts": list(state.verification_receipts),
+                        "mutation_receipts": list(state.mutation_receipts.values()),
+                        "verification_receipts": list(state.verification_receipts.values()),
                     },
                 ),
             )
@@ -180,6 +188,48 @@ class AppV22AgentRuntime:
     def _apply(self, state, event: RuntimeEvent) -> None:
         self.events.append(event)
         apply_event(state, event)
+
+    def _provider_bound_prompt(self, state, prompt: dict) -> dict:
+        payload = deepcopy(prompt)
+        messages = [
+            {
+                "role": "system",
+                "name": "provider_bound_prompt",
+                "content": "Provider-bound prompt payload follows.",
+                "prompt": payload,
+            },
+            {
+                "role": "user",
+                "content": state.request.user_goal,
+                "metadata": deepcopy(payload.get("agent", {})),
+            },
+        ]
+        guarded = self.services.gateway_guard.guard(messages)
+        compressed = self.services.compressor.compress(guarded, previous_summary=state.context_summary)
+        context_summary = self._summary_from_messages(compressed)
+        if context_summary is not None and context_summary != state.context_summary:
+            self._apply(state, RuntimeEvent("ContextSummaryUpdated", context_summary))
+        provider_prompt = deepcopy(prompt)
+        for message in compressed:
+            if message.get("name") == "provider_bound_prompt" and isinstance(message.get("prompt"), dict):
+                provider_prompt = deepcopy(message["prompt"])
+                break
+        provider_prompt["messages"] = compressed
+        return provider_prompt
+
+    def _summary_from_messages(self, messages: list[dict]) -> dict | None:
+        for message in messages:
+            summary = message.get("summary")
+            if isinstance(summary, dict):
+                return deepcopy(summary)
+        return None
+
+    def _active_capability_id(self, planned_id: str | None, active_ids: tuple[str, ...], label: str) -> str:
+        if planned_id:
+            if planned_id not in active_ids:
+                raise ValueError(f"inactive {label}: {planned_id}")
+            return planned_id
+        return self._single(active_ids, label)
 
     def _single(self, values: tuple[str, ...], label: str) -> str:
         if len(values) != 1:
