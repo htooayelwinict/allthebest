@@ -89,6 +89,43 @@ def test_gateway_guard_compacts_oversized_middle_context_without_verbose_tools()
     assert any(message.get("name") == "context_guard_compaction" for message in guarded[1:-1])
 
 
+def test_gateway_guard_returns_minimal_compacted_output_when_rich_compaction_is_oversized() -> None:
+    messages = [
+        {"role": "system", "content": "edge-start"},
+        {"role": "user", "content": "constraint: " + "u" * 600},
+        {"role": "assistant", "content": "rationale: " + "a" * 600},
+        {"role": "user", "content": "edge-end"},
+    ]
+
+    guarded = GatewayContextGuard(max_chars=350, threshold=0.85).guard(messages)
+
+    assert guarded[0] == messages[0]
+    assert guarded[-1] == messages[-1]
+    assert len(guarded) == 3
+    assert guarded[1]["name"] == "context_guard_compaction"
+    assert guarded[1]["content"] == "Middle context compacted by GatewayContextGuard: 2 messages."
+    assert estimate_chars(guarded) <= 350
+
+
+def test_gateway_guard_last_resort_does_not_return_oversized_original_middle_context() -> None:
+    messages = [
+        {"role": "system", "content": "s" * 300},
+        {"role": "user", "content": "middle user constraint: " + "u" * 4000},
+        {"role": "assistant", "content": "middle assistant rationale: " + "a" * 4000},
+        {"role": "user", "content": "u" * 300},
+    ]
+
+    guarded = GatewayContextGuard(max_chars=400, threshold=0.85).guard(messages)
+
+    assert guarded[0] == messages[0]
+    assert guarded[-1] == messages[-1]
+    assert len(guarded) == 3
+    assert guarded[1]["name"] == "context_guard_compaction"
+    assert guarded[1]["compaction"]["fallback"] == "last_resort"
+    assert "middle user constraint" not in str(guarded)
+    assert "middle assistant rationale" not in str(guarded)
+
+
 def test_structured_summary_merges_previous_summary_and_evidence_refs() -> None:
     summary = structured_summary(
         [
@@ -152,16 +189,46 @@ def test_agent_compressor_summary_preserves_middle_constraints_and_notes() -> No
         {"role": "user", "content": "instruction: never mutate caller-owned messages"},
         {"role": "assistant", "content": "rationale: summary must retain audit context"},
         {"role": "tool", "tool_result_id": "toolres_small", "content": "non-verbose evidence"},
+        {"role": "assistant", "content": "background filler " * 100},
         {"role": "user", "content": "continue"},
     ]
 
-    compacted = AgentContextCompressor(max_chars=200, threshold=0.50).compress(messages, previous_summary={})
+    compacted = AgentContextCompressor(max_chars=1_600, threshold=0.50).compress(messages, previous_summary={})
     summary = compacted[1]["summary"]
 
     assert set(summary) == {"goals", "decisions", "progress", "open_risks", "evidence_refs"}
     assert "instruction: never mutate caller-owned messages" in summary["goals"]
     assert "rationale: summary must retain audit context" in summary["progress"]
     assert "toolres_small: non-verbose evidence" in summary["progress"]
+
+
+def test_agent_compressor_shrinks_oversized_summary_to_budget() -> None:
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "instruction: " + "u" * 1000},
+        {"role": "assistant", "content": "rationale: " + "a" * 1000},
+        {"role": "tool", "tool_result_id": "toolres_small", "content": "e" * 1000},
+        {"role": "user", "content": "continue"},
+    ]
+    previous_summary = {
+        "goals": ["g" * 1000],
+        "decisions": ["d" * 1000],
+        "progress": ["p" * 1000],
+        "open_risks": ["r" * 1000],
+        "evidence_refs": ["toolres_previous"],
+    }
+
+    compacted = AgentContextCompressor(max_chars=900, threshold=0.50).compress(
+        messages, previous_summary=previous_summary
+    )
+
+    assert compacted[0] == messages[0]
+    assert compacted[-1] == messages[-1]
+    assert compacted[1]["name"] == "context_summary"
+    assert set(compacted[1]["summary"]) == {"goals", "decisions", "progress", "open_risks", "evidence_refs"}
+    assert estimate_chars(compacted) <= 450
+    assert messages[1]["content"] == "instruction: " + "u" * 1000
+    assert previous_summary["goals"] == ["g" * 1000]
 
 
 def test_agent_compressor_does_not_compress_below_threshold() -> None:

@@ -38,6 +38,26 @@ def _middle_compaction_message(messages: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
+def _minimal_compaction_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "role": "system",
+        "name": "context_guard_compaction",
+        "content": f"Middle context compacted by GatewayContextGuard: {len(messages)} messages.",
+    }
+
+
+def _last_resort_compaction_message(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "role": "system",
+        "name": "context_guard_compaction",
+        "content": "Middle context omitted by GatewayContextGuard budget fallback.",
+        "compaction": {
+            "messages_compacted": len(messages),
+            "fallback": "last_resort",
+        },
+    }
+
+
 class GatewayContextGuard:
     def __init__(self, *, max_chars: int, threshold: float = 0.85) -> None:
         self.max_chars = max_chars
@@ -48,9 +68,11 @@ class GatewayContextGuard:
         if estimate_chars(guarded) <= int(self.max_chars * self.threshold):
             return guarded
 
+        pruned_verbose_tool = False
         for message in guarded[1:-1]:
             if message.get("role") == "tool" and len(str(message.get("content", ""))) > 1000:
                 message["content"] = f"[pruned verbose tool result:{message.get('tool_result_id', 'unknown')}]"
+                pruned_verbose_tool = True
         if estimate_chars(guarded) <= min(self.max_chars, int(self.max_chars * self.threshold)):
             return guarded
         if len(guarded) <= 2:
@@ -60,9 +82,10 @@ class GatewayContextGuard:
         if estimate_chars(compacted) <= self.max_chars:
             return compacted
 
-        compacted[1] = {
-            "role": "system",
-            "name": "context_guard_compaction",
-            "content": f"Middle context compacted by GatewayContextGuard: {len(guarded[1:-1])} messages.",
-        }
-        return guarded
+        compacted = [guarded[0], _minimal_compaction_message(guarded[1:-1]), guarded[-1]]
+        if estimate_chars(compacted) <= self.max_chars:
+            return compacted
+        if pruned_verbose_tool:
+            return guarded
+
+        return [guarded[0], _last_resort_compaction_message(guarded[1:-1]), guarded[-1]]
