@@ -28,6 +28,18 @@ def test_context_evidence_reads_raw_world_refs() -> None:
     assert evidence.kinds == ("file_management.repo_snapshot",)
 
 
+def test_context_evidence_falls_back_to_world_ref_key() -> None:
+    evidence = ContextEvidence.from_prompt(
+        {
+            "world": {"world_refs": {"world://fallback/latest": {"kind": "fallback.kind"}}},
+            "messages": [],
+        }
+    )
+
+    assert evidence.refs == ("world://fallback/latest",)
+    assert evidence.kinds == ("fallback.kind",)
+
+
 def test_context_evidence_reads_compacted_summary_refs() -> None:
     prompt = {
         "world": {"world_refs": {}},
@@ -47,6 +59,19 @@ def test_context_evidence_reads_compacted_summary_refs() -> None:
 
     assert evidence.has_ref("world://repo_snapshot/latest")
     assert not evidence.has_kind("file_management.repo_snapshot")
+
+
+def test_context_evidence_reads_state_context_summary_refs() -> None:
+    evidence = ContextEvidence.from_prompt(
+        {
+            "world": {"world_refs": {}},
+            "messages": [],
+            "state": {"context_summary": {"evidence_refs": ["world://state/latest"]}},
+        }
+    )
+
+    assert evidence.refs == ("world://state/latest",)
+    assert evidence.kinds == ()
 
 
 def test_context_evidence_deduplicates_refs_across_layers() -> None:
@@ -88,3 +113,9 @@ def test_context_evidence_ignores_malformed_summary_without_crashing() -> None:
 
     assert evidence.refs == ()
     assert evidence.kinds == ()
+
+
+def test_context_evidence_ignores_non_dict_prompt_without_crashing() -> None:
+    assert ContextEvidence.from_prompt(None).refs == ()
+    assert ContextEvidence.from_prompt(["not", "a", "prompt"]).refs == ()
+    assert ContextEvidence.from_prompt("not-a-prompt").refs == ()

@@ -10,9 +10,12 @@ class ContextEvidence:
     kinds: tuple[str, ...]
 
     @classmethod
-    def from_prompt(cls, prompt: dict[str, Any]) -> ContextEvidence:
+    def from_prompt(cls, prompt: Any) -> ContextEvidence:
         refs: list[str] = []
         kinds: list[str] = []
+
+        if not isinstance(prompt, dict):
+            return cls(refs=(), kinds=())
 
         world = prompt.get("world")
         if isinstance(world, dict):
