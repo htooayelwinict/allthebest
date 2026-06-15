@@ -203,6 +203,9 @@ def test_broker_custom_registered_tool_with_handler_is_exposed_validates_and_exe
             "tool_name": "inspect_manifest",
             "path": path,
             "content": "manifest ok",
+            "payload_ref": "handler://conflicting-payload-ref",
+            "evidence_refs": ["handler://conflicting-evidence-ref"],
+            "artifacts": [{"artifact_id": "handler-conflict"}],
             "prompt_summary": {"path": path, "preview": "manifest ok"},
         }
 
@@ -239,6 +242,11 @@ def test_broker_custom_registered_tool_with_handler_is_exposed_validates_and_exe
     assert result["payload"]["path"] == "pyproject.toml"
     assert result["payload"]["bytes"] == len("manifest ok".encode("utf-8"))
     assert "content" not in result["payload"]
+    assert "preview" not in result["prompt_summary"]
+    assert result["prompt_summary"] == {"path": "pyproject.toml", "bytes": len("manifest ok".encode("utf-8")), "line_count": 1}
+    assert "payload_ref" not in result["payload"]
+    assert "evidence_refs" not in result["payload"]
+    assert "artifacts" not in result["payload"]
 
 
 def test_tool_raw_payload_is_retained_by_ref_not_prompt(tmp_path: Path) -> None:
@@ -278,3 +286,29 @@ def test_tool_raw_payload_is_retained_by_ref_not_prompt(tmp_path: Path) -> None:
     ]
     assert any(ref["payload"]["payload_ref"] == payload_ref for ref in world_refs)
     assert any(ref["payload"]["prompt_summary"]["path"] == "notes.txt" for ref in world_refs)
+
+
+def test_runtime_denied_sensitive_read_has_no_payload_ref_or_evidence_payload(tmp_path: Path) -> None:
+    secret_content = "OPENAI_API_KEY=sk-distinctive-secret\n"
+    (tmp_path / ".env").write_text(secret_content, encoding="utf-8")
+    provider = QueueProvider(
+        [
+            RuntimeDecision(kind="tool_call", reason="read env", payload={"tool_name": "read_file", "arguments": {"path": ".env"}}),
+            RuntimeDecision(kind="finalize", reason="no-op verified", payload={"explicit_noop": True}),
+        ]
+    )
+    services = create_appv21_runtime_services(root_path=tmp_path, provider=provider)
+
+    result = AppV21AgentRuntime(root_path=tmp_path, services=services).run("Read env.")
+
+    denied = [event for event in result["events"] if event["event_type"] == "ToolCallDenied" and event["payload"]["tool_name"] == "read_file"]
+    assert denied
+    denied_payload = denied[0]["payload"]
+    assert denied_payload["payload_ref"] == ""
+    assert services.evidence_store.get(denied_payload["tool_result_id"]) is None
+    assert services.evidence_store.get(denied_payload["payload_ref"]) is None
+    assert all(
+        not (event["event_type"] == "WorldRefAdded" and event["payload"].get("kind") == "tool_result")
+        for event in result["events"]
+    )
+    assert secret_content not in json.dumps(result["events"])

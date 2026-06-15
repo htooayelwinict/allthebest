@@ -37,6 +37,17 @@ READ_TOOL_CATEGORIES = {
     ToolCategory.VERIFY,
 }
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
+ENVELOPE_METADATA_KEYS = {
+    "tool_result_id",
+    "tool_name",
+    "status",
+    "trust",
+    "prompt_summary",
+    "payload_ref",
+    "evidence_refs",
+    "artifacts",
+}
+RISKY_PROMPT_SUMMARY_KEYS = {"content", "preview", "payload", "payload_ref", "evidence_refs", "artifacts"}
 
 
 @dataclass(frozen=True)
@@ -157,8 +168,8 @@ class ToolBroker:
             return ToolExecutionResult(envelope=envelope)
         result = self._handlers[tool_name](arguments)
         status = str(result.get("status") or "completed")
-        payload = {key: value for key, value in result.items() if key not in {"tool_result_id", "tool_name", "status", "trust", "prompt_summary"}}
-        prompt_summary = result.get("prompt_summary") or self.compact_tool_result(result)
+        payload = {key: value for key, value in result.items() if key not in ENVELOPE_METADATA_KEYS}
+        prompt_summary = self.compact_prompt_summary(result)
         envelope = self.tool_result_envelope(
             tool_name=tool_name,
             status=status,
@@ -215,6 +226,16 @@ class ToolBroker:
         if "content" in payload:
             compact["bytes"] = len(str(payload.get("content") or "").encode("utf-8"))
         return compact
+
+    def compact_prompt_summary(self, result: dict[str, Any]) -> dict[str, Any]:
+        if "content" in result or "files" in result:
+            return self.compact_tool_result(result)
+        supplied = result.get("prompt_summary")
+        if isinstance(supplied, dict):
+            sanitized = {key: deepcopy(value) for key, value in supplied.items() if key not in RISKY_PROMPT_SUMMARY_KEYS}
+            if sanitized:
+                return sanitized
+        return self.compact_tool_result(result)
 
     def compact_tool_result(self, result: dict[str, Any]) -> dict[str, Any]:
         if "content" in result:
