@@ -18,7 +18,7 @@ from appv21.runtime.agent_runtime import AppV21AgentRuntime
 from appv21.runtime.decisions import RuntimeDecision
 from appv21.runtime.services import create_appv21_runtime_services
 from appv21.state.models import AgentState, Artifact, MutationLease, MutationReceipt, PauseState, PlanState, RequestEnvelope, WorldRef
-from scripts.live_appv21_staged_file_management_matrix_probe import _build_report
+from scripts.live_appv21_staged_file_management_matrix_report import _build_report
 
 
 def test_context_budget_estimates_section_sizes() -> None:
@@ -135,6 +135,19 @@ def test_staged_probe_report_has_context_budget_matrix(tmp_path: Path) -> None:
 
     assert report["context_budget_matrix"] == []
     assert report["selection_matrix"] == []
+
+
+def test_staged_probe_report_captures_invalid_manifest(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "docs" / "workspace_manifest.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text("{not json", encoding="utf-8")
+
+    report = _build_report(repo=tmp_path, result={"status": "completed", "events": []}, provider=None, max_turns=1)
+
+    assert report["file_matrix"]["manifest"] is None
+    assert "manifest_error" in report["file_matrix"]
+    assert report["verdict"]["checks"]["manifest_valid"] is False
+    assert report["verdict"]["overall"] == "fail"
 
 
 def test_context_overflow_policy_classifies_provider_errors() -> None:
