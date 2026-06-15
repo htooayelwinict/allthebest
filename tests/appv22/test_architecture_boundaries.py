@@ -13,11 +13,24 @@ def _imported_modules(path: Path) -> set[str]:
     return modules
 
 
-def test_runtime_core_does_not_import_extensions_package():
+def _is_file_management_extension_import(module: str) -> bool:
+    return module == "appv22.extensions.file_management" or module.startswith(
+        "appv22.extensions.file_management."
+    )
+
+
+def test_runtime_extension_boundary_allows_generic_extension_contracts():
+    assert not _is_file_management_extension_import("appv22.extensions")
+    assert not _is_file_management_extension_import("appv22.extensions.base")
+    assert not _is_file_management_extension_import("appv22.extensions.registry")
+    assert _is_file_management_extension_import("appv22.extensions.file_management")
+    assert _is_file_management_extension_import("appv22.extensions.file_management.tools")
+
+
+def test_runtime_core_does_not_import_file_management_extensions():
     runtime_files = (Path(__file__).resolve().parents[2] / "appV2.2/appv22/runtime").rglob(
         "*.py"
     )
     for path in runtime_files:
         for module in _imported_modules(path):
-            assert module != "appv22.extensions"
-            assert not module.startswith("appv22.extensions.")
+            assert not _is_file_management_extension_import(module)
