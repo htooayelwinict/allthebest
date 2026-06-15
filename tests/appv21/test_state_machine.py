@@ -1,0 +1,34 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.1"))
+
+from appv21.runtime.decisions import RuntimeDecision
+from appv21.runtime.state_machine import RuntimeStateMachine
+
+
+def test_state_machine_allows_open_observe_act_revise_loop() -> None:
+    machine = RuntimeStateMachine()
+
+    assert machine.next_mode("START", RuntimeDecision(kind="observe", reason="map")) == "OBSERVE"
+    assert machine.next_mode("OBSERVE", RuntimeDecision(kind="plan", reason="plan")) == "PLAN"
+    assert machine.next_mode("PLAN", RuntimeDecision(kind="mutation_intent", reason="act")) == "ACT"
+    assert machine.next_mode("ACT", RuntimeDecision(kind="verify", reason="check")) == "VERIFY"
+    assert machine.next_mode("VERIFY", RuntimeDecision(kind="finalize", reason="done")) == "FINALIZE"
+
+
+def test_state_machine_rejects_finalize_from_start() -> None:
+    machine = RuntimeStateMachine()
+
+    rejection = machine.validate_transition("START", RuntimeDecision(kind="finalize", reason="done"))
+
+    assert rejection == "invalid_transition:START->finalize"
+
+
+def test_state_machine_detects_repeated_nonproductive_decisions() -> None:
+    machine = RuntimeStateMachine(max_repeated_decisions=3)
+    decision = RuntimeDecision(kind="observe", reason="again")
+
+    assert machine.record_progress(decision, changed=False) is None
+    assert machine.record_progress(decision, changed=False) is None
+    assert machine.record_progress(decision, changed=False) == "repeated_loop:observe"
