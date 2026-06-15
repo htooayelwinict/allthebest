@@ -224,14 +224,14 @@ def _satisfied_observation_tool_call(prompt: dict, decision: RuntimeDecision) ->
     if not isinstance(tool_id, str):
         return None
 
-    contracts = _observation_contracts(prompt)
-    if not contracts:
+    contract_records = _observation_contract_records(prompt)
+    if not contract_records:
         return None
 
     evidence = ContextEvidence.from_prompt(prompt)
-    for contract in contracts:
+    for contract, tool_ids in contract_records:
         preferred_tool_id = contract.get("preferred_tool_id")
-        if preferred_tool_id != tool_id:
+        if preferred_tool_id != tool_id and tool_id not in tool_ids:
             continue
         if not _contract_satisfied(contract, evidence):
             continue
@@ -258,13 +258,13 @@ def _missing_observation_tool(prompt: dict, selected_tools: list[str]) -> str | 
     if not selected_tools:
         return None
 
-    contracts = _observation_contracts(prompt)
-    if not contracts:
+    contract_records = _observation_contract_records(prompt)
+    if not contract_records:
         return selected_tools[0] if not _world_refs(prompt) else None
 
     selected_tool_ids = set(selected_tools)
     evidence = ContextEvidence.from_prompt(prompt)
-    for contract in contracts:
+    for contract, _tool_ids in contract_records:
         if _contract_satisfied(contract, evidence):
             continue
         preferred_tool_id = contract.get("preferred_tool_id")
@@ -273,16 +273,16 @@ def _missing_observation_tool(prompt: dict, selected_tools: list[str]) -> str | 
     return None
 
 
-def _observation_contracts(prompt: dict) -> list[dict[str, Any]]:
+def _observation_contract_records(prompt: dict) -> list[tuple[dict[str, Any], tuple[str, ...]]]:
     skills = prompt.get("skills") if isinstance(prompt.get("skills"), list) else []
-    contracts: list[dict[str, Any]] = []
+    records: list[tuple[dict[str, Any], tuple[str, ...]]] = []
     for skill in skills:
         if not isinstance(skill, dict):
             continue
         contract = skill.get("observation_contract")
         if isinstance(contract, dict):
-            contracts.append(contract)
-    return contracts
+            records.append((contract, _contract_values(skill.get("tool_ids"))))
+    return records
 
 
 def _contract_satisfied(contract: Mapping[str, Any], evidence: ContextEvidence) -> bool:

@@ -266,6 +266,39 @@ def test_appv22_adapter_suppresses_legacy_observe_replay_when_summary_satisfies_
     assert coerced.evidence_refs == ["world://repo_snapshot/latest"]
 
 
+def test_appv22_adapter_suppresses_satisfied_contract_read_tool_replay() -> None:
+    prompt = {
+        "state": {"runtime_plan": {}, "mutation_receipts": {}, "verification_receipts": {}},
+        "world": {"world_refs": {}},
+        "messages": [
+            {"role": "system", "name": "context_summary", "summary": {"evidence_refs": ["world://repo_snapshot/latest"]}}
+        ],
+        "selection": {"selected_tools": ["file_management.repo_snapshot", "file_management.read_file"]},
+        "skills": [
+            {
+                "skill_id": "file_management.cleanup",
+                "tool_ids": ("file_management.repo_snapshot", "file_management.read_file"),
+                "observation_contract": {
+                    "evidence_refs": ("world://repo_snapshot/latest",),
+                    "evidence_kinds": ("file_management.repo_snapshot",),
+                    "preferred_tool_id": "file_management.repo_snapshot",
+                },
+            }
+        ],
+    }
+    decision = RuntimeDecision(
+        "tool_call",
+        "legacy read replay",
+        {"tool_id": "file_management.read_file", "arguments": {"path": "README.md"}},
+        [],
+    )
+
+    coerced = appv2_env_provider._coerce_appv22_progression(prompt, decision)
+
+    assert coerced.kind == "plan"
+    assert coerced.evidence_refs == ["world://repo_snapshot/latest"]
+
+
 def test_appv22_adapter_observes_when_contract_evidence_is_missing() -> None:
     prompt = {
         "state": {"runtime_plan": {}, "mutation_receipts": {}, "verification_receipts": {}},
