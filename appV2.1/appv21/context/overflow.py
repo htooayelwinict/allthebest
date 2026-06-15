@@ -11,10 +11,14 @@ class ContextOverflowPolicy:
         "context_length",
         "maximum context",
         "too many tokens",
-        "413",
         "request too large",
+    )
+    _HTTP_413_MARKERS = (
+        "http 413",
+        "413 request too large",
+        "413 payload too large",
     )
 
     def is_context_overflow(self, error: BaseException) -> bool:
         message = str(error).lower()
-        return any(marker in message for marker in self._MARKERS)
+        return any(marker in message for marker in self._MARKERS) or any(marker in message for marker in self._HTTP_413_MARKERS)

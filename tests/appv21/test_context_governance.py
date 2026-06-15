@@ -136,7 +136,10 @@ def test_context_overflow_policy_classifies_provider_errors() -> None:
     assert policy.is_context_overflow(RuntimeError("maximum context window exceeded")) is True
     assert policy.is_context_overflow(RuntimeError("too many tokens in request")) is True
     assert policy.is_context_overflow(RuntimeError("HTTP 413 from provider")) is True
+    assert policy.is_context_overflow(RuntimeError("413 request too large")) is True
+    assert policy.is_context_overflow(RuntimeError("413 Payload Too Large")) is True
     assert policy.is_context_overflow(RuntimeError("request too large")) is True
+    assert policy.is_context_overflow(RuntimeError("business id 413 failed validation")) is False
     assert policy.is_context_overflow(RuntimeError("rate limit exceeded")) is False
 
 
@@ -687,6 +690,100 @@ def test_context_overflow_retries_after_runtime_compaction(tmp_path: Path) -> No
     assert "ContextCompactionRequested" in event_types
     assert "ContextCompacted" in event_types
     assert "ContextOverflowRecoveryFailed" not in event_types
+
+
+def test_context_overflow_retry_is_exactly_once(tmp_path: Path) -> None:
+    class AlwaysOverflowProvider:
+        provider_id = "always-overflow"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def decide(self, _prompt_payload: dict) -> RuntimeDecision:
+            self.calls += 1
+            raise RuntimeError("context length exceeded")
+
+    provider = AlwaysOverflowProvider()
+    runtime = AppV21AgentRuntime(
+        root_path=tmp_path,
+        services=create_appv21_runtime_services(root_path=tmp_path, provider=provider),
+    )
+    state = AgentState(
+        session_id="sess",
+        run_id="run",
+        request=RequestEnvelope(request_id="req", user_goal="Inspect the repo.", root_path=str(tmp_path)),
+    )
+    for index in range(8):
+        state.world.refs[f"world://ref/{index}"] = WorldRef(
+            ref_id=f"world://ref/{index}",
+            kind="tool_result",
+            summary=f"ref {index}",
+            payload={"index": index},
+        )
+
+    with pytest.raises(RuntimeError, match="context length exceeded"):
+        runtime.run_turn(state)
+
+    event_types = [event["event_type"] for event in runtime.store.to_dicts()]
+    assert provider.calls == 2
+    assert event_types.count("ContextOverflowDetected") == 1
+    assert event_types.count("ContextOverflowRecoveryFailed") == 1
+
+
+def test_non_overflow_provider_exception_is_reraised_without_recovery_events(tmp_path: Path) -> None:
+    class NonOverflowProvider:
+        provider_id = "non-overflow"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def decide(self, _prompt_payload: dict) -> RuntimeDecision:
+            self.calls += 1
+            raise RuntimeError("rate limit exceeded")
+
+    provider = NonOverflowProvider()
+    runtime = AppV21AgentRuntime(
+        root_path=tmp_path,
+        services=create_appv21_runtime_services(root_path=tmp_path, provider=provider),
+        max_turns=1,
+    )
+
+    with pytest.raises(RuntimeError, match="rate limit exceeded"):
+        runtime.run("Summarize without changes.")
+
+    event_types = [event["event_type"] for event in runtime.store.to_dicts()]
+    assert provider.calls == 1
+    assert "ContextOverflowDetected" not in event_types
+    assert "ContextOverflowRecoveryFailed" not in event_types
+
+
+def test_context_overflow_without_compaction_emits_recovery_failed(tmp_path: Path) -> None:
+    class OverflowWithoutCompactionProvider:
+        provider_id = "overflow-without-compaction"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def decide(self, _prompt_payload: dict) -> RuntimeDecision:
+            self.calls += 1
+            raise RuntimeError("request too large")
+
+    provider = OverflowWithoutCompactionProvider()
+    runtime = AppV21AgentRuntime(
+        root_path=tmp_path,
+        services=create_appv21_runtime_services(root_path=tmp_path, provider=provider),
+        max_turns=1,
+    )
+
+    with pytest.raises(RuntimeError, match="request too large"):
+        runtime.run("Summarize without changes.")
+
+    event_types = [event["event_type"] for event in runtime.store.to_dicts()]
+    recovery_failure = next(event for event in runtime.store.to_dicts() if event["event_type"] == "ContextOverflowRecoveryFailed")
+    assert provider.calls == 1
+    assert event_types.count("ContextOverflowDetected") == 1
+    assert event_types.count("ContextOverflowRecoveryFailed") == 1
+    assert recovery_failure["payload"]["reason"] == "compaction_unavailable"
 
 
 def test_finalize_emits_runtime_verified_run_memory(tmp_path: Path) -> None:
