@@ -118,6 +118,7 @@ def test_runtime_core_does_not_import_file_management_extensions():
     appv22_root = Path(__file__).resolve().parents[2] / "appV2.2/appv22"
     scanned_files = [
         *appv22_root.joinpath("runtime").rglob("*.py"),
+        *(appv22_root.joinpath("core").rglob("*.py") if appv22_root.joinpath("core").exists() else []),
         appv22_root / "extensions/base.py",
         appv22_root / "extensions/registry.py",
     ]

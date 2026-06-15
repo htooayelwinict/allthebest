@@ -148,6 +148,78 @@ def test_read_file_denies_protected_paths_with_schema_compatible_payload(tmp_pat
     assert set(schema["required"]) == {"status", "path", "content"}
 
 
+def test_read_file_denies_normalized_protected_path_bypass(tmp_path):
+    (tmp_path / "safe").mkdir()
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets/token.txt").write_text("secret", encoding="utf-8")
+    registry = ToolRegistry()
+    FileManagementExtension().register_tools(registry)
+
+    result = registry.handler("file_management.read_file")(
+        {"path": "safe/../secrets/token.txt"},
+        {"root_path": tmp_path},
+    )
+
+    assert result == {
+        "status": "denied",
+        "path": "secrets/token.txt",
+        "content": "",
+        "errors": ["protected_path:secrets/token.txt"],
+    }
+
+
+def test_policy_rejects_normalized_protected_source_and_destination(tmp_path):
+    (tmp_path / "safe").mkdir()
+    (tmp_path / "safe/draft.md").write_text("draft", encoding="utf-8")
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets/token.txt").write_text("secret", encoding="utf-8")
+
+    errors = FileMoveMutationPolicy().validate(
+        [
+            {"action": "move", "source": "safe/../secrets/token.txt", "destination": "moved/token.txt"},
+            {"action": "move", "source": "safe/draft.md", "destination": "safe/../secrets/draft.md"},
+        ],
+        root_path=tmp_path,
+    )
+
+    assert "protected_source_path:secrets/token.txt" in errors
+    assert "protected_destination_path:secrets/draft.md" in errors
+
+
+def test_policy_rejects_canonical_duplicate_move_destinations(tmp_path):
+    (tmp_path / "one.md").write_text("one", encoding="utf-8")
+    (tmp_path / "two.md").write_text("two", encoding="utf-8")
+
+    errors = FileMoveMutationPolicy().validate(
+        [
+            {"action": "move", "source": "one.md", "destination": "docs/file.md"},
+            {"action": "move", "source": "two.md", "destination": "docs/../docs/file.md"},
+        ],
+        root_path=tmp_path,
+    )
+
+    assert "duplicate_destination:docs/file.md" in errors
+
+
+def test_policy_rejects_duplicate_canonical_sources_without_partial_mutation(tmp_path):
+    (tmp_path / "safe").mkdir()
+    (tmp_path / "safe/first.md").write_text("first", encoding="utf-8")
+
+    operations = [
+        {"action": "move", "source": "safe/first.md", "destination": "moved/first.md"},
+        {"action": "move", "source": "safe/../safe/first.md", "destination": "moved/second.md"},
+    ]
+
+    errors = FileMoveMutationPolicy().validate(operations, root_path=tmp_path)
+    result = FileMutationExecutor().apply(operations, root_path=tmp_path)
+
+    assert "duplicate_source:safe/first.md" in errors
+    assert result == {"status": "denied", "touched_paths": [], "errors": ["duplicate_source:safe/first.md"]}
+    assert (tmp_path / "safe/first.md").read_text(encoding="utf-8") == "first"
+    assert not (tmp_path / "moved/first.md").exists()
+    assert not (tmp_path / "moved/second.md").exists()
+
+
 def test_planner_holds_moves_when_destination_collides():
     state = AgentState("sess", "run", RequestEnvelope("req", "cleanup", "/workspace"))
     state.world_refs["world://repo_snapshot/latest"] = {

@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
-from appv22.extensions.file_management.mutation_policy import FileMoveMutationPolicy
+from appv22.extensions.file_management.mutation_policy import FileMoveMutationPolicy, _canonical_relative_path
 
 
 class FileMutationExecutor:
@@ -24,8 +24,14 @@ class FileMutationExecutor:
         for operation in operations:
             action = operation["action"]
             if action == "move":
-                source_name = str(operation["source"])
-                destination_name = str(operation["destination"])
+                source_name = _canonical_relative_path(root, str(operation["source"]))
+                destination_name = _canonical_relative_path(root, str(operation["destination"]))
+                if source_name is None or destination_name is None:
+                    return {
+                        "status": "denied",
+                        "touched_paths": sorted(set(touched)),
+                        "errors": [f"path_outside_root:{operation['source']}->{operation['destination']}"],
+                    }
                 source = root / source_name
                 destination = root / destination_name
                 if not source.is_file():
@@ -38,7 +44,13 @@ class FileMutationExecutor:
                 shutil.move(str(source), str(destination))
                 touched.extend([source_name, destination_name])
             elif action == "write":
-                path_name = str(operation["path"])
+                path_name = _canonical_relative_path(root, str(operation["path"]))
+                if path_name is None:
+                    return {
+                        "status": "denied",
+                        "touched_paths": sorted(set(touched)),
+                        "errors": [f"path_outside_root:{operation['path']}->{operation['path']}"],
+                    }
                 path = root / path_name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 content = operation.get("content", "")
@@ -53,8 +65,11 @@ class FileMutationExecutor:
         for operation in operations:
             if operation.get("action") != "move":
                 continue
-            source_name = str(operation["source"])
-            destination_name = str(operation["destination"])
+            source_name = _canonical_relative_path(root, str(operation["source"]))
+            destination_name = _canonical_relative_path(root, str(operation["destination"]))
+            if source_name is None or destination_name is None:
+                errors.append(f"path_outside_root:{operation['source']}->{operation['destination']}")
+                continue
             source = root / source_name
             destination = root / destination_name
             if not source.exists():

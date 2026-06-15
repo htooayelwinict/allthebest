@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from appv22.extensions.file_management.mutation_policy import _absolute, _outside, _protected
+from appv22.extensions.file_management.mutation_policy import _absolute, _canonical_relative_path, _protected
 from appv22.extensions.file_management.schemas import READ_FILE_OUTPUT_SCHEMA, REPO_SNAPSHOT_OUTPUT_SCHEMA
 from appv22.tools.definitions import ToolDefinition
 
@@ -58,11 +58,22 @@ def read_file(args: dict, context: dict) -> dict:
     relative = str(args.get("path", ""))
     if _absolute(relative):
         return {"status": "denied", "path": relative, "content": "", "errors": [f"absolute_path:path:{relative}"]}
-    if _outside(root, relative):
+    canonical_relative = _canonical_relative_path(root, relative)
+    if canonical_relative is None:
         return {"status": "denied", "path": relative, "content": "", "errors": [f"path_outside_root:{relative}"]}
-    if _protected(relative):
-        return {"status": "denied", "path": relative, "content": "", "errors": [f"protected_path:{relative}"]}
-    path = root / relative
+    if _protected(canonical_relative):
+        return {
+            "status": "denied",
+            "path": canonical_relative,
+            "content": "",
+            "errors": [f"protected_path:{canonical_relative}"],
+        }
+    path = root / canonical_relative
     if not path.is_file():
-        return {"status": "failed", "path": relative, "content": "", "errors": [f"missing_file:{relative}"]}
-    return {"status": "completed", "path": relative, "content": path.read_text(encoding="utf-8")}
+        return {
+            "status": "failed",
+            "path": canonical_relative,
+            "content": "",
+            "errors": [f"missing_file:{canonical_relative}"],
+        }
+    return {"status": "completed", "path": canonical_relative, "content": path.read_text(encoding="utf-8")}

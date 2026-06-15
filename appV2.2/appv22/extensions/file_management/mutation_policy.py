@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 PROTECTED_PREFIXES = (".git/", "tests/", "src/", "assets/", "secrets/", "docs/")
+PROTECTED_DESTINATION_PREFIXES = (".git/", "tests/", "src/", "assets/", "secrets/")
 PROTECTED_NAMES = ("README.md",)
 PROTECTED_NAME_PREFIXES = ("keep", "do_not_move", "old_blob")
 MANIFEST_PATH = "docs/workspace_manifest.json"
@@ -14,6 +15,7 @@ class FileMoveMutationPolicy:
     def validate(self, operations: list[dict], *, root_path) -> list[str]:
         errors: list[str] = []
         root = Path(root_path).resolve()
+        sources: set[str] = set()
         destinations: set[str] = set()
         for operation in operations:
             action = operation.get("action")
@@ -26,32 +28,41 @@ class FileMoveMutationPolicy:
                     errors.append(f"absolute_path:source:{source}")
                 if destination_absolute:
                     errors.append(f"absolute_path:destination:{destination}")
-                source_outside = _outside(root, source)
-                destination_outside = _outside(root, destination)
+                canonical_source = None if source_absolute else _canonical_relative_path(root, source)
+                canonical_destination = None if destination_absolute else _canonical_relative_path(root, destination)
+                source_outside = canonical_source is None
+                destination_outside = canonical_destination is None
                 if source_outside or destination_outside:
                     errors.append(f"path_outside_root:{source}->{destination}")
-                if _protected(source):
-                    errors.append(f"protected_source_path:{source}")
-                if destination and not destination_absolute and not destination_outside:
-                    normalized_destination = _normalize(destination)
-                    if normalized_destination in destinations:
-                        errors.append(f"duplicate_destination:{normalized_destination}")
-                    destinations.add(normalized_destination)
-                if destination and not destination_outside and (root / destination).exists():
-                    errors.append(f"destination_exists:{destination}")
-                if source and not source_absolute and not source_outside and not _protected(source):
-                    source_path = root / source
+                if canonical_source and _protected(canonical_source):
+                    errors.append(f"protected_source_path:{canonical_source}")
+                if canonical_destination and _protected_destination(canonical_destination):
+                    errors.append(f"protected_destination_path:{canonical_destination}")
+                if canonical_source:
+                    if canonical_source in sources:
+                        errors.append(f"duplicate_source:{canonical_source}")
+                    sources.add(canonical_source)
+                if canonical_destination:
+                    if canonical_destination in destinations:
+                        errors.append(f"duplicate_destination:{canonical_destination}")
+                    destinations.add(canonical_destination)
+                if canonical_destination and (root / canonical_destination).exists():
+                    errors.append(f"destination_exists:{canonical_destination}")
+                if canonical_source and not _protected(canonical_source):
+                    source_path = root / canonical_source
                     if not source_path.exists():
-                        errors.append(f"missing_source:{source}")
+                        errors.append(f"missing_source:{canonical_source}")
                     elif not source_path.is_file():
-                        errors.append(f"non_file_source:{source}")
+                        errors.append(f"non_file_source:{canonical_source}")
             elif action == "write":
                 path = str(operation.get("path", ""))
-                if _absolute(path):
+                path_absolute = _absolute(path)
+                if path_absolute:
                     errors.append(f"absolute_path:path:{path}")
-                if _outside(root, path):
+                canonical_path = None if path_absolute else _canonical_relative_path(root, path)
+                if canonical_path is None:
                     errors.append(f"path_outside_root:{path}->{path}")
-                if path != MANIFEST_PATH:
+                if canonical_path != MANIFEST_PATH:
                     errors.append(f"unsupported_write_path:{operation.get('path')}")
             else:
                 errors.append(f"unsupported_operation:{action}")
@@ -59,13 +70,16 @@ class FileMoveMutationPolicy:
 
 
 def _outside(root: Path, relative: str) -> bool:
-    if not relative:
-        return True
+    return _canonical_relative_path(root, relative) is None
+
+
+def _canonical_relative_path(root: Path, relative: str) -> str | None:
+    if not relative or _absolute(relative):
+        return None
     try:
-        (root / relative).resolve().relative_to(root)
+        return (root / relative).resolve().relative_to(root).as_posix()
     except ValueError:
-        return True
-    return False
+        return None
 
 
 def _absolute(path: str) -> bool:
@@ -82,5 +96,15 @@ def _protected(path: str) -> bool:
     return (
         normalized in PROTECTED_NAMES
         or normalized.startswith(PROTECTED_PREFIXES)
+        or name.startswith(PROTECTED_NAME_PREFIXES)
+    )
+
+
+def _protected_destination(path: str) -> bool:
+    normalized = path.replace("\\", "/").lstrip("/")
+    name = Path(normalized).name.lower()
+    return (
+        normalized in PROTECTED_NAMES
+        or normalized.startswith(PROTECTED_DESTINATION_PREFIXES)
         or name.startswith(PROTECTED_NAME_PREFIXES)
     )
