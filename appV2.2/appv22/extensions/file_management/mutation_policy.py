@@ -7,6 +7,10 @@ PROTECTED_DESTINATION_PREFIXES = (".git/", "tests/", "src/", "assets/", "secrets
 PROTECTED_NAMES = ("README.md",)
 PROTECTED_NAME_PREFIXES = ("keep", "do_not_move", "old_blob")
 MANIFEST_PATH = "docs/workspace_manifest.json"
+_PROTECTED_PREFIXES_CANONICAL = tuple(prefix.lower() for prefix in PROTECTED_PREFIXES)
+_PROTECTED_DESTINATION_PREFIXES_CANONICAL = tuple(prefix.lower() for prefix in PROTECTED_DESTINATION_PREFIXES)
+_PROTECTED_NAMES_CANONICAL = tuple(name.lower() for name in PROTECTED_NAMES)
+_PROTECTED_NAME_PREFIXES_CANONICAL = tuple(prefix.lower() for prefix in PROTECTED_NAME_PREFIXES)
 
 
 class FileMoveMutationPolicy:
@@ -91,20 +95,20 @@ def _normalize(path: str) -> str:
 
 
 def _protected(path: str) -> bool:
-    normalized = path.replace("\\", "/").lstrip("/")
-    name = Path(normalized).name.lower()
+    normalized = path.replace("\\", "/").lstrip("/").lower()
+    name = Path(normalized).name
     return (
-        normalized in PROTECTED_NAMES
-        or normalized.startswith(PROTECTED_PREFIXES)
-        or name.startswith(PROTECTED_NAME_PREFIXES)
+        normalized in _PROTECTED_NAMES_CANONICAL
+        or normalized.startswith(_PROTECTED_PREFIXES_CANONICAL)
+        or name.startswith(_PROTECTED_NAME_PREFIXES_CANONICAL)
     )
 
 
 def _protected_destination(path: str) -> bool:
-    normalized = path.replace("\\", "/").lstrip("/")
-    name = Path(normalized).name.lower()
+    normalized = path.replace("\\", "/").lstrip("/").lower()
+    name = Path(normalized).name
     return (
-        normalized in PROTECTED_NAMES
-        or normalized.startswith(PROTECTED_DESTINATION_PREFIXES)
-        or name.startswith(PROTECTED_NAME_PREFIXES)
+        normalized in _PROTECTED_NAMES_CANONICAL
+        or normalized.startswith(_PROTECTED_DESTINATION_PREFIXES_CANONICAL)
+        or name.startswith(_PROTECTED_NAME_PREFIXES_CANONICAL)
     )

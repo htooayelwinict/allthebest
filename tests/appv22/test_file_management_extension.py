@@ -168,6 +168,43 @@ def test_read_file_denies_normalized_protected_path_bypass(tmp_path):
     }
 
 
+def test_read_file_denies_case_variant_readme_protected_path(tmp_path):
+    (tmp_path / "readme.md").write_text("private", encoding="utf-8")
+    registry = ToolRegistry()
+    FileManagementExtension().register_tools(registry)
+
+    result = registry.handler("file_management.read_file")({"path": "readme.md"}, {"root_path": tmp_path})
+
+    assert result == {
+        "status": "denied",
+        "path": "readme.md",
+        "content": "",
+        "errors": ["protected_path:readme.md"],
+    }
+
+
+def test_policy_rejects_case_variant_protected_sources_and_destinations(tmp_path):
+    (tmp_path / "draft.md").write_text("draft", encoding="utf-8")
+    (tmp_path / "notes.md").write_text("notes", encoding="utf-8")
+
+    errors = FileMoveMutationPolicy().validate(
+        [
+            {"action": "move", "source": "readme.md", "destination": "out/readme.md"},
+            {"action": "move", "source": "README.md", "destination": "out/README.md"},
+            {"action": "move", "source": "Tests/foo.py", "destination": "out/foo.py"},
+            {"action": "move", "source": "draft.md", "destination": "Secrets/out.txt"},
+            {"action": "move", "source": "notes.md", "destination": ".GIT/config"},
+        ],
+        root_path=tmp_path,
+    )
+
+    assert "protected_source_path:readme.md" in errors
+    assert "protected_source_path:README.md" in errors
+    assert "protected_source_path:Tests/foo.py" in errors
+    assert "protected_destination_path:Secrets/out.txt" in errors
+    assert "protected_destination_path:.GIT/config" in errors
+
+
 def test_policy_rejects_normalized_protected_source_and_destination(tmp_path):
     (tmp_path / "safe").mkdir()
     (tmp_path / "safe/draft.md").write_text("draft", encoding="utf-8")
