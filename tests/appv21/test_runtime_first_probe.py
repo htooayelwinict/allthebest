@@ -231,3 +231,11 @@ def test_appv21_runtime_rejects_missing_decision_evidence(tmp_path: Path) -> Non
     assert result["status"] == "failed"
     assert result["reason"] == "repeated_rejected_decision"
     assert [event["event_type"] for event in result["events"]].count("DecisionRejected") == 3
+    rejected_indexes = [index for index, event in enumerate(result["events"]) if event["event_type"] == "DecisionRejected"]
+    for index in rejected_indexes:
+        previous_mode = next(
+            event["payload"]["mode"]
+            for event in reversed(result["events"][:index])
+            if event["event_type"] == "ModeChanged"
+        )
+        assert previous_mode == "OBSERVE"

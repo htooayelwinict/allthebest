@@ -102,17 +102,23 @@ class AppV21AgentRuntime:
 
         transition_rejection = self.state_machine.validate_transition(mode_before_prompt, decision)
         if transition_rejection is not None:
+            self._restore_mode_after_rejection(state, mode_before_prompt)
             self._apply(state, [RuntimeEvent("DecisionRejected", {"decision_id": decision.decision_id, "reason": transition_rejection})])
             return decision, transition_rejection
 
         validation_issues = self.decision_validator.validate(decision, state)
         rejection = validation_issues[0] if validation_issues else None
         if rejection is not None:
+            self._restore_mode_after_rejection(state, mode_before_prompt)
             self._apply(state, [RuntimeEvent("DecisionRejected", {"decision_id": decision.decision_id, "reason": rejection})])
             return decision, rejection
 
         self.route_decision(state, decision)
         return decision, None
+
+    def _restore_mode_after_rejection(self, state: AgentState, mode_before_prompt: str) -> None:
+        if state.mode != mode_before_prompt:
+            self._apply(state, [RuntimeEvent("ModeChanged", {"mode": mode_before_prompt})])
 
     def _build_prompt_payload(self, state: AgentState) -> dict[str, Any]:
         self._apply(state, [RuntimeEvent("ModeChanged", {"mode": "THINK"})])
