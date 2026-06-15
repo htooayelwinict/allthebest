@@ -48,6 +48,10 @@ ENVELOPE_METADATA_KEYS = {
     "artifacts",
 }
 RISKY_PROMPT_SUMMARY_KEYS = {"content", "preview", "payload", "payload_ref", "evidence_refs", "artifacts"}
+PROTECTED_MUTATION_PREFIXES = ("tests/", "src/", "assets/", "secrets/", "docs/")
+PROTECTED_MUTATION_EXACT_NAMES = {"README.md"}
+PROTECTED_MUTATION_FILENAME_MARKERS = ("keep", "do_not_move", "old_blob")
+PROTECTED_WRITE_EXCEPTIONS = {"docs/workspace_manifest.json"}
 
 
 @dataclass(frozen=True)
@@ -370,12 +374,18 @@ class ToolBroker:
             if action == "move":
                 for key in ("source", "destination"):
                     path = str(operation.get(key) or "")
-                    if self._safe_path(path) is None:
+                    safe_path = self._safe_path(path)
+                    if safe_path is None:
                         errors.append(f"{key}_outside_root:{path}")
+                    elif key == "source" and self._protected_mutation_path(safe_path):
+                        errors.append(f"protected_source_path:{path}")
             elif action == "write":
                 path = str(operation.get("path") or "")
-                if self._safe_path(path) is None:
+                safe_path = self._safe_path(path)
+                if safe_path is None:
                     errors.append(f"path_outside_root:{path}")
+                elif self._protected_mutation_path(safe_path) and self._relative_path(safe_path) not in PROTECTED_WRITE_EXCEPTIONS:
+                    errors.append(f"protected_destination_path:{path}")
             else:
                 errors.append(f"unsupported_operation:{action}")
         return errors
@@ -468,6 +478,18 @@ class ToolBroker:
         except ValueError:
             return None
         return candidate
+
+    def _relative_path(self, path: Path) -> str:
+        return path.relative_to(self.root).as_posix()
+
+    def _protected_mutation_path(self, path: Path) -> bool:
+        relative_path = self._relative_path(path)
+        if Path(relative_path).name in PROTECTED_MUTATION_EXACT_NAMES:
+            return True
+        if any(relative_path == prefix.rstrip("/") or relative_path.startswith(prefix) for prefix in PROTECTED_MUTATION_PREFIXES):
+            return True
+        filename = Path(relative_path).name.lower()
+        return any(marker in filename for marker in PROTECTED_MUTATION_FILENAME_MARKERS)
 
 
 def _ignored(path: Path) -> bool:

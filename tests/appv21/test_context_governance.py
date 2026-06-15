@@ -18,6 +18,7 @@ from appv21.runtime.agent_runtime import AppV21AgentRuntime
 from appv21.runtime.decisions import RuntimeDecision
 from appv21.runtime.services import create_appv21_runtime_services
 from appv21.state.models import AgentState, Artifact, MutationLease, MutationReceipt, PauseState, PlanState, RequestEnvelope, WorldRef
+from appv21.tools.broker import ToolBroker
 from scripts.live_appv21_staged_file_management_matrix_report import _build_report
 
 
@@ -252,6 +253,70 @@ def test_workspace_cleanup_skill_cards_are_isolated_from_returned_mutations() ->
         "**/do_not_move*",
         "**/old_blob*",
     ]
+
+
+def test_mutation_validation_rejects_protected_path_moves(tmp_path: Path) -> None:
+    broker = ToolBroker(root_path=tmp_path)
+
+    errors = broker.validate_mutation_intent(
+        [
+            {
+                "action": "move",
+                "source": "src/config/settings.json",
+                "destination": "artifacts/logs/settings.json",
+            }
+        ]
+    )
+
+    assert errors == ["protected_source_path:src/config/settings.json"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "README.md",
+        "docs/archive/legacy_report.md",
+        "secrets/.env",
+        "notes/keep-plan.md",
+        "notes/do_not_move-plan.md",
+        "notes/old_blob-archive.md",
+    ],
+)
+def test_mutation_validation_rejects_workspace_cleanup_preservation_sources(tmp_path: Path, source: str) -> None:
+    broker = ToolBroker(root_path=tmp_path)
+
+    errors = broker.validate_mutation_intent(
+        [{"action": "move", "source": source, "destination": f"artifacts/{Path(source).name}"}]
+    )
+
+    assert errors == [f"protected_source_path:{source}"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "README.md",
+        "docs/archive/legacy_report.md",
+        "secrets/.env",
+        "assets/keep-icon.svg",
+    ],
+)
+def test_mutation_validation_rejects_protected_write_destinations(tmp_path: Path, path: str) -> None:
+    broker = ToolBroker(root_path=tmp_path)
+
+    errors = broker.validate_mutation_intent([{"action": "write", "path": path, "content": "replace"}])
+
+    assert errors == [f"protected_destination_path:{path}"]
+
+
+def test_mutation_validation_allows_workspace_manifest_write(tmp_path: Path) -> None:
+    broker = ToolBroker(root_path=tmp_path)
+
+    errors = broker.validate_mutation_intent(
+        [{"action": "write", "path": "docs/workspace_manifest.json", "content": {"observed_files": []}}]
+    )
+
+    assert errors == []
 
 
 @pytest.mark.parametrize(
