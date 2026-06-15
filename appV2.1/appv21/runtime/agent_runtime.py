@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -27,6 +28,10 @@ class AppV21AgentRuntime:
         self.skills = self.services.skills
         self.verifier = self.services.verifier
         self.context = self.services.context
+        self.context_overflow = self.services.context_overflow
+        self.context_budget = self.services.context_budget
+        self.context_selector = self.services.context_selector
+        self.run_memory_builder = self.services.run_memory_builder
         self.artifact_validator = self.services.artifact_validator
         self.decision_validator = self.services.decision_validator
         self.state_machine = self.services.state_machine
@@ -98,8 +103,8 @@ class AppV21AgentRuntime:
 
     def run_turn(self, state: AgentState, *, turn_index: int = 0) -> tuple[RuntimeDecision, str | None]:
         mode_before_prompt = state.mode
-        prompt_payload = self._build_prompt_payload(state)
-        decision = self.services.provider.decide(prompt_payload)
+        prompt_payload = self._build_prompt_payload(state, selection_mode=mode_before_prompt)
+        decision = self._decide_with_context_overflow_recovery(state, prompt_payload, selection_mode=mode_before_prompt)
         self._apply(state, [RuntimeEvent("DecisionProposed", {"turn_index": turn_index, **decision.to_dict()})])
 
         transition_rejection = self.state_machine.validate_transition(mode_before_prompt, decision)
@@ -136,6 +141,55 @@ class AppV21AgentRuntime:
             self._fail(state, "repeated_loop", {"decision": decision.to_dict(), "reason": progress_rejection})
         return decision, None
 
+    def _decide_with_context_overflow_recovery(
+        self,
+        state: AgentState,
+        prompt_payload: dict[str, Any],
+        *,
+        selection_mode: str,
+    ) -> RuntimeDecision:
+        try:
+            return self.services.provider.decide(prompt_payload)
+        except Exception as error:
+            if not self.context_overflow.is_context_overflow(error):
+                raise
+            trimmed_error = self._trim_provider_error(error)
+            self._apply(state, [RuntimeEvent("ContextOverflowDetected", {"error": trimmed_error})])
+            compaction_events = self.context.maybe_compact(state, force=True)
+            if not compaction_events:
+                self._apply(
+                    state,
+                    [
+                        RuntimeEvent(
+                            "ContextOverflowRecoveryFailed",
+                            {"error": trimmed_error, "reason": "compaction_unavailable"},
+                        )
+                    ],
+                )
+                raise
+            self._apply(state, compaction_events)
+            retry_prompt_payload = self._build_prompt_payload(state, selection_mode=selection_mode)
+            try:
+                return self.services.provider.decide(retry_prompt_payload)
+            except Exception as retry_error:
+                if self.context_overflow.is_context_overflow(retry_error):
+                    self._apply(
+                        state,
+                        [
+                            RuntimeEvent(
+                                "ContextOverflowRecoveryFailed",
+                                {"error": self._trim_provider_error(retry_error), "reason": "retry_overflow"},
+                            )
+                        ],
+                    )
+                raise
+
+    def _trim_provider_error(self, error: BaseException) -> str:
+        message = str(error)
+        if len(message) <= 500:
+            return message
+        return f"{message[:497]}..."
+
     def _restore_mode_after_rejection(self, state: AgentState, mode_before_prompt: str) -> None:
         if state.mode != mode_before_prompt:
             self._apply(state, [RuntimeEvent("ModeChanged", {"mode": mode_before_prompt})])
@@ -151,19 +205,30 @@ class AppV21AgentRuntime:
             repr(state.result),
         )
 
-    def _build_prompt_payload(self, state: AgentState) -> dict[str, Any]:
+    def _build_prompt_payload(self, state: AgentState, *, selection_mode: str | None = None) -> dict[str, Any]:
         self._apply(state, [RuntimeEvent("ModeChanged", {"mode": "THINK"})])
         active_skills = self.skills.active_skills(state)
         turn_context = self.context.build_turn_context(state)
         decomposition = self.decomposer.decompose(state.request)
         turn_context["decomposition"] = decomposition
+        tool_specs = self.broker.tool_specs()
+        selected_context = self.context_selector.select(
+            state,
+            active_skills=active_skills,
+            tool_specs=tool_specs,
+            mode=selection_mode,
+        )
         prompt_payload = self.services.prompt_builder.build(
             state=state,
             turn_context=turn_context,
-            active_skills=active_skills,
-            tool_specs=self.broker.tool_specs(),
+            active_skills=selected_context["skills"],
+            tool_specs=selected_context["tools"],
+            selected_context=selected_context,
+            selection=selected_context["selection"],
         )
         prompt_payload["decomposition"] = decomposition
+        context_budget = self._build_context_budget_metadata(prompt_payload)
+        prompt_payload["context_budget"] = context_budget
         self._apply(
             state,
             [
@@ -172,13 +237,32 @@ class AppV21AgentRuntime:
                     {
                         "sections": sorted(prompt_payload),
                         "tool_count": len(prompt_payload["tools"]),
-                        "skill_count": len(active_skills),
+                        "skill_count": len(prompt_payload["skills"]),
+                        "context_budget": context_budget,
+                        "selection": prompt_payload["selection"],
                         "model": self.services.model_registry.for_role("agent").__dict__,
                     },
                 )
             ],
         )
         return prompt_payload
+
+    def _build_context_budget_metadata(self, prompt_payload: dict[str, Any]) -> dict[str, Any]:
+        measured_prompt = {
+            **prompt_payload,
+            "context_budget": {"measured_without_self": True},
+        }
+        context_budget = {
+            **self.context_budget.estimate(measured_prompt),
+            "measured_without_self": True,
+            "final_prompt_chars": 0,
+        }
+        for _ in range(8):
+            final_prompt_chars = len(json.dumps({**prompt_payload, "context_budget": context_budget}, sort_keys=True))
+            if final_prompt_chars == context_budget["final_prompt_chars"]:
+                break
+            context_budget = {**context_budget, "final_prompt_chars": final_prompt_chars}
+        return context_budget
 
     def route_decision(self, state: AgentState, decision: RuntimeDecision) -> None:
         if decision.kind == "observe":
@@ -291,9 +375,20 @@ class AppV21AgentRuntime:
                     )
                 ],
             )
+        if latest_verification_id is None and latest_receipt_id is not None:
+            latest_verification_id = self._verify_accepted_plan_before_finalize(state)
+            if state.terminal:
+                return
         if latest_verification_id is None:
             self._fail(state, "finalize_without_verification")
             return
+        if "run_memory" not in state.world.artifacts:
+            artifact = self.run_memory_builder.build(state, self._current_run_events(state))
+            issues = self.artifact_validator.validate(artifact, state)
+            if issues:
+                self._fail(state, "artifact_validation_failed", {"issues": issues})
+                return
+            self._apply(state, [RuntimeEvent("ArtifactAccepted", artifact.__dict__)])
         if "final_summary" not in state.world.artifacts:
             artifact = Artifact(
                 artifact_id="final_summary",
@@ -327,7 +422,32 @@ class AppV21AgentRuntime:
         }
         self._apply(state, [RuntimeEvent("RunCompleted", result)])
 
+    def _verify_accepted_plan_before_finalize(self, state: AgentState) -> str | None:
+        runtime_plan = state.plan.runtime_plan if state.plan is not None else {}
+        verification_intent = runtime_plan.get("verification_intent") if isinstance(runtime_plan, dict) else None
+        if not isinstance(verification_intent, dict):
+            return None
+        self._apply(state, [RuntimeEvent("ModeChanged", {"mode": "VERIFY"})])
+        self._hook(state, "before_verify", verification_intent)
+        verification = self.verifier.verify(root_path=self.root_path, verification_intent=verification_intent)
+        verification_id = f"verify_{uuid4().hex}"
+        self._apply(state, [RuntimeEvent("VerificationRecorded", {"verification_id": verification_id, **verification})])
+        self._hook(state, "after_verify", {"verification_id": verification_id, "status": verification["status"]})
+        if verification["status"] != "passed":
+            self._fail(state, "verification_failed", verification)
+            return None
+        return verification_id
+
     _route_decision = route_decision
+
+    def _current_run_events(self, state: AgentState) -> list[dict]:
+        return [
+            event.to_dict()
+            for event in self.services.session_store.events_for_run(
+                session_id=state.session_id,
+                run_id=state.run_id,
+            )
+        ]
 
     def _apply_mutation_intent(self, state: AgentState, decision: RuntimeDecision, *, allow_high_risk: bool = False) -> None:
         operations = decision.payload.get("operations") or []
