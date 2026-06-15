@@ -2,14 +2,49 @@ import ast
 from pathlib import Path
 
 
+def _module_parts_for_path(path: Path) -> tuple[str, ...]:
+    parts = path.resolve().with_suffix("").parts
+    try:
+        appv22_index = len(parts) - 1 - parts[::-1].index("appv22")
+    except ValueError:
+        return ()
+
+    module_parts = parts[appv22_index:]
+    if module_parts[-1] == "__init__":
+        module_parts = module_parts[:-1]
+    return module_parts
+
+
+def _resolve_import_from_module(path: Path, node: ast.ImportFrom) -> str | None:
+    module_parts = node.module.split(".") if node.module else []
+    if node.level == 0:
+        return node.module
+
+    path_module_parts = _module_parts_for_path(path)
+    if not path_module_parts:
+        return node.module
+
+    package_parts = path_module_parts[:-1]
+    if node.level > len(package_parts) + 1:
+        return node.module
+
+    base_parts = package_parts[: len(package_parts) - node.level + 1]
+    return ".".join((*base_parts, *module_parts))
+
+
 def _imported_modules(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolve_import_from_module(path, node)
+            if module:
+                modules.add(module)
+                modules.update(
+                    f"{module}.{alias.name}" for alias in node.names if alias.name != "*"
+                )
     return modules
 
 
@@ -36,6 +71,47 @@ def test_runtime_extension_boundary_allows_generic_extension_contracts():
     assert _is_file_management_extension_import("appv22.extensions.file_management.tools")
     assert _is_file_management_extension_import("extensions.file_management")
     assert _is_file_management_extension_import("extensions.file_management.tools")
+
+
+def test_imported_modules_detects_absolute_extension_package_aliases(tmp_path):
+    path = tmp_path / "probe.py"
+    path.write_text(
+        "\n".join(
+            [
+                "from appv22.extensions import file_management",
+                "from appv22.extensions import base",
+                "from extensions import file_management",
+                "from extensions import registry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    modules = _imported_modules(path)
+
+    assert "appv22.extensions.file_management" in modules
+    assert "extensions.file_management" in modules
+    assert "appv22.extensions.base" in modules
+    assert "extensions.registry" in modules
+
+
+def test_imported_modules_detects_relative_extension_package_aliases(tmp_path):
+    path = tmp_path / "appV2.2/appv22/runtime/probe.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "\n".join(
+            [
+                "from ..extensions import file_management",
+                "from ..extensions import registry",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    modules = _imported_modules(path)
+
+    assert "appv22.extensions.file_management" in modules
+    assert "appv22.extensions.registry" in modules
 
 
 def test_runtime_core_does_not_import_file_management_extensions():
