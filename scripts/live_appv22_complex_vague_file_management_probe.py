@@ -22,7 +22,7 @@ DEFAULT_REPO_STEM = "live_appv22_complex_vague_file_management_repo"
 DEFAULT_REPORT_DIR = ROOT / "plan"
 SENTINEL_NAME = ".appv22-complex-vague-file-management-probe"
 SENTINEL_VALUE = "owned-by-live-appv22-complex-vague-file-management-probe\n"
-MANIFEST_PATH = "cleanup_manifest.json"
+MANIFEST_PATH = "docs/workspace_manifest.json"
 PROTECTED_PATHS = [
     "README.md",
     "src/app.py",
@@ -41,11 +41,11 @@ EXPECTED_DESTINATIONS = [
 EXPECTED_SOURCES_ABSENT_AFTER_MOVES = [
     "notes/team/standup.md",
     "projects/alpha/spec.md",
-    "tmp/session/run.log",
+    "tmp/other/run.log",
 ]
 EXPECTED_HELD_SOURCES = [
     "projects/beta/spec.md",
-    "tmp/other/run.log",
+    "tmp/session/run.log",
 ]
 
 
@@ -82,7 +82,8 @@ def main() -> int:
             sort_keys=True,
         )
     )
-    return 0 if report["status"] == "completed" else 1
+    violations = report["file_management"]["violations"]
+    return 0 if report["status"] == "completed" and not violations else 1
 
 
 def create_provider(provider_name: str, *, dotenv_path: str):
@@ -224,8 +225,8 @@ def _manifest_summary(path: Path) -> dict[str, Any]:
         "path": MANIFEST_PATH,
         "exists": path.is_file(),
         "valid_json": False,
-        "shape": {"moved": False, "held": False, "collisions": False},
-        "counts": {"moved": 0, "held": 0, "collisions": 0},
+        "shape": {"moves": False, "held": False, "collisions": False},
+        "counts": {"moves": 0, "held": 0, "collisions": 0},
     }
     if not path.is_file():
         return summary
@@ -236,7 +237,7 @@ def _manifest_summary(path: Path) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         return summary
     summary["valid_json"] = True
-    for key in ("moved", "held", "collisions"):
+    for key in ("moves", "held", "collisions"):
         value = manifest.get(key)
         summary["shape"][key] = isinstance(value, list)
         summary["counts"][key] = len(value) if isinstance(value, list) else 0
@@ -288,7 +289,7 @@ def _file_management_violations(
         violations.append(f"manifest invalid json: {MANIFEST_PATH}")
     else:
         shape = manifest.get("shape", {})
-        violations.extend(f"manifest missing key: {key}" for key in ("moved", "held", "collisions") if not shape.get(key))
+        violations.extend(f"manifest missing key: {key}" for key in ("moves", "held", "collisions") if not shape.get(key))
     return violations
 
 

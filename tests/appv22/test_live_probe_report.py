@@ -27,15 +27,16 @@ def test_probe_report_contains_full_matrix(tmp_path):
     (tmp_path / "projects" / "beta").mkdir(parents=True)
     (tmp_path / "projects" / "beta" / "spec.md").write_text("held collision\n", encoding="utf-8")
     (tmp_path / "tmp" / "session").mkdir(parents=True)
+    (tmp_path / "tmp" / "session" / "run.log").write_text("held collision\n", encoding="utf-8")
     (tmp_path / "tmp" / "session" / "keep_trace.json").write_text('{"keep": true}\n', encoding="utf-8")
     (tmp_path / "tmp" / "other").mkdir(parents=True)
-    (tmp_path / "tmp" / "other" / "run.log").write_text("held collision\n", encoding="utf-8")
     (tmp_path / "artifacts" / "logs").mkdir(parents=True)
     (tmp_path / "artifacts" / "logs" / "run.log").write_text("moved run log\n", encoding="utf-8")
-    (tmp_path / "cleanup_manifest.json").write_text(
-        '{"moved": [{"source": "notes/team/standup.md", "destination": "docs/standup.md"}],'
-        ' "held": [{"source": "projects/beta/spec.md", "reason": "destination collision"}],'
-        ' "collisions": [{"source": "tmp/other/run.log", "destination": "artifacts/logs/run.log"}]}',
+    (tmp_path / "docs" / "workspace_manifest.json").write_text(
+        '{"moves": [{"source": "notes/team/standup.md", "destination": "docs/standup.md"}],'
+        ' "held": [{"source": "projects/beta/spec.md", "reason": "destination collision"},'
+        ' {"source": "tmp/session/run.log", "reason": "destination collision"}],'
+        ' "collisions": [{"source": "tmp/session/run.log", "destination": "artifacts/logs/run.log"}]}',
         encoding="utf-8",
     )
     result = {
@@ -91,18 +92,22 @@ def test_probe_report_contains_full_matrix(tmp_path):
     assert report["file_management"]["expected_destinations_present"]["docs/spec.md"] is True
     assert report["file_management"]["expected_destinations_present"]["artifacts/logs/run.log"] is True
     assert report["file_management"]["expected_sources_absent_after_moves"]["notes/team/standup.md"] is True
+    assert report["file_management"]["expected_sources_absent_after_moves"]["tmp/other/run.log"] is True
+    assert report["file_management"]["expected_held_sources_present"]["tmp/session/run.log"] is True
     assert report["file_management"]["manifest"]["exists"] is True
-    assert report["file_management"]["manifest"]["shape"]["moved"] is True
+    assert report["file_management"]["manifest"]["path"] == "docs/workspace_manifest.json"
+    assert report["file_management"]["manifest"]["shape"]["moves"] is True
     assert report["file_management"]["manifest"]["shape"]["held"] is True
     assert report["file_management"]["manifest"]["shape"]["collisions"] is True
     assert report["file_management"]["held_or_collision_info"]["available"] is True
     assert report["file_management"]["violations"] == []
-    assert "cleanup_manifest.json" in report["files"]
+    assert "docs/workspace_manifest.json" in report["files"]
 
 
 def test_probe_report_flags_protected_collision_and_missing_move_expectations(tmp_path):
     (tmp_path / "README.md").write_text("# probe\n", encoding="utf-8")
-    (tmp_path / "cleanup_manifest.json").write_text('{"moved": []}', encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "workspace_manifest.json").write_text('{"moves": []}', encoding="utf-8")
 
     report = build_report(repo=tmp_path, result={"status": "completed", "events": []}, provider=None, prompt="p")
 
@@ -147,4 +152,5 @@ def test_cost_extraction_marks_nested_zero_usage_available(tmp_path):
 def test_default_report_path_is_provider_specific_and_output_arg_can_override(tmp_path):
     assert default_report_path("deterministic").name == "live-appv22-complex-vague-file-management-probe.deterministic.json"
     assert default_report_path("appv2-env").name == "live-appv22-complex-vague-file-management-probe.appv2-env.json"
+    assert default_report_path("deterministic").name != "live-appv22-complex-vague-file-management-probe.json"
     assert default_report_path("deterministic", output=tmp_path / "custom.json") == tmp_path / "custom.json"
