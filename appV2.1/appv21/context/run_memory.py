@@ -28,7 +28,7 @@ class RunMemoryBuilder:
             producer="appv21_runtime",
             trust="runtime_verified",
             lifecycle="runtime_verified",
-            evidence_refs=verification_receipts or mutation_receipts,
+            evidence_refs=mutation_receipts + verification_receipts,
         )
 
     def _outcome(self, state: AgentState) -> str:

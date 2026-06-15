@@ -676,3 +676,67 @@ def test_finalize_emits_runtime_verified_run_memory(tmp_path: Path) -> None:
     assert content["decision_counts"]["finalize"] == 1
     assert content["tools_used"] == ["repo_snapshot"]
     assert content["open_risks"] == []
+
+
+def test_run_memory_scopes_events_to_current_run_when_runtime_reused(tmp_path: Path) -> None:
+    (tmp_path / "first.txt").write_text("first run only", encoding="utf-8")
+
+    class ReusedRuntimeProvider:
+        provider_id = "reused-runtime"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def decide(self, _prompt_payload: dict) -> RuntimeDecision:
+            self.calls += 1
+            if self.calls == 1:
+                return RuntimeDecision(kind="observe", reason="Observe first run.")
+            if self.calls == 2:
+                return RuntimeDecision(kind="read_file", reason="Read first-run-only file.", payload={"path": "first.txt"})
+            if self.calls == 3:
+                return RuntimeDecision(kind="finalize", reason="Finalize first run.", payload={"explicit_noop": True})
+            if self.calls == 4:
+                return RuntimeDecision(kind="observe", reason="Observe second run.")
+            return RuntimeDecision(kind="finalize", reason="Finalize second run.", payload={"explicit_noop": True})
+
+    runtime = AppV21AgentRuntime(
+        root_path=tmp_path,
+        services=create_appv21_runtime_services(root_path=tmp_path, provider=ReusedRuntimeProvider()),
+        max_turns=3,
+    )
+
+    first_result = runtime.run("First run reads a file.")
+    second_result = runtime.run("Second run only observes.")
+
+    assert first_result["status"] == "completed"
+    assert second_result["status"] == "completed"
+
+    run_memory_events = [
+        event
+        for event in second_result["events"]
+        if event["event_type"] == "ArtifactAccepted" and event["payload"]["artifact_id"] == "run_memory"
+    ]
+    second_run_memory = run_memory_events[-1]["payload"]["content"]
+
+    assert second_run_memory["goal"] == "Second run only observes."
+    assert second_run_memory["decision_counts"] == {"finalize": 1, "observe": 1}
+    assert second_run_memory["event_counts"]["UserMessageReceived"] == 1
+    assert second_run_memory["event_counts"]["DecisionProposed"] == 2
+    assert second_run_memory["tools_used"] == ["repo_snapshot"]
+
+
+def test_run_memory_evidence_refs_include_mutation_and_verification_receipts(tmp_path: Path) -> None:
+    (tmp_path / "note.md").write_text("move me", encoding="utf-8")
+
+    result = AppV21AgentRuntime(
+        root_path=tmp_path,
+        services=create_appv21_runtime_services(root_path=tmp_path),
+    ).run("Organize this workspace safely.")
+
+    artifact_events = [event for event in result["events"] if event["event_type"] == "ArtifactAccepted"]
+    run_memory = next(event["payload"] for event in artifact_events if event["payload"]["artifact_id"] == "run_memory")
+
+    assert result["status"] == "completed"
+    assert run_memory["content"]["mutation_receipts"] == result["mutation_receipts"]
+    assert run_memory["content"]["verification_receipts"] == result["verification_receipts"]
+    assert run_memory["evidence_refs"] == result["mutation_receipts"] + result["verification_receipts"]

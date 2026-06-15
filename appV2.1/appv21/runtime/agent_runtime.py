@@ -328,7 +328,7 @@ class AppV21AgentRuntime:
             self._fail(state, "finalize_without_verification")
             return
         if "run_memory" not in state.world.artifacts:
-            artifact = self.run_memory_builder.build(state, self.store.to_dicts())
+            artifact = self.run_memory_builder.build(state, self._current_run_events(state))
             issues = self.artifact_validator.validate(artifact, state)
             if issues:
                 self._fail(state, "artifact_validation_failed", {"issues": issues})
@@ -368,6 +368,15 @@ class AppV21AgentRuntime:
         self._apply(state, [RuntimeEvent("RunCompleted", result)])
 
     _route_decision = route_decision
+
+    def _current_run_events(self, state: AgentState) -> list[dict]:
+        events = self.store.to_dicts()
+        for index in range(len(events) - 1, -1, -1):
+            event = events[index]
+            payload = event.get("payload") or {}
+            if event.get("event_type") == "UserMessageReceived" and payload.get("request_id") == state.request.request_id:
+                return events[index:]
+        return events
 
     def _apply_mutation_intent(self, state: AgentState, decision: RuntimeDecision, *, allow_high_risk: bool = False) -> None:
         operations = decision.payload.get("operations") or []
