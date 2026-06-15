@@ -21,6 +21,9 @@ class FileMoveMutationPolicy:
         root = Path(root_path).resolve()
         sources: set[str] = set()
         destinations: set[str] = set()
+        source_entries: list[tuple[str, str]] = []
+        destination_entries: list[tuple[str, str]] = []
+        existing_file_keys = _casefolded_existing_file_keys(root)
         for operation in operations:
             action = operation.get("action")
             if action == "move":
@@ -47,12 +50,14 @@ class FileMoveMutationPolicy:
                     if canonical_source_key in sources:
                         errors.append(f"duplicate_source:{canonical_source}")
                     sources.add(canonical_source_key)
+                    source_entries.append((canonical_source_key, canonical_source))
                 if canonical_destination:
                     canonical_destination_key = _casefold_canonical_key(canonical_destination)
                     if canonical_destination_key in destinations:
                         errors.append(f"duplicate_destination:{canonical_destination}")
                     destinations.add(canonical_destination_key)
-                if canonical_destination and (root / canonical_destination).exists():
+                    destination_entries.append((canonical_destination_key, canonical_destination))
+                if canonical_destination and canonical_destination_key in existing_file_keys:
                     errors.append(f"destination_exists:{canonical_destination}")
                 if canonical_source and not _protected(canonical_source):
                     source_path = root / canonical_source
@@ -72,6 +77,14 @@ class FileMoveMutationPolicy:
                     errors.append(f"unsupported_write_path:{operation.get('path')}")
             else:
                 errors.append(f"unsupported_operation:{action}")
+        source_keys = {key for key, _path in source_entries}
+        destination_keys = {key for key, _path in destination_entries}
+        for destination_key, canonical_destination in destination_entries:
+            if destination_key in source_keys:
+                errors.append(f"source_destination_collision:{canonical_destination}")
+        for source_key, canonical_source in source_entries:
+            if source_key in destination_keys:
+                errors.append(f"source_destination_collision:{canonical_source}")
         return errors
 
 
@@ -94,6 +107,14 @@ def _absolute(path: str) -> bool:
 
 def _casefold_canonical_key(path: str) -> str:
     return path.replace("\\", "/").casefold()
+
+
+def _casefolded_existing_file_keys(root: Path) -> set[str]:
+    keys: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_file():
+            keys.add(_casefold_canonical_key(path.relative_to(root).as_posix()))
+    return keys
 
 
 def _normalize(path: str) -> str:

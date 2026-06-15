@@ -4,7 +4,12 @@ import json
 import shutil
 from pathlib import Path
 
-from appv22.extensions.file_management.mutation_policy import FileMoveMutationPolicy, _canonical_relative_path
+from appv22.extensions.file_management.mutation_policy import (
+    FileMoveMutationPolicy,
+    _canonical_relative_path,
+    _casefold_canonical_key,
+    _casefolded_existing_file_keys,
+)
 
 
 class FileMutationExecutor:
@@ -70,6 +75,11 @@ class FileMutationExecutor:
 
     def _preflight(self, operations: list[dict], *, root: Path) -> list[str]:
         errors: list[str] = []
+        sources: set[str] = set()
+        destinations: set[str] = set()
+        source_entries: list[tuple[str, str]] = []
+        destination_entries: list[tuple[str, str]] = []
+        existing_file_keys = _casefolded_existing_file_keys(root)
         for operation in operations:
             if operation.get("action") == "move":
                 source_name = _canonical_relative_path(root, str(operation["source"]))
@@ -77,13 +87,22 @@ class FileMutationExecutor:
                 if source_name is None or destination_name is None:
                     errors.append(f"path_outside_root:{operation['source']}->{operation['destination']}")
                     continue
+                source_key = _casefold_canonical_key(source_name)
+                destination_key = _casefold_canonical_key(destination_name)
+                if source_key in sources:
+                    errors.append(f"duplicate_source:{source_name}")
+                sources.add(source_key)
+                source_entries.append((source_key, source_name))
+                if destination_key in destinations:
+                    errors.append(f"duplicate_destination:{destination_name}")
+                destinations.add(destination_key)
+                destination_entries.append((destination_key, destination_name))
                 source = root / source_name
-                destination = root / destination_name
                 if not source.exists():
                     errors.append(f"missing_source:{source_name}")
                 elif not source.is_file():
                     errors.append(f"non_file_source:{source_name}")
-                if destination.exists():
+                if destination_key in existing_file_keys:
                     errors.append(f"destination_exists:{destination_name}")
             elif operation.get("action") == "write":
                 path_name = _canonical_relative_path(root, str(operation["path"]))
@@ -101,4 +120,12 @@ class FileMutationExecutor:
                     if candidate.exists() and not candidate.is_dir():
                         errors.append(f"blocked_write_parent:{path_name}")
                         break
+        source_keys = {key for key, _path in source_entries}
+        destination_keys = {key for key, _path in destination_entries}
+        for destination_key, destination_name in destination_entries:
+            if destination_key in source_keys:
+                errors.append(f"source_destination_collision:{destination_name}")
+        for source_key, source_name in source_entries:
+            if source_key in destination_keys:
+                errors.append(f"source_destination_collision:{source_name}")
         return errors

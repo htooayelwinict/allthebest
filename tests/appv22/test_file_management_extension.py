@@ -273,6 +273,67 @@ def test_policy_rejects_casefolded_duplicate_move_destinations(tmp_path):
     assert "duplicate_destination:out/file.md" in errors
 
 
+def test_policy_rejects_casefolded_source_destination_cross_collision(tmp_path):
+    (tmp_path / "a.md").write_text("a", encoding="utf-8")
+    (tmp_path / "b.md").write_text("b", encoding="utf-8")
+
+    operations = [
+        {"action": "move", "source": "a.md", "destination": "B.md"},
+        {"action": "move", "source": "b.md", "destination": "c.md"},
+    ]
+
+    errors = FileMoveMutationPolicy().validate(operations, root_path=tmp_path)
+    result = FileMutationExecutor().apply(operations, root_path=tmp_path)
+
+    assert "source_destination_collision:B.md" in errors
+    assert result["status"] == "denied"
+    assert "source_destination_collision:B.md" in result["errors"]
+    assert (tmp_path / "a.md").read_text(encoding="utf-8") == "a"
+    assert (tmp_path / "b.md").read_text(encoding="utf-8") == "b"
+    assert not (tmp_path / "c.md").exists()
+
+
+def test_policy_rejects_casefolded_existing_destination_collision(tmp_path):
+    (tmp_path / "draft.md").write_text("draft", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/file.md").write_text("existing", encoding="utf-8")
+
+    operations = [{"action": "move", "source": "draft.md", "destination": "docs/File.md"}]
+
+    errors = FileMoveMutationPolicy().validate(operations, root_path=tmp_path)
+    result = FileMutationExecutor().apply(operations, root_path=tmp_path)
+
+    assert "destination_exists:docs/File.md" in errors
+    assert result["status"] == "denied"
+    assert "destination_exists:docs/File.md" in result["errors"]
+    assert (tmp_path / "draft.md").read_text(encoding="utf-8") == "draft"
+    assert (tmp_path / "docs/file.md").read_text(encoding="utf-8") == "existing"
+
+
+def test_executor_preflight_rejects_casefolded_collisions_without_partial_mutation(tmp_path, monkeypatch):
+    (tmp_path / "a.md").write_text("a", encoding="utf-8")
+    (tmp_path / "b.md").write_text("b", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/file.md").write_text("existing", encoding="utf-8")
+    operations = [
+        {"action": "move", "source": "a.md", "destination": "B.md"},
+        {"action": "move", "source": "b.md", "destination": "c.md"},
+        {"action": "move", "source": "a.md", "destination": "docs/File.md"},
+    ]
+    monkeypatch.setattr(FileMoveMutationPolicy, "validate", lambda self, operations, *, root_path: [])
+
+    result = FileMutationExecutor().apply(operations, root_path=tmp_path)
+
+    assert result["status"] == "denied"
+    assert result["touched_paths"] == []
+    assert "source_destination_collision:B.md" in result["errors"]
+    assert "destination_exists:docs/File.md" in result["errors"]
+    assert (tmp_path / "a.md").read_text(encoding="utf-8") == "a"
+    assert (tmp_path / "b.md").read_text(encoding="utf-8") == "b"
+    assert (tmp_path / "docs/file.md").read_text(encoding="utf-8") == "existing"
+    assert not (tmp_path / "c.md").exists()
+
+
 def test_policy_rejects_duplicate_canonical_sources_without_partial_mutation(tmp_path):
     (tmp_path / "safe").mkdir()
     (tmp_path / "safe/first.md").write_text("first", encoding="utf-8")
