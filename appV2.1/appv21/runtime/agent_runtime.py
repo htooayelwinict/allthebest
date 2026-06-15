@@ -113,12 +113,43 @@ class AppV21AgentRuntime:
             self._apply(state, [RuntimeEvent("DecisionRejected", {"decision_id": decision.decision_id, "reason": rejection})])
             return decision, rejection
 
+        progress_before = self._progress_snapshot(state)
+        had_latest_repo_snapshot = "world://repo_snapshot/latest" in state.world.refs
         self.route_decision(state, decision)
+        if decision.kind == "observe" and had_latest_repo_snapshot:
+            changed = False
+        else:
+            changed = progress_before != self._progress_snapshot(state)
+        progress_rejection = self.state_machine.record_progress(decision, changed=changed)
+        if progress_rejection is not None:
+            self._apply(
+                state,
+                [
+                    RuntimeEvent(
+                        "LoopProgressRejected",
+                        {"decision_id": decision.decision_id, "reason": progress_rejection},
+                    )
+                ],
+            )
+            self._fail(state, "repeated_loop", {"decision": decision.to_dict(), "reason": progress_rejection})
         return decision, None
 
     def _restore_mode_after_rejection(self, state: AgentState, mode_before_prompt: str) -> None:
         if state.mode != mode_before_prompt:
             self._apply(state, [RuntimeEvent("ModeChanged", {"mode": mode_before_prompt})])
+
+    def _progress_snapshot(self, state: AgentState) -> tuple[Any, ...]:
+        return (
+            len(self.store.to_dicts()),
+            tuple(state.world.refs),
+            repr(state.plan),
+            tuple(state.world.mutation_receipts),
+            tuple(state.world.verification_receipts),
+            tuple(state.world.artifacts),
+            state.terminal,
+            state.mode,
+            repr(state.result),
+        )
 
     def _build_prompt_payload(self, state: AgentState) -> dict[str, Any]:
         self._apply(state, [RuntimeEvent("ModeChanged", {"mode": "THINK"})])

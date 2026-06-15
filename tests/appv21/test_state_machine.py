@@ -94,3 +94,18 @@ def test_runtime_rejects_illegal_plan_transition_from_start(tmp_path: Path) -> N
         event["event_type"] == "DecisionRejected" and event["payload"]["reason"] == "invalid_transition:START->plan"
         for event in result["events"]
     )
+
+
+def test_runtime_fails_repeated_nonproductive_observe_loop(tmp_path: Path) -> None:
+    class RepeatingObserveProvider:
+        provider_id = "repeat-observe"
+
+        def decide(self, prompt_payload: dict) -> RuntimeDecision:
+            return RuntimeDecision(kind="observe", reason="again")
+
+    services = create_appv21_runtime_services(root_path=tmp_path, provider=RepeatingObserveProvider())
+    result = AppV21AgentRuntime(root_path=tmp_path, services=services, max_turns=8).run("Loop.")
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "repeated_loop"
+    assert any(event["event_type"] == "LoopProgressRejected" for event in result["events"])
