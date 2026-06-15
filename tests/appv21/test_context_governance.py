@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.1"))
 from appv21.context.budget import ContextBudgetManager, DEFAULT_SECTION_BUDGETS
 from appv21.context.selector import ContextSelector
 from appv21.extensions.skills import SkillRouter
-from appv21.state.models import AgentState, RequestEnvelope, WorldRef
+from appv21.state.models import AgentState, Artifact, MutationLease, MutationReceipt, PauseState, PlanState, RequestEnvelope, WorldRef
 
 
 def test_context_budget_estimates_section_sizes() -> None:
@@ -327,3 +327,81 @@ def test_context_selector_filters_tools_by_mode() -> None:
 
     assert [tool["name"] for tool in verify_selected["tools"]] == ["repo_snapshot", "read_file"]
     assert verify_selected["selection"]["selected_tools"] == ["repo_snapshot", "read_file"]
+
+
+def test_context_selector_unknown_mode_hides_tools() -> None:
+    tool_specs = [
+        {"name": "repo_snapshot", "guidance": "observe"},
+        {"name": "read_file", "guidance": "inspect"},
+    ]
+    state = AgentState(
+        session_id="sess",
+        run_id="run",
+        request=RequestEnvelope(request_id="req", user_goal="Inspect the repo.", root_path="."),
+        mode="UNSUPPORTED",
+    )
+
+    selected = ContextSelector().select(state, active_skills=[], tool_specs=tool_specs)
+
+    assert selected["tools"] == []
+    assert selected["selection"]["selected_tools"] == []
+
+
+def test_context_selector_state_output_is_isolated_from_agent_state_mutation() -> None:
+    state = AgentState(
+        session_id="sess",
+        run_id="run",
+        request=RequestEnvelope(request_id="req", user_goal="Inspect the repo.", root_path="."),
+    )
+    state.plan = PlanState(
+        intent="preserve",
+        steps=[{"step_id": "one", "notes": ["original"]}],
+        runtime_plan={"nested": {"status": "original"}},
+    )
+    state.world.artifacts["artifact"] = Artifact(
+        artifact_id="artifact",
+        kind="manifest",
+        content={"paths": ["README.md"]},
+        producer="test",
+    )
+    state.world.mutation_leases["lease"] = MutationLease(
+        lease_id="lease",
+        operation_batch_id="batch",
+        allowed_operations=[{"op": "move", "path": "README.md"}],
+        allowed_sources=["README.md"],
+        allowed_destinations=["docs/README.md"],
+    )
+    state.world.mutation_receipts["receipt"] = MutationReceipt(
+        receipt_id="receipt",
+        lease_id="lease",
+        status="completed",
+        operations=[{"op": "move", "path": "README.md"}],
+        touched_paths=["README.md"],
+    )
+    state.world.verification_receipts["verification"] = {"checks": [{"status": "original"}]}
+    state.pauses.append(
+        PauseState(
+            pause_id="pause",
+            pause_type="approval",
+            summary="Needs approval",
+            options=[{"label": "continue"}],
+        )
+    )
+
+    selected = ContextSelector().select(state, active_skills=[], tool_specs=[])
+
+    selected["state"]["plan"]["steps"][0]["notes"].append("mutated")
+    selected["state"]["plan"]["runtime_plan"]["nested"]["status"] = "mutated"
+    selected["state"]["artifacts"]["artifact"]["content"]["paths"].append("mutated")
+    selected["state"]["mutation_leases"]["lease"]["allowed_operations"][0]["path"] = "mutated"
+    selected["state"]["mutation_receipts"]["receipt"]["operations"][0]["path"] = "mutated"
+    selected["state"]["verification_receipts"]["verification"]["checks"][0]["status"] = "mutated"
+    selected["state"]["pauses"][0]["options"][0]["label"] = "mutated"
+
+    assert state.plan.steps == [{"step_id": "one", "notes": ["original"]}]
+    assert state.plan.runtime_plan == {"nested": {"status": "original"}}
+    assert state.world.artifacts["artifact"].content == {"paths": ["README.md"]}
+    assert state.world.mutation_leases["lease"].allowed_operations == [{"op": "move", "path": "README.md"}]
+    assert state.world.mutation_receipts["receipt"].operations == [{"op": "move", "path": "README.md"}]
+    assert state.world.verification_receipts["verification"] == {"checks": [{"status": "original"}]}
+    assert state.pauses[0].options == [{"label": "continue"}]

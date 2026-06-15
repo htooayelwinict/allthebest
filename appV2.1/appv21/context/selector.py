@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from appv21.state.models import AgentState, WorldRef
@@ -53,11 +53,11 @@ class ContextSelector:
                 "constraints": list(state.request.constraints),
             },
             "plan": deepcopy(state.plan.__dict__) if state.plan is not None else None,
-            "artifacts": list(state.world.artifacts),
-            "mutation_leases": list(state.world.mutation_leases),
-            "mutation_receipts": list(state.world.mutation_receipts),
-            "verification_receipts": list(state.world.verification_receipts),
-            "pauses": [deepcopy(pause.__dict__) for pause in state.pauses],
+            "artifacts": {artifact_id: asdict(artifact) for artifact_id, artifact in state.world.artifacts.items()},
+            "mutation_leases": {lease_id: asdict(lease) for lease_id, lease in state.world.mutation_leases.items()},
+            "mutation_receipts": {receipt_id: asdict(receipt) for receipt_id, receipt in state.world.mutation_receipts.items()},
+            "verification_receipts": deepcopy(state.world.verification_receipts),
+            "pauses": [asdict(pause) for pause in state.pauses],
             "terminal": state.terminal,
         }
 
@@ -93,7 +93,7 @@ class ContextSelector:
             return frozenset()
         if mode in READ_TOOL_MODES:
             return READ_ONLY_TOOL_NAMES
-        return READ_ONLY_TOOL_NAMES
+        return frozenset()
 
     def _select_skills(self, mode: str, active_skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
