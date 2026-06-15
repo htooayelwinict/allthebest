@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import dataclass
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
 from appv21.state.models import MutationLease, MutationReceipt
-from appv21.tools.definitions import ToolCategory, ToolDefinition
+from appv21.tools.definitions import ToolCategory, ToolDefinition, ToolResultEnvelope
 from appv21.tools.registry import ToolRegistry
 
 SENSITIVE_PATH_NAMES = {
@@ -35,6 +37,13 @@ READ_TOOL_CATEGORIES = {
     ToolCategory.VERIFY,
 }
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ToolExecutionResult:
+    envelope: dict[str, Any]
+    raw_payload: dict[str, Any] | None = None
+    payload_ref: str | None = None
 
 
 def default_tool_registry() -> ToolRegistry:
@@ -138,19 +147,30 @@ class ToolBroker:
         return []
 
     def execute_tool_call(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.execute_tool_call_result(tool_name, arguments).envelope
+
+    def execute_tool_call_result(self, tool_name: str, arguments: dict[str, Any] | None = None) -> ToolExecutionResult:
         arguments = arguments or {}
         errors = self.validate_tool_call(tool_name, arguments)
         if errors:
-            return self.tool_result_envelope(tool_name=tool_name, status="denied", payload={"errors": errors})
+            envelope = self.tool_result_envelope(tool_name=tool_name, status="denied", payload={"errors": errors})
+            return ToolExecutionResult(envelope=envelope)
         result = self._handlers[tool_name](arguments)
         status = str(result.get("status") or "completed")
         payload = {key: value for key, value in result.items() if key not in {"tool_result_id", "tool_name", "status", "trust", "prompt_summary"}}
-        return self.tool_result_envelope(
+        prompt_summary = result.get("prompt_summary") or self.compact_tool_result(result)
+        envelope = self.tool_result_envelope(
             tool_name=tool_name,
             status=status,
-            payload=payload,
-            prompt_summary=result.get("prompt_summary") or self.compact_tool_result(result),
+            payload=self.compact_payload(tool_name=tool_name, status=status, payload=payload),
+            prompt_summary=prompt_summary,
             evidence_refs=list(result.get("evidence_refs") or []),
+            create_payload_ref=status == "completed",
+        )
+        return ToolExecutionResult(
+            envelope=envelope,
+            raw_payload=deepcopy(payload) if status == "completed" else None,
+            payload_ref=envelope.get("payload_ref") if status == "completed" else None,
         )
 
     def tool_result_envelope(
@@ -161,21 +181,48 @@ class ToolBroker:
         payload: dict[str, Any],
         prompt_summary: dict[str, Any] | None = None,
         evidence_refs: list[str] | None = None,
+        create_payload_ref: bool = False,
     ) -> dict[str, Any]:
-        return {
-            "tool_result_id": f"toolres_{uuid4().hex}",
-            "tool_name": tool_name,
-            "status": status,
-            "trust": self._trust_for(tool_name),
-            "payload": payload,
-            "prompt_summary": prompt_summary or self.compact_tool_result(payload),
-            "evidence_refs": list(evidence_refs or []),
-        }
+        tool_result_id = f"toolres_{uuid4().hex}"
+        payload_ref = f"world://tool_payload/{tool_result_id}" if create_payload_ref else ""
+        envelope = ToolResultEnvelope(
+            tool_result_id=tool_result_id,
+            tool_name=tool_name,
+            status=status,
+            trust=self._trust_for(tool_name),
+            payload_ref=payload_ref,
+            prompt_summary=prompt_summary or self.compact_tool_result(payload),
+            evidence_refs=list(evidence_refs or []),
+            artifacts=[],
+        ).to_dict()
+        envelope["payload"] = deepcopy(payload)
+        return envelope
+
+    def compact_payload(self, *, tool_name: str, status: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if status != "completed":
+            return deepcopy(payload)
+        if tool_name == "read_file":
+            compact = {key: value for key, value in payload.items() if key != "content"}
+            if "bytes" not in compact and "content" in payload:
+                compact["bytes"] = len(str(payload.get("content") or "").encode("utf-8"))
+            return compact
+        if tool_name == "repo_snapshot":
+            return {
+                "file_count": len(payload.get("files") or []),
+                "directory_count": len(payload.get("directories") or []),
+            }
+        compact = {key: value for key, value in payload.items() if key != "content"}
+        if "content" in payload:
+            compact["bytes"] = len(str(payload.get("content") or "").encode("utf-8"))
+        return compact
 
     def compact_tool_result(self, result: dict[str, Any]) -> dict[str, Any]:
         if "content" in result:
             content = str(result.get("content") or "")
-            return {"bytes": len(content.encode("utf-8")), "preview": content[:500]}
+            summary = {"bytes": len(content.encode("utf-8")), "preview": content[:500]}
+            if "path" in result:
+                summary["path"] = result["path"]
+            return summary
         if "files" in result:
             return {"file_count": len(result.get("files") or []), "directory_count": len(result.get("directories") or [])}
         return {"keys": sorted(result)[:20]}
@@ -238,7 +285,7 @@ class ToolBroker:
             "path": path,
             "bytes": len(text.encode("utf-8")),
             "content": text,
-            "prompt_summary": {"path": path, "preview": text[:500]},
+            "prompt_summary": {"path": path, "bytes": len(text.encode("utf-8")), "preview": text[:500]},
         }
 
     def derive_mutation_lease(self, *, operation_batch_id: str, operations: list[dict[str, Any]]) -> MutationLease:

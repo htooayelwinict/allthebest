@@ -22,6 +22,7 @@ from appv21.runtime.session_store import JsonlSessionStore
 from appv21.runtime.state_machine import RuntimeStateMachine
 from appv21.state.store import InMemoryEventStore
 from appv21.tools.broker import ToolBroker
+from appv21.tools.evidence_store import EvidenceStore
 from appv21.validators.artifacts import ArtifactValidator
 
 
@@ -40,6 +41,7 @@ class AppV21RuntimeServices:
     decision_validator: DecisionValidator
     state_machine: RuntimeStateMachine
     event_store: InMemoryEventStore
+    evidence_store: EvidenceStore
     event_bus: EventBus
     session_store: JsonlSessionStore
     extension_runner: ExtensionRunner
@@ -70,6 +72,7 @@ def create_appv21_runtime_services(
         decision_validator=DecisionValidator(),
         state_machine=RuntimeStateMachine(),
         event_store=InMemoryEventStore(),
+        evidence_store=EvidenceStore(),
         event_bus=EventBus(),
         session_store=JsonlSessionStore(path),
         extension_runner=ExtensionRunner([TraceExtension()] if enable_trace_extension else []),

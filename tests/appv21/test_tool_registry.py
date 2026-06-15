@@ -1,11 +1,27 @@
+import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.1"))
 
+from appv21 import AppV21AgentRuntime
+from appv21.runtime.decisions import RuntimeDecision
+from appv21.runtime.services import create_appv21_runtime_services
 from appv21.tools.definitions import ToolCategory, ToolDefinition, ToolResultEnvelope
 from appv21.tools.broker import ToolBroker
 from appv21.tools.registry import ToolRegistry
+
+
+class QueueProvider:
+    provider_id = "queue"
+
+    def __init__(self, decisions: list[RuntimeDecision]) -> None:
+        self.decisions = decisions
+
+    def decide(self, _prompt_payload: dict) -> RuntimeDecision:
+        if not self.decisions:
+            return RuntimeDecision(kind="finalize", reason="done", payload={"explicit_noop": True})
+        return self.decisions.pop(0)
 
 
 def test_tool_definition_requires_name_category_and_schema() -> None:
@@ -219,5 +235,46 @@ def test_broker_custom_registered_tool_with_handler_is_exposed_validates_and_exe
 
     assert result["status"] == "completed"
     assert result["trust"] == "custom_runtime_trust"
+    assert result["payload_ref"].startswith("world://tool_payload/")
     assert result["payload"]["path"] == "pyproject.toml"
-    assert result["payload"]["content"] == "manifest ok"
+    assert result["payload"]["bytes"] == len("manifest ok".encode("utf-8"))
+    assert "content" not in result["payload"]
+
+
+def test_tool_raw_payload_is_retained_by_ref_not_prompt(tmp_path: Path) -> None:
+    distinctive_content = "compact preview prefix\n" + ("x" * 700) + "\nDISTINCTIVE_FULL_RAW_PAYLOAD_CONTENT\n"
+    (tmp_path / "notes.txt").write_text(distinctive_content, encoding="utf-8")
+    provider = QueueProvider(
+        [
+            RuntimeDecision(kind="tool_call", reason="read file", payload={"tool_name": "read_file", "arguments": {"path": "notes.txt"}}),
+            RuntimeDecision(kind="finalize", reason="no-op verified", payload={"explicit_noop": True}),
+        ]
+    )
+    services = create_appv21_runtime_services(root_path=tmp_path, provider=provider)
+
+    result = AppV21AgentRuntime(root_path=tmp_path, services=services).run("Read notes.")
+
+    completed = [event for event in result["events"] if event["event_type"] == "ToolCallCompleted" and event["payload"]["tool_name"] == "read_file"]
+    assert completed
+    envelope = completed[0]["payload"]
+    payload_ref = envelope["payload_ref"]
+    assert payload_ref.startswith("world://tool_payload/")
+    assert services.evidence_store.get(payload_ref) == {
+        "path": "notes.txt",
+        "bytes": len(distinctive_content.encode("utf-8")),
+        "content": distinctive_content,
+    }
+    assert "content" not in envelope.get("payload", {})
+    assert envelope["prompt_summary"]["path"] == "notes.txt"
+    assert envelope["prompt_summary"]["bytes"] == len(distinctive_content.encode("utf-8"))
+    assert len(envelope["prompt_summary"]["preview"]) < len(distinctive_content)
+
+    events_json = json.dumps(result["events"])
+    assert distinctive_content not in events_json
+    world_refs = [
+        event["payload"]
+        for event in result["events"]
+        if event["event_type"] == "WorldRefAdded" and event["payload"].get("kind") == "tool_result"
+    ]
+    assert any(ref["payload"]["payload_ref"] == payload_ref for ref in world_refs)
+    assert any(ref["payload"]["prompt_summary"]["path"] == "notes.txt" for ref in world_refs)

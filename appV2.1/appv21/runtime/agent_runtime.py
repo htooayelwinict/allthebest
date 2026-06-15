@@ -11,7 +11,8 @@ from appv21.runtime.pause import create_pause
 from appv21.runtime.reducer import reduce_events
 from appv21.runtime.services import AppV21RuntimeServices, create_appv21_runtime_services
 from appv21.state.events import RuntimeEvent
-from appv21.state.models import AgentState, Artifact, RequestEnvelope
+from appv21.state.models import AgentState, Artifact, RequestEnvelope, WorldRef
+from appv21.tools.broker import ToolExecutionResult
 
 
 class AppV21AgentRuntime:
@@ -183,7 +184,7 @@ class AppV21AgentRuntime:
         if decision.kind == "observe":
             self._apply(state, [RuntimeEvent("ModeChanged", {"mode": "OBSERVE"})])
             self._hook(state, "before_observe", decision.payload)
-            self._record_tool_result(state, self.broker.execute_tool_call("repo_snapshot", {}))
+            self._record_tool_result(state, self.broker.execute_tool_call_result("repo_snapshot", {}))
             self._hook(state, "after_observe", decision.payload)
             return
 
@@ -194,7 +195,7 @@ class AppV21AgentRuntime:
             arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
             if decision.kind == "read_file" and "path" in decision.payload:
                 arguments = {"path": decision.payload["path"]}
-            result = self.broker.execute_tool_call(tool_name, arguments)
+            result = self.broker.execute_tool_call_result(tool_name, arguments)
             self._record_tool_result(state, result)
             return
 
@@ -202,7 +203,13 @@ class AppV21AgentRuntime:
             self._apply(state, [RuntimeEvent("ModeChanged", {"mode": "PLAN"})])
             self._hook(state, "before_plan", decision.payload)
             self._ensure_planner_repo_snapshot_ref(state)
-            plan = self.planner.plan_next(state)
+            hydrated_repo_ref = self._hydrate_repo_snapshot_for_planner(state)
+            try:
+                plan = self.planner.plan_next(state)
+            finally:
+                if hydrated_repo_ref is not None:
+                    ref, compact_payload = hydrated_repo_ref
+                    ref.payload = compact_payload
             if plan.get("needs_observation"):
                 self._apply(state, [RuntimeEvent("DecisionRejected", {"decision_id": decision.decision_id, "reason": "plan_requires_observation"})])
                 return
@@ -434,10 +441,22 @@ class AppV21AgentRuntime:
             self.services.session_store.append_event(session_id=state.session_id, run_id=state.run_id, event=event)
         reduce_events(state, events)
 
-    def _record_tool_result(self, state: AgentState, result: dict[str, Any]) -> None:
+    def _record_tool_result(self, state: AgentState, result: ToolExecutionResult | dict[str, Any]) -> None:
+        raw_payload: dict[str, Any] | None = None
+        payload_ref: str | None = None
+        if isinstance(result, ToolExecutionResult):
+            raw_payload = result.raw_payload
+            payload_ref = result.payload_ref
+            result = result.envelope
         if result["status"] == "denied":
             self._apply(state, [RuntimeEvent("ToolCallDenied", result)])
             return
+        if raw_payload is not None and payload_ref:
+            self.services.evidence_store.put_tool_payload(
+                tool_result_id=result["tool_result_id"],
+                payload_ref=payload_ref,
+                payload=raw_payload,
+            )
         self._apply(state, [RuntimeEvent("ToolCallCompleted", result)])
         ref_events = [
             RuntimeEvent(
@@ -446,7 +465,7 @@ class AppV21AgentRuntime:
                     "ref_id": f"world://tool_result/{result['tool_result_id']}",
                     "kind": "tool_result",
                     "summary": json_summary(result.get("prompt_summary") or {}),
-                    "payload": result,
+                    "payload": _compact_tool_result_for_world_ref(result),
                     "trust": result.get("trust", "runtime_observed"),
                 },
             )
@@ -459,7 +478,7 @@ class AppV21AgentRuntime:
                         "ref_id": "world://repo_snapshot/latest",
                         "kind": "repo_snapshot",
                         "summary": json_summary(result.get("prompt_summary") or {}),
-                        "payload": dict(result.get("payload") or {}),
+                        "payload": _compact_tool_result_for_world_ref(result),
                         "trust": result.get("trust", "runtime_observed"),
                     },
                 )
@@ -521,12 +540,26 @@ class AppV21AgentRuntime:
                         "ref_id": "world://repo_snapshot/latest",
                         "kind": "repo_snapshot",
                         "summary": latest.summary,
-                        "payload": dict(latest.payload["payload"]),
+                        "payload": _compact_tool_result_for_world_ref(latest.payload),
                         "trust": latest.trust,
                     },
                 )
             ],
         )
+
+    def _hydrate_repo_snapshot_for_planner(self, state: AgentState) -> tuple[WorldRef, dict[str, Any]] | None:
+        ref = state.world.refs.get("world://repo_snapshot/latest")
+        if ref is None or "files" in ref.payload:
+            return None
+        payload_ref = str(ref.payload.get("payload_ref") or "")
+        if not payload_ref:
+            return None
+        raw_payload = self.services.evidence_store.get(payload_ref)
+        if not isinstance(raw_payload, dict) or "files" not in raw_payload:
+            return None
+        compact_payload = dict(ref.payload)
+        ref.payload = raw_payload
+        return ref, compact_payload
 
     def _hook(self, state: AgentState, hook: str, payload: dict) -> None:
         self._apply(state, self.services.extension_runner.run_hook(hook, state, payload))
@@ -540,3 +573,20 @@ class AppV21AgentRuntime:
 def json_summary(payload: dict[str, Any]) -> str:
     parts = [f"{key}={payload[key]}" for key in sorted(payload)[:4]]
     return ", ".join(parts) if parts else "tool result"
+
+
+def _compact_tool_result_for_world_ref(result: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        "tool_result_id": result.get("tool_result_id"),
+        "tool_name": result.get("tool_name"),
+        "status": result.get("status"),
+        "trust": result.get("trust"),
+        "payload_ref": result.get("payload_ref"),
+        "prompt_summary": dict(result.get("prompt_summary") or {}),
+        "evidence_refs": list(result.get("evidence_refs") or []),
+        "artifacts": list(result.get("artifacts") or []),
+    }
+    payload = result.get("payload")
+    if isinstance(payload, dict) and payload:
+        compact["payload"] = {key: value for key, value in payload.items() if key != "content"}
+    return compact
