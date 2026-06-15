@@ -1,8 +1,21 @@
+import ast
 from pathlib import Path
 
 
-def test_runtime_core_does_not_import_file_management_extension():
-    runtime_files = list(Path("appV2.2/appv22/runtime").glob("*.py"))
+def _imported_modules(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+    return modules
+
+
+def test_runtime_core_does_not_import_extensions_package():
+    runtime_files = Path("appV2.2/appv22/runtime").rglob("*.py")
     for path in runtime_files:
-        text = path.read_text(encoding="utf-8")
-        assert "extensions.file_management" not in text
+        for module in _imported_modules(path):
+            assert module != "appv22.extensions"
+            assert not module.startswith("appv22.extensions.")

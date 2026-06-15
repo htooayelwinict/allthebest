@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.2"))
 
 from appv22.extensions.base import RuntimeExtension, SkillCard
@@ -53,6 +55,40 @@ class DemoExtension(RuntimeExtension):
         capabilities.register_artifact_schema("demo.schema", {"type": "object"})
 
 
+class OtherExtension(RuntimeExtension):
+    extension_id = "other"
+
+    def skill_cards(self):
+        return [
+            SkillCard(
+                "zeta",
+                "other",
+                ("clean",),
+                ("START",),
+                "Other Zeta",
+                "other.planner",
+                "other.policy",
+                "other.executor",
+                "other.verifier",
+                (),
+                (),
+            ),
+            SkillCard(
+                "alpha",
+                "other",
+                ("clean",),
+                ("START",),
+                "Other Alpha",
+                "other.planner",
+                "other.policy",
+                "other.executor",
+                "other.verifier",
+                (),
+                (),
+            ),
+        ]
+
+
 def test_extension_resolution_links_skill_to_capabilities():
     registry = ExtensionRegistry()
     capabilities = CapabilityRegistry()
@@ -63,12 +99,12 @@ def test_extension_resolution_links_skill_to_capabilities():
 
     resolved = registry.resolve_active(state)
 
-    assert resolved.extension_ids == ["demo"]
-    assert resolved.planner_ids == ["demo.planner"]
-    assert resolved.mutation_policy_ids == ["demo.policy"]
-    assert resolved.mutation_executor_ids == ["demo.executor"]
-    assert resolved.verifier_ids == ["demo.verifier"]
-    assert resolved.artifact_schema_ids == ["demo.schema"]
+    assert resolved.extension_ids == ("demo",)
+    assert resolved.planner_ids == ("demo.planner",)
+    assert resolved.mutation_policy_ids == ("demo.policy",)
+    assert resolved.mutation_executor_ids == ("demo.executor",)
+    assert resolved.verifier_ids == ("demo.verifier",)
+    assert resolved.artifact_schema_ids == ("demo.schema",)
     assert capabilities.planner("demo.planner").capability_id == "demo.planner"
     assert capabilities.mutation_policy("demo.policy").capability_id == "demo.policy"
     assert capabilities.mutation_executor("demo.executor").capability_id == "demo.executor"
@@ -83,6 +119,81 @@ def test_extension_resolution_ignores_inactive_skills():
 
     resolved = registry.resolve_active(state)
 
-    assert resolved.extension_ids == []
-    assert resolved.skill_cards == []
-    assert resolved.planner_ids == []
+    assert resolved.extension_ids == ()
+    assert resolved.skill_cards == ()
+    assert resolved.planner_ids == ()
+
+
+def test_resolved_extensions_are_immutable_tuples():
+    registry = ExtensionRegistry()
+    registry.register(DemoExtension())
+    state = AgentState("sess", "run", RequestEnvelope("req", "please clean", "."))
+
+    resolved = registry.resolve_active(state)
+
+    assert isinstance(resolved.extension_ids, tuple)
+    assert isinstance(resolved.skill_cards, tuple)
+    assert isinstance(resolved.tool_ids, tuple)
+    assert isinstance(resolved.planner_ids, tuple)
+    assert isinstance(resolved.mutation_policy_ids, tuple)
+    assert isinstance(resolved.mutation_executor_ids, tuple)
+    assert isinstance(resolved.verifier_ids, tuple)
+    assert isinstance(resolved.artifact_schema_ids, tuple)
+
+
+def test_extension_registry_rejects_duplicate_extension_ids():
+    registry = ExtensionRegistry()
+    registry.register(DemoExtension())
+
+    with pytest.raises(ValueError, match="duplicate extension_id: demo"):
+        registry.register(DemoExtension())
+
+
+def test_skill_cards_resolve_in_deterministic_order():
+    registry = ExtensionRegistry()
+    registry.register(OtherExtension())
+    registry.register(DemoExtension())
+    state = AgentState("sess", "run", RequestEnvelope("req", "please clean", "."))
+
+    resolved = registry.resolve_active(state)
+
+    assert [(card.extension_id, card.skill_id) for card in resolved.skill_cards] == [
+        ("demo", "demo.cleanup"),
+        ("other", "alpha"),
+        ("other", "zeta"),
+    ]
+
+
+def test_capability_registry_rejects_duplicate_capability_ids():
+    capabilities = CapabilityRegistry()
+    capabilities.register_planner("cap", object())
+    capabilities.register_mutation_policy("cap", object())
+    capabilities.register_mutation_executor("cap", object())
+    capabilities.register_verifier("cap", object())
+    capabilities.register_artifact_schema("cap", {"type": "object"})
+
+    with pytest.raises(ValueError, match="duplicate capability_id: cap"):
+        capabilities.register_planner("cap", object())
+    with pytest.raises(ValueError, match="duplicate capability_id: cap"):
+        capabilities.register_mutation_policy("cap", object())
+    with pytest.raises(ValueError, match="duplicate capability_id: cap"):
+        capabilities.register_mutation_executor("cap", object())
+    with pytest.raises(ValueError, match="duplicate capability_id: cap"):
+        capabilities.register_verifier("cap", object())
+    with pytest.raises(ValueError, match="duplicate capability_id: cap"):
+        capabilities.register_artifact_schema("cap", {"type": "object"})
+
+
+def test_artifact_schemas_are_copied_on_register_and_return():
+    capabilities = CapabilityRegistry()
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+    capabilities.register_artifact_schema("schema", schema)
+
+    schema["properties"]["name"]["type"] = "integer"
+    returned = capabilities.artifact_schema("schema")
+    returned["properties"]["name"]["type"] = "boolean"
+
+    assert capabilities.artifact_schema("schema") == {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+    }

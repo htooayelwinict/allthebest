@@ -8,14 +8,14 @@ from appv22.state.models import AgentState
 
 @dataclass(frozen=True)
 class ResolvedExtensions:
-    extension_ids: list[str]
-    skill_cards: list[SkillCard]
-    tool_ids: list[str]
-    planner_ids: list[str]
-    mutation_policy_ids: list[str]
-    mutation_executor_ids: list[str]
-    verifier_ids: list[str]
-    artifact_schema_ids: list[str]
+    extension_ids: tuple[str, ...]
+    skill_cards: tuple[SkillCard, ...]
+    tool_ids: tuple[str, ...]
+    planner_ids: tuple[str, ...]
+    mutation_policy_ids: tuple[str, ...]
+    mutation_executor_ids: tuple[str, ...]
+    verifier_ids: tuple[str, ...]
+    artifact_schema_ids: tuple[str, ...]
 
 
 class ExtensionRegistry:
@@ -23,24 +23,29 @@ class ExtensionRegistry:
         self._extensions: dict[str, RuntimeExtension] = {}
 
     def register(self, extension: RuntimeExtension) -> None:
+        if extension.extension_id in self._extensions:
+            raise ValueError(f"duplicate extension_id: {extension.extension_id}")
         self._extensions[extension.extension_id] = extension
 
     def resolve_active(self, state: AgentState) -> ResolvedExtensions:
-        cards = [
-            card
-            for extension in self._extensions.values()
-            for card in extension.skill_cards()
-            if card.activates_for(state)
-        ]
-        return ResolvedExtensions(
-            extension_ids=sorted({card.extension_id for card in cards}),
-            skill_cards=cards,
-            tool_ids=sorted({tool_id for card in cards for tool_id in card.tool_ids}),
-            planner_ids=sorted({card.planner_id for card in cards}),
-            mutation_policy_ids=sorted({card.mutation_policy_id for card in cards}),
-            mutation_executor_ids=sorted({card.mutation_executor_id for card in cards}),
-            verifier_ids=sorted({card.verifier_id for card in cards}),
-            artifact_schema_ids=sorted(
-                {schema_id for card in cards for schema_id in card.artifact_schema_ids}
+        cards = sorted(
+            (
+                card
+                for extension in self._extensions.values()
+                for card in extension.skill_cards()
+                if card.activates_for(state)
             ),
+            key=lambda card: (card.extension_id, card.skill_id),
+        )
+        return ResolvedExtensions(
+            extension_ids=tuple(sorted({card.extension_id for card in cards})),
+            skill_cards=tuple(cards),
+            tool_ids=tuple(sorted({tool_id for card in cards for tool_id in card.tool_ids})),
+            planner_ids=tuple(sorted({card.planner_id for card in cards})),
+            mutation_policy_ids=tuple(sorted({card.mutation_policy_id for card in cards})),
+            mutation_executor_ids=tuple(sorted({card.mutation_executor_id for card in cards})),
+            verifier_ids=tuple(sorted({card.verifier_id for card in cards})),
+            artifact_schema_ids=tuple(sorted(
+                {schema_id for card in cards for schema_id in card.artifact_schema_ids}
+            )),
         )
