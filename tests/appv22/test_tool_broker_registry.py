@@ -114,3 +114,94 @@ def test_broker_does_not_mutate_arguments_or_handler_result_payload(tmp_path):
 
     assert arguments == {"message": "hello", "items": ["original"]}
     assert handler_result == {"status": "completed", "items": ["handler"]}
+
+
+def test_tool_broker_denies_invalid_argument_type(tmp_path):
+    registry = ToolRegistry()
+    registry.register(
+        _echo_definition(
+            {
+                "type": "object",
+                "properties": {"message": {"type": "string"}},
+                "required": ["message"],
+            }
+        ),
+        lambda args, _ctx: {"status": "completed", "message": args["message"]},
+    )
+    broker = ToolBroker(registry=registry, root_path=tmp_path)
+
+    result = broker.execute("demo.echo", {"message": 42}, active_tool_ids=["demo.echo"])
+
+    assert result["status"] == "denied"
+    assert result["payload"] == {"errors": ["invalid_argument_type:message:expected_string"]}
+    assert result["payload_ref"] == ""
+
+
+def test_tool_broker_returns_failure_envelope_for_handler_exception(tmp_path):
+    registry = ToolRegistry()
+
+    def broken_handler(_args, _ctx):
+        raise RuntimeError("boom")
+
+    registry.register(_echo_definition(), broken_handler)
+    broker = ToolBroker(registry=registry, root_path=tmp_path)
+
+    result = broker.execute("demo.echo", {"message": "hello"}, active_tool_ids=["demo.echo"])
+
+    assert result["status"] == "failed"
+    assert result["payload"] == {"errors": ["handler_exception:RuntimeError"]}
+    assert result["payload_ref"] == ""
+
+
+def test_tool_broker_returns_failure_envelope_for_malformed_handler_return(tmp_path):
+    registry = ToolRegistry()
+    registry.register(_echo_definition(), lambda _args, _ctx: "not-a-dict")
+    broker = ToolBroker(registry=registry, root_path=tmp_path)
+
+    result = broker.execute("demo.echo", {"message": "hello"}, active_tool_ids=["demo.echo"])
+
+    assert result["status"] == "failed"
+    assert result["payload"] == {"errors": ["malformed_handler_result:expected_object"]}
+    assert result["payload_ref"] == ""
+
+
+def test_tool_broker_normalizes_unknown_handler_status_to_failed(tmp_path):
+    registry = ToolRegistry()
+    registry.register(
+        _echo_definition(),
+        lambda args, _ctx: {"status": "surprise", "message": args["message"]},
+    )
+    broker = ToolBroker(registry=registry, root_path=tmp_path)
+
+    result = broker.execute("demo.echo", {"message": "hello"}, active_tool_ids=["demo.echo"])
+
+    assert result["status"] == "failed"
+    assert result["payload"] == {"errors": ["invalid_status:surprise"], "message": "hello"}
+    assert result["payload_ref"] == ""
+
+
+def test_tool_broker_rejects_completed_result_schema_violation(tmp_path):
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            "demo.echo",
+            "observe",
+            "low",
+            {"required": ["message"]},
+            {
+                "type": "object",
+                "properties": {"message": {"type": "string"}},
+                "required": ["message"],
+            },
+            "runtime_observed",
+            "Echo.",
+        ),
+        lambda _args, _ctx: {"status": "completed", "message": 42},
+    )
+    broker = ToolBroker(registry=registry, root_path=tmp_path)
+
+    result = broker.execute("demo.echo", {"message": "hello"}, active_tool_ids=["demo.echo"])
+
+    assert result["status"] == "failed"
+    assert result["payload"] == {"errors": ["invalid_result_type:message:expected_string"]}
+    assert result["payload_ref"] == ""

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 from itertools import count
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from appv22.tools.registry import ToolRegistry
+
+
+_SAFE_STATUSES = frozenset({"completed", "failed", "denied"})
+_SCHEMA_TYPES = frozenset({"object", "string", "integer", "number", "boolean", "array"})
 
 
 class ToolBroker:
@@ -39,14 +44,57 @@ class ToolBroker:
                 create_ref=False,
             )
 
-        required_args = definition.argument_schema.get("required", ())
-        errors = [f"missing_argument:{key}" for key in required_args if key not in arguments]
+        errors = _validate_value_against_schema(
+            definition.argument_schema,
+            arguments,
+            missing_prefix="missing_argument",
+            type_prefix="invalid_argument_type",
+        )
         if errors:
             return self._envelope(tool_id, "denied", {"errors": errors}, create_ref=False)
 
-        handler_result = handler(deepcopy(arguments), {"root_path": self.root_path})
+        try:
+            handler_result = handler(deepcopy(arguments), {"root_path": self.root_path})
+        except Exception as exc:  # noqa: BLE001 - broker must not leak handler failures.
+            return self._envelope(
+                tool_id,
+                "failed",
+                {"errors": [f"handler_exception:{exc.__class__.__name__}"]},
+                create_ref=False,
+            )
+
+        if not isinstance(handler_result, dict):
+            return self._envelope(
+                tool_id,
+                "failed",
+                {"errors": ["malformed_handler_result:expected_object"]},
+                create_ref=False,
+            )
+
         status = str(handler_result.get("status", "completed"))
         payload = {key: deepcopy(value) for key, value in handler_result.items() if key != "status"}
+
+        if status not in _SAFE_STATUSES:
+            payload_errors = list(payload.get("errors", ())) if isinstance(payload.get("errors"), list) else []
+            payload_errors.insert(0, f"invalid_status:{status}")
+            payload["errors"] = payload_errors
+            status = "failed"
+
+        if status == "completed":
+            result_errors = _validate_value_against_schema(
+                definition.result_schema,
+                payload,
+                missing_prefix="missing_result",
+                type_prefix="invalid_result_type",
+            )
+            if result_errors:
+                return self._envelope(
+                    tool_id,
+                    "failed",
+                    {"errors": result_errors},
+                    create_ref=False,
+                )
+
         return self._envelope(tool_id, status, payload, create_ref=status == "completed")
 
     def _envelope(
@@ -66,3 +114,104 @@ class ToolBroker:
             "payload_ref": f"world://tool_payload/{result_id}" if create_ref else "",
             "evidence_refs": [],
         }
+
+
+def _validate_value_against_schema(
+    schema: Any,
+    value: Any,
+    *,
+    missing_prefix: str,
+    type_prefix: str,
+) -> list[str]:
+    if not isinstance(schema, Mapping):
+        return []
+
+    errors: list[str] = []
+    schema_type = schema.get("type")
+    if schema_type is not None and schema_type in _SCHEMA_TYPES:
+        if not _matches_schema_type(value, schema_type):
+            return [f"{type_prefix}:<root>:expected_{schema_type}"]
+
+    if not isinstance(value, dict):
+        if schema_type == "object":
+            return [f"{type_prefix}:<root>:expected_object"]
+        return errors
+
+    for key in schema.get("required", ()):
+        if key not in value:
+            errors.append(f"{missing_prefix}:{key}")
+
+    properties = schema.get("properties", {})
+    if not isinstance(properties, Mapping):
+        return errors
+
+    for key, property_schema in properties.items():
+        if key not in value or not isinstance(property_schema, Mapping):
+            continue
+        errors.extend(
+            _validate_property(
+                property_schema,
+                value[key],
+                path=str(key),
+                missing_prefix=missing_prefix,
+                type_prefix=type_prefix,
+            )
+        )
+
+    return errors
+
+
+def _validate_property(
+    schema: Mapping[str, Any],
+    value: Any,
+    *,
+    path: str,
+    missing_prefix: str,
+    type_prefix: str,
+) -> list[str]:
+    errors: list[str] = []
+    schema_type = schema.get("type")
+    if schema_type in _SCHEMA_TYPES and not _matches_schema_type(value, schema_type):
+        return [f"{type_prefix}:{path}:expected_{schema_type}"]
+
+    if schema_type != "object" or not isinstance(value, dict):
+        return errors
+
+    for key in schema.get("required", ()):
+        if key not in value:
+            errors.append(f"{missing_prefix}:{path}.{key}")
+
+    properties = schema.get("properties", {})
+    if not isinstance(properties, Mapping):
+        return errors
+
+    for key, property_schema in properties.items():
+        if key not in value or not isinstance(property_schema, Mapping):
+            continue
+        errors.extend(
+            _validate_property(
+                property_schema,
+                value[key],
+                path=f"{path}.{key}",
+                missing_prefix=missing_prefix,
+                type_prefix=type_prefix,
+            )
+        )
+
+    return errors
+
+
+def _matches_schema_type(value: Any, schema_type: str) -> bool:
+    if schema_type == "object":
+        return isinstance(value, dict)
+    if schema_type == "string":
+        return isinstance(value, str)
+    if schema_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if schema_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if schema_type == "boolean":
+        return isinstance(value, bool)
+    if schema_type == "array":
+        return isinstance(value, list)
+    return True
