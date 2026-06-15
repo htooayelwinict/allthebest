@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.1"))
 
 from appv21.tools.definitions import ToolCategory, ToolDefinition, ToolResultEnvelope
+from appv21.tools.registry import ToolRegistry
 
 
 def test_tool_definition_requires_name_category_and_schema() -> None:
@@ -42,3 +43,29 @@ def test_tool_result_envelope_uses_payload_ref() -> None:
     assert envelope.prompt_summary == {"file_count": 1}
     assert envelope.evidence_refs == []
     assert envelope.artifacts == []
+
+
+def test_registry_denies_unknown_tools() -> None:
+    registry = ToolRegistry()
+    assert registry.validate_call("missing", {}) == ["unknown_tool:missing"]
+
+
+def test_registry_validates_required_arguments() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="read_file",
+            category=ToolCategory.INSPECT,
+            argument_schema={
+                "type": "object",
+                "required": ["path"],
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            result_schema={"type": "object"},
+        )
+    )
+
+    assert registry.validate_call("read_file", {}) == ["missing_argument:path"]
+    assert registry.validate_call("read_file", {"path": "README.md", "extra": True}) == ["unknown_argument:extra"]
+    assert registry.validate_call("read_file", {"path": "README.md"}) == []
