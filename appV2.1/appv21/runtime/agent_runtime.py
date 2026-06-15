@@ -27,6 +27,8 @@ class AppV21AgentRuntime:
         self.verifier = self.services.verifier
         self.context = self.services.context
         self.artifact_validator = self.services.artifact_validator
+        self.decision_validator = self.services.decision_validator
+        self.state_machine = self.services.state_machine
         self.store = self.services.event_store
         self._paused_states: dict[str, AgentState] = {}
 
@@ -80,6 +82,8 @@ class AppV21AgentRuntime:
         for turn_index in range(self.max_turns):
             decision, rejection = self.run_turn(state, turn_index=turn_index)
             if rejection is not None:
+                if rejection.startswith(("invalid_transition:", "invalid_mode:")):
+                    return self._fail(state, "invalid_transition", {"decision": decision.to_dict(), "reason": rejection})
                 fingerprint = f"{decision.kind}:{rejection}"
                 rejected_fingerprints[fingerprint] = rejected_fingerprints.get(fingerprint, 0) + 1
                 if rejected_fingerprints[fingerprint] >= 3:
@@ -91,11 +95,18 @@ class AppV21AgentRuntime:
         return self._fail(state, "max_turns_exceeded", {"max_turns": self.max_turns})
 
     def run_turn(self, state: AgentState, *, turn_index: int = 0) -> tuple[RuntimeDecision, str | None]:
+        mode_before_prompt = state.mode
         prompt_payload = self._build_prompt_payload(state)
         decision = self.services.provider.decide(prompt_payload)
         self._apply(state, [RuntimeEvent("DecisionProposed", {"turn_index": turn_index, **decision.to_dict()})])
 
-        validation_issues = self.artifact_validator.validate_decision(decision, state)
+        transition_mode = mode_before_prompt if mode_before_prompt == "START" and decision.kind == "finalize" else state.mode
+        transition_rejection = self.state_machine.validate_transition(transition_mode, decision)
+        if transition_rejection is not None:
+            self._apply(state, [RuntimeEvent("DecisionRejected", {"decision_id": decision.decision_id, "reason": transition_rejection})])
+            return decision, transition_rejection
+
+        validation_issues = self.decision_validator.validate(decision, state)
         rejection = validation_issues[0] if validation_issues else None
         if rejection is not None:
             self._apply(state, [RuntimeEvent("DecisionRejected", {"decision_id": decision.decision_id, "reason": rejection})])
