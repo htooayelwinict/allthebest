@@ -11,6 +11,26 @@ from appv21.state.models import AgentState
 WORKSPACE_CLEANUP_TRIGGERS = ("cleanup", "organize", "move", "workspace")
 WORKSPACE_CLEANUP_INTENT_TOKENS = frozenset(("cleanup", "organize", "move"))
 WORKSPACE_CLEANUP_INTENT_PHRASES = ("clean up",)
+WORKSPACE_CLEANUP_CONTEXT_TOKENS = frozenset(
+    (
+        "doc",
+        "docs",
+        "documentation",
+        "directory",
+        "directories",
+        "file",
+        "files",
+        "folder",
+        "folders",
+        "management",
+        "markdown",
+        "note",
+        "notes",
+        "repo",
+        "repository",
+        "workspace",
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -78,6 +98,7 @@ class SkillRegistry:
         tokens = set(re.findall(r"[a-z0-9_]+", text))
         has_intent_token = bool(tokens & WORKSPACE_CLEANUP_INTENT_TOKENS)
         has_intent_phrase = any(phrase in text for phrase in WORKSPACE_CLEANUP_INTENT_PHRASES)
-        if has_intent_token or has_intent_phrase:
+        has_cleanup_context = bool(tokens & WORKSPACE_CLEANUP_CONTEXT_TOKENS)
+        if (has_intent_token or has_intent_phrase) and has_cleanup_context:
             return [WORKSPACE_CLEANUP_CARD.to_prompt_card()]
         return []

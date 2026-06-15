@@ -209,3 +209,49 @@ def test_workspace_cleanup_skill_cards_are_isolated_from_returned_mutations() ->
         "**/do_not_move*",
         "**/old_blob*",
     ]
+
+
+@pytest.mark.parametrize(
+    "user_goal",
+    [
+        "Organize this workspace safely.",
+        "Clean up file management workspace.",
+        "Move markdown notes into docs.",
+    ],
+)
+def test_workspace_cleanup_skill_requires_file_or_workspace_context_to_activate(user_goal: str) -> None:
+    state = AgentState(
+        session_id="sess",
+        run_id="run",
+        request=RequestEnvelope(
+            request_id="req",
+            user_goal=user_goal,
+            root_path=".",
+        ),
+    )
+
+    cards = SkillRouter().active_skills(state)
+
+    assert [card["skill_id"] for card in cards] == ["workspace_cleanup"]
+
+
+@pytest.mark.parametrize(
+    "user_goal",
+    [
+        "remove unused imports",
+        "organize imports",
+        "move the button left",
+    ],
+)
+def test_workspace_cleanup_skill_ignores_action_words_without_file_or_workspace_context(user_goal: str) -> None:
+    state = AgentState(
+        session_id="sess",
+        run_id="run",
+        request=RequestEnvelope(
+            request_id="req",
+            user_goal=user_goal,
+            root_path=".",
+        ),
+    )
+
+    assert SkillRouter().active_skills(state) == []
