@@ -80,3 +80,17 @@ def test_runtime_rejects_illegal_finalize_transition_from_start(tmp_path: Path) 
         event["event_type"] == "DecisionRejected" and event["payload"]["reason"] == "invalid_transition:START->finalize"
         for event in result["events"]
     )
+
+
+def test_runtime_rejects_illegal_plan_transition_from_start(tmp_path: Path) -> None:
+    provider = QueueProvider([RuntimeDecision(kind="plan", reason="too early")])
+    services = create_appv21_runtime_services(root_path=tmp_path, provider=provider)
+
+    result = AppV21AgentRuntime(root_path=tmp_path, services=services, max_turns=1).run("Plan too early.")
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "invalid_transition"
+    assert any(
+        event["event_type"] == "DecisionRejected" and event["payload"]["reason"] == "invalid_transition:START->plan"
+        for event in result["events"]
+    )

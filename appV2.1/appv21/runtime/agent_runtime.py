@@ -100,8 +100,7 @@ class AppV21AgentRuntime:
         decision = self.services.provider.decide(prompt_payload)
         self._apply(state, [RuntimeEvent("DecisionProposed", {"turn_index": turn_index, **decision.to_dict()})])
 
-        transition_mode = mode_before_prompt if mode_before_prompt == "START" and decision.kind == "finalize" else state.mode
-        transition_rejection = self.state_machine.validate_transition(transition_mode, decision)
+        transition_rejection = self.state_machine.validate_transition(mode_before_prompt, decision)
         if transition_rejection is not None:
             self._apply(state, [RuntimeEvent("DecisionRejected", {"decision_id": decision.decision_id, "reason": transition_rejection})])
             return decision, transition_rejection
