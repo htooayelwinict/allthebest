@@ -9,6 +9,8 @@ from typing import Any
 from uuid import uuid4
 
 from appv21.state.models import MutationLease, MutationReceipt
+from appv21.tools.definitions import ToolCategory, ToolDefinition
+from appv21.tools.registry import ToolRegistry
 
 SENSITIVE_PATH_NAMES = {
     ".env",
@@ -26,28 +28,80 @@ SENSITIVE_PATH_NAMES = {
 SENSITIVE_PATH_SUFFIXES = (".key", ".pem", ".p12", ".pfx", ".crt", ".cer")
 
 
+def default_tool_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="repo_snapshot",
+            category=ToolCategory.OBSERVE,
+            argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            result_schema={
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                    "files": {"type": "array"},
+                    "directories": {"type": "array"},
+                },
+            },
+            risk_level="low",
+            trust="runtime_observed",
+            guidance="Use before planning; returns file and directory map only.",
+            cacheable=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="read_file",
+            category=ToolCategory.INSPECT,
+            argument_schema={
+                "type": "object",
+                "required": ["path"],
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            result_schema={
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                    "path": {"type": "string"},
+                    "bytes": {"type": "integer"},
+                    "content": {"type": "string"},
+                },
+            },
+            risk_level="low",
+            trust="runtime_observed",
+            guidance="Use for targeted file evidence; never infer file contents without this.",
+        )
+    )
+    return registry
+
+
 class ToolBroker:
-    def __init__(self, *, root_path: str | Path) -> None:
+    def __init__(self, *, root_path: str | Path, registry: ToolRegistry | None = None) -> None:
         self.root = Path(root_path).resolve()
+        self.registry = registry or default_tool_registry()
         self._issued_leases: dict[str, MutationLease] = {}
 
     def tool_specs(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": "repo_snapshot",
-                "kind": "observe",
-                "trust": "runtime_observed",
-                "guidance": "Use before planning; returns file and directory map only.",
-            },
-            {
-                "name": "read_file",
-                "kind": "observe",
-                "trust": "runtime_observed",
-                "guidance": "Use for targeted file evidence; never infer file contents without this.",
-            },
-        ]
+        specs: list[dict[str, Any]] = []
+        for definition in self.registry.list():
+            specs.append(
+                {
+                    "name": definition.name,
+                    "category": definition.category.value,
+                    "trust": definition.trust,
+                    "guidance": definition.guidance,
+                    "argument_schema": definition.argument_schema,
+                    "result_schema": definition.result_schema,
+                    "risk_level": definition.risk_level,
+                }
+            )
+        return specs
 
     def validate_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> list[str]:
+        registry_errors = self.registry.validate_call(tool_name, arguments)
+        if registry_errors:
+            return registry_errors
         if tool_name == "repo_snapshot":
             return []
         if tool_name == "read_file":

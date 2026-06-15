@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.1"))
 
 from appv21.tools.definitions import ToolCategory, ToolDefinition, ToolResultEnvelope
+from appv21.tools.broker import ToolBroker
 from appv21.tools.registry import ToolRegistry
 
 
@@ -98,3 +99,40 @@ def test_registry_validation_is_isolated_from_schema_mutation() -> None:
     assert registry.validate_call("read_file", {}) == ["missing_argument:path"]
     assert registry.validate_call("read_file", {"path": "README.md", "extra": True}) == ["unknown_argument:extra"]
     assert registry.validate_call("read_file", {"path": {"bad": True}}) == ["invalid_argument_type:path:string"]
+
+
+def test_broker_specs_are_registry_backed(tmp_path: Path) -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="repo_snapshot",
+            category=ToolCategory.SEARCH,
+            argument_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            result_schema={"type": "object", "properties": {"files": {"type": "array"}}},
+            risk_level="medium",
+            trust="custom_trust",
+            guidance="custom guidance",
+        )
+    )
+    broker = ToolBroker(root_path=tmp_path, registry=registry)
+
+    assert broker.tool_specs() == [
+        {
+            "name": "repo_snapshot",
+            "category": "search",
+            "trust": "custom_trust",
+            "guidance": "custom guidance",
+            "argument_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "result_schema": {"type": "object", "properties": {"files": {"type": "array"}}},
+            "risk_level": "medium",
+        }
+    ]
+
+
+def test_broker_validate_tool_call_routes_through_registry(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# hello\n", encoding="utf-8")
+    broker = ToolBroker(root_path=tmp_path)
+
+    assert broker.validate_tool_call("missing", {}) == ["unknown_tool:missing"]
+    assert broker.validate_tool_call("read_file", {}) == ["missing_argument:path"]
+    assert broker.validate_tool_call("read_file", {"path": "README.md", "extra": True}) == ["unknown_argument:extra"]
