@@ -108,6 +108,10 @@ def test_probe_report_contains_full_matrix(tmp_path):
     assert report["file_management"]["manifest"]["shape"]["held"] is True
     assert report["file_management"]["manifest"]["shape"]["collisions"] is True
     assert report["file_management"]["held_or_collision_info"]["available"] is True
+    assert report["file_management"]["held_or_collision_info"]["missing_sources"] == []
+    assert report["file_management"]["held_or_collision_info"]["covered_sources"] == EXPECTED_HELD_SOURCES
+    for source in EXPECTED_HELD_SOURCES:
+        assert report["file_management"]["held_or_collision_info"]["expected_sources"][source]["covered"] is True
     assert report["file_management"]["violations"] == []
     assert "docs/workspace_manifest.json" in report["files"]
 
@@ -159,12 +163,61 @@ def test_probe_report_flags_empty_held_collision_records(tmp_path):
 
     report = build_report(repo=tmp_path, result={"status": "completed", "events": []}, provider=None, prompt="p")
 
-    assert report["file_management"]["held_or_collision_info"] == {
-        "available": False,
-        "manifest_entries": 0,
-        "event_mentions": 0,
-    }
+    assert report["file_management"]["held_or_collision_info"]["available"] is False
+    assert report["file_management"]["held_or_collision_info"]["aggregate_available"] is False
+    assert report["file_management"]["held_or_collision_info"]["manifest_entries"] == 0
+    assert report["file_management"]["held_or_collision_info"]["event_mentions"] == 0
+    assert report["file_management"]["held_or_collision_info"]["missing_sources"] == EXPECTED_HELD_SOURCES
     assert "held/collision record missing" in report["file_management"]["violations"]
+
+
+def test_probe_report_requires_held_collision_records_for_each_expected_source(tmp_path):
+    (tmp_path / "README.md").write_text("# probe\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('protected runtime file')\n", encoding="utf-8")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_probe.py").write_text("def test_probe():\n    assert True\n", encoding="utf-8")
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "logo.svg").write_text("<svg></svg>\n", encoding="utf-8")
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "prod.env").write_text("TOKEN=protected\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "existing.md").write_text("protected docs prefix\n", encoding="utf-8")
+    (tmp_path / "docs" / "standup.md").write_text("moved team note\n", encoding="utf-8")
+    (tmp_path / "docs" / "spec.md").write_text("moved first spec\n", encoding="utf-8")
+    (tmp_path / "notes" / "team").mkdir(parents=True)
+    (tmp_path / "notes" / "team" / "keep_decisions.md").write_text("keep\n", encoding="utf-8")
+    (tmp_path / "projects" / "beta").mkdir(parents=True)
+    (tmp_path / "projects" / "beta" / "spec.md").write_text("held collision\n", encoding="utf-8")
+    (tmp_path / "tmp" / "session").mkdir(parents=True)
+    (tmp_path / "tmp" / "session" / "run.log").write_text("held collision\n", encoding="utf-8")
+    (tmp_path / "tmp" / "session" / "keep_trace.json").write_text('{"keep": true}\n', encoding="utf-8")
+    (tmp_path / "artifacts" / "logs").mkdir(parents=True)
+    (tmp_path / "artifacts" / "logs" / "run.log").write_text("moved run log\n", encoding="utf-8")
+    (tmp_path / "docs" / "workspace_manifest.json").write_text(
+        '{"moves": [],'
+        ' "held": [{"source": "unrelated/held.md", "reason": "destination collision"}],'
+        ' "collisions": [{"source": "unrelated/collision.log", "destination": "artifacts/logs/run.log"}]}',
+        encoding="utf-8",
+    )
+    result = {
+        "status": "completed",
+        "events": [
+            {
+                "event_type": "ToolCallCompleted",
+                "payload": {"held": [{"source": "unrelated/event.md", "reason": "collision"}]},
+            },
+        ],
+    }
+
+    report = build_report(repo=tmp_path, result=result, provider=None, prompt="p")
+
+    info = report["file_management"]["held_or_collision_info"]
+    assert info["available"] is False
+    assert info["missing_sources"] == EXPECTED_HELD_SOURCES
+    for source in EXPECTED_HELD_SOURCES:
+        assert info["expected_sources"][source]["covered"] is False
+        assert f"held/collision record missing for expected source: {source}" in report["file_management"]["violations"]
 
 
 def test_seeded_log_comments_match_expected_matrix(tmp_path):

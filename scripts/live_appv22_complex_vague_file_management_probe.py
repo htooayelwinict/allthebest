@@ -228,6 +228,7 @@ def _manifest_summary(path: Path) -> dict[str, Any]:
         "valid_json": False,
         "shape": {"moves": False, "held": False, "collisions": False},
         "counts": {"moves": 0, "held": 0, "collisions": 0},
+        "sources": {"held": [], "collisions": []},
     }
     if not path.is_file():
         return summary
@@ -242,13 +243,32 @@ def _manifest_summary(path: Path) -> dict[str, Any]:
         value = manifest.get(key)
         summary["shape"][key] = isinstance(value, list)
         summary["counts"][key] = len(value) if isinstance(value, list) else 0
+        if key in ("held", "collisions") and isinstance(value, list):
+            summary["sources"][key] = _record_sources(value)
     return summary
+
+
+def _record_sources(records: list[Any]) -> list[str]:
+    sources: list[str] = []
+    for record in records:
+        source: Any = None
+        if isinstance(record, dict):
+            for key in ("source", "src", "path", "from"):
+                if isinstance(record.get(key), str):
+                    source = record[key]
+                    break
+        elif isinstance(record, str):
+            source = record
+        if isinstance(source, str) and source not in sources:
+            sources.append(source)
+    return sources
 
 
 def _held_or_collision_info(*, manifest: dict[str, Any], events: list[Any]) -> dict[str, Any]:
     manifest_counts = manifest.get("counts", {})
     from_manifest = int(manifest_counts.get("held", 0) or 0) + int(manifest_counts.get("collisions", 0) or 0)
     from_events = 0
+    event_sources: list[str] = []
     for event in events:
         if not isinstance(event, dict):
             continue
@@ -258,10 +278,50 @@ def _held_or_collision_info(*, manifest: dict[str, Any], events: list[Any]) -> d
         payload_text = json.dumps(payload, sort_keys=True).lower()
         if "held" in payload_text or "collision" in payload_text:
             from_events += 1
+            for source in EXPECTED_HELD_SOURCES:
+                if source.lower() in payload_text and source not in event_sources:
+                    event_sources.append(source)
+
+    manifest_sources = manifest.get("sources", {})
+    manifest_held_sources = set(manifest_sources.get("held", []))
+    manifest_collision_sources = set(manifest_sources.get("collisions", []))
+    event_source_set = set(event_sources)
+    expected_sources: dict[str, Any] = {}
+    covered_sources: list[str] = []
+    missing_sources: list[str] = []
+    for source in EXPECTED_HELD_SOURCES:
+        evidence = []
+        if source in manifest_held_sources:
+            evidence.append("manifest.held")
+        if source in manifest_collision_sources:
+            evidence.append("manifest.collisions")
+        if source in event_source_set:
+            evidence.append("event.payload")
+        covered = bool(evidence)
+        if covered:
+            covered_sources.append(source)
+        else:
+            missing_sources.append(source)
+        expected_sources[source] = {
+            "covered": covered,
+            "manifest_held": source in manifest_held_sources,
+            "manifest_collision": source in manifest_collision_sources,
+            "event_payload": source in event_source_set,
+            "evidence": evidence,
+        }
     return {
-        "available": from_manifest > 0 or from_events > 0,
+        "available": not missing_sources,
+        "aggregate_available": from_manifest > 0 or from_events > 0,
         "manifest_entries": from_manifest,
         "event_mentions": from_events,
+        "manifest_sources": {
+            "held": list(manifest_sources.get("held", [])),
+            "collisions": list(manifest_sources.get("collisions", [])),
+        },
+        "event_sources": event_sources,
+        "expected_sources": expected_sources,
+        "covered_sources": covered_sources,
+        "missing_sources": missing_sources,
     }
 
 
@@ -292,8 +352,12 @@ def _file_management_violations(
     else:
         shape = manifest.get("shape", {})
         violations.extend(f"manifest missing key: {key}" for key in ("moves", "held", "collisions") if not shape.get(key))
-    if not held_or_collision_info.get("available"):
+    if not held_or_collision_info.get("aggregate_available"):
         violations.append("held/collision record missing")
+    violations.extend(
+        f"held/collision record missing for expected source: {source}"
+        for source in held_or_collision_info.get("missing_sources", [])
+    )
     return violations
 
 
