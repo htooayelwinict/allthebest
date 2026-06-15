@@ -136,3 +136,35 @@ def test_broker_validate_tool_call_routes_through_registry(tmp_path: Path) -> No
     assert broker.validate_tool_call("missing", {}) == ["unknown_tool:missing"]
     assert broker.validate_tool_call("read_file", {}) == ["missing_argument:path"]
     assert broker.validate_tool_call("read_file", {"path": "README.md", "extra": True}) == ["unknown_argument:extra"]
+
+
+def test_broker_custom_registered_tool_uses_registry_for_validation_policy_and_trust(tmp_path: Path) -> None:
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="inspect_manifest",
+            category=ToolCategory.INSPECT,
+            argument_schema={
+                "type": "object",
+                "required": ["path"],
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            result_schema={"type": "object"},
+            trust="custom_runtime_trust",
+        )
+    )
+    broker = ToolBroker(root_path=tmp_path, registry=registry)
+
+    assert broker.validate_tool_call("inspect_manifest", {"path": "pyproject.toml"}) == []
+    assert broker.validate_tool_call("inspect_manifest", {}) == ["missing_argument:path"]
+    assert broker.validate_tool_call("inspect_manifest", {"path": "pyproject.toml", "extra": True}) == [
+        "unknown_argument:extra"
+    ]
+    assert broker.tool_policy_for(None)["read_tools"] == ["inspect_manifest"]
+
+    result = broker.execute_tool_call("inspect_manifest", {"path": "pyproject.toml"})
+
+    assert result["status"] == "unsupported"
+    assert result["trust"] == "custom_runtime_trust"
+    assert result["payload"]["errors"] == ["unsupported_tool:inspect_manifest"]

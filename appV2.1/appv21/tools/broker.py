@@ -26,6 +26,14 @@ SENSITIVE_PATH_NAMES = {
     "credentials.json",
 }
 SENSITIVE_PATH_SUFFIXES = (".key", ".pem", ".p12", ".pfx", ".crt", ".cer")
+READ_TOOL_CATEGORIES = {
+    ToolCategory.OBSERVE,
+    ToolCategory.INSPECT,
+    ToolCategory.SEARCH,
+    ToolCategory.ANALYZE,
+    ToolCategory.PLAN_HELPER,
+    ToolCategory.VERIFY,
+}
 
 
 def default_tool_registry() -> ToolRegistry:
@@ -114,7 +122,7 @@ class ToolBroker:
             if not safe_path.is_file():
                 return [f"path_not_file:{path}"]
             return []
-        return [f"unknown_tool:{tool_name}"]
+        return []
 
     def execute_tool_call(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         arguments = arguments or {}
@@ -126,7 +134,7 @@ class ToolBroker:
         elif tool_name == "read_file":
             result = self.read_file(str(arguments.get("path") or ""))
         else:
-            result = {"status": "denied", "errors": [f"unknown_tool:{tool_name}"]}
+            result = {"status": "unsupported", "tool_name": tool_name, "errors": [f"unsupported_tool:{tool_name}"]}
         status = str(result.get("status") or "completed")
         payload = {key: value for key, value in result.items() if key not in {"tool_result_id", "tool_name", "status", "trust", "prompt_summary"}}
         return self.tool_result_envelope(
@@ -150,7 +158,7 @@ class ToolBroker:
             "tool_result_id": f"toolres_{uuid4().hex}",
             "tool_name": tool_name,
             "status": status,
-            "trust": "runtime_observed" if tool_name in {"repo_snapshot", "read_file"} else "runtime_owned",
+            "trust": self._trust_for(tool_name),
             "payload": payload,
             "prompt_summary": prompt_summary or self.compact_tool_result(payload),
             "evidence_refs": list(evidence_refs or []),
@@ -168,8 +176,16 @@ class ToolBroker:
         return {
             "mutating_tools_require_lease": True,
             "high_risk_mutations_require_human": True,
-            "read_tools": ["repo_snapshot", "read_file"],
+            "read_tools": [
+                definition.name for definition in self.registry.list() if definition.category in READ_TOOL_CATEGORIES
+            ],
         }
+
+    def _trust_for(self, tool_name: str) -> str:
+        definition = self.registry.get(tool_name)
+        if definition is None:
+            return "runtime_owned"
+        return definition.trust
 
     def repo_snapshot(self) -> dict[str, Any]:
         files: list[str] = []
