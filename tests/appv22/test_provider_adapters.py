@@ -288,6 +288,40 @@ def test_appv22_adapter_ignores_unrelated_summary_evidence_for_observation_contr
     assert coerced.payload["tool_id"] == "file_management.repo_snapshot"
 
 
+def test_appv22_adapter_requires_contract_ref_when_ref_and_kind_are_declared() -> None:
+    prompt = {
+        "state": {"runtime_plan": {}, "mutation_receipts": {}, "verification_receipts": {}},
+        "world": {
+            "world_refs": {
+                "world://old_snapshot/stale": {
+                    "kind": "file_management.repo_snapshot",
+                }
+            }
+        },
+        "messages": [],
+        "selection": {
+            "selected_tools": ["file_management.repo_snapshot", "file_management.read_file"],
+        },
+        "skills": [
+            {
+                "skill_id": "file_management.cleanup",
+                "tool_ids": ("file_management.repo_snapshot", "file_management.read_file"),
+                "observation_contract": {
+                    "evidence_refs": ("world://repo_snapshot/latest",),
+                    "evidence_kinds": ("file_management.repo_snapshot",),
+                    "preferred_tool_id": "file_management.repo_snapshot",
+                },
+            }
+        ],
+    }
+    decision = RuntimeDecision("plan", "kind exists but required ref is absent", {}, [])
+
+    coerced = appv2_env_provider._coerce_appv22_progression(prompt, decision)
+
+    assert coerced.kind == "tool_call"
+    assert coerced.payload == {"tool_id": "file_management.repo_snapshot", "arguments": {}}
+
+
 def test_appv2_env_adapter_coerces_redundant_plan_to_mutation_intent_and_adds_appv21_plan_alias():
     class DelegateProvider:
         provider_id = "appv2-env-worker"

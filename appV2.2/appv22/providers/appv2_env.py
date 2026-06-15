@@ -258,9 +258,11 @@ def _observation_contracts(prompt: dict) -> list[dict[str, Any]]:
 def _contract_satisfied(contract: Mapping[str, Any], evidence: ContextEvidence) -> bool:
     evidence_refs = _contract_values(contract.get("evidence_refs"))
     evidence_kinds = _contract_values(contract.get("evidence_kinds"))
-    if not evidence_refs and not evidence_kinds:
-        return True
-    return evidence.has_any_ref(evidence_refs) or evidence.has_any_kind(evidence_kinds)
+    if evidence_refs:
+        return evidence.has_any_ref(evidence_refs)
+    if evidence_kinds:
+        return evidence.has_any_kind(evidence_kinds)
+    return True
 
 
 def _contract_values(value: Any) -> tuple[str, ...]:

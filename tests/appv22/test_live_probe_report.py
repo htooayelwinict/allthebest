@@ -52,6 +52,37 @@ def test_dual_compaction_report_proof_separates_initial_observation_from_reobser
     assert "rehydration_attempted" not in report["proof"]
 
 
+def test_dual_compaction_report_proof_flags_reobserve_after_summary_evidence(tmp_path):
+    provider = _DualCompactionProvider()
+    provider.prompts.append(
+        {
+            "messages": [
+                {
+                    "name": "context_summary",
+                    "summary": {"evidence_refs": ["tool:file_management.repo_snapshot:1"]},
+                }
+            ],
+            "world": {},
+        }
+    )
+    provider.decisions.append(
+        {
+            "kind": "tool_call",
+            "payload": {"tool_id": "file_management.repo_snapshot"},
+            "evidence_refs": [],
+        }
+    )
+
+    report = build_dual_compaction_report(
+        repo=tmp_path,
+        result={"status": "completed", "events": []},
+        provider=provider,
+        prompt="p",
+    )
+
+    assert report["proof"]["no_reobserve_after_summary_evidence"] is False
+
+
 def test_probe_report_contains_full_matrix(tmp_path):
     (tmp_path / "README.md").write_text("# probe\n", encoding="utf-8")
     (tmp_path / "src").mkdir()
