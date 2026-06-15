@@ -28,6 +28,7 @@ class AppV21AgentRuntime:
         self.skills = self.services.skills
         self.verifier = self.services.verifier
         self.context = self.services.context
+        self.context_overflow = self.services.context_overflow
         self.context_budget = self.services.context_budget
         self.context_selector = self.services.context_selector
         self.run_memory_builder = self.services.run_memory_builder
@@ -103,7 +104,7 @@ class AppV21AgentRuntime:
     def run_turn(self, state: AgentState, *, turn_index: int = 0) -> tuple[RuntimeDecision, str | None]:
         mode_before_prompt = state.mode
         prompt_payload = self._build_prompt_payload(state)
-        decision = self.services.provider.decide(prompt_payload)
+        decision = self._decide_with_context_overflow_recovery(state, prompt_payload)
         self._apply(state, [RuntimeEvent("DecisionProposed", {"turn_index": turn_index, **decision.to_dict()})])
 
         transition_rejection = self.state_machine.validate_transition(mode_before_prompt, decision)
@@ -139,6 +140,49 @@ class AppV21AgentRuntime:
             )
             self._fail(state, "repeated_loop", {"decision": decision.to_dict(), "reason": progress_rejection})
         return decision, None
+
+    def _decide_with_context_overflow_recovery(self, state: AgentState, prompt_payload: dict[str, Any]) -> RuntimeDecision:
+        try:
+            return self.services.provider.decide(prompt_payload)
+        except Exception as error:
+            if not self.context_overflow.is_context_overflow(error):
+                raise
+            trimmed_error = self._trim_provider_error(error)
+            self._apply(state, [RuntimeEvent("ContextOverflowDetected", {"error": trimmed_error})])
+            compaction_events = self.context.maybe_compact(state)
+            if not compaction_events:
+                self._apply(
+                    state,
+                    [
+                        RuntimeEvent(
+                            "ContextOverflowRecoveryFailed",
+                            {"error": trimmed_error, "reason": "compaction_unavailable"},
+                        )
+                    ],
+                )
+                raise
+            self._apply(state, compaction_events)
+            retry_prompt_payload = self._build_prompt_payload(state)
+            try:
+                return self.services.provider.decide(retry_prompt_payload)
+            except Exception as retry_error:
+                if self.context_overflow.is_context_overflow(retry_error):
+                    self._apply(
+                        state,
+                        [
+                            RuntimeEvent(
+                                "ContextOverflowRecoveryFailed",
+                                {"error": self._trim_provider_error(retry_error), "reason": "retry_overflow"},
+                            )
+                        ],
+                    )
+                raise
+
+    def _trim_provider_error(self, error: BaseException) -> str:
+        message = str(error)
+        if len(message) <= 500:
+            return message
+        return f"{message[:497]}..."
 
     def _restore_mode_after_rejection(self, state: AgentState, mode_before_prompt: str) -> None:
         if state.mode != mode_before_prompt:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from appv21.context.budget import ContextBudgetManager
 from appv21.context.manager import DualContextManager
+from appv21.context.overflow import ContextOverflowPolicy
 from appv21.context.prompt_builder import PromptBuilder
 from appv21.context.run_memory import RunMemoryBuilder
 from appv21.context.selector import ContextSelector
@@ -39,6 +40,7 @@ class AppV21RuntimeServices:
     skills: SkillRouter
     verifier: VerifierExtension
     context: DualContextManager
+    context_overflow: ContextOverflowPolicy
     context_budget: ContextBudgetManager
     context_selector: ContextSelector
     prompt_builder: PromptBuilder
@@ -73,6 +75,7 @@ def create_appv21_runtime_services(
         skills=SkillRouter(),
         verifier=VerifierExtension(),
         context=DualContextManager(),
+        context_overflow=ContextOverflowPolicy(),
         context_budget=ContextBudgetManager(),
         context_selector=ContextSelector(),
         prompt_builder=PromptBuilder(),

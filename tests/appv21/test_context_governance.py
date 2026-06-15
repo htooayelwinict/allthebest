@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.1"))
 
 from appv21.context.budget import ContextBudgetManager, DEFAULT_SECTION_BUDGETS
 from appv21.context.compactor import RuntimeContextCompactor
+from appv21.context.overflow import ContextOverflowPolicy
 from appv21.context.selector import ContextSelector
 from appv21.extensions.skills import SkillRouter
 from appv21.runtime.agent_runtime import AppV21AgentRuntime
@@ -125,6 +126,18 @@ def test_context_budget_over_budget_sections_use_canonical_order() -> None:
 
     assert list(estimate["sections"]) == list(DEFAULT_SECTION_BUDGETS)
     assert estimate["over_budget_sections"] == ["system", "tools"]
+
+
+def test_context_overflow_policy_classifies_provider_errors() -> None:
+    policy = ContextOverflowPolicy()
+
+    assert policy.is_context_overflow(RuntimeError("context length exceeded")) is True
+    assert policy.is_context_overflow(RuntimeError("context_length limit reached")) is True
+    assert policy.is_context_overflow(RuntimeError("maximum context window exceeded")) is True
+    assert policy.is_context_overflow(RuntimeError("too many tokens in request")) is True
+    assert policy.is_context_overflow(RuntimeError("HTTP 413 from provider")) is True
+    assert policy.is_context_overflow(RuntimeError("request too large")) is True
+    assert policy.is_context_overflow(RuntimeError("rate limit exceeded")) is False
 
 
 def test_workspace_cleanup_skill_activates_as_card() -> None:
@@ -632,6 +645,48 @@ def test_prompt_context_prepared_records_budget_and_selection(tmp_path: Path) ->
     assert "model" in prompt_events[-1]["payload"]
     assert "tool_count" in prompt_events[-1]["payload"]
     assert "skill_count" in prompt_events[-1]["payload"]
+
+
+def test_context_overflow_retries_after_runtime_compaction(tmp_path: Path) -> None:
+    for index in range(6):
+        (tmp_path / f"note-{index}.txt").write_text(f"note {index}", encoding="utf-8")
+
+    class OverflowOnceProvider:
+        provider_id = "overflow-once"
+
+        def __init__(self) -> None:
+            self.calls = 0
+            self.saw_retry = False
+
+        def decide(self, prompt_payload: dict) -> RuntimeDecision:
+            self.calls += 1
+            if self.calls == 1:
+                return RuntimeDecision(kind="observe", reason="Collect repo snapshot.")
+            if 2 <= self.calls <= 7:
+                return RuntimeDecision(
+                    kind="read_file",
+                    reason="Accumulate context refs.",
+                    payload={"path": f"note-{self.calls - 2}.txt"},
+                )
+            if self.calls == 8:
+                raise RuntimeError("provider rejected request: context length exceeded")
+            self.saw_retry = True
+            return RuntimeDecision(kind="finalize", reason="Recovered after compaction.", payload={"explicit_noop": True})
+
+    provider = OverflowOnceProvider()
+    result = AppV21AgentRuntime(
+        root_path=tmp_path,
+        services=create_appv21_runtime_services(root_path=tmp_path, provider=provider),
+        max_turns=8,
+    ).run("Summarize the notes without changes.")
+
+    event_types = [event["event_type"] for event in result["events"]]
+    assert result["status"] == "completed"
+    assert provider.saw_retry is True
+    assert event_types.count("ContextOverflowDetected") == 1
+    assert "ContextCompactionRequested" in event_types
+    assert "ContextCompacted" in event_types
+    assert "ContextOverflowRecoveryFailed" not in event_types
 
 
 def test_finalize_emits_runtime_verified_run_memory(tmp_path: Path) -> None:
