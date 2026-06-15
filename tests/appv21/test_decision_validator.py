@@ -14,3 +14,6 @@ def test_rejection_constants_are_stable_strings() -> None:
     assert rejections.STALE_PLAN == "stale_plan"
     assert rejections.VERIFICATION_FAILED == "verification_failed"
     assert rejections.REPEATED_LOOP == "repeated_loop"
+    assert rejections.INVALID_TRANSITION == "invalid_transition"
+    assert rejections.FINALIZE_WITHOUT_VERIFICATION == "finalize_without_verification"
+    assert rejections.INVALID_PAYLOAD == "invalid_payload"
