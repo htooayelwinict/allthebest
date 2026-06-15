@@ -9,9 +9,47 @@ from scripts.live_appv22_complex_vague_file_management_probe import (
     EXPECTED_HELD_SOURCES,
     EXPECTED_SOURCES_ABSENT_AFTER_MOVES,
     build_report,
+    create_provider,
     default_report_path,
     seed_repo,
 )
+from scripts.live_appv22_dual_compaction_rehydration_probe import build_report as build_dual_compaction_report
+
+
+class _DualCompactionProvider:
+    provider_id = "test-provider"
+    raw_decisions = []
+
+    def __init__(self):
+        self.prompts = [
+            {"messages": [], "world": {"world_refs": {"repo": {}}}},
+            {
+                "messages": [
+                    {
+                        "name": "context_summary",
+                        "summary": {"evidence_refs": ["tool:file_management.repo_snapshot:1"]},
+                    }
+                ],
+                "world": {},
+            },
+        ]
+        self.decisions = [
+            {"kind": "tool_call", "payload": {"tool_id": "file_management.repo_snapshot"}, "evidence_refs": []},
+            {"kind": "respond", "payload": {}, "evidence_refs": ["tool:file_management.repo_snapshot:1"]},
+        ]
+
+
+def test_dual_compaction_report_proof_separates_initial_observation_from_reobserve(tmp_path):
+    report = build_dual_compaction_report(
+        repo=tmp_path,
+        result={"status": "completed", "events": []},
+        provider=_DualCompactionProvider(),
+        prompt="p",
+    )
+
+    assert report["proof"]["initial_observation_attempted"] is True
+    assert report["proof"]["no_reobserve_after_summary_evidence"] is True
+    assert "rehydration_attempted" not in report["proof"]
 
 
 def test_probe_report_contains_full_matrix(tmp_path):
@@ -267,3 +305,23 @@ def test_default_report_path_is_provider_specific_and_output_arg_can_override(tm
     assert default_report_path("appv2-env").name == "live-appv22-complex-vague-file-management-probe.appv2-env.json"
     assert default_report_path("deterministic").name != "live-appv22-complex-vague-file-management-probe.json"
     assert default_report_path("deterministic", output=tmp_path / "custom.json") == tmp_path / "custom.json"
+
+
+def test_appv2_env_probe_passes_file_management_tool_name_map(monkeypatch):
+    captured = {}
+    provider = object()
+
+    def fake_create_appv22_provider_from_appv2_env(*, dotenv_path, tool_name_map=None):
+        captured["dotenv_path"] = dotenv_path
+        captured["tool_name_map"] = tool_name_map
+        return provider
+
+    monkeypatch.setattr(
+        "scripts.live_appv22_complex_vague_file_management_probe.create_appv22_provider_from_appv2_env",
+        fake_create_appv22_provider_from_appv2_env,
+    )
+
+    assert create_provider("appv2-env", dotenv_path=".env") is provider
+    assert captured["dotenv_path"] == ".env"
+    assert captured["tool_name_map"]["repo_snapshot"] == "file_management.repo_snapshot"
+    assert captured["tool_name_map"]["read_file"] == "file_management.read_file"

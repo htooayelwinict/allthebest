@@ -105,7 +105,7 @@ def main() -> int:
     return (
         0
         if proof["dual_compaction_carried"]
-        and proof["rehydration_attempted"]
+        and proof["initial_observation_attempted"]
         and proof["no_reobserve_after_summary_evidence"]
         else 1
     )
@@ -243,7 +243,7 @@ def build_report(*, repo: Path, result: dict[str, Any], provider: RecordingProvi
         ),
         "summary_carries_evidence": any(row["turn"] > 1 and row["summary_evidence_ref_count"] > 0 for row in prompt_matrix),
         "dual_compaction_carried": False,
-        "rehydration_attempted": any(
+        "initial_observation_attempted": any(
             decision["kind"] == "tool_call"
             and decision["tool_id"] == "file_management.repo_snapshot"
             and _prompt_summary_evidence_ref_count(prompt_matrix, decision["turn"]) == 0
