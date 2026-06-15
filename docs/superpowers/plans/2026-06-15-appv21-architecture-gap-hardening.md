@@ -21,6 +21,32 @@ This plan covers the full gap review, but implementation should be executed in p
 
 Do not start Phase Gate C until Phase Gate A and B tests pass. The current production risk is not planner intelligence; it is unclear runtime/tool interfaces.
 
+## Phase Gate A Execution Addendum
+
+Status: implemented and reviewed on branch `codex/appv21-architecture-hardening`.
+
+Fresh verification after Phase Gate A:
+
+```bash
+UV_CACHE_DIR=/private/tmp/allthebest-uv-cache uv run pytest tests/appv21 tests/test_appv2_prompt_quality.py -q
+```
+
+Expected: `56 passed`.
+
+Phase Gate A final behavior is stricter than the initial task snippets below. Future workers must preserve these reviewed corrections:
+
+- `tests/appv21/test_decision_validator.py` asserts all 10 rejection constants, including `INVALID_TRANSITION`, `FINALIZE_WITHOUT_VERIFICATION`, and `INVALID_PAYLOAD`.
+- `DecisionValidator` uses `appv21.runtime.decisions.KNOWN_DECISION_KINDS` as the canonical decision-kind source.
+- `RuntimeStateMachine` validates unknown modes separately with `invalid_mode:<mode>`.
+- `RuntimeStateMachine.record_progress()` counts only consecutive nonproductive decisions.
+- `RuntimeStateMachine.reset_progress()` is called at the start of each new runtime `run()` to prevent loop-state leakage across reused runtime/service objects.
+- `AppV21AgentRuntime.run_turn()` validates transitions from `mode_before_prompt`, not the temporary `THINK` mode introduced while building prompt context.
+- Rejected decisions restore the previous semantic mode before `DecisionRejected` is emitted.
+- Loop progress detection uses semantic state only. Do not use event-count or mode changes as progress signals.
+- Direct mutation test/probe providers must follow the legal runtime path: `observe -> plan -> mutation_intent`. Do not reintroduce `START -> mutation_intent` fixtures.
+
+Phase Gate B workers should treat the above as non-negotiable compatibility requirements.
+
 ## File Structure
 
 Create:
@@ -83,6 +109,9 @@ def test_rejection_constants_are_stable_strings() -> None:
     assert rejections.STALE_PLAN == "stale_plan"
     assert rejections.VERIFICATION_FAILED == "verification_failed"
     assert rejections.REPEATED_LOOP == "repeated_loop"
+    assert rejections.INVALID_TRANSITION == "invalid_transition"
+    assert rejections.FINALIZE_WITHOUT_VERIFICATION == "finalize_without_verification"
+    assert rejections.INVALID_PAYLOAD == "invalid_payload"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -191,23 +220,13 @@ Expected: FAIL because `DecisionValidator` does not exist.
 
 from __future__ import annotations
 
-from appv21.runtime.decisions import RuntimeDecision
+from appv21.runtime.decisions import KNOWN_DECISION_KINDS, RuntimeDecision
 from appv21.runtime import rejections
 from appv21.state.models import AgentState
 
 
 class DecisionValidator:
-    known_decision_kinds = {
-        "observe",
-        "read_file",
-        "plan",
-        "tool_call",
-        "mutation_intent",
-        "verify",
-        "pause",
-        "compact",
-        "finalize",
-    }
+    known_decision_kinds = KNOWN_DECISION_KINDS
 
     def validate(self, decision: RuntimeDecision, state: AgentState) -> list[str]:
         issues: list[str] = []
@@ -367,15 +386,18 @@ TARGET_MODE_BY_DECISION: dict[str, RuntimeMode] = {
 @dataclass
 class RuntimeStateMachine:
     max_repeated_decisions: int = 3
-    _repeated: dict[str, int] = field(default_factory=dict)
+    _last_nonproductive_key: str | None = None
+    _repeated_count: int = 0
 
-    def validate_transition(self, current_mode: str, decision: RuntimeDecision) -> str | None:
-        allowed = TRANSITIONS.get(current_mode, set())
+    def validate_transition(self, current_mode: RuntimeMode | str, decision: RuntimeDecision) -> str | None:
+        if current_mode not in TRANSITIONS:
+            return f"invalid_mode:{current_mode}"
+        allowed = TRANSITIONS[current_mode]  # type: ignore[index]
         if decision.kind not in allowed:
             return f"invalid_transition:{current_mode}->{decision.kind}"
         return None
 
-    def next_mode(self, current_mode: str, decision: RuntimeDecision) -> RuntimeMode:
+    def next_mode(self, current_mode: RuntimeMode | str, decision: RuntimeDecision) -> RuntimeMode:
         rejection = self.validate_transition(current_mode, decision)
         if rejection is not None:
             raise ValueError(rejection)
@@ -384,13 +406,19 @@ class RuntimeStateMachine:
     def record_progress(self, decision: RuntimeDecision, *, changed: bool) -> str | None:
         key = decision.kind
         if changed:
-            self._repeated.clear()
+            self._last_nonproductive_key = None
+            self._repeated_count = 0
             return None
-        self._repeated[key] = self._repeated.get(key, 0) + 1
-        if self._repeated[key] >= self.max_repeated_decisions:
+        if key != self._last_nonproductive_key:
+            self._last_nonproductive_key = key
+            self._repeated_count = 0
+        self._repeated_count += 1
+        if self._repeated_count >= self.max_repeated_decisions:
             return f"repeated_loop:{key}"
         return None
 ```
+
+The final implementation also includes `reset_progress()` and tests for canonical decision-kind coverage, unknown-mode handling, consecutive-only loop detection, and progress reset between runs.
 
 - [ ] **Step 4: Run tests**
 
@@ -483,11 +511,16 @@ self.decision_validator = self.services.decision_validator
 self.state_machine = self.services.state_machine
 ```
 
-In `run_turn()`, replace artifact validator decision validation with:
+In `run_turn()`, capture the semantic mode before prompt building and replace artifact validator decision validation with:
 
 ```python
-transition_rejection = self.state_machine.validate_transition(state.mode, decision)
+mode_before_prompt = state.mode
+prompt_payload = self._build_prompt_payload(state)
+decision = self.services.provider.decide(prompt_payload)
+
+transition_rejection = self.state_machine.validate_transition(mode_before_prompt, decision)
 if transition_rejection is not None:
+    self._restore_mode_after_rejection(state, mode_before_prompt)
     self._apply(state, [RuntimeEvent("DecisionRejected", {"decision_id": decision.decision_id, "reason": transition_rejection})])
     return decision, transition_rejection
 
@@ -497,8 +530,16 @@ validation_issues = self.decision_validator.validate(decision, state)
 Change repeated rejection failure mapping:
 
 ```python
-if rejection.startswith("invalid_transition:"):
+if rejection.startswith(("invalid_transition:", "invalid_mode:")):
     return self._fail(state, "invalid_transition", {"decision": decision.to_dict(), "reason": rejection})
+```
+
+Add `_restore_mode_after_rejection()` so rejected decisions do not leave the runtime in the transient prompt-preparation `THINK` mode:
+
+```python
+def _restore_mode_after_rejection(self, state: AgentState, mode_before_prompt: str) -> None:
+    if state.mode != mode_before_prompt:
+        self._apply(state, [RuntimeEvent("ModeChanged", {"mode": mode_before_prompt})])
 ```
 
 - [ ] **Step 5: Run focused tests**
@@ -520,7 +561,7 @@ git commit -m "feat(appv21): enforce runtime transitions"
 
 **Files:**
 - Modify: `appV2.1/appv21/runtime/agent_runtime.py`
-- Modify: `appV2.1/appv21/runtime/reducer.py`
+- Modify: `appV2.1/appv21/runtime/state_machine.py`
 - Test: `tests/appv21/test_state_machine.py`
 
 - [ ] **Step 1: Add failing repeated-loop runtime test**
@@ -547,28 +588,42 @@ Run: `uv run pytest tests/appv21/test_state_machine.py::test_runtime_fails_repea
 
 Expected: FAIL because runtime does not record nonproductive progress.
 
-- [ ] **Step 3: Record event deltas around route execution**
+- [ ] **Step 3: Record semantic progress around route execution**
 
-In `run_turn()`, capture event count:
+Do not use event count or mode changes as progress. Those are bookkeeping and will mask nonproductive loops.
+
+In `run_turn()`, capture semantic state before routing:
 
 ```python
-before_count = len(self.store.all())
+progress_before = self._progress_snapshot(state)
+had_latest_repo_snapshot = "world://repo_snapshot/latest" in state.world.refs
 self.route_decision(state, decision)
-after_count = len(self.store.all())
-progress_rejection = self.state_machine.record_progress(decision, changed=after_count > before_count)
+if decision.kind == "observe" and had_latest_repo_snapshot:
+    changed = False
+else:
+    changed = progress_before != self._progress_snapshot(state)
+progress_rejection = self.state_machine.record_progress(decision, changed=changed)
 if progress_rejection is not None:
     self._apply(state, [RuntimeEvent("LoopProgressRejected", {"decision_id": decision.decision_id, "reason": progress_rejection})])
     self._fail(state, "repeated_loop", {"decision": decision.to_dict(), "reason": progress_rejection})
 ```
 
-For observe loops, define productive change more strictly after the first canonical repo snapshot:
+Use a semantic progress snapshot:
 
 ```python
-def _made_progress(self, decision: RuntimeDecision, before_refs: set[str], state: AgentState) -> bool:
-    if decision.kind == "observe" and "world://repo_snapshot/latest" in before_refs:
-        return False
-    return True
+def _progress_snapshot(self, state: AgentState) -> tuple[Any, ...]:
+    return (
+        tuple(state.world.refs),
+        repr(state.plan),
+        tuple(state.world.mutation_receipts),
+        tuple(state.world.verification_receipts),
+        tuple(state.world.artifacts),
+        state.terminal,
+        repr(state.result),
+    )
 ```
+
+Add `RuntimeStateMachine.reset_progress()` and call it at the start of `AppV21AgentRuntime.run()` before `_run_loop()` so reused runtime instances do not leak loop-progress counters across independent runs.
 
 - [ ] **Step 4: Run tests**
 
