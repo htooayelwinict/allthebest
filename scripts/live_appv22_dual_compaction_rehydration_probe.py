@@ -229,6 +229,11 @@ def build_report(*, repo: Path, result: dict[str, Any], provider: RecordingProvi
         for index, decision in enumerate(decisions, start=1)
     ]
     tool_events = [row for row in event_matrix if row["event_type"] == "ToolCallCompleted"]
+    summary_evidence_turns = [row for row in prompt_matrix if row["summary_evidence_ref_count"] > 0]
+    no_reobserve_after_summary_evidence = bool(summary_evidence_turns) and all(
+        not _decision_is_repo_snapshot_tool_call(decision_matrix, row["turn"])
+        for row in summary_evidence_turns
+    )
     proof = {
         "raw_context_removed_after_first_observation": any(
             row["turn"] > 1 and not row["raw_marker_visible"] and row["world_ref_count"] == 0 for row in prompt_matrix
@@ -244,11 +249,7 @@ def build_report(*, repo: Path, result: dict[str, Any], provider: RecordingProvi
             and _prompt_summary_evidence_ref_count(prompt_matrix, decision["turn"]) == 0
             for decision in decision_matrix
         ),
-        "no_reobserve_after_summary_evidence": any(
-            row["summary_evidence_ref_count"] > 0
-            and not _decision_is_repo_snapshot_tool_call(decision_matrix, row["turn"])
-            for row in prompt_matrix
-        ),
+        "no_reobserve_after_summary_evidence": no_reobserve_after_summary_evidence,
         "raw_marker_leaked_after_compaction": any(row["turn"] > 1 and row["raw_marker_visible"] for row in prompt_matrix),
     }
     proof["dual_compaction_carried"] = (
