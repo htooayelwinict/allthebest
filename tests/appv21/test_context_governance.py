@@ -345,12 +345,34 @@ def test_compactor_preserves_receipts_and_repo_refs() -> None:
         producer="test",
         evidence_refs=["world://artifact/evidence"],
     )
+    state.world.artifacts["artifact-a"] = Artifact(
+        artifact_id="artifact-a",
+        kind="manifest",
+        content={"paths": ["README.md"]},
+        producer="test",
+        evidence_refs=["world://repo_snapshot/latest"],
+    )
+    state.pauses.append(
+        PauseState(
+            pause_id="pause",
+            pause_type="approval",
+            summary="Needs approval",
+            options=[{"label": "continue"}],
+        )
+    )
     state.world.mutation_leases["lease"] = MutationLease(
         lease_id="lease",
         operation_batch_id="batch",
         allowed_operations=[{"op": "write", "path": "docs/report.md"}],
         allowed_sources=[],
         allowed_destinations=["docs/report.md"],
+    )
+    state.world.mutation_leases["lease-a"] = MutationLease(
+        lease_id="lease-a",
+        operation_batch_id="batch",
+        allowed_operations=[{"op": "write", "path": "README.md"}],
+        allowed_sources=[],
+        allowed_destinations=["README.md"],
     )
     state.world.mutation_receipts["receipt"] = MutationReceipt(
         receipt_id="receipt",
@@ -359,9 +381,43 @@ def test_compactor_preserves_receipts_and_repo_refs() -> None:
         operations=[{"op": "write", "path": "docs/report.md"}],
         touched_paths=["docs/report.md"],
     )
+    state.world.mutation_receipts["receipt-a"] = MutationReceipt(
+        receipt_id="receipt-a",
+        lease_id="lease-a",
+        status="completed",
+        operations=[{"op": "write", "path": "README.md"}],
+        touched_paths=["README.md"],
+    )
     state.world.verification_receipts["verification"] = {"checks": [{"status": "passed"}]}
+    state.world.verification_receipts["verification-a"] = {"checks": [{"status": "also-passed"}]}
 
     digest = RuntimeContextCompactor().compact(state)
+
+    digest["immutable_classes"].append("mutated")
+    digest["preservation_policy"]["keep_latest_world_ref_count"] = 99
+    digest["open_pause"]["options"][0]["label"] = "mutated"
+    digest["active_lease_snapshots"]["lease"]["allowed_operations"][0]["path"] = "mutated"
+    digest["mutation_receipt_snapshots"]["receipt"]["operations"][0]["path"] = "mutated"
+    digest["verification_receipt_snapshots"]["verification"]["checks"][0]["status"] = "mutated"
+    digest["artifact_evidence_refs"]["artifact"].append("mutated")
+
+    second_digest = RuntimeContextCompactor().compact(state)
+
+    assert second_digest["open_pause"]["options"] == [{"label": "continue"}]
+    assert second_digest["active_lease_snapshots"]["lease"]["allowed_operations"] == [
+        {"op": "write", "path": "docs/report.md"}
+    ]
+    assert second_digest["mutation_receipt_snapshots"]["receipt"]["operations"] == [
+        {"op": "write", "path": "docs/report.md"}
+    ]
+    assert second_digest["verification_receipt_snapshots"]["verification"] == {"checks": [{"status": "passed"}]}
+    assert second_digest["artifact_evidence_refs"]["artifact"] == ["world://artifact/evidence"]
+    assert state.pauses[0].options == [{"label": "continue"}]
+    assert state.world.mutation_leases["lease"].allowed_operations == [{"op": "write", "path": "docs/report.md"}]
+    assert state.world.mutation_receipts["receipt"].operations == [{"op": "write", "path": "docs/report.md"}]
+    assert state.world.verification_receipts["verification"] == {"checks": [{"status": "passed"}]}
+    assert state.world.artifacts["artifact"].evidence_refs == ["world://artifact/evidence"]
+    digest = second_digest
 
     assert digest["immutable_classes"] == [
         "user_request",
@@ -384,10 +440,19 @@ def test_compactor_preserves_receipts_and_repo_refs() -> None:
         "world://latest/3",
         "world://repo_snapshot/latest",
     ]
-    assert digest["active_leases"] == ["lease"]
-    assert digest["mutation_receipts"] == ["receipt"]
-    assert digest["verification_receipts"] == ["verification"]
-    assert digest["artifact_evidence_refs"] == {"artifact": ["world://artifact/evidence"]}
+    assert digest["active_leases"] == ["lease", "lease-a"]
+    assert list(digest["active_lease_snapshots"]) == ["lease", "lease-a"]
+    assert digest["active_lease_snapshots"]["lease-a"]["allowed_destinations"] == ["README.md"]
+    assert digest["mutation_receipts"] == ["receipt", "receipt-a"]
+    assert list(digest["mutation_receipt_snapshots"]) == ["receipt", "receipt-a"]
+    assert digest["mutation_receipt_snapshots"]["receipt-a"]["touched_paths"] == ["README.md"]
+    assert digest["verification_receipts"] == ["verification", "verification-a"]
+    assert list(digest["verification_receipt_snapshots"]) == ["verification", "verification-a"]
+    assert digest["verification_receipt_snapshots"]["verification-a"] == {"checks": [{"status": "also-passed"}]}
+    assert digest["artifact_evidence_refs"] == {
+        "artifact": ["world://artifact/evidence"],
+        "artifact-a": ["world://repo_snapshot/latest"],
+    }
 
 
 def test_context_selector_filters_tools_by_mode() -> None:
