@@ -379,6 +379,8 @@ class ToolBroker:
                         errors.append(f"{key}_outside_root:{path}")
                     elif key == "source" and self._protected_mutation_path(safe_path):
                         errors.append(f"protected_source_path:{path}")
+                    elif key == "destination" and self._protected_mutation_path(safe_path):
+                        errors.append(f"protected_destination_path:{path}")
             elif action == "write":
                 path = str(operation.get("path") or "")
                 safe_path = self._safe_path(path)
@@ -489,7 +491,7 @@ class ToolBroker:
         if any(relative_path == prefix.rstrip("/") or relative_path.startswith(prefix) for prefix in PROTECTED_MUTATION_PREFIXES):
             return True
         filename = Path(relative_path).name.lower()
-        return any(marker in filename for marker in PROTECTED_MUTATION_FILENAME_MARKERS)
+        return any(filename.startswith(marker) for marker in PROTECTED_MUTATION_FILENAME_MARKERS)
 
 
 def _ignored(path: Path) -> bool:

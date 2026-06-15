@@ -272,6 +272,36 @@ def test_mutation_validation_rejects_protected_path_moves(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
+    ("destination", "expected_error"),
+    [
+        ("README.md", "protected_destination_path:README.md"),
+        ("docs/archive/legacy_report.md", "protected_destination_path:docs/archive/legacy_report.md"),
+    ],
+)
+def test_mutation_validation_rejects_protected_move_destinations(
+    tmp_path: Path, destination: str, expected_error: str
+) -> None:
+    broker = ToolBroker(root_path=tmp_path)
+
+    errors = broker.validate_mutation_intent(
+        [{"action": "move", "source": "notes/new.md", "destination": destination}]
+    )
+
+    assert errors == [expected_error]
+
+
+@pytest.mark.parametrize("source", ["bookkeeping.md", "unkeepable.md"])
+def test_mutation_validation_marker_policy_uses_filename_prefixes(tmp_path: Path, source: str) -> None:
+    broker = ToolBroker(root_path=tmp_path)
+
+    errors = broker.validate_mutation_intent(
+        [{"action": "move", "source": source, "destination": f"artifacts/{source}"}]
+    )
+
+    assert errors == []
+
+
+@pytest.mark.parametrize(
     "source",
     [
         "README.md",
