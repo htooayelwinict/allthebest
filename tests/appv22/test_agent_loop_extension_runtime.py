@@ -9,6 +9,8 @@ from appv22 import AppV22AgentRuntime
 from appv22.extensions.base import SkillCard
 from appv22.extensions.file_management.extension import FileManagementExtension
 from appv22.providers.deterministic import DeterministicAppV22Provider
+from appv22.context.compressor import AgentContextCompressor
+from appv22.context.gateway_guard import GatewayContextGuard
 from appv22.runtime.decisions import RuntimeDecision
 from appv22.runtime.reducer import apply_event
 from appv22.runtime.services import create_appv22_services
@@ -46,8 +48,10 @@ class SequenceProvider:
 
     def __init__(self, decisions):
         self.decisions = list(decisions)
+        self.prompts = []
 
     def decide(self, prompt: dict):
+        self.prompts.append(prompt)
         return self.decisions.pop(0)
 
 
@@ -250,6 +254,133 @@ def test_agent_loop_default_context_governance_compacts_oversized_provider_promp
     assert any(message.get("name") == "context_summary" for message in provider.prompts[0]["messages"])
     summary_events = [event for event in result["events"] if event["event_type"] == "ContextSummaryUpdated"]
     assert summary_events
+
+
+def test_dual_context_compacts_large_world_context_and_carries_summary_to_next_turn(tmp_path):
+    raw_marker = "RAW_DUAL_CONTEXT_SENTINEL"
+    noisy_root = tmp_path / "incoming"
+    noisy_root.mkdir()
+    for index in range(80):
+        (noisy_root / f"{raw_marker}_{index:03d}_workspace_note.md").write_text("x", encoding="utf-8")
+    provider = SequenceProvider(
+        [
+            RuntimeDecision(
+                "tool_call",
+                "observe oversized workspace",
+                {"tool_id": "file_management.repo_snapshot", "arguments": {}},
+            ),
+            RuntimeDecision("pause", "stop after compacted prompt inspection"),
+        ]
+    )
+    services = create_appv22_services(
+        root_path=tmp_path,
+        provider=provider,
+        extensions=[FileManagementExtension()],
+    )
+    services.gateway_guard = GatewayContextGuard(max_chars=50_000, threshold=1.0)
+    services.compressor = AgentContextCompressor(max_chars=2_500, threshold=0.50)
+
+    result = AppV22AgentRuntime(root_path=tmp_path, services=services, max_turns=2).run(
+        "make this workspace sane and keep a record"
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "paused"
+    assert len(provider.prompts) == 2
+    first_prompt_payload = json.dumps(provider.prompts[0], sort_keys=True, default=str)
+    second_prompt_payload = json.dumps(provider.prompts[1], sort_keys=True, default=str)
+    assert raw_marker not in first_prompt_payload
+    assert raw_marker not in second_prompt_payload
+    assert provider.prompts[1]["world"] == {"world_refs": {}}
+    assert any(message.get("name") == "context_summary" for message in provider.prompts[1]["messages"])
+    summary_events = [event for event in result["events"] if event["event_type"] == "ContextSummaryUpdated"]
+    assert summary_events
+    assert any(event["payload"].get("evidence_refs") for event in summary_events)
+
+
+def test_dual_context_preserves_compact_observation_contract(tmp_path):
+    raw_marker = "RAW_OBSERVATION_CONTRACT_SENTINEL"
+    noisy_root = tmp_path / "incoming"
+    noisy_root.mkdir()
+    for index in range(100):
+        (noisy_root / f"{raw_marker}_{index:03d}.md").write_text("x", encoding="utf-8")
+    provider = SequenceProvider(
+        [
+            RuntimeDecision(
+                "tool_call",
+                "observe workspace",
+                {"tool_id": "file_management.repo_snapshot", "arguments": {}},
+            ),
+            RuntimeDecision("pause", "inspect compacted prompt"),
+        ]
+    )
+    services = create_appv22_services(
+        root_path=tmp_path,
+        provider=provider,
+        extensions=[FileManagementExtension()],
+    )
+    services.gateway_guard = GatewayContextGuard(max_chars=50_000, threshold=1.0)
+    services.compressor = AgentContextCompressor(max_chars=2_800, threshold=0.50)
+
+    AppV22AgentRuntime(root_path=tmp_path, services=services, max_turns=2).run(
+        "make this workspace sane and keep a record"
+    )
+
+    contract = provider.prompts[1]["skills"][0]["observation_contract"]
+    assert contract is not None
+    assert tuple(contract["evidence_refs"]) == ("world://repo_snapshot/latest",)
+    assert tuple(contract["evidence_kinds"]) == ("file_management.repo_snapshot",)
+    assert contract["preferred_tool_id"] == "file_management.repo_snapshot"
+
+
+def test_dual_context_allows_tool_rehydration_after_compaction(tmp_path):
+    raw_marker = "RAW_REHYDRATION_SENTINEL"
+    noisy_root = tmp_path / "incoming"
+    noisy_root.mkdir()
+    for index in range(120):
+        (noisy_root / f"{raw_marker}_{index:03d}_workspace_note.md").write_text("x", encoding="utf-8")
+    provider = SequenceProvider(
+        [
+            RuntimeDecision(
+                "tool_call",
+                "observe oversized workspace",
+                {"tool_id": "file_management.repo_snapshot", "arguments": {}},
+            ),
+            RuntimeDecision(
+                "tool_call",
+                "rehydrate exact workspace evidence from compacted summary",
+                {"tool_id": "file_management.repo_snapshot", "arguments": {}},
+            ),
+            RuntimeDecision("pause", "stop after rehydration proof"),
+        ]
+    )
+    services = create_appv22_services(
+        root_path=tmp_path,
+        provider=provider,
+        extensions=[FileManagementExtension()],
+    )
+    services.gateway_guard = GatewayContextGuard(max_chars=50_000, threshold=1.0)
+    services.compressor = AgentContextCompressor(max_chars=2_500, threshold=0.50)
+
+    result = AppV22AgentRuntime(root_path=tmp_path, services=services, max_turns=3).run(
+        "make this workspace sane and recover exact repo details if needed"
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "paused"
+    assert len(provider.prompts) == 3
+    second_prompt_payload = json.dumps(provider.prompts[1], sort_keys=True, default=str)
+    third_prompt_payload = json.dumps(provider.prompts[2], sort_keys=True, default=str)
+    assert raw_marker not in second_prompt_payload
+    assert raw_marker not in third_prompt_payload
+    summary_messages = [
+        message for message in provider.prompts[1]["messages"] if message.get("name") == "context_summary"
+    ]
+    assert summary_messages
+    assert summary_messages[0]["summary"]["evidence_refs"]
+    tool_events = [event for event in result["events"] if event["event_type"] == "ToolCallCompleted"]
+    assert len(tool_events) == 2
+    assert all(event["payload"]["tool_id"] == "file_management.repo_snapshot" for event in tool_events)
 
 
 def test_agent_loop_denies_runtime_plan_capability_outside_active_scope(tmp_path):

@@ -6,6 +6,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.2"))
 
 from appv22.extensions.base import RuntimeExtension, SkillCard
+from appv22.extensions.file_management.skills import FILE_MANAGEMENT_SKILL
 from appv22.extensions.registry import ExtensionRegistry
 from appv22.runtime.capabilities import CapabilityRegistry
 from appv22.state.models import AgentState, RequestEnvelope
@@ -224,6 +225,15 @@ def test_skill_card_normalizes_collection_fields_to_immutable_tuples():
     assert card.modes == ("START",)
     assert card.tool_ids == ("demo.inspect",)
     assert card.artifact_schema_ids == ("demo.schema",)
+
+
+def test_file_management_skill_declares_observation_contract() -> None:
+    contract = FILE_MANAGEMENT_SKILL.observation_contract
+
+    assert contract is not None
+    assert contract.evidence_refs == ("world://repo_snapshot/latest",)
+    assert contract.evidence_kinds == ("file_management.repo_snapshot",)
+    assert contract.preferred_tool_id == "file_management.repo_snapshot"
 
 
 def test_extension_registry_rejects_duplicate_extension_ids():

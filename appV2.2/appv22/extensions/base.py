@@ -7,6 +7,17 @@ from appv22.state.models import AgentState
 
 
 @dataclass(frozen=True)
+class ObservationContract:
+    evidence_refs: tuple[str, ...] = ()
+    evidence_kinds: tuple[str, ...] = ()
+    preferred_tool_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+        object.__setattr__(self, "evidence_kinds", tuple(self.evidence_kinds))
+
+
+@dataclass(frozen=True)
 class SkillCard:
     skill_id: str
     extension_id: str
@@ -19,6 +30,7 @@ class SkillCard:
     verifier_id: str
     tool_ids: tuple[str, ...]
     artifact_schema_ids: tuple[str, ...]
+    observation_contract: ObservationContract | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("triggers", "modes", "tool_ids", "artifact_schema_ids"):
