@@ -19,7 +19,11 @@ class ContextSelector:
         pre_turn_mode: str,
     ) -> dict[str, Any]:
         skill_cards = [card for card in resolved.skill_cards if pre_turn_mode in card.modes]
-        selected_tools = list(resolved.tool_ids) if pre_turn_mode in READ_TOOL_MODES else []
+        selected_tools = [
+            tool_id
+            for card in skill_cards
+            for tool_id in card.tool_ids
+        ] if pre_turn_mode in READ_TOOL_MODES else []
         selected_skills = [card.skill_id for card in skill_cards]
 
         return {

@@ -52,12 +52,39 @@ def test_prompt_uses_pre_turn_mode_and_hides_tools_in_plan():
     assert prompt["tools"] == []
 
 
-def test_observe_mode_exposes_resolved_tools():
+def test_observe_mode_exposes_only_tools_from_selected_skill_cards():
     state = AgentState("sess", "run", RequestEnvelope("req", "clean this", "."), mode="OBSERVE")
     selected = ContextSelector().select(state, _resolved(), pre_turn_mode="OBSERVE")
 
-    assert selected["selection"]["selected_tools"] == ["demo.inspect", "demo.plan_only"]
-    assert selected["tools"] == ["demo.inspect", "demo.plan_only"]
+    assert selected["selection"]["selected_tools"] == ["demo.inspect"]
+    assert selected["tools"] == ["demo.inspect"]
+
+
+def test_read_mode_tool_order_is_deterministic_and_scoped_to_selected_skill_cards():
+    observe_first = _card("demo.observe_first", ("OBSERVE",), ("demo.inspect_b", "demo.inspect_a"))
+    plan_card = _card("demo.plan_skill", ("PLAN",), ("demo.plan_only",))
+    observe_second = _card("demo.observe_second", ("OBSERVE",), ("demo.inspect_c",))
+    resolved = ResolvedExtensions(
+        ("demo",),
+        (observe_first, plan_card, observe_second),
+        ("demo.inspect_c", "demo.plan_only", "demo.inspect_a", "demo.inspect_b"),
+        ("demo.planner",),
+        ("demo.policy",),
+        ("demo.executor",),
+        ("demo.verifier",),
+        ("demo.schema",),
+    )
+    state = AgentState("sess", "run", RequestEnvelope("req", "clean this", "."), mode="OBSERVE")
+
+    selected = ContextSelector().select(state, resolved, pre_turn_mode="OBSERVE")
+
+    assert selected["selection"]["selected_skills"] == ["demo.observe_first", "demo.observe_second"]
+    assert selected["selection"]["selected_tools"] == [
+        "demo.inspect_b",
+        "demo.inspect_a",
+        "demo.inspect_c",
+    ]
+    assert selected["tools"] == ["demo.inspect_b", "demo.inspect_a", "demo.inspect_c"]
 
 
 def test_skill_selection_filters_by_pre_turn_mode():
@@ -75,7 +102,7 @@ def test_pre_turn_mode_controls_prompt_when_state_mode_has_changed():
 
     assert prompt["agent"]["mode"] == "OBSERVE"
     assert prompt["state"]["mode"] == "OBSERVE"
-    assert prompt["selection"]["selected_tools"] == ["demo.inspect", "demo.plan_only"]
+    assert prompt["selection"]["selected_tools"] == ["demo.inspect"]
 
 
 def test_prompt_includes_state_receipts_world_refs_and_metadata_without_mutability_leaks():
