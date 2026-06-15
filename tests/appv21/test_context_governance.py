@@ -421,7 +421,11 @@ def test_prompt_context_prepared_records_budget_and_selection(tmp_path: Path) ->
             self.seen_prompt = True
             assert "context_budget" in prompt_payload
             assert "selection" in prompt_payload
-            assert prompt_payload["context_budget"]["total_chars"] > 0
+            context_budget = prompt_payload["context_budget"]
+            assert context_budget["measured_without_self"] is True
+            assert context_budget["total_chars"] > 0
+            assert context_budget["final_prompt_chars"] == len(json.dumps(prompt_payload, sort_keys=True))
+            assert context_budget["final_prompt_chars"] > context_budget["total_chars"]
             assert prompt_payload["selection"]["mode"] == "THINK"
             assert set(prompt_payload["selection"]) == {"mode", "selected_world_refs", "selected_tools", "selected_skills"}
             return RuntimeDecision(kind="observe", reason="metadata captured")
@@ -436,7 +440,10 @@ def test_prompt_context_prepared_records_budget_and_selection(tmp_path: Path) ->
     prompt_events = [event for event in result["events"] if event["event_type"] == "PromptContextPrepared"]
     assert provider.seen_prompt is True
     assert prompt_events
-    assert prompt_events[-1]["payload"]["context_budget"]["total_chars"] > 0
+    event_budget = prompt_events[-1]["payload"]["context_budget"]
+    assert event_budget["measured_without_self"] is True
+    assert event_budget["total_chars"] > 0
+    assert event_budget["final_prompt_chars"] > event_budget["total_chars"]
     assert prompt_events[-1]["payload"]["selection"]["mode"] == "THINK"
     assert "model" in prompt_events[-1]["payload"]
     assert "tool_count" in prompt_events[-1]["payload"]

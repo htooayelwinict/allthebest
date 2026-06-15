@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -174,7 +175,7 @@ class AppV21AgentRuntime:
             selection=selected_context["selection"],
         )
         prompt_payload["decomposition"] = decomposition
-        context_budget = self.context_budget.estimate(prompt_payload)
+        context_budget = self._build_context_budget_metadata(prompt_payload)
         prompt_payload["context_budget"] = context_budget
         self._apply(
             state,
@@ -193,6 +194,23 @@ class AppV21AgentRuntime:
             ],
         )
         return prompt_payload
+
+    def _build_context_budget_metadata(self, prompt_payload: dict[str, Any]) -> dict[str, Any]:
+        measured_prompt = {
+            **prompt_payload,
+            "context_budget": {"measured_without_self": True},
+        }
+        context_budget = {
+            **self.context_budget.estimate(measured_prompt),
+            "measured_without_self": True,
+            "final_prompt_chars": 0,
+        }
+        for _ in range(8):
+            final_prompt_chars = len(json.dumps({**prompt_payload, "context_budget": context_budget}, sort_keys=True))
+            if final_prompt_chars == context_budget["final_prompt_chars"]:
+                break
+            context_budget = {**context_budget, "final_prompt_chars": final_prompt_chars}
+        return context_budget
 
     def route_decision(self, state: AgentState, decision: RuntimeDecision) -> None:
         if decision.kind == "observe":
