@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -17,6 +18,6 @@ class RuntimeEvent:
         return {
             "event_id": self.event_id,
             "event_type": self.event_type,
-            "payload": self.payload,
+            "payload": deepcopy(self.payload),
             "timestamp": self.timestamp,
         }
