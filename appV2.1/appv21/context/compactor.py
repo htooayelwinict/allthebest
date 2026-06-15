@@ -65,7 +65,7 @@ class RuntimeContextCompactor:
                 for receipt_id in mutation_receipt_ids
             },
             "artifact_evidence_refs": {
-                artifact_id: list(state.world.artifacts[artifact_id].evidence_refs)
+                artifact_id: sorted(state.world.artifacts[artifact_id].evidence_refs)
                 for artifact_id in sorted(state.world.artifacts)
             },
             "unresolved_errors": [],

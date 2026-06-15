@@ -331,6 +331,18 @@ def test_compactor_preserves_receipts_and_repo_refs() -> None:
         summary="artifact evidence",
         payload={"path": "docs/report.md"},
     )
+    state.world.refs["world://artifact/evidence-a"] = WorldRef(
+        ref_id="world://artifact/evidence-a",
+        kind="tool_result",
+        summary="artifact evidence a",
+        payload={"path": "docs/a.md"},
+    )
+    state.world.refs["world://artifact/evidence-z"] = WorldRef(
+        ref_id="world://artifact/evidence-z",
+        kind="tool_result",
+        summary="artifact evidence z",
+        payload={"path": "docs/z.md"},
+    )
     for index in range(4):
         state.world.refs[f"world://latest/{index}"] = WorldRef(
             ref_id=f"world://latest/{index}",
@@ -351,6 +363,13 @@ def test_compactor_preserves_receipts_and_repo_refs() -> None:
         content={"paths": ["README.md"]},
         producer="test",
         evidence_refs=["world://repo_snapshot/latest"],
+    )
+    state.world.artifacts["artifact-multi"] = Artifact(
+        artifact_id="artifact-multi",
+        kind="manifest",
+        content={"paths": ["docs/z.md", "docs/a.md"]},
+        producer="test",
+        evidence_refs=["world://artifact/evidence-z", "world://artifact/evidence-a"],
     )
     state.pauses.append(
         PauseState(
@@ -412,11 +431,19 @@ def test_compactor_preserves_receipts_and_repo_refs() -> None:
     ]
     assert second_digest["verification_receipt_snapshots"]["verification"] == {"checks": [{"status": "passed"}]}
     assert second_digest["artifact_evidence_refs"]["artifact"] == ["world://artifact/evidence"]
+    assert second_digest["artifact_evidence_refs"]["artifact-multi"] == [
+        "world://artifact/evidence-a",
+        "world://artifact/evidence-z",
+    ]
     assert state.pauses[0].options == [{"label": "continue"}]
     assert state.world.mutation_leases["lease"].allowed_operations == [{"op": "write", "path": "docs/report.md"}]
     assert state.world.mutation_receipts["receipt"].operations == [{"op": "write", "path": "docs/report.md"}]
     assert state.world.verification_receipts["verification"] == {"checks": [{"status": "passed"}]}
     assert state.world.artifacts["artifact"].evidence_refs == ["world://artifact/evidence"]
+    assert state.world.artifacts["artifact-multi"].evidence_refs == [
+        "world://artifact/evidence-z",
+        "world://artifact/evidence-a",
+    ]
     digest = second_digest
 
     assert digest["immutable_classes"] == [
@@ -435,6 +462,8 @@ def test_compactor_preserves_receipts_and_repo_refs() -> None:
     assert digest["latest_world_refs"] == ["world://latest/1", "world://latest/2", "world://latest/3"]
     assert digest["preserved_world_refs"] == [
         "world://artifact/evidence",
+        "world://artifact/evidence-a",
+        "world://artifact/evidence-z",
         "world://latest/1",
         "world://latest/2",
         "world://latest/3",
@@ -449,9 +478,15 @@ def test_compactor_preserves_receipts_and_repo_refs() -> None:
     assert digest["verification_receipts"] == ["verification", "verification-a"]
     assert list(digest["verification_receipt_snapshots"]) == ["verification", "verification-a"]
     assert digest["verification_receipt_snapshots"]["verification-a"] == {"checks": [{"status": "also-passed"}]}
+    assert list(digest["artifact_evidence_refs"]) == ["artifact", "artifact-a", "artifact-multi"]
+    assert digest["artifact_evidence_refs"]["artifact-multi"] == [
+        "world://artifact/evidence-a",
+        "world://artifact/evidence-z",
+    ]
     assert digest["artifact_evidence_refs"] == {
         "artifact": ["world://artifact/evidence"],
         "artifact-a": ["world://repo_snapshot/latest"],
+        "artifact-multi": ["world://artifact/evidence-a", "world://artifact/evidence-z"],
     }
 
 
