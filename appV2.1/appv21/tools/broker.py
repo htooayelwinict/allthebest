@@ -219,7 +219,7 @@ class ToolBroker:
     def compact_tool_result(self, result: dict[str, Any]) -> dict[str, Any]:
         if "content" in result:
             content = str(result.get("content") or "")
-            summary = {"bytes": len(content.encode("utf-8")), "preview": content[:500]}
+            summary = {"bytes": len(content.encode("utf-8")), "line_count": len(content.splitlines())}
             if "path" in result:
                 summary["path"] = result["path"]
             return summary
@@ -285,7 +285,7 @@ class ToolBroker:
             "path": path,
             "bytes": len(text.encode("utf-8")),
             "content": text,
-            "prompt_summary": {"path": path, "bytes": len(text.encode("utf-8")), "preview": text[:500]},
+            "prompt_summary": {"path": path, "bytes": len(text.encode("utf-8")), "line_count": len(text.splitlines())},
         }
 
     def derive_mutation_lease(self, *, operation_batch_id: str, operations: list[dict[str, Any]]) -> MutationLease:

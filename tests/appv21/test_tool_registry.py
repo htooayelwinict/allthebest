@@ -242,7 +242,7 @@ def test_broker_custom_registered_tool_with_handler_is_exposed_validates_and_exe
 
 
 def test_tool_raw_payload_is_retained_by_ref_not_prompt(tmp_path: Path) -> None:
-    distinctive_content = "compact preview prefix\n" + ("x" * 700) + "\nDISTINCTIVE_FULL_RAW_PAYLOAD_CONTENT\n"
+    distinctive_content = "DISTINCTIVE_SHORT_RAW_PAYLOAD_CONTENT\n"
     (tmp_path / "notes.txt").write_text(distinctive_content, encoding="utf-8")
     provider = QueueProvider(
         [
@@ -267,7 +267,7 @@ def test_tool_raw_payload_is_retained_by_ref_not_prompt(tmp_path: Path) -> None:
     assert "content" not in envelope.get("payload", {})
     assert envelope["prompt_summary"]["path"] == "notes.txt"
     assert envelope["prompt_summary"]["bytes"] == len(distinctive_content.encode("utf-8"))
-    assert len(envelope["prompt_summary"]["preview"]) < len(distinctive_content)
+    assert "preview" not in envelope["prompt_summary"]
 
     events_json = json.dumps(result["events"])
     assert distinctive_content not in events_json
