@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.1"))
 
 from appv21.context.budget import ContextBudgetManager, DEFAULT_SECTION_BUDGETS
@@ -17,6 +18,7 @@ from appv21.runtime.agent_runtime import AppV21AgentRuntime
 from appv21.runtime.decisions import RuntimeDecision
 from appv21.runtime.services import create_appv21_runtime_services
 from appv21.state.models import AgentState, Artifact, MutationLease, MutationReceipt, PauseState, PlanState, RequestEnvelope, WorldRef
+from scripts.live_appv21_staged_file_management_matrix_probe import _build_report
 
 
 def test_context_budget_estimates_section_sizes() -> None:
@@ -126,6 +128,13 @@ def test_context_budget_over_budget_sections_use_canonical_order() -> None:
 
     assert list(estimate["sections"]) == list(DEFAULT_SECTION_BUDGETS)
     assert estimate["over_budget_sections"] == ["system", "tools"]
+
+
+def test_staged_probe_report_has_context_budget_matrix(tmp_path: Path) -> None:
+    report = _build_report(repo=tmp_path, result={"status": "completed", "events": []}, provider=None, max_turns=1)
+
+    assert report["context_budget_matrix"] == []
+    assert report["selection_matrix"] == []
 
 
 def test_context_overflow_policy_classifies_provider_errors() -> None:
