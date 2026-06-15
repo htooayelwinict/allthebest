@@ -9,8 +9,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "appV2.1"))
 
 from appv21.context.budget import ContextBudgetManager, DEFAULT_SECTION_BUDGETS
+from appv21.context.selector import ContextSelector
 from appv21.extensions.skills import SkillRouter
-from appv21.state.models import AgentState, RequestEnvelope
+from appv21.state.models import AgentState, RequestEnvelope, WorldRef
 
 
 def test_context_budget_estimates_section_sizes() -> None:
@@ -255,3 +256,74 @@ def test_workspace_cleanup_skill_ignores_action_words_without_file_or_workspace_
     )
 
     assert SkillRouter().active_skills(state) == []
+
+
+def test_context_selector_preserves_repo_snapshot_and_latest_refs() -> None:
+    state = AgentState(
+        session_id="sess",
+        run_id="run",
+        request=RequestEnvelope(request_id="req", user_goal="Inspect the repo.", root_path="."),
+    )
+    state.world.refs["world://old"] = WorldRef(
+        ref_id="world://old",
+        kind="tool_result",
+        summary="old ref",
+        payload={"content": "must not leak"},
+    )
+    state.world.refs["world://repo_snapshot/latest"] = WorldRef(
+        ref_id="world://repo_snapshot/latest",
+        kind="repo_snapshot",
+        summary="latest repo map",
+        payload={"files": ["secret.txt"]},
+    )
+    for index in range(4):
+        state.world.refs[f"world://latest/{index}"] = WorldRef(
+            ref_id=f"world://latest/{index}",
+            kind="tool_result",
+            summary=f"latest ref {index}",
+            payload={"raw": f"payload {index}"},
+            trust="runtime_observed",
+        )
+
+    selected = ContextSelector(max_world_refs=2).select(
+        state,
+        active_skills=[],
+        tool_specs=[],
+    )
+
+    world_refs = selected["world"]["world_refs"]
+    selected_ref_ids = [ref["ref_id"] for ref in world_refs]
+    assert selected_ref_ids == [
+        "world://repo_snapshot/latest",
+        "world://latest/2",
+        "world://latest/3",
+    ]
+    assert selected["selection"]["selected_world_refs"] == selected_ref_ids
+    assert all(set(ref) == {"ref_id", "kind", "summary", "trust"} for ref in world_refs)
+    assert all("payload" not in ref for ref in world_refs)
+
+
+def test_context_selector_filters_tools_by_mode() -> None:
+    tool_specs = [
+        {"name": "repo_snapshot", "guidance": "observe"},
+        {"name": "read_file", "guidance": "inspect"},
+        {"name": "write_file", "guidance": "mutate"},
+    ]
+    state = AgentState(
+        session_id="sess",
+        run_id="run",
+        request=RequestEnvelope(request_id="req", user_goal="Inspect the repo.", root_path="."),
+        mode="PLAN",
+    )
+
+    plan_selected = ContextSelector().select(state, active_skills=[], tool_specs=tool_specs)
+
+    assert plan_selected["tools"] == []
+    assert plan_selected["selection"]["selected_tools"] == []
+
+    state.mode = "VERIFY"
+
+    verify_selected = ContextSelector().select(state, active_skills=[], tool_specs=tool_specs)
+
+    assert [tool["name"] for tool in verify_selected["tools"]] == ["repo_snapshot", "read_file"]
+    assert verify_selected["selection"]["selected_tools"] == ["repo_snapshot", "read_file"]
