@@ -4,6 +4,20 @@ from copy import deepcopy
 from typing import Any
 
 SUMMARY_KEYS = ("goals", "decisions", "progress", "open_risks", "evidence_refs")
+IMPORTANT_USER_MARKERS = (
+    "constraint",
+    "instruction",
+    "required",
+    "requirement",
+    "must",
+    "should",
+    "preserve",
+    "do not",
+    "don't",
+    "never",
+    "only",
+)
+RISK_MARKERS = ("risk", "blocker", "blocked", "unknown", "uncertain", "fail", "failure")
 
 
 def _summary_list(previous_summary: dict[str, Any], key: str) -> list[Any]:
@@ -13,25 +27,58 @@ def _summary_list(previous_summary: dict[str, Any], key: str) -> list[Any]:
     return [deepcopy(value)]
 
 
+def _append_unique(values: list[Any], item: Any) -> None:
+    copied = deepcopy(item)
+    if copied not in values:
+        values.append(copied)
+
+
+def _content(message: dict[str, Any]) -> str:
+    return str(message.get("content", "")).strip()
+
+
 def structured_summary(messages: list[dict[str, Any]], previous_summary: dict[str, Any]) -> dict[str, list[Any]]:
     previous = deepcopy(previous_summary)
     goals = _summary_list(previous, "goals")
     if not goals:
         first_user_goal = next((message.get("content", "") for message in messages if message.get("role") == "user"), "")
-        goals = [first_user_goal]
+        goals = [first_user_goal] if first_user_goal else []
+
+    decisions = _summary_list(previous, "decisions")
+    progress = _summary_list(previous, "progress")
+    open_risks = _summary_list(previous, "open_risks")
+    evidence_refs = _summary_list(previous, "evidence_refs")
+
+    for message in messages:
+        role = message.get("role")
+        content = _content(message)
+        lowered = content.lower()
+
+        if role == "assistant" and "decision:" in lowered:
+            _append_unique(decisions, content)
+            continue
+
+        if role == "user" and content and any(marker in lowered for marker in IMPORTANT_USER_MARKERS):
+            _append_unique(goals, content)
+            continue
+
+        if role == "assistant" and content:
+            if any(marker in lowered for marker in RISK_MARKERS):
+                _append_unique(open_risks, content)
+            else:
+                _append_unique(progress, content)
+            continue
+
+        if role == "tool" and message.get("tool_result_id"):
+            tool_result_id = message["tool_result_id"]
+            _append_unique(evidence_refs, tool_result_id)
+            if content and len(content) <= 1000 and not content.startswith("[pruned verbose tool result:"):
+                _append_unique(progress, f"{tool_result_id}: {content}")
 
     return {
         "goals": goals,
-        "decisions": [
-            message.get("content", "")
-            for message in messages
-            if message.get("role") == "assistant" and "decision:" in str(message.get("content", "")).lower()
-        ],
-        "progress": _summary_list(previous, "progress"),
-        "open_risks": _summary_list(previous, "open_risks"),
-        "evidence_refs": [
-            message["tool_result_id"]
-            for message in messages
-            if message.get("role") == "tool" and message.get("tool_result_id")
-        ],
+        "decisions": decisions,
+        "progress": progress,
+        "open_risks": open_risks,
+        "evidence_refs": evidence_refs,
     }

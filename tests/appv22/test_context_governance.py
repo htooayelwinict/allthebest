@@ -70,22 +70,64 @@ def test_gateway_guard_does_not_mutate_input_messages() -> None:
     assert messages[1]["content"] == "x" * 9000
 
 
+def test_gateway_guard_compacts_oversized_middle_context_without_verbose_tools() -> None:
+    messages = [
+        {"role": "system", "content": "edge-start"},
+        {"role": "user", "content": "middle user constraint: keep responses auditable " + "u" * 4000},
+        {"role": "assistant", "content": "middle assistant rationale: preserve reversible state " + "a" * 4000},
+        {"role": "tool", "tool_result_id": "toolres_small", "content": "short evidence"},
+        {"role": "user", "content": "edge-end"},
+    ]
+
+    guarded = GatewayContextGuard(max_chars=1_000, threshold=0.85).guard(messages)
+
+    assert guarded[0] == messages[0]
+    assert guarded[-1] == messages[-1]
+    assert guarded is not messages
+    assert messages[1]["content"].startswith("middle user constraint")
+    assert estimate_chars(guarded) <= 1_000
+    assert any(message.get("name") == "context_guard_compaction" for message in guarded[1:-1])
+
+
 def test_structured_summary_merges_previous_summary_and_evidence_refs() -> None:
     summary = structured_summary(
         [
             {"role": "assistant", "content": "decision: observe"},
             {"role": "tool", "tool_result_id": "toolres_1", "content": "result"},
         ],
-        {"goals": ["existing goal"], "progress": ["done"], "open_risks": ["risk"]},
+        {
+            "goals": ["existing goal"],
+            "decisions": ["decision: prior", "decision: observe"],
+            "progress": ["done"],
+            "open_risks": ["risk"],
+            "evidence_refs": ["toolres_0", "toolres_1"],
+        },
     )
 
     assert summary == {
         "goals": ["existing goal"],
-        "decisions": ["decision: observe"],
-        "progress": ["done"],
+        "decisions": ["decision: prior", "decision: observe"],
+        "progress": ["done", "toolres_1: result"],
         "open_risks": ["risk"],
-        "evidence_refs": ["toolres_1"],
+        "evidence_refs": ["toolres_0", "toolres_1"],
     }
+
+
+def test_structured_summary_preserves_middle_constraints_and_assistant_context() -> None:
+    summary = structured_summary(
+        [
+            {"role": "user", "content": "constraint: preserve Task 4 threshold semantics"},
+            {"role": "assistant", "content": "rationale: keep first and last messages intact"},
+            {"role": "tool", "tool_result_id": "toolres_small", "content": "short useful evidence"},
+        ],
+        {"goals": ["ship context governance hardening"]},
+    )
+
+    assert set(summary) == {"goals", "decisions", "progress", "open_risks", "evidence_refs"}
+    assert "constraint: preserve Task 4 threshold semantics" in summary["goals"]
+    assert "rationale: keep first and last messages intact" in summary["progress"]
+    assert "toolres_small: short useful evidence" in summary["progress"]
+    assert summary["evidence_refs"] == ["toolres_small"]
 
 
 def test_agent_compressor_emits_structured_summary() -> None:
@@ -102,6 +144,24 @@ def test_agent_compressor_emits_structured_summary() -> None:
     assert compacted[1]["name"] == "context_summary"
     assert set(compacted[1]["summary"]) == {"goals", "decisions", "progress", "open_risks", "evidence_refs"}
     assert compacted[-1]["content"] == "continue"
+
+
+def test_agent_compressor_summary_preserves_middle_constraints_and_notes() -> None:
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "instruction: never mutate caller-owned messages"},
+        {"role": "assistant", "content": "rationale: summary must retain audit context"},
+        {"role": "tool", "tool_result_id": "toolres_small", "content": "non-verbose evidence"},
+        {"role": "user", "content": "continue"},
+    ]
+
+    compacted = AgentContextCompressor(max_chars=200, threshold=0.50).compress(messages, previous_summary={})
+    summary = compacted[1]["summary"]
+
+    assert set(summary) == {"goals", "decisions", "progress", "open_risks", "evidence_refs"}
+    assert "instruction: never mutate caller-owned messages" in summary["goals"]
+    assert "rationale: summary must retain audit context" in summary["progress"]
+    assert "toolres_small: non-verbose evidence" in summary["progress"]
 
 
 def test_agent_compressor_does_not_compress_below_threshold() -> None:
