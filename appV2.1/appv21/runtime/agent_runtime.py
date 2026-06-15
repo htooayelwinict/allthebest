@@ -370,13 +370,13 @@ class AppV21AgentRuntime:
     _route_decision = route_decision
 
     def _current_run_events(self, state: AgentState) -> list[dict]:
-        events = self.store.to_dicts()
-        for index in range(len(events) - 1, -1, -1):
-            event = events[index]
-            payload = event.get("payload") or {}
-            if event.get("event_type") == "UserMessageReceived" and payload.get("request_id") == state.request.request_id:
-                return events[index:]
-        return events
+        return [
+            event.to_dict()
+            for event in self.services.session_store.events_for_run(
+                session_id=state.session_id,
+                run_id=state.run_id,
+            )
+        ]
 
     def _apply_mutation_intent(self, state: AgentState, decision: RuntimeDecision, *, allow_high_risk: bool = False) -> None:
         operations = decision.payload.get("operations") or []

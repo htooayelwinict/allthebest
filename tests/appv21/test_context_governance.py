@@ -725,6 +725,54 @@ def test_run_memory_scopes_events_to_current_run_when_runtime_reused(tmp_path: P
     assert second_run_memory["tools_used"] == ["repo_snapshot"]
 
 
+def test_run_memory_uses_current_run_events_when_reused_runtime_interleaves_paused_run(tmp_path: Path) -> None:
+    (tmp_path / "second.txt").write_text("second run only", encoding="utf-8")
+
+    class InterleavedRuntimeProvider:
+        provider_id = "interleaved-runtime"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def decide(self, _prompt_payload: dict) -> RuntimeDecision:
+            self.calls += 1
+            if self.calls == 1:
+                return RuntimeDecision(kind="pause", reason="Pause first run before completion.")
+            if self.calls == 2:
+                return RuntimeDecision(kind="read_file", reason="Read second-run-only file.", payload={"path": "second.txt"})
+            if self.calls == 3:
+                return RuntimeDecision(kind="finalize", reason="Finalize second run.", payload={"explicit_noop": True})
+            return RuntimeDecision(kind="finalize", reason="Resume and finalize first run.", payload={"explicit_noop": True})
+
+    runtime = AppV21AgentRuntime(
+        root_path=tmp_path,
+        services=create_appv21_runtime_services(root_path=tmp_path, provider=InterleavedRuntimeProvider()),
+        max_turns=2,
+    )
+
+    paused_first_result = runtime.run("First run pauses before completion.")
+    second_result = runtime.run("Second run reads a file.")
+    resumed_first_result = runtime.resume(paused_first_result["pause_id"], {"acknowledged": True})
+
+    assert paused_first_result["status"] == "paused"
+    assert second_result["status"] == "completed"
+    assert resumed_first_result["status"] == "completed"
+
+    run_memory_events = [
+        event
+        for event in resumed_first_result["events"]
+        if event["event_type"] == "ArtifactAccepted" and event["payload"]["artifact_id"] == "run_memory"
+    ]
+    first_run_memory = run_memory_events[-1]["payload"]["content"]
+
+    assert first_run_memory["goal"] == "First run pauses before completion."
+    assert first_run_memory["decision_counts"] == {"finalize": 1, "pause": 1}
+    assert first_run_memory["event_counts"]["UserMessageReceived"] == 1
+    assert first_run_memory["event_counts"]["DecisionProposed"] == 2
+    assert first_run_memory["event_counts"].get("ToolCallCompleted", 0) == 0
+    assert first_run_memory["tools_used"] == []
+
+
 def test_run_memory_evidence_refs_include_mutation_and_verification_receipts(tmp_path: Path) -> None:
     (tmp_path / "note.md").write_text("move me", encoding="utf-8")
 
