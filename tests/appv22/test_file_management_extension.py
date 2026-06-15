@@ -238,6 +238,41 @@ def test_policy_rejects_canonical_duplicate_move_destinations(tmp_path):
     assert "duplicate_destination:docs/file.md" in errors
 
 
+def test_policy_rejects_casefolded_duplicate_move_sources(tmp_path):
+    (tmp_path / "safe").mkdir()
+    (tmp_path / "safe/file.md").write_text("file", encoding="utf-8")
+
+    operations = [
+        {"action": "move", "source": "safe/file.md", "destination": "moved/one.md"},
+        {"action": "move", "source": "SAFE/FILE.md", "destination": "moved/two.md"},
+    ]
+
+    errors = FileMoveMutationPolicy().validate(operations, root_path=tmp_path)
+    result = FileMutationExecutor().apply(operations, root_path=tmp_path)
+
+    assert "duplicate_source:SAFE/FILE.md" in errors
+    assert result["status"] == "denied"
+    assert "duplicate_source:SAFE/FILE.md" in result["errors"]
+    assert (tmp_path / "safe/file.md").read_text(encoding="utf-8") == "file"
+    assert not (tmp_path / "moved/one.md").exists()
+    assert not (tmp_path / "moved/two.md").exists()
+
+
+def test_policy_rejects_casefolded_duplicate_move_destinations(tmp_path):
+    (tmp_path / "one.md").write_text("one", encoding="utf-8")
+    (tmp_path / "two.md").write_text("two", encoding="utf-8")
+
+    errors = FileMoveMutationPolicy().validate(
+        [
+            {"action": "move", "source": "one.md", "destination": "out/File.md"},
+            {"action": "move", "source": "two.md", "destination": "out/file.md"},
+        ],
+        root_path=tmp_path,
+    )
+
+    assert "duplicate_destination:out/file.md" in errors
+
+
 def test_policy_rejects_duplicate_canonical_sources_without_partial_mutation(tmp_path):
     (tmp_path / "safe").mkdir()
     (tmp_path / "safe/first.md").write_text("first", encoding="utf-8")

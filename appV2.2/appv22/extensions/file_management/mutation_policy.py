@@ -43,13 +43,15 @@ class FileMoveMutationPolicy:
                 if canonical_destination and _protected_destination(canonical_destination):
                     errors.append(f"protected_destination_path:{canonical_destination}")
                 if canonical_source:
-                    if canonical_source in sources:
+                    canonical_source_key = _casefold_canonical_key(canonical_source)
+                    if canonical_source_key in sources:
                         errors.append(f"duplicate_source:{canonical_source}")
-                    sources.add(canonical_source)
+                    sources.add(canonical_source_key)
                 if canonical_destination:
-                    if canonical_destination in destinations:
+                    canonical_destination_key = _casefold_canonical_key(canonical_destination)
+                    if canonical_destination_key in destinations:
                         errors.append(f"duplicate_destination:{canonical_destination}")
-                    destinations.add(canonical_destination)
+                    destinations.add(canonical_destination_key)
                 if canonical_destination and (root / canonical_destination).exists():
                     errors.append(f"destination_exists:{canonical_destination}")
                 if canonical_source and not _protected(canonical_source):
@@ -88,6 +90,10 @@ def _canonical_relative_path(root: Path, relative: str) -> str | None:
 
 def _absolute(path: str) -> bool:
     return Path(path).is_absolute()
+
+
+def _casefold_canonical_key(path: str) -> str:
+    return path.replace("\\", "/").casefold()
 
 
 def _normalize(path: str) -> str:
