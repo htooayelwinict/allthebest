@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from appv21.state.models import MutationLease, MutationReceipt
@@ -34,6 +34,7 @@ READ_TOOL_CATEGORIES = {
     ToolCategory.PLAN_HELPER,
     ToolCategory.VERIFY,
 }
+ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 def default_tool_registry() -> ToolRegistry:
@@ -88,11 +89,21 @@ class ToolBroker:
     def __init__(self, *, root_path: str | Path, registry: ToolRegistry | None = None) -> None:
         self.root = Path(root_path).resolve()
         self.registry = registry or default_tool_registry()
+        self._handlers: dict[str, ToolHandler] = {
+            "repo_snapshot": lambda _arguments: self.repo_snapshot(),
+            "read_file": lambda arguments: self.read_file(str(arguments.get("path") or "")),
+        }
         self._issued_leases: dict[str, MutationLease] = {}
+
+    def register_tool(self, definition: ToolDefinition, handler: ToolHandler) -> None:
+        self.registry.register(definition)
+        self._handlers[definition.name] = handler
 
     def tool_specs(self) -> list[dict[str, Any]]:
         specs: list[dict[str, Any]] = []
         for definition in self.registry.list():
+            if definition.name not in self._handlers:
+                continue
             specs.append(
                 {
                     "name": definition.name,
@@ -110,6 +121,8 @@ class ToolBroker:
         registry_errors = self.registry.validate_call(tool_name, arguments)
         if registry_errors:
             return registry_errors
+        if tool_name not in self._handlers:
+            return [f"unavailable_tool:{tool_name}"]
         if tool_name == "repo_snapshot":
             return []
         if tool_name == "read_file":
@@ -129,12 +142,7 @@ class ToolBroker:
         errors = self.validate_tool_call(tool_name, arguments)
         if errors:
             return self.tool_result_envelope(tool_name=tool_name, status="denied", payload={"errors": errors})
-        if tool_name == "repo_snapshot":
-            result = self.repo_snapshot()
-        elif tool_name == "read_file":
-            result = self.read_file(str(arguments.get("path") or ""))
-        else:
-            result = {"status": "unsupported", "tool_name": tool_name, "errors": [f"unsupported_tool:{tool_name}"]}
+        result = self._handlers[tool_name](arguments)
         status = str(result.get("status") or "completed")
         payload = {key: value for key, value in result.items() if key not in {"tool_result_id", "tool_name", "status", "trust", "prompt_summary"}}
         return self.tool_result_envelope(
@@ -177,7 +185,9 @@ class ToolBroker:
             "mutating_tools_require_lease": True,
             "high_risk_mutations_require_human": True,
             "read_tools": [
-                definition.name for definition in self.registry.list() if definition.category in READ_TOOL_CATEGORIES
+                definition.name
+                for definition in self.registry.list()
+                if definition.name in self._handlers and definition.category in READ_TOOL_CATEGORIES
             ],
         }
 
