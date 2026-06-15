@@ -85,7 +85,4 @@ class GatewayContextGuard:
         compacted = [guarded[0], _minimal_compaction_message(guarded[1:-1]), guarded[-1]]
         if estimate_chars(compacted) <= self.max_chars:
             return compacted
-        if pruned_verbose_tool:
-            return guarded
-
         return [guarded[0], _last_resort_compaction_message(guarded[1:-1]), guarded[-1]]

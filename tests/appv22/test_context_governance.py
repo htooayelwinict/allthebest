@@ -54,7 +54,8 @@ def test_gateway_guard_preserves_system_and_user_edge_messages_even_when_verbose
     guarded = GatewayContextGuard(max_chars=10_000, threshold=0.85).guard(messages)
 
     assert guarded[0]["content"] == "s" * 5000
-    assert guarded[1]["content"] == "[pruned verbose tool result:toolres_old]"
+    assert guarded[1]["name"] == "context_guard_compaction"
+    assert guarded[1]["compaction"]["fallback"] == "last_resort"
     assert guarded[-1]["content"] == "u" * 5000
 
 
@@ -124,6 +125,27 @@ def test_gateway_guard_last_resort_does_not_return_oversized_original_middle_con
     assert guarded[1]["compaction"]["fallback"] == "last_resort"
     assert "middle user constraint" not in str(guarded)
     assert "middle assistant rationale" not in str(guarded)
+
+
+def test_gateway_guard_last_resort_after_verbose_tool_pruning_drops_original_middle_context() -> None:
+    messages = [
+        {"role": "system", "content": "s" * 300},
+        {"role": "tool", "tool_result_id": "toolres_verbose", "content": "x" * 5000},
+        {"role": "user", "content": "middle non-tool constraint: " + "u" * 4000},
+        {"role": "assistant", "content": "middle non-tool rationale: " + "a" * 4000},
+        {"role": "user", "content": "u" * 300},
+    ]
+
+    guarded = GatewayContextGuard(max_chars=400, threshold=0.85).guard(messages)
+
+    assert guarded[0] == messages[0]
+    assert guarded[-1] == messages[-1]
+    assert len(guarded) == 3
+    assert guarded[1]["name"] == "context_guard_compaction"
+    assert guarded[1]["compaction"]["fallback"] == "last_resort"
+    assert "middle non-tool constraint" not in str(guarded)
+    assert "middle non-tool rationale" not in str(guarded)
+    assert "[pruned verbose tool result:toolres_verbose]" not in str(guarded)
 
 
 def test_structured_summary_merges_previous_summary_and_evidence_refs() -> None:
@@ -229,6 +251,42 @@ def test_agent_compressor_shrinks_oversized_summary_to_budget() -> None:
     assert estimate_chars(compacted) <= 450
     assert messages[1]["content"] == "instruction: " + "u" * 1000
     assert previous_summary["goals"] == ["g" * 1000]
+
+
+def test_agent_compressor_bounded_summary_prefers_recent_facts_over_older_previous_summary() -> None:
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "constraint: preserve current hard budget evidence"},
+        {"role": "tool", "tool_result_id": "toolres_current", "content": "current evidence survives"},
+        {"role": "assistant", "content": "background filler " * 200},
+        {"role": "user", "content": "continue"},
+    ]
+    previous_summary = {
+        "goals": [
+            *[f"older previous goal {index}" for index in range(12)],
+        ],
+        "decisions": [],
+        "progress": [
+            *[f"older previous progress {index}" for index in range(12)],
+        ],
+        "open_risks": [],
+        "evidence_refs": [
+            *[f"toolres_old_{index}" for index in range(12)],
+        ],
+    }
+
+    compacted = AgentContextCompressor(max_chars=1_800, threshold=0.50).compress(
+        messages, previous_summary=previous_summary
+    )
+    summary = compacted[1]["summary"]
+
+    assert set(summary) == {"goals", "decisions", "progress", "open_risks", "evidence_refs"}
+    assert "constraint: preserve current hard budget evidence" in summary["goals"]
+    assert "toolres_current: current evidence survives" in summary["progress"]
+    assert "toolres_current" in summary["evidence_refs"]
+    assert "older previous goal 0" not in summary["goals"]
+    assert "older previous progress 0" not in summary["progress"]
+    assert "toolres_old_0" not in summary["evidence_refs"]
 
 
 def test_agent_compressor_does_not_compress_below_threshold() -> None:

@@ -26,7 +26,11 @@ def _normal_summary(summary: dict[str, Any]) -> dict[str, list[Any]]:
 def _bounded_summary(summary: dict[str, list[Any]], *, max_items: int, max_item_chars: int) -> dict[str, list[Any]]:
     bounded: dict[str, list[Any]] = {}
     for key in SUMMARY_KEYS:
-        values = summary.get(key, [])[:max_items]
+        values = summary.get(key, [])
+        if max_items <= 0:
+            values = []
+        else:
+            values = values[-max_items:]
         if max_item_chars <= 0:
             bounded[key] = []
         else:
