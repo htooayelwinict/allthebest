@@ -1,1 +1,3 @@
-# Runtime export is added after Task 7 creates agent_loop.py.
+from appv22.runtime.agent_loop import AppV22AgentRuntime
+
+__all__ = ["AppV22AgentRuntime"]
