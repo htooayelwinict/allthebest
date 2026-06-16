@@ -5,9 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-KNOWN_DECISION_KINDS = frozenset(
-    {"tool_call", "plan", "mutation_intent", "verify", "compact", "pause", "finalize"}
-)
+KNOWN_DECISION_KINDS = frozenset({"tool_call", "compact", "pause", "finalize"})
 
 
 @dataclass(frozen=True)

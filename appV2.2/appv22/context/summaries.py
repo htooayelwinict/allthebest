@@ -56,7 +56,7 @@ def _append_world_refs(message: dict[str, Any], progress: list[Any], evidence_re
         if summary:
             kind = ref.get("kind")
             if isinstance(kind, str) and kind:
-                _append_unique(progress, f"{stable_ref_id} ({kind}): {summary}")
+                _append_unique(progress, f"{kind}: {summary}")
             else:
                 _append_unique(progress, str(summary))
 

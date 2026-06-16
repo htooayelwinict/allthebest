@@ -18,46 +18,42 @@ def _card(skill_id: str, modes: tuple[str, ...], tool_ids: tuple[str, ...]) -> S
         triggers=("clean",),
         modes=modes,
         summary=f"{skill_id} summary",
-        planner_id=f"{skill_id}.planner",
-        mutation_policy_id=f"{skill_id}.policy",
-        mutation_executor_id=f"{skill_id}.executor",
-        verifier_id=f"{skill_id}.verifier",
         tool_ids=tool_ids,
-        artifact_schema_ids=(f"{skill_id}.schema",),
     )
 
 
 def _resolved() -> ResolvedExtensions:
-    plan_card = _card("demo.plan_skill", ("PLAN",), ("demo.plan_only",))
+    think_card = _card("demo.think_skill", ("THINK",), ("demo.think_tool",))
     observe_card = _card("demo.observe_skill", ("START", "THINK", "OBSERVE", "VERIFY"), ("demo.inspect",))
     return ResolvedExtensions(
         ("demo",),
-        (plan_card, observe_card),
-        ("demo.inspect", "demo.plan_only"),
-        ("demo.planner",),
-        ("demo.policy",),
-        ("demo.executor",),
-        ("demo.verifier",),
-        ("demo.schema",),
+        (think_card, observe_card),
+        ("demo.inspect", "demo.think_tool"),
     )
 
 
-def test_prompt_uses_pre_turn_mode_and_hides_tools_in_plan():
-    state = AgentState("sess", "run", RequestEnvelope("req", "clean this", "."), mode="PLAN")
-    selected = ContextSelector().select(state, _resolved(), pre_turn_mode="PLAN")
+def test_prompt_uses_pre_turn_mode_and_exposes_selected_skill_tools_in_think():
+    state = AgentState("sess", "run", RequestEnvelope("req", "clean this", "."), mode="THINK")
+    selected = ContextSelector().select(state, _resolved(), pre_turn_mode="THINK")
     prompt = PromptBuilder().build(state, selected)
 
     assert prompt["system"]["identity"] == "AppV2.2 Pi-Hermes coding agent"
-    assert any("observe -> plan -> act -> verify" in rule for rule in prompt["system"]["agent_loop_contract"])
+    assert any("Pi-style coding-agent harness" in rule for rule in prompt["system"]["agent_loop_contract"])
+    assert any("obsolete, fake, stale, or do-not-use" in rule for rule in prompt["system"]["agent_loop_contract"])
     assert any("context_summary.evidence_refs" in rule for rule in prompt["system"]["dual_context_contract"])
+    assert any("exact world_ref" in rule for rule in prompt["system"]["dual_context_contract"])
+    assert any("structured evidence_refs array" in rule for rule in prompt["system"]["dual_context_contract"])
+    assert any("Do not repeat broad observation" in rule for rule in prompt["system"]["dual_context_contract"])
     assert any("selected_tools" in rule for rule in prompt["system"]["tool_contract"])
-    assert any("observation evidence" in rule for rule in prompt["agent"]["mode_contract"])
-    assert prompt["agent"]["mode"] == "PLAN"
-    assert prompt["selection"]["selected_tools"] == []
-    assert prompt["selection"]["available_tools"] == []
-    assert prompt["tools"] == []
-    assert selected["skills"][0]["tool_ids"] == ()
-    assert prompt["skills"][0]["tool_ids"] == ()
+    assert any("do not emit compact" in rule and "selected tool" in rule for rule in prompt["system"]["tool_contract"])
+    assert any("supersedes earlier user or skill instructions" in rule for rule in prompt["system"]["tool_contract"])
+    assert any("finalize, pause, or compact is invalid" in rule for rule in prompt["system"]["tool_contract"])
+    assert any("required argument" in rule and "schema" in rule for rule in prompt["system"]["tool_contract"])
+    assert any("tool_call for actions" in rule for rule in prompt["agent"]["mode_contract"])
+    assert prompt["agent"]["mode"] == "THINK"
+    assert prompt["selection"]["selected_tools"] == ["demo.think_tool", "demo.inspect"]
+    assert prompt["selection"]["available_tools"] == ["demo.think_tool", "demo.inspect"]
+    assert prompt["tools"] == ["demo.think_tool", "demo.inspect"]
 
 
 def test_observe_mode_exposes_only_tools_from_selected_skill_cards():
@@ -75,17 +71,12 @@ def test_observe_mode_exposes_only_tools_from_selected_skill_cards():
 
 def test_read_mode_tool_order_is_deterministic_and_scoped_to_selected_skill_cards():
     observe_first = _card("demo.observe_first", ("OBSERVE",), ("demo.inspect_b", "demo.inspect_a"))
-    plan_card = _card("demo.plan_skill", ("PLAN",), ("demo.plan_only",))
+    think_card = _card("demo.think_skill", ("THINK",), ("demo.think_tool",))
     observe_second = _card("demo.observe_second", ("OBSERVE",), ("demo.inspect_c",))
     resolved = ResolvedExtensions(
         ("demo",),
-        (observe_first, plan_card, observe_second),
-        ("demo.inspect_c", "demo.plan_only", "demo.inspect_a", "demo.inspect_b"),
-        ("demo.planner",),
-        ("demo.policy",),
-        ("demo.executor",),
-        ("demo.verifier",),
-        ("demo.schema",),
+        (observe_first, think_card, observe_second),
+        ("demo.inspect_c", "demo.think_tool", "demo.inspect_a", "demo.inspect_b"),
     )
     state = AgentState("sess", "run", RequestEnvelope("req", "clean this", "."), mode="OBSERVE")
 
@@ -118,31 +109,23 @@ def test_pre_turn_mode_controls_prompt_when_state_mode_has_changed():
     assert prompt["selection"]["selected_tools"] == ["demo.inspect"]
 
 
-def test_prompt_includes_state_receipts_world_refs_and_metadata_without_mutability_leaks():
+def test_prompt_includes_state_world_refs_and_metadata_without_mutability_leaks():
     state = AgentState(
         "sess",
         "run",
         RequestEnvelope("req", "clean this", ".", constraints=["stay safe"]),
         mode="VERIFY",
     )
-    state.runtime_plan["step"] = {"id": "plan_1"}
-    state.mutation_receipts["mut_1"] = {"status": "applied"}
-    state.verification_receipts["verify_1"] = {"status": "passed"}
     state.world_refs["world://repo_snapshot/latest"] = {"summary": "snapshot"}
     state.context_summary["evidence_refs"] = ["world://repo_snapshot/latest"]
     state.context_summary["progress"] = ["repo snapshot evidence is available"]
 
     selected = ContextSelector().select(state, _resolved(), pre_turn_mode="VERIFY")
     prompt = PromptBuilder().build(state, selected)
-    state.runtime_plan["step"]["id"] = "mutated"
     state.world_refs["world://repo_snapshot/latest"]["summary"] = "mutated"
-    selected["state"]["mutation_receipts"]["mut_1"]["status"] = "mutated"
     selected["state"]["context_summary"]["progress"].append("mutated")
 
     assert prompt["agent"]["constraints"] == ["stay safe"]
-    assert prompt["state"]["runtime_plan"]["step"]["id"] == "plan_1"
-    assert prompt["state"]["mutation_receipts"]["mut_1"]["status"] == "applied"
-    assert prompt["state"]["verification_receipts"]["verify_1"]["status"] == "passed"
     assert prompt["state"]["context_summary"]["evidence_refs"] == ["world://repo_snapshot/latest"]
     assert prompt["state"]["context_summary"]["progress"] == ["repo snapshot evidence is available"]
     assert prompt["world"]["world_refs"]["world://repo_snapshot/latest"]["summary"] == "snapshot"
@@ -157,12 +140,7 @@ def test_skill_prompt_instructions_are_selected_and_prompt_visible():
         triggers=("research",),
         modes=("OBSERVE",),
         summary="Research public sources.",
-        planner_id="demo.research.planner",
-        mutation_policy_id="demo.research.policy",
-        mutation_executor_id="demo.research.executor",
-        verifier_id="demo.research.verifier",
         tool_ids=("demo.search",),
-        artifact_schema_ids=("demo.research_report",),
         instructions=(
             "Use the skill prompt as the domain adapter, not as a replacement for the agent loop.",
             "Rehydrate exact evidence before citing or writing final claims.",
@@ -172,11 +150,6 @@ def test_skill_prompt_instructions_are_selected_and_prompt_visible():
         ("demo",),
         (card,),
         ("demo.search",),
-        ("demo.research.planner",),
-        ("demo.research.policy",),
-        ("demo.research.executor",),
-        ("demo.research.verifier",),
-        ("demo.research_report",),
     )
     state = AgentState("sess", "run", RequestEnvelope("req", "research this", "."), mode="OBSERVE")
 
@@ -189,3 +162,23 @@ def test_skill_prompt_instructions_are_selected_and_prompt_visible():
         "Use the skill prompt as the domain adapter, not as a replacement for the agent loop.",
         "Rehydrate exact evidence before citing or writing final claims.",
     )
+
+
+def test_file_management_skill_prompt_guides_vague_organization_without_planner():
+    from appv22.extensions.file_management.skills import FILE_MANAGEMENT_SKILL
+
+    instruction_text = "\n".join(FILE_MANAGEMENT_SKILL.instructions)
+
+    assert "file-content cues" in instruction_text
+    assert "colliding basename" in instruction_text
+    assert "first clear colliding source claims the common destination" in instruction_text
+    assert "later colliding sources" in instruction_text
+    assert "docs/workspace_manifest.json" in instruction_text
+    assert "human-authored artifacts" in instruction_text
+    assert "machine/session traces" in instruction_text
+    assert "prefer move_file" in instruction_text
+    assert "remove obvious junk" in instruction_text
+    assert "file_management.delete_file" in instruction_text
+    assert "deletions" in instruction_text
+    assert "Do not emit finalize" in instruction_text
+    assert "deterministic" not in instruction_text.lower()

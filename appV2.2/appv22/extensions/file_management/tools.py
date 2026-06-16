@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
+import shutil
+from uuid import uuid4
 
-from appv22.extensions.file_management.mutation_policy import _absolute, _canonical_relative_path
-from appv22.extensions.file_management.schemas import READ_FILE_OUTPUT_SCHEMA, REPO_SNAPSHOT_OUTPUT_SCHEMA
+from appv22.extensions.file_management.schemas import (
+    COPY_FILE_OUTPUT_SCHEMA,
+    DELETE_FILE_OUTPUT_SCHEMA,
+    MKDIR_OUTPUT_SCHEMA,
+    MOVE_FILE_OUTPUT_SCHEMA,
+    READ_FILE_OUTPUT_SCHEMA,
+    REPO_SNAPSHOT_OUTPUT_SCHEMA,
+    WRITE_FILE_OUTPUT_SCHEMA,
+)
 from appv22.tools.definitions import ToolDefinition
 
 
@@ -17,6 +27,7 @@ def register_file_management_tools(registry) -> None:
             REPO_SNAPSHOT_OUTPUT_SCHEMA,
             "runtime_observed",
             "Return workspace files and directories relative to the root.",
+            payload_ref_mode="latest",
         ),
         repo_snapshot,
     )
@@ -35,6 +46,99 @@ def register_file_management_tools(registry) -> None:
             "Read a workspace file by relative path.",
         ),
         read_file,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.write_file",
+            "act",
+            "medium",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "overwrite": {"type": "boolean"},
+                },
+                "required": ["path", "content"],
+            },
+            WRITE_FILE_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Write complete text content to a workspace file by relative path. Creates parent directories.",
+        ),
+        write_file,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.mkdir",
+            "act",
+            "medium",
+            {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+            MKDIR_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Create a workspace directory by relative path.",
+        ),
+        mkdir,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.move_file",
+            "act",
+            "medium",
+            {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "destination": {"type": "string"},
+                    "overwrite": {"type": "boolean"},
+                },
+                "required": ["source", "destination"],
+            },
+            MOVE_FILE_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Move a workspace file from source to destination. Creates parent directories.",
+        ),
+        move_file,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.copy_file",
+            "act",
+            "medium",
+            {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "destination": {"type": "string"},
+                    "overwrite": {"type": "boolean"},
+                    "preserve_source": {"type": "boolean"},
+                },
+                "required": ["source", "destination"],
+            },
+            COPY_FILE_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Copy a workspace file from source to destination. Creates parent directories.",
+        ),
+        copy_file,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.delete_file",
+            "act",
+            "high",
+            {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+            DELETE_FILE_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Delete one workspace file by relative path.",
+        ),
+        delete_file,
     )
 
 
@@ -102,6 +206,304 @@ def read_file(args: dict, context: dict) -> dict:
     return {"status": "completed", "path": canonical_relative, "content": path.read_text(encoding="utf-8")}
 
 
+def write_file(args: dict, context: dict) -> dict:
+    root = Path(context["root_path"]).resolve()
+    relative = str(args.get("path", ""))
+    content = args.get("content", "")
+    overwrite = bool(args.get("overwrite", False))
+    if _request_forbids_overwrite(context):
+        overwrite = False
+    if not isinstance(content, str):
+        content = str(content)
+    obsolete_error = _obsolete_identifier_error(content)
+    if obsolete_error:
+        cleaned_content = _remove_obsolete_identifier_lines(content)
+        if cleaned_content != content and not _obsolete_identifier_error(cleaned_content):
+            content = cleaned_content
+        else:
+            return {
+                "status": "denied",
+                "path": relative,
+                "bytes_written": 0,
+                "overwritten": False,
+                "errors": [obsolete_error],
+            }
+    if _absolute(relative):
+        return {
+            "status": "denied",
+            "path": relative,
+            "bytes_written": 0,
+            "overwritten": False,
+            "errors": [f"absolute_path:path:{relative}"],
+        }
+    canonical_relative = _canonical_relative_path(root, relative)
+    if canonical_relative is None:
+        return {
+            "status": "denied",
+            "path": relative,
+            "bytes_written": 0,
+            "overwritten": False,
+            "errors": [f"path_outside_root:{relative}"],
+        }
+    if _protected_mutation(canonical_relative):
+        return {
+            "status": "denied",
+            "path": canonical_relative,
+            "bytes_written": 0,
+            "overwritten": False,
+            "errors": [f"protected_path:{canonical_relative}"],
+        }
+    path = root / canonical_relative
+    if path.exists() and path.is_dir():
+        return {
+            "status": "failed",
+            "path": canonical_relative,
+            "bytes_written": 0,
+            "overwritten": False,
+            "errors": [f"write_target_is_directory:{canonical_relative}"],
+        }
+    if path.exists() and not overwrite:
+        suggested_path = _available_sibling_path(root, canonical_relative)
+        return {
+            "status": "denied",
+            "path": canonical_relative,
+            "bytes_written": 0,
+            "overwritten": False,
+            "suggested_path": suggested_path,
+            "errors": [f"existing_file_requires_overwrite:{canonical_relative}"],
+        }
+    overwritten = path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return {
+        "status": "completed",
+        "path": canonical_relative,
+        "bytes_written": len(content.encode("utf-8")),
+        "overwritten": overwritten,
+        "errors": [],
+    }
+
+
+def mkdir(args: dict, context: dict) -> dict:
+    root = Path(context["root_path"]).resolve()
+    relative = str(args.get("path", ""))
+    denied = _validate_single_mutation_path(root, relative)
+    if denied:
+        return {"status": "denied", "path": relative, "created": False, "errors": [denied]}
+    canonical_relative = _canonical_relative_path(root, relative)
+    assert canonical_relative is not None
+    path = root / canonical_relative
+    if path.exists() and not path.is_dir():
+        return {"status": "failed", "path": canonical_relative, "created": False, "errors": [f"path_is_file:{canonical_relative}"]}
+    created = not path.exists()
+    path.mkdir(parents=True, exist_ok=True)
+    return {"status": "completed", "path": canonical_relative, "created": created, "errors": []}
+
+
+def move_file(args: dict, context: dict) -> dict:
+    return _copy_or_move_file(args, context, operation="move")
+
+
+def copy_file(args: dict, context: dict) -> dict:
+    if args.get("preserve_source") is not True:
+        source = str(args.get("source", ""))
+        destination = str(args.get("destination", ""))
+        return _file_transfer_result(
+            "denied",
+            source,
+            destination,
+            False,
+            ["copy_requires_preserve_source:true"],
+        )
+    return _copy_or_move_file(args, context, operation="copy")
+
+
+def delete_file(args: dict, context: dict) -> dict:
+    root = Path(context["root_path"]).resolve()
+    relative = str(args.get("path", ""))
+    denied = _validate_single_mutation_path(root, relative)
+    if denied:
+        return {"status": "denied", "path": relative, "deleted": False, "errors": [denied]}
+    canonical_relative = _canonical_relative_path(root, relative)
+    assert canonical_relative is not None
+    path = root / canonical_relative
+    if not path.exists():
+        return {"status": "failed", "path": canonical_relative, "deleted": False, "errors": [f"missing_path:{canonical_relative}"]}
+    if not path.is_file():
+        return {"status": "denied", "path": canonical_relative, "deleted": False, "errors": [f"delete_target_not_file:{canonical_relative}"]}
+    path.unlink()
+    return {"status": "completed", "path": canonical_relative, "deleted": True, "errors": []}
+
+
+def _copy_or_move_file(args: dict, context: dict, *, operation: str) -> dict:
+    root = Path(context["root_path"]).resolve()
+    source = str(args.get("source", ""))
+    destination = str(args.get("destination", ""))
+    overwrite = bool(args.get("overwrite", False))
+    if _request_forbids_overwrite(context):
+        overwrite = False
+    source_error = _validate_single_mutation_path(root, source)
+    if source_error:
+        return _file_transfer_result("denied", source, destination, False, [f"source:{source_error}"])
+    destination_error = _validate_single_mutation_path(root, destination)
+    if destination_error:
+        return _file_transfer_result("denied", source, destination, False, [f"destination:{destination_error}"])
+    canonical_source = _canonical_relative_path(root, source)
+    canonical_destination = _canonical_relative_path(root, destination)
+    assert canonical_source is not None
+    assert canonical_destination is not None
+    source_path = root / canonical_source
+    destination_path = root / canonical_destination
+    if not source_path.exists():
+        return _file_transfer_result("failed", canonical_source, canonical_destination, False, [f"missing_source:{canonical_source}"])
+    if not source_path.is_file():
+        return _file_transfer_result("denied", canonical_source, canonical_destination, False, [f"source_not_file:{canonical_source}"])
+    if destination_path.exists() and destination_path.is_dir():
+        return _file_transfer_result("failed", canonical_source, canonical_destination, False, [f"destination_is_directory:{canonical_destination}"])
+    if destination_path.exists() and not overwrite:
+        result = _file_transfer_result(
+            "denied",
+            canonical_source,
+            canonical_destination,
+            False,
+            [f"existing_file_requires_overwrite:{canonical_destination}"],
+        )
+        result["suggested_path"] = _available_sibling_path(root, canonical_destination)
+        return result
+    overwritten = destination_path.exists()
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    if operation == "move":
+        shutil.move(str(source_path), str(destination_path))
+    else:
+        shutil.copy2(source_path, destination_path)
+    return _file_transfer_result("completed", canonical_source, canonical_destination, overwritten, [])
+
+
+def _file_transfer_result(status: str, source: str, destination: str, overwritten: bool, errors: list[str]) -> dict:
+    return {
+        "status": status,
+        "source": source,
+        "destination": destination,
+        "overwritten": overwritten,
+        "errors": errors,
+    }
+
+
 def _protected_read(path: str) -> bool:
     normalized = path.replace("\\", "/").lstrip("/").lower()
     return normalized.startswith((".git/", "secrets/", "assets/"))
+
+
+def _protected_mutation(path: str) -> bool:
+    normalized = path.replace("\\", "/").lstrip("/").lower()
+    return normalized.startswith((".git/", "secrets/", "assets/"))
+
+
+def _validate_single_mutation_path(root: Path, path: str) -> str:
+    if _absolute(path):
+        return f"absolute_path:path:{path}"
+    canonical_relative = _canonical_relative_path(root, path)
+    if canonical_relative is None:
+        return f"path_outside_root:{path}"
+    if _protected_mutation(canonical_relative):
+        return f"protected_path:{canonical_relative}"
+    return ""
+
+
+def _absolute(path: str) -> bool:
+    return Path(path).is_absolute()
+
+
+def _canonical_relative_path(root: Path, path: str) -> str | None:
+    if not path or "\x00" in path:
+        return None
+    candidate = (root / path).resolve()
+    try:
+        return candidate.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def _available_sibling_path(root: Path, relative: str) -> str:
+    path = Path(relative)
+    parent = path.parent.as_posix()
+    stem = path.stem or "file"
+    suffix = path.suffix
+    for index in range(1, 100):
+        candidate_name = f"{stem}-{index}{suffix}"
+        candidate = candidate_name if parent == "." else f"{parent}/{candidate_name}"
+        if not (root / candidate).exists():
+            return candidate
+    return f"{parent}/{stem}-{uuid4().hex[:8]}{suffix}" if parent != "." else f"{stem}-{uuid4().hex[:8]}{suffix}"
+
+
+def _request_forbids_overwrite(context: dict) -> bool:
+    request = context.get("request") if isinstance(context.get("request"), dict) else {}
+    goal = str(request.get("user_goal", "")).lower()
+    return any(
+        marker in goal
+        for marker in (
+            "do not overwrite",
+            "don't overwrite",
+            "dont overwrite",
+            "no overwrite",
+            "without overwriting",
+            "not overwrite",
+            "keep existing",
+            "preserve existing",
+        )
+    )
+
+
+def _obsolete_identifier_error(content: str) -> str:
+    risky_lines = _obsolete_identifier_risky_lines(content)
+    if not risky_lines:
+        return ""
+    code_like_identifiers = re.findall(
+        r"\b[A-Z][A-Z0-9]+-[0-9]{2,}-[A-Z0-9]+\b",
+        "\n".join(risky_lines),
+    )
+    if not code_like_identifiers:
+        return ""
+    unique_identifiers = sorted(set(code_like_identifiers))
+    return "obsolete_identifier_leak:" + ",".join(unique_identifiers[:8])
+
+
+def _remove_obsolete_identifier_lines(content: str) -> str:
+    kept_lines: list[str] = []
+    in_obsolete_section = False
+    for line in content.splitlines():
+        marker_line = _has_obsolete_marker(line)
+        if marker_line:
+            in_obsolete_section = True
+        elif line.startswith("#"):
+            in_obsolete_section = False
+        elif not line.strip():
+            in_obsolete_section = False
+        has_identifier = re.search(r"\b[A-Z][A-Z0-9]+-[0-9]{2,}-[A-Z0-9]+\b", line)
+        if has_identifier and (marker_line or in_obsolete_section):
+            continue
+        kept_lines.append(line)
+    cleaned = "\n".join(kept_lines).strip()
+    return f"{cleaned}\n" if cleaned else content
+
+
+def _obsolete_identifier_risky_lines(content: str) -> list[str]:
+    risky_lines: list[str] = []
+    in_obsolete_section = False
+    for line in content.splitlines():
+        if _has_obsolete_marker(line):
+            in_obsolete_section = True
+            risky_lines.append(line)
+            continue
+        if line.startswith("#") or not line.strip():
+            in_obsolete_section = False
+            continue
+        if in_obsolete_section:
+            risky_lines.append(line)
+    return risky_lines
+
+
+def _has_obsolete_marker(line: str) -> bool:
+    lowered = line.lower()
+    return any(marker in lowered for marker in ("obsolete", "do not use", "excluded", "fake", "stale"))

@@ -1,0 +1,125 @@
+{
+  "after_hook_schema_recovery": {
+    "completed_fallback_count": 1,
+    "completed_primary_count": 0,
+    "failed_primary_count": 1,
+    "file_tool_calls": 0,
+    "forbidden_hits": {
+      "backend trace": false,
+      "file_management.write_file": false,
+      "tok_schema_private_27": false
+    },
+    "lookup_calls": 1,
+    "passed": true,
+    "publish_ids": [
+      "publish_SCH-27"
+    ],
+    "required_hits": {
+      "2026-06-30": true,
+      "Ilya Noor": true,
+      "SCH-27": true,
+      "adapter rehearsal": true,
+      "schema-safe": true
+    },
+    "violations": []
+  },
+  "costs": {
+    "available": true,
+    "cost": 0.0,
+    "model_calls": 4,
+    "source": "provider.usage_snapshot",
+    "total_tokens": 27332
+  },
+  "event_order": [
+    "AgentStarted",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "ModeChanged",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallDenied",
+    "ModeChanged",
+    "ModeChanged",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "DecisionProposed",
+    "RunCompleted"
+  ],
+  "provider": "appv2-env-worker-appv22-native",
+  "reason": "tool_loop_completed",
+  "status": "completed",
+  "tool_matrix": [
+    {
+      "arguments": {
+        "case_id": "SCH-27"
+      },
+      "errors": [],
+      "event_type": "ToolCallCompleted",
+      "index": 3,
+      "payload": {
+        "activity": "adapter rehearsal",
+        "case_id": "SCH-27",
+        "date": "2026-06-30",
+        "errors": [],
+        "owner": "Ilya Noor"
+      },
+      "status": "completed",
+      "tool_id": "schema_lab.lookup"
+    },
+    {
+      "arguments": {
+        "case_id": "SCH-27",
+        "message": "SCH-27 schema-safe: Ilya Noor owns the 2026-06-30 adapter rehearsal."
+      },
+      "errors": [
+        "missing_result:accepted"
+      ],
+      "event_type": "ToolCallDenied",
+      "index": 11,
+      "payload": {
+        "errors": [
+          "missing_result:accepted"
+        ],
+        "reason": "after_tool_result_schema_invalid"
+      },
+      "status": "failed",
+      "tool_id": "schema_lab.publish_primary"
+    },
+    {
+      "arguments": {
+        "case_id": "SCH-27",
+        "message": "SCH-27 schema-safe: Ilya Noor owns the 2026-06-30 adapter rehearsal."
+      },
+      "errors": [],
+      "event_type": "ToolCallCompleted",
+      "index": 20,
+      "payload": {
+        "accepted": true,
+        "case_id": "SCH-27",
+        "errors": [],
+        "message": "SCH-27 schema-safe: Ilya Noor owns the 2026-06-30 adapter rehearsal.",
+        "publish_id": "publish_SCH-27"
+      },
+      "status": "completed",
+      "tool_id": "schema_lab.publish_fallback"
+    }
+  ],
+  "totals": {
+    "compactions": 6,
+    "decisions": 4,
+    "events": 24,
+    "tool_calls": 3
+  },
+  "user_prompt": "Use schema-lab tools only. Publish SCH-27. First call schema_lab.publish_primary exactly once after lookup; if the primary result is invalid or failed, recover with schema_lab.publish_fallback and finalize."
+}

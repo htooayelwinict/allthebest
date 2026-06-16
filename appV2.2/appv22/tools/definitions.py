@@ -25,6 +25,7 @@ class ToolDefinition:
     result_schema: Mapping[str, Any]
     trust: str
     guidance: str
+    payload_ref_mode: str = "content_hash"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "argument_schema", _freeze_json_like(self.argument_schema))

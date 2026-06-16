@@ -1,0 +1,96 @@
+{
+  "costs": {
+    "available": true,
+    "cost": 0.0,
+    "model_calls": 3,
+    "source": "provider.usage_snapshot",
+    "total_tokens": 16318
+  },
+  "event_order": [
+    "AgentStarted",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "ModeChanged",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "DecisionProposed",
+    "RunCompleted"
+  ],
+  "hook_exception_isolation": {
+    "fetch_calls": 1,
+    "file_tool_calls": 0,
+    "forbidden_hits": {
+      "backend trace": false,
+      "file_management.write_file": false,
+      "stack frame": false,
+      "tok_hook_private_44": false
+    },
+    "note_ids": [
+      "note_LAB-44"
+    ],
+    "passed": true,
+    "publish_calls": 1,
+    "required_hits": {
+      "Atlas": true,
+      "LAB-44": true,
+      "Nora Quinn": true,
+      "rollback rehearsal": true,
+      "safe lab note": true
+    },
+    "violations": []
+  },
+  "provider": "appv2-env-worker-appv22-native",
+  "reason": "tool_loop_completed",
+  "status": "completed",
+  "tool_matrix": [
+    {
+      "arguments": {
+        "lab_id": "LAB-44"
+      },
+      "errors": [],
+      "event_type": "ToolCallCompleted",
+      "index": 3,
+      "payload": {
+        "errors": [],
+        "lab_id": "LAB-44",
+        "owner": "Nora Quinn",
+        "project": "Atlas",
+        "task": "rollback rehearsal"
+      },
+      "status": "completed",
+      "tool_id": "hook_lab.fetch"
+    },
+    {
+      "arguments": {
+        "lab_id": "LAB-44",
+        "note": "LAB-44 safe lab note: Atlas owner Nora Quinn will run rollback rehearsal."
+      },
+      "errors": [],
+      "event_type": "ToolCallCompleted",
+      "index": 11,
+      "payload": {
+        "accepted": true,
+        "errors": [],
+        "lab_id": "LAB-44",
+        "note": "LAB-44 safe lab note: Atlas owner Nora Quinn will run rollback rehearsal.",
+        "note_id": "note_LAB-44"
+      },
+      "status": "completed",
+      "tool_id": "hook_lab.publish"
+    }
+  ],
+  "totals": {
+    "compactions": 2,
+    "decisions": 3,
+    "events": 15,
+    "tool_calls": 2
+  },
+  "user_prompt": "Use hook-lab tools only. Fetch LAB-44 and publish the safe lab note, then finalize."
+}

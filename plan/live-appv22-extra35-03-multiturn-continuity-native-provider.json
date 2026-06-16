@@ -1,0 +1,145 @@
+{
+  "costs": {
+    "available": true,
+    "cost": 0.0,
+    "model_calls": 6,
+    "source": "provider.usage_snapshot",
+    "total_tokens": 34524
+  },
+  "event_order": [
+    "AgentStarted",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "DecisionProposed",
+    "RunCompleted",
+    "AgentStarted",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallDenied",
+    "ModeChanged",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallDenied",
+    "ModeChanged",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "DecisionProposed",
+    "RunCompleted"
+  ],
+  "multiturn_continuity": {
+    "carried_world_refs": true,
+    "completed_followup_count": 1,
+    "first_lookup_count": 1,
+    "passed": true,
+    "required_hits": {
+      "2027-01-09": true,
+      "Juniper onboarding": true,
+      "Lina Vale": true,
+      "THREAD-73": true,
+      "send welcome packet": true
+    },
+    "same_session": true,
+    "second_lookup_count": 0,
+    "violations": []
+  },
+  "provider": "appv2-env-worker-appv22-native",
+  "reason": "tool_loop_completed",
+  "status": "completed",
+  "tool_matrix": [
+    {
+      "arguments": {
+        "thread_id": "THREAD-73"
+      },
+      "errors": [],
+      "event_type": "ToolCallCompleted",
+      "index": 3,
+      "payload": {
+        "date": "2027-01-09",
+        "errors": [],
+        "next_action": "send welcome packet",
+        "owner": "Lina Vale",
+        "program": "Juniper onboarding",
+        "thread_id": "THREAD-73"
+      },
+      "status": "completed",
+      "tool_id": "thread_memory.lookup"
+    },
+    {
+      "arguments": {
+        "message": "send welcome packet",
+        "thread_id": "THREAD-73"
+      },
+      "errors": [
+        "message_missing_terms:THREAD-73,Juniper onboarding,Lina Vale,2027-01-09"
+      ],
+      "event_type": "ToolCallDenied",
+      "index": 3,
+      "payload": {
+        "accepted": false,
+        "errors": [
+          "message_missing_terms:THREAD-73,Juniper onboarding,Lina Vale,2027-01-09"
+        ],
+        "followup_id": "",
+        "message": "send welcome packet",
+        "thread_id": "THREAD-73"
+      },
+      "status": "denied",
+      "tool_id": "thread_memory.publish_followup"
+    },
+    {
+      "arguments": {
+        "message": "Follow-up for Juniper onboarding (Lina Vale, 2027-01-09): next action is to send welcome packet.",
+        "thread_id": "THREAD-73"
+      },
+      "errors": [
+        "message_missing_terms:THREAD-73"
+      ],
+      "event_type": "ToolCallDenied",
+      "index": 9,
+      "payload": {
+        "accepted": false,
+        "errors": [
+          "message_missing_terms:THREAD-73"
+        ],
+        "followup_id": "",
+        "message": "Follow-up for Juniper onboarding (Lina Vale, 2027-01-09): next action is to send welcome packet.",
+        "thread_id": "THREAD-73"
+      },
+      "status": "denied",
+      "tool_id": "thread_memory.publish_followup"
+    },
+    {
+      "arguments": {
+        "message": "Follow-up for Juniper onboarding thread THREAD-73 (owner: Lina Vale, date: 2027-01-09). Next action: send welcome packet.",
+        "thread_id": "THREAD-73"
+      },
+      "errors": [],
+      "event_type": "ToolCallCompleted",
+      "index": 15,
+      "payload": {
+        "accepted": true,
+        "errors": [],
+        "followup_id": "followup_THREAD-73",
+        "message": "Follow-up for Juniper onboarding thread THREAD-73 (owner: Lina Vale, date: 2027-01-09). Next action: send welcome packet.",
+        "thread_id": "THREAD-73"
+      },
+      "status": "completed",
+      "tool_id": "thread_memory.publish_followup"
+    }
+  ],
+  "totals": {
+    "compactions": 4,
+    "decisions": 6,
+    "events": 27,
+    "tool_calls": 4
+  }
+}
