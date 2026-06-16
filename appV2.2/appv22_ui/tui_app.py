@@ -64,16 +64,14 @@ class AppV22Tui:
             self.state.conversation.clear()
             self.state.events.clear()
             self.state.add_notice("UI conversation reset. Runtime world/context refs are preserved.")
-            self.store.save(
-                {
-                    "status": self.state.status,
-                    "reason": self.state.reason,
-                    "session_id": self.state.session_id,
-                    "world_refs": {},
-                    "context_summary": self.state.context_summary,
-                },
-                conversation=self.state.conversation,
-            )
+            preserved = self._previous_result() or {}
+            preserved.setdefault("status", self.state.status)
+            preserved.setdefault("reason", self.state.reason)
+            preserved.setdefault("session_id", self.state.session_id)
+            preserved.setdefault("world_refs", {})
+            preserved.setdefault("context_summary", self.state.context_summary)
+            preserved["ui_context"] = self._ui_context_payload()
+            self.store.save(preserved, conversation=self.state.conversation)
             return False
         if command == "/clear":
             self.state.clear_transient()
@@ -87,9 +85,9 @@ class AppV22Tui:
             self.state.add_notice(f"showing last {min(len(self.state.events), 14)} agent-loop events")
             return False
         if command == "/context":
-            risks = self.state.context_summary.get("open_risks")
-            risk_count = len(risks) if isinstance(risks, list) else 0
-            self.state.add_notice(f"context refs={self.state.world_ref_count} open_risks={risk_count}")
+            blockers = self.state.context_summary.get("blockers")
+            blocker_count = len(blockers) if isinstance(blockers, list) else 0
+            self.state.add_notice(f"context refs={self.state.world_ref_count} blockers={blocker_count}")
             return False
         if command == "/refs":
             self.state.add_notice(", ".join(self.state.world_refs[-8:]) or "no world refs")

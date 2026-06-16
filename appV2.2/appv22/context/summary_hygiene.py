@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-SUMMARY_KEYS = ("goals", "decisions", "progress", "open_risks", "evidence_refs")
+SUMMARY_KEYS = ("goals", "decisions", "progress", "blockers", "evidence_refs")
 
 
 def normalized_context_summary(summary: Any) -> dict[str, list[Any]]:
@@ -25,7 +25,7 @@ def drop_unavailable_tool_risks(summary: Any, active_tool_ids: tuple[str, ...]) 
     normalized = normalized_context_summary(summary)
     active = set(active_tool_ids)
     kept: list[Any] = []
-    for risk in normalized.get("open_risks", []):
+    for risk in normalized.get("blockers", []):
         if not isinstance(risk, str):
             kept.append(risk)
             continue
@@ -33,7 +33,7 @@ def drop_unavailable_tool_risks(summary: Any, active_tool_ids: tuple[str, ...]) 
         if inactive_tool_id and inactive_tool_id not in active:
             continue
         kept.append(risk)
-    normalized["open_risks"] = kept
+    normalized["blockers"] = kept
     return normalized
 
 
@@ -45,9 +45,9 @@ def strip_cross_turn_tool_availability_risks(summary: Any) -> dict[str, list[Any
     stale summaries to override the current tool surface.
     """
     normalized = normalized_context_summary(summary)
-    normalized["open_risks"] = [
+    normalized["blockers"] = [
         risk
-        for risk in normalized.get("open_risks", [])
+        for risk in normalized.get("blockers", [])
         if not (isinstance(risk, str) and is_tool_availability_risk(risk))
     ]
     return normalized
@@ -61,9 +61,9 @@ def strip_turn_local_repair_risks(summary: Any) -> dict[str, list[Any]]:
     persisted task state.
     """
     normalized = normalized_context_summary(summary)
-    normalized["open_risks"] = [
+    normalized["blockers"] = [
         risk
-        for risk in normalized.get("open_risks", [])
+        for risk in normalized.get("blockers", [])
         if not (isinstance(risk, str) and is_turn_local_repair_risk(risk))
     ]
     return normalized
@@ -83,14 +83,14 @@ def resolve_tool_risks_after_success(summary: Any, tool_id: str) -> dict[str, li
         return normalized
     removed = [
         risk
-        for risk in normalized.get("open_risks", [])
+        for risk in normalized.get("blockers", [])
         if isinstance(risk, str) and _risk_mentions_tool_failure(risk, tool_id)
     ]
     if not removed:
         return normalized
-    normalized["open_risks"] = [
+    normalized["blockers"] = [
         risk
-        for risk in normalized.get("open_risks", [])
+        for risk in normalized.get("blockers", [])
         if not (isinstance(risk, str) and _risk_mentions_tool_failure(risk, tool_id))
     ]
     progress = normalized.setdefault("progress", [])
@@ -133,6 +133,24 @@ def inactive_tool_id_from_risk(risk: str) -> str:
 
 def is_tool_availability_risk(risk: str) -> bool:
     return "inactive_tool:" in risk or " request was denied" in risk
+
+
+def is_durable_blocker(risk: str) -> bool:
+    lowered = risk.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "protected_path",
+            "approval",
+            "policy",
+            "blocked",
+            "permission",
+            "requires confirmation",
+            "requires clarification",
+            "clarification required",
+            "user input required",
+        )
+    )
 
 
 def is_turn_local_repair_risk(risk: str) -> bool:

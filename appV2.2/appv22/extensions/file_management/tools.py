@@ -34,8 +34,9 @@ def register_file_management_tools(registry) -> None:
             {"type": "object", "properties": {}},
             REPO_SNAPSHOT_OUTPUT_SCHEMA,
             "runtime_observed",
-            "Return workspace files and directories relative to the root.",
-            payload_ref_mode="latest",
+            "List workspace files and directories relative to the root. Includes dotfiles, sorted paths, and clipped text previews for common text files.",
+            freshness="turn",
+            invalidated_by_mutation=True,
         ),
         repo_snapshot,
     )
@@ -51,7 +52,7 @@ def register_file_management_tools(registry) -> None:
             },
             READ_FILE_OUTPUT_SCHEMA,
             "runtime_observed",
-            "Read a workspace file by relative path.",
+            "Read exact text content from one workspace file by relative path.",
         ),
         read_file,
     )
@@ -71,7 +72,7 @@ def register_file_management_tools(registry) -> None:
             },
             WRITE_FILE_OUTPUT_SCHEMA,
             "runtime_observed",
-            "Write complete text content to a workspace file by relative path. Creates parent directories.",
+            "Write complete text content to one workspace file by relative path. Creates parent directories.",
         ),
         write_file,
     )
@@ -87,7 +88,7 @@ def register_file_management_tools(registry) -> None:
             },
             MKDIR_OUTPUT_SCHEMA,
             "runtime_observed",
-            "Create a workspace directory by relative path.",
+            "Create one workspace directory by relative path.",
         ),
         mkdir,
     )
@@ -107,7 +108,7 @@ def register_file_management_tools(registry) -> None:
             },
             MOVE_FILE_OUTPUT_SCHEMA,
             "runtime_observed",
-            "Move a workspace file from source to destination. Creates parent directories.",
+            "Move one workspace file from source to destination. Creates parent directories.",
         ),
         move_file,
     )
@@ -128,7 +129,7 @@ def register_file_management_tools(registry) -> None:
             },
             COPY_FILE_OUTPUT_SCHEMA,
             "runtime_observed",
-            "Copy a workspace file from source to destination. Creates parent directories.",
+            "Copy one workspace file from source to destination. Creates parent directories.",
         ),
         copy_file,
     )
