@@ -131,7 +131,7 @@ class AppV22Tui:
         except KeyboardInterrupt:
             self.state.running = False
             self.state.mode = "INTERRUPTED"
-            self.state.add_notice("turn interrupted in UI; type /exit to leave or continue with a new request")
+            self.state.add_notice("turn interrupted in UI; late provider/tool results will be ignored")
             self._draw()
             return
         self._drain_events(event_queue)
@@ -161,6 +161,9 @@ class AppV22Tui:
             if kind == "event":
                 self.state.apply_event(payload)
             elif kind == "result":
+                if self.state.mode == "INTERRUPTED":
+                    self.state.add_notice("ignored late result from interrupted turn")
+                    continue
                 self.state.apply_result(payload)
                 payload = self._with_ui_context(payload)
                 self.store.save(payload, conversation=self.state.conversation)
@@ -173,7 +176,11 @@ class AppV22Tui:
                 self.state.add_notice(f"agent error: {payload}")
 
     def _previous_result(self) -> dict[str, Any] | None:
-        return None
+        loaded = self.store.load()
+        if not isinstance(loaded, dict):
+            return None
+        previous = loaded.get("last_result")
+        return dict(previous) if isinstance(previous, dict) else None
 
     def _runtime_prompt(self, prompt: str) -> str:
         runtime_prompt, hot_lines, summary = self.context_manager.prepare_prompt(

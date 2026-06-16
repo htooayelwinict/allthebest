@@ -187,7 +187,7 @@ class TuiAppTests(unittest.TestCase):
         self.assertIn("UI SESSION SUMMARY - REFERENCE ONLY", prompt)
         self.assertIn("RECENT UI TURNS", prompt)
 
-    def test_tui_does_not_reuse_previous_runtime_result_as_active_state(self) -> None:
+    def test_tui_reuses_sanitized_previous_runtime_result_for_continuation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             app = AppV22Tui(workspace=Path(tmp), dotenv_path=Path(".env"), max_turns=4, extensions=("file_management",))
             app.store.save(
@@ -203,7 +203,132 @@ class TuiAppTests(unittest.TestCase):
 
             previous = app._previous_result()
 
-        self.assertIsNone(previous)
+        self.assertIsInstance(previous, dict)
+        self.assertEqual(previous["session_id"], "sess_old")
+        self.assertIn("world://file_management.write_file/old", previous["world_refs"])
+
+    def test_session_store_does_not_persist_inactive_tool_risks_as_active_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(Path(tmp))
+            store.save(
+                {
+                    "status": "completed",
+                    "reason": "tool_loop_completed",
+                    "session_id": "sess_test",
+                    "world_refs": {},
+                    "context_summary": {
+                        "progress": ["write completed"],
+                        "open_risks": [
+                            "file.read reported error: inactive_tool:file.read",
+                            "file.read request was denied for argument keys ['path']; treat that denial as evidence.",
+                            "real unresolved risk",
+                        ],
+                    },
+                },
+                conversation=[],
+            )
+
+            loaded = store.load()
+
+        self.assertEqual(loaded["context_summary"]["open_risks"], ["real unresolved risk"])
+        self.assertEqual(loaded["last_result"]["context_summary"]["open_risks"], ["real unresolved risk"])
+
+    def test_session_store_reconciles_tool_risks_against_persisted_world_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(Path(tmp))
+            store.save(
+                {
+                    "status": "completed",
+                    "reason": "tool_loop_completed",
+                    "session_id": "sess_test",
+                    "world_refs": {
+                        "world://file_management.read_file/ok": {
+                            "kind": "file_management.read_file",
+                            "summary": "file_management.read_file result",
+                        }
+                    },
+                    "context_summary": {
+                        "progress": ["file_management.read_file: file_management.read_file result"],
+                        "open_risks": [
+                            "file_management.read_file reported error: missing_file:cat.txt",
+                            "other_tool reported error: still_active",
+                        ],
+                    },
+                },
+                conversation=[],
+            )
+
+            loaded = store.load()
+
+        self.assertEqual(loaded["context_summary"]["open_risks"], ["other_tool reported error: still_active"])
+        self.assertIn(
+            "file_management.read_file: prior failed/denied tool risk resolved by later successful result",
+            loaded["context_summary"]["progress"],
+        )
+
+    def test_session_store_does_not_persist_turn_local_repair_risks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(Path(tmp))
+            store.save(
+                {
+                    "status": "failed",
+                    "reason": "max_turns_exceeded",
+                    "session_id": "sess_test",
+                    "world_refs": {},
+                    "context_summary": {
+                        "open_risks": [
+                            "Malformed tool_call decision was missing payload.tool_id; the next decision must call one selected tool.",
+                            "real task risk",
+                        ],
+                    },
+                },
+                conversation=[],
+            )
+
+            loaded = store.load()
+
+        self.assertEqual(loaded["context_summary"]["open_risks"], ["real task risk"])
+        self.assertEqual(loaded["last_result"]["context_summary"]["open_risks"], ["real task risk"])
+
+    def test_session_store_persists_lightweight_observe_payloads_for_rehydration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(Path(tmp))
+            store.save(
+                {
+                    "status": "completed",
+                    "reason": "tool_loop_completed",
+                    "session_id": "sess_test",
+                    "world_refs": {
+                        "world://file_management.repo_snapshot/latest": {
+                            "kind": "file_management.repo_snapshot",
+                            "summary": "file_management.repo_snapshot result",
+                            "arguments": {},
+                            "payload": {
+                                "files": ["cat_poem.txt", "docs/output.md"],
+                                "directories": ["docs"],
+                                "text_previews": {"docs/output.md": "x" * 1000},
+                            },
+                        },
+                        "world://file_management.read_file/ok": {
+                            "kind": "file_management.read_file",
+                            "summary": "file_management.read_file result",
+                            "arguments": {"path": "cat_poem.txt"},
+                            "payload": {"path": "cat_poem.txt", "content": "cat poem"},
+                        },
+                    },
+                    "context_summary": {},
+                },
+                conversation=[],
+            )
+
+            loaded = store.load()
+
+        snapshot = loaded["world_refs"]["world://file_management.repo_snapshot/latest"]["payload"]
+        read = loaded["world_refs"]["world://file_management.read_file/ok"]["payload"]
+        self.assertEqual(snapshot["files"], ["cat_poem.txt", "docs/output.md"])
+        self.assertEqual(snapshot["directories"], ["docs"])
+        self.assertLessEqual(len(snapshot["text_previews"]["docs/output.md"]), 700)
+        self.assertEqual(read["content"], "cat poem")
 
     def test_tui_context_manager_preserves_compaction_metrics_without_recompacting_hot_tail(self) -> None:
         manager = TuiContextManager(max_hot_lines=6, compact_after_lines=12)

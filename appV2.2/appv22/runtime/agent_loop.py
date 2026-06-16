@@ -7,6 +7,12 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from appv22.context.compressor import _compact_world_ref_payload
+from appv22.context.summary_hygiene import (
+    drop_unavailable_tool_risks,
+    resolve_tool_risks_after_success,
+    resolve_tool_risks_from_world_refs,
+    strip_turn_local_repair_risks,
+)
 from appv22.runtime.decisions import KNOWN_DECISION_KINDS, RuntimeDecision
 from appv22.runtime.reducer import apply_event
 from appv22.runtime.services import AppV22Services
@@ -88,7 +94,7 @@ class AppV22AgentRuntime:
             state.world_refs = deepcopy(world_refs)
         context_summary = previous_result.get("context_summary")
         if isinstance(context_summary, dict):
-            state.context_summary = self._normalized_context_summary(context_summary)
+            state.context_summary = resolve_tool_risks_from_world_refs(context_summary, state.world_refs)
         return self._run_state(state)
 
     def _run_state(self, state: AgentState) -> dict:
@@ -99,6 +105,10 @@ class AppV22AgentRuntime:
             resolved = self.services.extension_registry.resolve_active(state)
             state.active_extension_ids = list(resolved.extension_ids)
             state.active_skill_ids = [card.skill_id for card in resolved.skill_cards]
+            state.context_summary = resolve_tool_risks_from_world_refs(
+                strip_turn_local_repair_risks(drop_unavailable_tool_risks(state.context_summary, resolved.tool_ids)),
+                state.world_refs,
+            )
 
             selected = self.services.context_selector.select(state, resolved, pre_turn_mode=state.mode)
             prompt = self.services.prompt_builder.build(state, selected)
@@ -218,10 +228,9 @@ class AppV22AgentRuntime:
             self._apply(state, RuntimeEvent("ModeChanged", {"mode": "THINK"}))
             self._record_runtime_guidance(
                 state,
-                open_risk=(
+                progress=(
                     "Malformed tool_call decision was missing payload.tool_id; "
-                    "the next decision must call one selected tool using payload.tool_id and payload.arguments, "
-                    "or finalize only if existing evidence already proves completion."
+                    "treated as turn-local provider repair feedback. Continue from selected tools or existing evidence."
                 ),
             )
             return
@@ -367,9 +376,15 @@ class AppV22AgentRuntime:
         return result
 
     def _record_tool_result(self, state: AgentState, result: dict[str, Any]) -> None:
-        event_type = "ToolCallCompleted" if result["status"] == "completed" else "ToolCallDenied"
+        event_type = {
+            "completed": "ToolCallCompleted",
+            "failed": "ToolCallFailed",
+        }.get(str(result.get("status")), "ToolCallDenied")
         self._apply(state, RuntimeEvent(event_type, result))
         if result["status"] == "completed":
+            resolved_summary = resolve_tool_risks_after_success(state.context_summary, str(result.get("tool_id") or ""))
+            if resolved_summary != self._normalized_context_summary(state.context_summary):
+                self._apply(state, RuntimeEvent("ContextSummaryUpdated", resolved_summary))
             arguments = result.get("arguments") if isinstance(result.get("arguments"), dict) else {}
             self._apply(
                 state,
@@ -747,8 +762,23 @@ class AppV22AgentRuntime:
                 continue
             existing_arguments = world_ref.get("arguments")
             if isinstance(existing_arguments, dict) and existing_arguments == arguments:
+                definition = self.services.tool_registry.definition(tool_id)
+                if definition is not None and definition.category == "observe" and not self._world_ref_has_usable_payload(world_ref):
+                    return False
                 return True
         return False
+
+    @staticmethod
+    def _world_ref_has_usable_payload(world_ref: dict[str, Any]) -> bool:
+        payload = world_ref.get("payload")
+        if not isinstance(payload, dict) or not payload:
+            return False
+        kind = world_ref.get("kind")
+        if kind == "file_management.repo_snapshot":
+            return isinstance(payload.get("files"), list) or isinstance(payload.get("directories"), list)
+        if kind == "file_management.read_file":
+            return isinstance(payload.get("content"), str)
+        return True
 
     def _existing_tool_call_denial(self, state: AgentState, tool_id: str, arguments: Any) -> dict[str, Any] | None:
         if not isinstance(arguments, dict):

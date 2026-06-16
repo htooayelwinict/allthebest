@@ -87,9 +87,7 @@ class AppV22TextualApp(App):
 
     def action_cancel_or_quit(self) -> None:
         if self.controller.state.running:
-            self.controller.state.running = False
-            self.controller.state.mode = "INTERRUPTED"
-            self.controller.state.add_notice("UI interrupted; provider call may finish in background")
+            self.controller.interrupt_running_turn()
             self._refresh_all()
             return
         self.exit()
