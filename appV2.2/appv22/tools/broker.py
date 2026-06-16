@@ -27,6 +27,7 @@ class ToolBroker:
         arguments: dict[str, Any],
         *,
         active_tool_ids: list[str] | tuple[str, ...] | set[str] | frozenset[str],
+        request_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if tool_id not in set(active_tool_ids):
             return self._envelope(
@@ -56,12 +57,15 @@ class ToolBroker:
             return self._envelope(tool_id, "denied", {"errors": errors}, create_ref=False)
 
         try:
-            handler_result = handler(deepcopy(arguments), {"root_path": self.root_path})
+            handler_context = {"root_path": self.root_path}
+            if isinstance(request_context, dict):
+                handler_context["request"] = deepcopy(request_context)
+            handler_result = handler(deepcopy(arguments), handler_context)
         except Exception as exc:  # noqa: BLE001 - broker must not leak handler failures.
             return self._envelope(
                 tool_id,
                 "failed",
-                {"errors": [f"handler_exception:{exc.__class__.__name__}"]},
+                {"errors": ["handler_exception"]},
                 create_ref=False,
             )
 
@@ -97,7 +101,7 @@ class ToolBroker:
                     create_ref=False,
                 )
 
-        return self._envelope(tool_id, status, payload, create_ref=status == "completed")
+        return self._envelope(tool_id, status, payload, definition=definition, create_ref=status == "completed")
 
     def _envelope(
         self,
@@ -105,10 +109,11 @@ class ToolBroker:
         status: str,
         payload: dict[str, Any],
         *,
+        definition=None,
         create_ref: bool,
     ) -> dict[str, Any]:
         result_id = f"toolres_{next(self._result_counter):06d}"
-        payload_ref = self._payload_ref(tool_id, payload) if create_ref else ""
+        payload_ref = self._payload_ref(tool_id, payload, definition=definition) if create_ref else ""
         return {
             "tool_result_id": result_id,
             "tool_id": tool_id,
@@ -118,12 +123,23 @@ class ToolBroker:
             "evidence_refs": [payload_ref] if payload_ref else [],
         }
 
-    def _payload_ref(self, tool_id: str, payload: dict[str, Any]) -> str:
-        if tool_id.endswith(".repo_snapshot"):
+    def _payload_ref(self, tool_id: str, payload: dict[str, Any], *, definition=None) -> str:
+        if getattr(definition, "payload_ref_mode", "") == "latest":
             return f"world://{tool_id}/latest"
         stable = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
         digest = sha256(stable.encode("utf-8")).hexdigest()[:16]
         return f"world://{tool_id}/{digest}"
+
+    def validate_result_payload(self, tool_id: str, payload: dict[str, Any]) -> list[str]:
+        definition = self.registry.definition(tool_id)
+        if definition is None:
+            return [f"unknown_tool:{tool_id}"]
+        return _validate_value_against_schema(
+            definition.result_schema,
+            payload,
+            missing_prefix="missing_result",
+            type_prefix="invalid_result_type",
+        )
 
 
 def _validate_value_against_schema(

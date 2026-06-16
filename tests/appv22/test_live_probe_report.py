@@ -14,6 +14,7 @@ from scripts.live_appv22_complex_vague_file_management_probe import (
     seed_repo,
 )
 from scripts.live_appv22_dual_compaction_rehydration_probe import build_report as build_dual_compaction_report
+from scripts import live_appv22_long_context_fact_stress as long_context_fact_stress
 
 
 class _DualCompactionProvider:
@@ -142,6 +143,44 @@ def test_dual_compaction_report_ignores_malformed_summary_without_crashing(tmp_p
     assert report["prompt_matrix"][0]["summary_evidence_ref_count"] == 0
 
 
+def test_long_context_fact_report_passes_when_created_file_has_required_facts_without_generic_keywords(tmp_path):
+    (tmp_path / "docs").mkdir()
+    seed_files = {
+        "docs/operator-brief.md": (
+            "Bridge code ORCHID-77-BRIDGE belongs to owner Mira Chen. "
+            "First checkpoint is 2026-06-18 09:30. "
+            "Escalate to FinchOps only after two failed badge syncs.\n"
+        ),
+        "notes/ferry-window.txt": (
+            "Ferry code NEON-42-FERRY belongs to owner Pavel Ortiz. "
+            "Final checkpoint is 2026-06-19 15:00. Keep exact spelling.\n"
+        ),
+    }
+    for relative, content in seed_files.items():
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    (tmp_path / "docs" / "handoff.md").write_text(
+        "Bridge code ORCHID-77-BRIDGE belongs to owner Mira Chen. First checkpoint is 2026-06-18 09:30.\n"
+        "Ferry code NEON-42-FERRY belongs to owner Pavel Ortiz. Final checkpoint is 2026-06-19 15:00.\n"
+        "Escalation rule: Escalate to FinchOps only after two failed badge syncs.\n",
+        encoding="utf-8",
+    )
+    long_context_fact_stress.SEED_FILES.clear()
+    long_context_fact_stress.SEED_FILES.update(seed_files)
+
+    report = long_context_fact_stress.build_report(
+        repo=tmp_path,
+        before_files=sorted(seed_files),
+        result={"status": "completed", "events": []},
+        provider=None,
+        prompt="p",
+    )
+
+    assert report["file_creation"]["summary"]["passed"] is False
+    assert report["fact_stress"]["passed"] is True
+
+
 def test_probe_report_contains_full_matrix(tmp_path):
     (tmp_path / "README.md").write_text("# probe\n", encoding="utf-8")
     (tmp_path / "src").mkdir()
@@ -181,14 +220,6 @@ def test_probe_report_contains_full_matrix(tmp_path):
                 "event_type": "ToolCallCompleted",
                 "payload": {"tool_id": "file_management.repo_snapshot"},
             },
-            {
-                "event_type": "MutationApplied",
-                "payload": {"receipt_id": "mut_workspace_cleanup"},
-            },
-            {
-                "event_type": "VerificationRecorded",
-                "payload": {"verification_id": "verify_1"},
-            },
         ],
     }
 
@@ -202,11 +233,9 @@ def test_probe_report_contains_full_matrix(tmp_path):
     assert report["status"] == "completed"
     assert report["user_prompt"] == "Can you clean this mess up safely and keep a record?"
     assert report["provider"] is None
-    assert report["totals"]["events"] == 4
+    assert report["totals"]["events"] == 2
     assert report["totals"]["decisions"] == 1
     assert report["totals"]["tool_calls"] == 1
-    assert report["totals"]["mutation_receipts"] == 1
-    assert report["totals"]["verification_receipts"] == 1
     assert report["costs"] == {
         "available": False,
         "source": None,
@@ -217,8 +246,6 @@ def test_probe_report_contains_full_matrix(tmp_path):
     assert report["event_order"] == [
         "DecisionProposed",
         "ToolCallCompleted",
-        "MutationApplied",
-        "VerificationRecorded",
     ]
     assert report["file_management"]["protected_paths_preserved"]["src/app.py"] is True
     assert report["file_management"]["protected_paths_preserved"]["secrets/prod.env"] is True
@@ -397,13 +424,12 @@ def test_default_report_path_is_provider_specific_and_output_arg_can_override(tm
     assert default_report_path("deterministic", output=tmp_path / "custom.json") == tmp_path / "custom.json"
 
 
-def test_appv2_env_probe_passes_file_management_tool_name_map(monkeypatch):
+def test_appv2_env_probe_uses_native_provider_without_legacy_tool_name_map(monkeypatch):
     captured = {}
     provider = object()
 
-    def fake_create_appv22_provider_from_appv2_env(*, dotenv_path, tool_name_map=None):
+    def fake_create_appv22_provider_from_appv2_env(*, dotenv_path):
         captured["dotenv_path"] = dotenv_path
-        captured["tool_name_map"] = tool_name_map
         return provider
 
     monkeypatch.setattr(
@@ -413,5 +439,3 @@ def test_appv2_env_probe_passes_file_management_tool_name_map(monkeypatch):
 
     assert create_provider("appv2-env", dotenv_path=".env") is provider
     assert captured["dotenv_path"] == ".env"
-    assert captured["tool_name_map"]["repo_snapshot"] == "file_management.repo_snapshot"
-    assert captured["tool_name_map"]["read_file"] == "file_management.read_file"

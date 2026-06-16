@@ -1,0 +1,91 @@
+{
+  "costs": {
+    "available": true,
+    "cost": 0.0,
+    "model_calls": 3,
+    "source": "provider.usage_snapshot",
+    "total_tokens": 14010
+  },
+  "event_order": [
+    "AgentStarted",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallDenied",
+    "ModeChanged",
+    "ModeChanged",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "ContextSummaryUpdated",
+    "DecisionProposed",
+    "ModeChanged",
+    "ToolCallCompleted",
+    "WorldRefAdded",
+    "ModeChanged",
+    "DecisionProposed",
+    "RunCompleted"
+  ],
+  "provider": "appv2-env-worker-appv22-native",
+  "reason": "tool_loop_completed",
+  "retryable_failure_recovery": {
+    "completed_count": 1,
+    "passed": true,
+    "retryable_failure_count": 1,
+    "term_hits": {
+      "2026-10-02 10:15": true,
+      "DEP-515": true,
+      "Helios": true,
+      "stable": true
+    },
+    "violations": []
+  },
+  "status": "completed",
+  "tool_matrix": [
+    {
+      "arguments": {
+        "deployment_id": "DEP-515"
+      },
+      "errors": [
+        "transient_backend_unavailable"
+      ],
+      "event_type": "ToolCallDenied",
+      "index": 3,
+      "payload": {
+        "checked_at": "",
+        "deployment_id": "DEP-515",
+        "errors": [
+          "transient_backend_unavailable"
+        ],
+        "retryable": true,
+        "service": "Helios"
+      },
+      "status": "failed",
+      "tool_id": "flaky_status.fetch_deployment"
+    },
+    {
+      "arguments": {
+        "deployment_id": "DEP-515"
+      },
+      "errors": [],
+      "event_type": "ToolCallCompleted",
+      "index": 12,
+      "payload": {
+        "checked_at": "2026-10-02 10:15",
+        "deployment_id": "DEP-515",
+        "errors": [],
+        "retryable": false,
+        "service": "Helios",
+        "status_value": "stable"
+      },
+      "status": "completed",
+      "tool_id": "flaky_status.fetch_deployment"
+    }
+  ],
+  "totals": {
+    "compactions": 4,
+    "decisions": 3,
+    "events": 17,
+    "tool_calls": 2
+  },
+  "user_prompt": "Use the flaky status extension to fetch deployment DEP-515. The first backend attempt may fail transiently; if the tool says retryable, retry the same selected tool call, then finalize only after the completed result."
+}

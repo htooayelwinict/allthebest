@@ -149,7 +149,7 @@ def test_tool_broker_returns_failure_envelope_for_handler_exception(tmp_path):
     result = broker.execute("demo.echo", {"message": "hello"}, active_tool_ids=["demo.echo"])
 
     assert result["status"] == "failed"
-    assert result["payload"] == {"errors": ["handler_exception:RuntimeError"]}
+    assert result["payload"] == {"errors": ["handler_exception"]}
     assert result["payload_ref"] == ""
 
 

@@ -52,7 +52,7 @@ class WorldRefAddedHandler:
         kind = payload.get("kind")
         ref_summary = payload.get("summary")
         if isinstance(kind, str) and isinstance(ref_summary, str):
-            progress_item = f"{ref_id} ({kind}): {ref_summary}"
+            progress_item = f"{kind}: {ref_summary}"
             if progress_item not in progress:
                 progress.append(progress_item)
 
@@ -98,10 +98,6 @@ DEFAULT_REDUCER = ReducerRegistry(
         WorldRefAddedHandler(),
         MappingUpsertHandler("ToolCallCompleted", "tool_results", "tool_result_id"),
         MappingUpsertHandler("ToolCallDenied", "tool_results", "tool_result_id"),
-        FieldAssignmentHandler("PlanAccepted", "runtime_plan"),
-        MappingUpsertHandler("MutationLeaseIssued", "mutation_leases", "lease_id"),
-        MappingUpsertHandler("MutationApplied", "mutation_receipts", "receipt_id"),
-        MappingUpsertHandler("VerificationRecorded", "verification_receipts", "verification_id"),
         FieldAssignmentHandler("ContextSummaryUpdated", "context_summary"),
         RunCompletedHandler(),
         RunFailedHandler(),

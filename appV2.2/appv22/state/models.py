@@ -7,7 +7,6 @@ RuntimeMode = Literal[
     "START",
     "THINK",
     "OBSERVE",
-    "PLAN",
     "ACT",
     "VERIFY",
     "COMPACT",
@@ -35,11 +34,6 @@ class AgentState:
     active_extension_ids: list[str] = field(default_factory=list)
     world_refs: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_results: dict[str, dict[str, Any]] = field(default_factory=dict)
-    runtime_plan: dict[str, Any] = field(default_factory=dict)
-    mutation_leases: dict[str, dict[str, Any]] = field(default_factory=dict)
-    mutation_receipts: dict[str, dict[str, Any]] = field(default_factory=dict)
-    verification_receipts: dict[str, dict[str, Any]] = field(default_factory=dict)
-    artifacts: dict[str, dict[str, Any]] = field(default_factory=dict)
     conversation_messages: list[dict[str, Any]] = field(default_factory=list)
     context_summary: dict[str, Any] = field(default_factory=dict)
     terminal: bool = False

@@ -294,6 +294,47 @@ def test_agent_compressor_shrinks_oversized_summary_to_budget() -> None:
     assert previous_summary["goals"] == ["g" * 1000]
 
 
+def test_agent_compressor_guarantees_budget_with_large_preserved_world() -> None:
+    text_previews = {
+        f"docs/important-{index:03d}.md": "BadgeCo Maya Priya Ken catering " * 80
+        for index in range(80)
+    }
+    messages = [
+        {"role": "system", "name": "provider_identity", "content": "runtime", "payload": {"identity": "runtime"}},
+        {
+            "role": "system",
+            "name": "provider_context_section",
+            "section": "world",
+            "payload": {
+                "world_refs": {
+                    "world://file_management.repo_snapshot/latest": {
+                        "ref_id": "world://file_management.repo_snapshot/latest",
+                        "kind": "file_management.repo_snapshot",
+                        "summary": "large repo snapshot",
+                        "payload": {
+                            "files": list(text_previews),
+                            "directories": ["docs"],
+                            "text_previews": text_previews,
+                            "errors": [],
+                        },
+                    }
+                }
+            },
+            "content": "world: huge",
+        },
+        {"role": "user", "name": "user_goal", "content": "continue"},
+    ]
+
+    compacted = AgentContextCompressor(max_chars=9_000, threshold=0.45).compress(
+        messages,
+        previous_summary={},
+    )
+
+    assert estimate_chars(compacted) <= 9_000
+    world_section = next(message for message in compacted if message.get("section") == "world")
+    assert "world://file_management.repo_snapshot/latest" in world_section["payload"]["world_refs"]
+
+
 def test_agent_compressor_bounded_summary_prefers_recent_facts_over_older_previous_summary() -> None:
     messages = [
         {"role": "system", "content": "s"},

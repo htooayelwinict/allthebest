@@ -8,7 +8,6 @@ from appv22.context.gateway_guard import GatewayContextGuard
 from appv22.context.prompt_builder import PromptBuilder
 from appv22.context.selector import ContextSelector
 from appv22.extensions.registry import ExtensionRegistry
-from appv22.runtime.capabilities import CapabilityRegistry
 from appv22.tools.broker import ToolBroker
 from appv22.tools.definitions import ToolDefinition
 from appv22.tools.registry import ToolRegistry
@@ -19,7 +18,6 @@ class AppV22Services:
     root_path: Path
     provider: object
     extension_registry: ExtensionRegistry
-    capability_registry: CapabilityRegistry
     tool_registry: ToolRegistry
     broker: ToolBroker
     context_selector: ContextSelector
@@ -31,11 +29,9 @@ class AppV22Services:
 def create_appv22_services(*, root_path, provider, extensions) -> AppV22Services:
     root = Path(root_path)
     extension_registry = ExtensionRegistry()
-    capability_registry = CapabilityRegistry()
     tool_registry = ToolRegistry()
     for extension in extensions:
         extension_registry.register(extension)
-        extension.register_capabilities(capability_registry)
         register_tools = getattr(extension, "register_tools", None)
         if callable(register_tools):
             register_tools(tool_registry)
@@ -44,7 +40,6 @@ def create_appv22_services(*, root_path, provider, extensions) -> AppV22Services
         root,
         provider,
         extension_registry,
-        capability_registry,
         tool_registry,
         ToolBroker(registry=tool_registry, root_path=root),
         ContextSelector(),
@@ -71,6 +66,7 @@ def _normalize_enveloped_tool_result_schemas(tool_registry: ToolRegistry) -> Non
             schema,
             definition.trust,
             definition.guidance,
+            payload_ref_mode=definition.payload_ref_mode,
         )
 
 

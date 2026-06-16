@@ -7,9 +7,6 @@ from typing import Any
 from appv22.extensions.registry import ResolvedExtensions
 from appv22.state.models import AgentState
 
-READ_TOOL_MODES = frozenset({"START", "THINK", "OBSERVE", "VERIFY"})
-
-
 class ContextSelector:
     def select(
         self,
@@ -18,12 +15,15 @@ class ContextSelector:
         *,
         pre_turn_mode: str,
     ) -> dict[str, Any]:
-        skill_cards = [card for card in resolved.skill_cards if pre_turn_mode in card.modes]
+        if pre_turn_mode in {"START", "THINK"}:
+            skill_cards = list(resolved.skill_cards)
+        else:
+            skill_cards = [card for card in resolved.skill_cards if pre_turn_mode in card.modes]
         selected_tools = [
             tool_id
             for card in skill_cards
             for tool_id in card.tool_ids
-        ] if pre_turn_mode in READ_TOOL_MODES else []
+        ]
         prompt_visible_tool_ids = set(selected_tools)
         serialized_skills = []
         for card in skill_cards:
@@ -37,9 +37,6 @@ class ContextSelector:
         return {
             "state": {
                 "mode": pre_turn_mode,
-                "runtime_plan": deepcopy(state.runtime_plan),
-                "mutation_receipts": deepcopy(state.mutation_receipts),
-                "verification_receipts": deepcopy(state.verification_receipts),
                 "context_summary": deepcopy(state.context_summary),
             },
             "skills": serialized_skills,

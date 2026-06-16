@@ -11,48 +11,124 @@ from pathlib import Path
 import sys
 from typing import Any, Mapping
 
-from appv22.context.evidence import ContextEvidence
 from appv22.runtime.decisions import KNOWN_DECISION_KINDS, RuntimeDecision
 
 
-class AppV2EnvAppV22ProviderAdapter:
-    """Adapts an AppV2.1 provider to the AppV2.2 provider boundary."""
+APPV22_DECISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "decision_id": {"type": "string"},
+        "kind": {
+            "type": "string",
+            "enum": ["tool_call", "pause", "compact", "finalize"],
+        },
+        "reason": {"type": "string"},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "payload": {"type": "object", "additionalProperties": True},
+    },
+    "required": ["kind", "reason", "evidence_refs", "payload"],
+}
 
-    def __init__(
-        self,
-        delegate: Any,
-        *,
-        tool_name_map: Mapping[str, str] | None = None,
-    ) -> None:
-        self.delegate = delegate
-        self.tool_name_map = dict(tool_name_map or {})
-        delegate_id = str(getattr(delegate, "provider_id", "appv2-env"))
-        self.provider_id = f"{delegate_id}-appv22-adapter"
+
+class AppV22NativeProvider:
+    """AppV2.2-native JSON provider using the appv2-env model transport."""
+
+    provider_id = "appv2-env-worker-appv22-native"
+
+    def __init__(self, *, client: Any) -> None:
+        self.client = client
 
     def decide(self, prompt: dict) -> RuntimeDecision:
-        delegate_prompt = _appv21_compatible_prompt(prompt)
-        raw_decision = self.delegate.decide(delegate_prompt)
-        decision = normalize_appv22_decision_payload(raw_decision, tool_name_map=self.tool_name_map)
-        return _coerce_appv22_progression(prompt, decision)
+        raw = self.client.complete_json(
+            stage="appv22_decision",
+            prompt=_appv22_decision_prompt(prompt),
+            schema=APPV22_DECISION_SCHEMA,
+        )
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return RuntimeDecision(
+                kind="compact",
+                reason="Model returned invalid JSON for AppV2.2 decision.",
+                payload={"error_type": "invalid_provider_json"},
+            )
+        if not isinstance(payload, dict):
+            return RuntimeDecision(
+                kind="pause",
+                reason="Model decision was not a JSON object.",
+                payload={"pause_type": "tool_blocked"},
+            )
+        return normalize_appv22_decision_payload(payload)
+
+    def usage_snapshot(self, *, reset: bool = False) -> dict[str, Any]:
+        usage_snapshot = getattr(self.client, "usage_snapshot", None)
+        if callable(usage_snapshot):
+            return usage_snapshot(reset=reset)
+        return {}
 
 
 def create_appv22_provider_from_appv2_env(
     dotenv_path: str | Path,
-    tool_name_map: Mapping[str, str] | None = None,
-) -> AppV2EnvAppV22ProviderAdapter:
-    """Create an AppV2.2 adapter around the AppV2.1 appv2-env provider."""
+) -> AppV22NativeProvider:
+    """Create an AppV2.2-native provider from the appv2-env model settings."""
 
     _ensure_local_appv21_import_path()
     try:
-        appv2_env = import_module("appv21.providers.appv2_env")
+        env_config = import_module("appv21.providers.env_config")
+        null_model = import_module("appv21.providers.null_model")
     except ImportError as exc:
         raise ImportError(
-            "AppV2.1 appv2-env provider is unavailable; ensure appv21 is importable "
-            "before creating the AppV2.2 adapter."
+            "AppV2.1 appv2-env transport is unavailable; ensure appv21 is importable "
+            "before creating the AppV2.2 native provider."
         ) from exc
 
-    delegate = appv2_env.create_appv21_provider_from_appv2_env(dotenv_path=dotenv_path)
-    return AppV2EnvAppV22ProviderAdapter(delegate, tool_name_map=tool_name_map)
+    client = env_config.build_appv21_model_client("APPV2_WORKER_LLM", dotenv_path=dotenv_path)
+    if client is None:
+        return null_model.NullModelProvider()
+    return AppV22NativeProvider(client=client)
+
+
+def _appv22_decision_prompt(prompt_payload: dict) -> str:
+    open_risks = _active_open_risk_lines(prompt_payload)
+    return "\n".join(
+        [
+            "You are the AppV2.2 Pi-Hermes coding agent decision engine.",
+            "Return only JSON matching the supplied schema. No markdown.",
+            "Use a Pi-style coding-agent loop: decide, call tools when needed, consume tool results, then stop when evidence proves completion.",
+            "Hermes dual context is active: summaries may compress prose, but exact evidence_refs and tool results are durable pointers.",
+            "Reason internally only. Never rely on a separate planning lane.",
+            "Use selected tools only. If exact facts are needed, request a read-only tool_call instead of trusting summaries.",
+            "If you say a tool is required, kind must be tool_call and payload must include tool_id plus arguments.",
+            "If world_refs or context_summary contain an exact durable ref, treat that observation as already done.",
+            "After denied/failed tool feedback, runtime guidance and context_summary.open_risks supersede earlier one-shot user or skill instructions that the feedback says already happened.",
+            "Use structured evidence_refs as authoritative and ignore partial/truncated world:// strings in prose.",
+            "Do not repeat broad observation tools just because raw payload was compacted; rehydrate only when missing raw details are necessary.",
+            "Use only selected tool calls for workspace changes; unsupported payload shapes are invalid.",
+            "If state.mode is ACT and any context_summary.open_risks says the next decision must be a tool_call, emit kind=tool_call for the named selected tool; finalize/pause/compact are invalid while that risk remains.",
+            "After successful action evidence, emit finalize or pause; do not repeat the same tool call.",
+            "Do not claim workspace changes unless tool results or verification receipts prove them.",
+            *open_risks,
+            json.dumps(prompt_payload, indent=2, sort_keys=True, default=str),
+        ]
+    )
+
+
+def _active_open_risk_lines(prompt_payload: dict) -> list[str]:
+    state = prompt_payload.get("state") if isinstance(prompt_payload, dict) else {}
+    if not isinstance(state, dict):
+        return []
+    summary = state.get("context_summary")
+    if not isinstance(summary, dict):
+        return []
+    risks = summary.get("open_risks")
+    if not isinstance(risks, list) or not risks:
+        return []
+    lines = ["CURRENT OPEN RISKS:"]
+    for risk in risks[-6:]:
+        if risk:
+            lines.append(f"- {str(risk)[:600]}")
+    return lines
 
 
 def _ensure_local_appv21_import_path() -> None:
@@ -76,25 +152,19 @@ def _discover_local_appv21_root(anchor: Path) -> Path | None:
     return None
 
 
-def normalize_appv22_decision_payload(
-    raw: Any,
-    tool_name_map: Mapping[str, str] | None = None,
-) -> RuntimeDecision:
-    """Normalize a raw AppV2/AppV2.1-style decision into an AppV2.2 decision."""
+def normalize_appv22_decision_payload(raw: Any) -> RuntimeDecision:
+    """Normalize a raw native AppV2.2 provider payload into a runtime decision."""
 
     raw_decision = _raw_decision_dict(raw)
     payload = raw_decision.get("payload") if isinstance(raw_decision.get("payload"), dict) else {}
     payload = deepcopy(payload)
-    _normalize_tool_payload(payload, tool_name_map=dict(tool_name_map or {}))
 
     kind = str(raw_decision.get("kind") or "pause")
-    if kind in {"observe", "read_file"}:
-        kind = "tool_call"
-    elif kind not in KNOWN_DECISION_KINDS:
+    if kind not in KNOWN_DECISION_KINDS:
         payload = {
-            "pause_type": "tool_blocked",
+            "pause_type": "unsupported_decision_kind_removed",
             "rejected_kind": raw_decision.get("kind"),
-            "rejection_reason": "unknown_decision_kind",
+            "rejection_reason": "Pi-style runtime accepts only model/tool/result loop decisions",
         }
         kind = "pause"
 
@@ -140,166 +210,3 @@ def _normalize_decision_id(raw_decision: Mapping[str, Any]) -> str:
     }
     encoded = json.dumps(stable_payload, sort_keys=True, default=str, separators=(",", ":"))
     return f"appv22-adapter-{sha256(encoded.encode('utf-8')).hexdigest()[:16]}"
-
-
-def _normalize_tool_payload(payload: dict[str, Any], *, tool_name_map: Mapping[str, str]) -> None:
-    if "params" in payload:
-        payload["params"] = deepcopy(payload["params"])
-
-    if "arguments" in payload:
-        payload["arguments"] = deepcopy(payload["arguments"])
-    elif "params" in payload:
-        payload["arguments"] = deepcopy(payload["params"])
-
-    if "tool_id" in payload:
-        return
-
-    tool_name = payload.get("tool_name", payload.get("tool"))
-    if tool_name is None:
-        return
-
-    tool_name = str(tool_name)
-    payload["tool_id"] = tool_name_map.get(tool_name, tool_name)
-    payload.setdefault("arguments", {})
-
-
-def _appv21_compatible_prompt(prompt: dict) -> dict:
-    adapted = deepcopy(prompt)
-    state = adapted.get("state")
-    if isinstance(state, dict):
-        runtime_plan = state.get("runtime_plan")
-        if isinstance(runtime_plan, dict) and runtime_plan:
-            state.setdefault("plan", {"runtime_plan": deepcopy(runtime_plan)})
-    return adapted
-
-
-def _coerce_appv22_progression(prompt: dict, decision: RuntimeDecision) -> RuntimeDecision:
-    if decision.kind == "tool_call":
-        selected_tools = _selected_tools(prompt)
-        payload = decision.payload if isinstance(decision.payload, dict) else {}
-        if not isinstance(payload.get("tool_id"), str):
-            if selected_tools:
-                return RuntimeDecision(
-                    kind="tool_call",
-                    reason="Resolve model context request to prompt-visible observation tool.",
-                    payload={"tool_id": selected_tools[0], "arguments": {}},
-                    evidence_refs=[],
-                )
-        satisfied_observation = _satisfied_observation_tool_call(prompt, decision)
-        if satisfied_observation is not None:
-            return satisfied_observation
-
-    if decision.kind != "plan":
-        return decision
-
-    selected_tools = _selected_tools(prompt)
-    observation_tool = _missing_observation_tool(prompt, selected_tools)
-    if observation_tool is not None:
-        return RuntimeDecision(
-            kind="tool_call",
-            reason="Observe prompt-visible context before planning.",
-            payload={"tool_id": observation_tool, "arguments": {}},
-            evidence_refs=[],
-        )
-
-    state = prompt.get("state") if isinstance(prompt.get("state"), dict) else {}
-    runtime_plan = state.get("runtime_plan") if isinstance(state, dict) else None
-    if isinstance(runtime_plan, dict) and runtime_plan:
-        return decision
-    return decision
-
-
-def _satisfied_observation_tool_call(prompt: dict, decision: RuntimeDecision) -> RuntimeDecision | None:
-    payload = decision.payload if isinstance(decision.payload, dict) else {}
-    tool_id = payload.get("tool_id")
-    if not isinstance(tool_id, str):
-        return None
-
-    contract_records = _observation_contract_records(prompt)
-    if not contract_records:
-        return None
-
-    evidence = ContextEvidence.from_prompt(prompt)
-    for contract, tool_ids in contract_records:
-        preferred_tool_id = contract.get("preferred_tool_id")
-        if preferred_tool_id != tool_id and tool_id not in tool_ids:
-            continue
-        if not _contract_satisfied(contract, evidence):
-            continue
-        return RuntimeDecision(
-            kind="plan",
-            reason="Observation evidence already exists; continue planning.",
-            payload={},
-            evidence_refs=list(evidence.refs),
-        )
-    return None
-
-
-def _world_refs(prompt: dict) -> list[Any]:
-    world = prompt.get("world") if isinstance(prompt.get("world"), dict) else {}
-    refs = world.get("world_refs") if isinstance(world, dict) else None
-    if isinstance(refs, dict):
-        return list(refs.values())
-    if isinstance(refs, list):
-        return refs
-    return []
-
-
-def _missing_observation_tool(prompt: dict, selected_tools: list[str]) -> str | None:
-    if not selected_tools:
-        return None
-
-    contract_records = _observation_contract_records(prompt)
-    if not contract_records:
-        return selected_tools[0] if not _world_refs(prompt) else None
-
-    selected_tool_ids = set(selected_tools)
-    evidence = ContextEvidence.from_prompt(prompt)
-    for contract, _tool_ids in contract_records:
-        if _contract_satisfied(contract, evidence):
-            continue
-        preferred_tool_id = contract.get("preferred_tool_id")
-        if isinstance(preferred_tool_id, str) and preferred_tool_id in selected_tool_ids:
-            return preferred_tool_id
-    return None
-
-
-def _observation_contract_records(prompt: dict) -> list[tuple[dict[str, Any], tuple[str, ...]]]:
-    skills = prompt.get("skills") if isinstance(prompt.get("skills"), list) else []
-    records: list[tuple[dict[str, Any], tuple[str, ...]]] = []
-    for skill in skills:
-        if not isinstance(skill, dict):
-            continue
-        contract = skill.get("observation_contract")
-        if isinstance(contract, dict):
-            records.append((contract, _contract_values(skill.get("tool_ids"))))
-    return records
-
-
-def _contract_satisfied(contract: Mapping[str, Any], evidence: ContextEvidence) -> bool:
-    evidence_refs = _contract_values(contract.get("evidence_refs"))
-    evidence_kinds = _contract_values(contract.get("evidence_kinds"))
-    if evidence_refs:
-        return evidence.has_any_ref(evidence_refs)
-    if evidence_kinds:
-        return evidence.has_any_kind(evidence_kinds)
-    return True
-
-
-def _contract_values(value: Any) -> tuple[str, ...]:
-    if isinstance(value, str):
-        return (value,)
-    if isinstance(value, (list, tuple, set)):
-        return tuple(str(item) for item in value if item)
-    return ()
-
-
-def _selected_tools(prompt: dict) -> list[str]:
-    selection = prompt.get("selection") if isinstance(prompt.get("selection"), dict) else {}
-    selected = selection.get("selected_tools") if isinstance(selection, dict) else None
-    if isinstance(selected, list):
-        return [str(tool_id) for tool_id in selected if tool_id]
-    tools = prompt.get("tools")
-    if isinstance(tools, list):
-        return [str(tool_id) for tool_id in tools if tool_id]
-    return []
