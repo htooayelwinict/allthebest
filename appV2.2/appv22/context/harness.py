@@ -9,6 +9,7 @@ from appv22.context.budget import estimate_chars
 from appv22.context.compressor import _compact_world_ref_payload
 from appv22.context.freshness import fresh_world_refs, stale_world_ref_ids
 from appv22.context.summary_hygiene import normalized_context_summary
+from appv22.context.summary_hygiene import strip_turn_local_operational_progress
 from appv22.state.models import AgentState
 
 
@@ -52,7 +53,7 @@ class ContextHarness:
             {
                 ref_id: ref
                 for ref_id, ref in fresh_world_refs(state, state.world_refs, definition_for=self._tool_definition).items()
-                if ref.get("kind") in selected_tool_ids
+                if ref.get("kind") in selected_tool_ids and self._world_ref_visible_for_prompt(state, ref)
             }
         )
         prompt["tool_definitions"] = self._selected_tool_definitions(prompt)
@@ -254,14 +255,12 @@ class ContextHarness:
                 if not isinstance(ref_id, str) or not isinstance(ref, dict):
                     continue
                 kind = ref.get("kind")
-                if isinstance(kind, str) and kind not in selected:
+                if isinstance(kind, str) and (
+                    kind not in selected or not self._world_ref_visible_for_prompt(state, ref)
+                ):
                     hidden_refs.add(ref_id)
                     hidden_kinds.add(kind)
-        normalized["progress"] = [
-            item
-            for item in normalized.get("progress", [])
-            if not _is_operational_progress(str(item))
-        ]
+        normalized = strip_turn_local_operational_progress(normalized)
         if not hidden_refs and not hidden_kinds:
             return normalized
         normalized["evidence_refs"] = [ref for ref in normalized.get("evidence_refs", []) if str(ref) not in hidden_refs]
@@ -296,6 +295,15 @@ class ContextHarness:
                 item["model_view"] = model_view.strip()[:2000]
             results.append(item)
         return results
+
+    def _world_ref_visible_for_prompt(self, state: AgentState, ref: dict[str, Any]) -> bool:
+        kind = ref.get("kind")
+        if not isinstance(kind, str):
+            return False
+        definition = self._tool_definition(kind)
+        if definition is None or definition.category != "act":
+            return True
+        return ref.get("request_id") == state.request.request_id
 
     def _context_metric(
         self,
@@ -362,14 +370,3 @@ class ContextHarness:
         if isinstance(value, tuple | list):
             return [self._mutable_json_like(item) for item in value]
         return value
-
-
-def _is_operational_progress(item: str) -> bool:
-    lowered = item.lower()
-    return lowered.startswith(
-        (
-            "observation already satisfied",
-            "observation evidence already exists",
-            "duplicate completed tool call suppressed",
-        )
-    )

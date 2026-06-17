@@ -127,3 +127,24 @@ class ExtensionRegistry:
             if isinstance(replacement, dict) and replacement:
                 current = replacement
         return current
+
+    def world_ref_has_usable_payload(
+        self,
+        extension_ids: tuple[str, ...],
+        state: AgentState,
+        world_ref: dict[str, Any],
+    ) -> bool | None:
+        for extension_id in extension_ids:
+            extension = self._extensions.get(extension_id)
+            if extension is None:
+                continue
+            hook = getattr(extension, "world_ref_has_usable_payload", None)
+            if not callable(hook):
+                continue
+            try:
+                result = hook(state, world_ref)
+            except Exception:  # noqa: BLE001 - extension hook details are not safe runtime context.
+                return False
+            if isinstance(result, bool):
+                return result
+        return None

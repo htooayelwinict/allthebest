@@ -6,7 +6,7 @@ import sys
 
 from appv22_ui.live import LiveEventBuffer, make_printing_event_sink
 from appv22_ui.renderers import create_renderer
-from appv22_ui.runtime_adapter import RuntimeAdapter, RuntimeAdapterConfig
+from appv22_ui.runtime_adapter import RuntimeAdapter, RuntimeAdapterConfig, create_ui_extensions
 from appv22_ui.session import SessionStore
 
 
@@ -16,7 +16,8 @@ def main(argv: list[str] | None = None) -> int:
     workspace = Path(args.workspace).expanduser().resolve()
     dotenv_path = Path(args.dotenv).expanduser().resolve()
     renderer = create_renderer(args.render)
-    store = SessionStore(workspace)
+    extensions = tuple(args.extension)
+    store = SessionStore(workspace, extensions=tuple(create_ui_extensions(extensions)))
 
     if args.command == "status":
         print(renderer.render(store.load()))
@@ -27,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace=workspace,
             dotenv_path=dotenv_path,
             max_turns=args.max_turns,
-            extensions=tuple(args.extension),
+            extensions=extensions,
         )
     )
 

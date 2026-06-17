@@ -3,7 +3,8 @@ from __future__ import annotations
 REPO_SNAPSHOT_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
-        "status": {"type": "string", "enum": ["completed"]},
+        "status": {"type": "string", "enum": ["completed", "denied", "failed"]},
+        "root": {"type": "string"},
         "files": {"type": "array", "items": {"type": "string"}},
         "directories": {"type": "array", "items": {"type": "string"}},
         "text_previews": {"type": "object"},
@@ -12,12 +13,92 @@ REPO_SNAPSHOT_OUTPUT_SCHEMA = {
     "required": ["status", "files", "directories", "errors"],
 }
 
+FIND_FILES_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["completed", "denied", "failed"]},
+        "root": {"type": "string"},
+        "matches": {"type": "array", "items": {"type": "string"}},
+        "errors": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "matches", "errors"],
+}
+
+SEARCH_TEXT_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["completed", "denied", "failed"]},
+        "root": {"type": "string"},
+        "matches": {"type": "array", "items": {"type": "object"}},
+        "errors": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "matches", "errors"],
+}
+
+READ_MANY_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["completed", "denied", "failed"]},
+        "files": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "bytes_read": {"type": "integer"},
+                    "line_count": {"type": "integer"},
+                    "truncated": {"type": "boolean"},
+                },
+            },
+        },
+        "errors": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "files", "errors"],
+}
+
+TREE_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["completed", "denied", "failed"]},
+        "root": {"type": "string"},
+        "entries": {"type": "array", "items": {"type": "string"}},
+        "errors": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "entries", "errors"],
+}
+
+GREP_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["completed", "denied", "failed"]},
+        "root": {"type": "string"},
+        "matches": {"type": "array", "items": {"type": "object"}},
+        "errors": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "matches", "errors"],
+}
+
+READ_RANGE_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["completed", "denied", "failed"]},
+        "path": {"type": "string"},
+        "start_line": {"type": "integer"},
+        "end_line": {"type": "integer"},
+        "content": {"type": "string"},
+        "errors": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "path", "content", "errors"],
+}
+
 READ_FILE_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
         "status": {"type": "string", "enum": ["completed", "denied", "failed"]},
         "path": {"type": "string"},
         "content": {"type": "string"},
+        "line_count": {"type": "integer"},
         "errors": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["status", "path", "content"],

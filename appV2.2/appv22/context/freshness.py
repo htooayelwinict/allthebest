@@ -10,7 +10,10 @@ def is_world_ref_fresh(state: AgentState, world_ref: dict[str, Any], definition:
     if freshness == "turn":
         return world_ref.get("request_id") == state.request.request_id and world_ref.get("run_id") == state.run_id
     if getattr(definition, "invalidated_by_mutation", False):
-        return world_ref.get("mutation_seq") == state.mutation_seq
+        ref_mutation_seq = world_ref.get("mutation_seq")
+        if not isinstance(ref_mutation_seq, int):
+            ref_mutation_seq = 0
+        return ref_mutation_seq == state.mutation_seq
     return True
 
 

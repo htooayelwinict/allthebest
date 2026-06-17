@@ -58,9 +58,12 @@ class ContextSelector:
 
     def _select_tools_for_turn(self, state: AgentState, tool_ids: list[str]) -> list[str]:
         unique_tool_ids = list(dict.fromkeys(tool_ids))
-        if self._has_repeated_completed_observe_result(state):
+        if not self._has_action_tool(unique_tool_ids) and self._has_repeated_completed_observe_result(state):
             return []
         return unique_tool_ids
+
+    def _has_action_tool(self, tool_ids: list[str]) -> bool:
+        return any(self._tool_category(tool_id) and self._tool_category(tool_id) != "observe" for tool_id in tool_ids)
 
     def _tool_category(self, tool_id: str) -> str:
         definition = None

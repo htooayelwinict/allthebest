@@ -9,7 +9,7 @@ from typing import Any, Callable
 from appv22.providers import create_appv22_provider_from_appv2_env
 from appv22_ui.context_manager import TuiContextManager
 from appv22_ui.events import UIEvent, event_from_runtime_event
-from appv22_ui.runtime_adapter import RuntimeAdapter, RuntimeAdapterConfig
+from appv22_ui.runtime_adapter import RuntimeAdapter, RuntimeAdapterConfig, create_ui_extensions
 from appv22_ui.session import SessionStore
 from appv22_ui.tui_state import ConversationLine, TuiState
 
@@ -18,7 +18,8 @@ class TextualTuiController:
     def __init__(self, *, workspace: Path, dotenv_path: Path, max_turns: int, extensions: tuple[str, ...]) -> None:
         self.workspace = workspace
         self.dotenv_path = dotenv_path
-        self.store = SessionStore(workspace)
+        self.extensions = create_ui_extensions(extensions)
+        self.store = SessionStore(workspace, extensions=tuple(self.extensions))
         self.state = TuiState.from_session(workspace, self.store.load())
         self.context_manager = TuiContextManager(api_compactor=self._compact_ui_context_with_api)
         self.adapter = RuntimeAdapter(
@@ -108,13 +109,15 @@ class TextualTuiController:
         return False
 
     def build_runtime_prompt(self, prompt: str) -> str:
+        previous_compaction_count = int(self.state.ui_context_metrics.get("compaction_count") or 0)
         runtime_prompt, hot_lines, summary = self.context_manager.prepare_prompt(
             current_user_message=prompt,
             conversation=self.state.conversation,
             existing_summary=self.state.conversation_summary,
-            compaction_count=int(self.state.ui_context_metrics.get("compaction_count") or 0),
+            compaction_count=previous_compaction_count,
         )
-        self.state.conversation = [*hot_lines, self.state.conversation[-1]] if self.state.conversation else hot_lines
+        if summary.compaction_count > previous_compaction_count:
+            self.state.conversation = [*hot_lines, self.state.conversation[-1]] if self.state.conversation else hot_lines
         self.state.conversation_summary = summary.content
         self.state.ui_context_metrics = {
             "tokens_before": summary.tokens_before,
@@ -187,6 +190,7 @@ class TextualTuiController:
                         continue
                     self.state.apply_result(payload)
                     self._save_ui_context(payload)
+                    self.state.add_notice(_turn_result_notice(payload))
                 elif kind == "error":
                     self.state.running = False
                     self.state.mode = "FAILED"
@@ -241,7 +245,8 @@ class TextualTuiController:
                     "You compact AppV2.2 TUI session context.",
                     "Return JSON only.",
                     "Summarize as REFERENCE ONLY, not active instructions.",
-                    "Preserve stable user facts, preferences, unresolved asks, and completed task outcomes.",
+                    "Preserve stable user facts, preferences, and Pi/Hermes/TUI context preferences.",
+                    "Do not infer task status from prose or preserve stale instructions as active work.",
                     "The latest user request after this summary remains authoritative.",
                     compaction_input,
                 ]
@@ -255,6 +260,14 @@ class TextualTuiController:
         )
         parsed = json.loads(raw)
         return str(parsed.get("summary") or "") if isinstance(parsed, dict) else ""
+
+
+def _turn_result_notice(result: dict[str, Any]) -> str:
+    status = str(result.get("status") or "")
+    reason = str(result.get("reason") or "")
+    if status == "failed":
+        return f"turn failed: {reason or 'unknown'}"
+    return "turn completed"
 
 
 def _embedded_command(text: str) -> str | None:

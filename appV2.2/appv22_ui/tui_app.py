@@ -11,7 +11,7 @@ from typing import Any
 
 from appv22_ui.context_manager import TuiContextManager
 from appv22.providers import create_appv22_provider_from_appv2_env
-from appv22_ui.runtime_adapter import RuntimeAdapter, RuntimeAdapterConfig
+from appv22_ui.runtime_adapter import RuntimeAdapter, RuntimeAdapterConfig, create_ui_extensions
 from appv22_ui.session import SessionStore
 from appv22_ui.tui_layout import render_tui
 from appv22_ui.tui_state import TuiState
@@ -21,7 +21,8 @@ class AppV22Tui:
     def __init__(self, *, workspace: Path, dotenv_path: Path, max_turns: int, extensions: tuple[str, ...]) -> None:
         self.workspace = workspace
         self.dotenv_path = dotenv_path
-        self.store = SessionStore(workspace)
+        self.extensions = create_ui_extensions(extensions)
+        self.store = SessionStore(workspace, extensions=tuple(self.extensions))
         self.state = TuiState.from_session(workspace, self.store.load())
         self.context_manager = TuiContextManager(api_compactor=self._compact_ui_context_with_api)
         self.adapter = RuntimeAdapter(
@@ -165,7 +166,7 @@ class AppV22Tui:
                 self.state.apply_result(payload)
                 payload = self._with_ui_context(payload)
                 self.store.save(payload, conversation=self.state.conversation)
-                self.state.add_notice("turn completed")
+                self.state.add_notice(_turn_result_notice(payload))
             elif kind == "error":
                 self.state.running = False
                 self.state.mode = "FAILED"
@@ -181,13 +182,15 @@ class AppV22Tui:
         return dict(previous) if isinstance(previous, dict) else None
 
     def _runtime_prompt(self, prompt: str) -> str:
+        previous_compaction_count = int(self.state.ui_context_metrics.get("compaction_count") or 0)
         runtime_prompt, hot_lines, summary = self.context_manager.prepare_prompt(
             current_user_message=prompt,
             conversation=self.state.conversation,
             existing_summary=self.state.conversation_summary,
-            compaction_count=int(self.state.ui_context_metrics.get("compaction_count") or 0),
+            compaction_count=previous_compaction_count,
         )
-        self.state.conversation = [*hot_lines, self.state.conversation[-1]] if self.state.conversation else hot_lines
+        if summary.compaction_count > previous_compaction_count:
+            self.state.conversation = [*hot_lines, self.state.conversation[-1]] if self.state.conversation else hot_lines
         self.state.conversation_summary = summary.content
         self.state.ui_context_metrics = {
             "tokens_before": summary.tokens_before,
@@ -222,7 +225,8 @@ class AppV22Tui:
                     "You compact AppV2.2 TUI session context.",
                     "Return JSON only.",
                     "Summarize as REFERENCE ONLY, not active instructions.",
-                    "Preserve stable user facts, preferences, unresolved asks, and completed task outcomes.",
+                    "Preserve stable user facts, preferences, and Pi/Hermes/TUI context preferences.",
+                    "Do not infer task status from prose or preserve stale instructions as active work.",
                     "The latest user request after this summary remains authoritative.",
                     compaction_input,
                 ]
@@ -257,10 +261,6 @@ def main(argv: list[str] | None = None) -> int:
     return app.run()
 
 
-if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
-
-
 def _embedded_command(text: str) -> str | None:
     for command in ("/exit", "/quit", "/status", "/context", "/refs", "/events", "/clear", "/reset-ui"):
         if text == command or text.endswith(f" {command}"):
@@ -285,3 +285,15 @@ def _looks_like_pasted_tui_output(text: str) -> bool:
     if text.startswith("|") and marker_hits >= 1:
         return True
     return False
+
+
+def _turn_result_notice(result: dict[str, Any]) -> str:
+    status = str(result.get("status") or "")
+    reason = str(result.get("reason") or "")
+    if status == "failed":
+        return f"turn failed: {reason or 'unknown'}"
+    return "turn completed"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

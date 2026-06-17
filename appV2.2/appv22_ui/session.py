@@ -9,6 +9,7 @@ from appv22.context.summary_hygiene import (
     normalized_context_summary,
     resolve_tool_risks_from_world_refs,
     strip_cross_turn_tool_availability_risks,
+    strip_turn_local_operational_progress,
     strip_turn_local_repair_risks,
 )
 
@@ -20,6 +21,7 @@ SESSION_FILE_NAME = "session.json"
 @dataclass(frozen=True)
 class SessionStore:
     workspace: Path
+    extensions: tuple[Any, ...] = ()
 
     @property
     def path(self) -> Path:
@@ -35,23 +37,31 @@ class SessionStore:
             return None
         if not isinstance(loaded, dict):
             return None
-        return _loaded_session_payload(loaded)
+        return _loaded_session_payload(loaded, extensions=self.extensions)
 
     def save(self, result: dict[str, Any], *, conversation: list[Any] | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
-            json.dumps(_session_payload(result, conversation=conversation), indent=2, sort_keys=True, default=str),
+            json.dumps(
+                _session_payload(result, conversation=conversation, extensions=self.extensions),
+                indent=2,
+                sort_keys=True,
+                default=str,
+            ),
             encoding="utf-8",
         )
 
 
-def _session_payload(result: dict[str, Any], *, conversation: list[Any] | None = None) -> dict[str, Any]:
+def _session_payload(
+    result: dict[str, Any], *, conversation: list[Any] | None = None, extensions: tuple[Any, ...] = ()
+) -> dict[str, Any]:
     world_refs = result.get("world_refs") if isinstance(result.get("world_refs"), dict) else {}
-    sanitized_world_refs = _sanitized_world_refs(world_refs)
+    sanitized_world_refs = _sanitized_world_refs(world_refs, extensions=extensions)
     context_summary = _sanitized_context_summary(
         result.get("context_summary") if isinstance(result.get("context_summary"), dict) else {},
         world_refs=sanitized_world_refs,
     )
+    events = _sanitized_events(result.get("events"))
     ui_context = result.get("ui_context") if isinstance(result.get("ui_context"), dict) else {}
     return {
         "session_id": str(result.get("session_id") or ""),
@@ -61,6 +71,7 @@ def _session_payload(result: dict[str, Any], *, conversation: list[Any] | None =
         "context_summary": context_summary,
         "turn_feedback": list(result.get("turn_feedback", [])) if isinstance(result.get("turn_feedback"), list) else [],
         "usage": dict(result.get("usage", {})) if isinstance(result.get("usage"), dict) else {},
+        "events": events,
         "ui_context": ui_context,
         "conversation": _conversation_payload(conversation),
         "last_result": {
@@ -72,20 +83,21 @@ def _session_payload(result: dict[str, Any], *, conversation: list[Any] | None =
             "turn_feedback": list(result.get("turn_feedback", [])) if isinstance(result.get("turn_feedback"), list) else [],
             "usage": dict(result.get("usage", {})) if isinstance(result.get("usage"), dict) else {},
             "assistant_message": str(result.get("assistant_message") or ""),
+            "events": events,
         },
     }
 
 
-def _loaded_session_payload(loaded: dict[str, Any]) -> dict[str, Any]:
+def _loaded_session_payload(loaded: dict[str, Any], *, extensions: tuple[Any, ...] = ()) -> dict[str, Any]:
     base = loaded.get("last_result") if isinstance(loaded.get("last_result"), dict) else loaded
-    payload = _session_payload(base, conversation=_loaded_conversation_lines(loaded.get("conversation")))
+    payload = _session_payload(base, conversation=_loaded_conversation_lines(loaded.get("conversation")), extensions=extensions)
     ui_context = loaded.get("ui_context")
     if isinstance(ui_context, dict):
         payload["ui_context"] = ui_context
     return payload
 
 
-def _sanitized_world_refs(world_refs: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _sanitized_world_refs(world_refs: dict[str, Any], *, extensions: tuple[Any, ...] = ()) -> dict[str, dict[str, Any]]:
     sanitized: dict[str, dict[str, Any]] = {}
     for ref_id, ref in world_refs.items():
         if not isinstance(ref_id, str) or not isinstance(ref, dict):
@@ -104,47 +116,34 @@ def _sanitized_world_refs(world_refs: dict[str, Any]) -> dict[str, dict[str, Any
             value = ref.get(key)
             if isinstance(value, str | int):
                 item[key] = value
-        payload = _sanitized_world_ref_payload(str(ref.get("kind") or ""), ref.get("payload"))
+        payload = _sanitized_world_ref_payload(str(ref.get("kind") or ""), ref.get("payload"), extensions=extensions)
         if payload:
             item["payload"] = payload
         sanitized[ref_id] = item
     return sanitized
 
 
-def _sanitized_world_ref_payload(kind: str, payload: Any) -> dict[str, Any]:
+def _sanitized_world_ref_payload(kind: str, payload: Any, *, extensions: tuple[Any, ...]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
-    if kind == "file_management.repo_snapshot":
-        item: dict[str, Any] = {}
-        files = payload.get("files")
-        directories = payload.get("directories")
-        if isinstance(files, list):
-            item["files"] = [str(path)[:240] for path in files[:600] if isinstance(path, str)]
-        if isinstance(directories, list):
-            item["directories"] = [str(path)[:240] for path in directories[:300] if isinstance(path, str)]
-        previews = payload.get("text_previews")
-        if isinstance(previews, dict):
-            item["text_previews"] = {
-                str(path)[:240]: str(text)[:700]
-                for path, text in list(previews.items())[:40]
-                if isinstance(path, str) and isinstance(text, str)
-            }
-        return item
-    if kind == "file_management.read_file":
-        content = payload.get("content")
-        path = payload.get("path")
-        item = {}
-        if isinstance(path, str):
-            item["path"] = path[:240]
-        if isinstance(content, str):
-            item["content"] = content[:12000]
-        return item
+    for extension in extensions:
+        hook = getattr(extension, "sanitize_world_ref_payload", None)
+        if not callable(hook):
+            continue
+        try:
+            sanitized = hook(kind, payload)
+        except Exception:  # noqa: BLE001 - persistence must not expose extension internals.
+            sanitized = {}
+        if isinstance(sanitized, dict) and sanitized:
+            return sanitized
     return {}
 
 
 def _sanitized_context_summary(summary: dict[str, Any], *, world_refs: dict[str, Any]) -> dict[str, Any]:
     normalized = resolve_tool_risks_from_world_refs(
-        strip_turn_local_repair_risks(strip_cross_turn_tool_availability_risks(summary)),
+        strip_turn_local_operational_progress(
+            strip_turn_local_repair_risks(strip_cross_turn_tool_availability_risks(summary))
+        ),
         world_refs,
     )
     normalized = normalized_context_summary(normalized)
@@ -153,6 +152,44 @@ def _sanitized_context_summary(summary: dict[str, Any], *, world_refs: dict[str,
         ref for ref in normalized.get("evidence_refs", []) if isinstance(ref, str) and ref in live_refs
     ]
     return normalized
+
+
+def _sanitized_events(events: Any) -> list[dict[str, Any]]:
+    if not isinstance(events, list):
+        return []
+    sanitized: list[dict[str, Any]] = []
+    for event in events[-80:]:
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("event_type") or event.get("type")
+        if not isinstance(event_type, str) or not event_type:
+            continue
+        payload = event.get("payload")
+        sanitized.append(
+            {
+                "event_type": event_type[:120],
+                "payload": _sanitized_event_value(payload, depth=0),
+            }
+        )
+    return sanitized
+
+
+def _sanitized_event_value(value: Any, *, depth: int) -> Any:
+    if depth >= 4:
+        return str(value)[:700]
+    if isinstance(value, str):
+        return value[:700]
+    if isinstance(value, bool | int | float) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key)[:120]: _sanitized_event_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:80]
+            if isinstance(key, str | int | float)
+        }
+    if isinstance(value, list):
+        return [_sanitized_event_value(item, depth=depth + 1) for item in value[:80]]
+    return str(value)[:700]
 
 
 def _conversation_payload(conversation: list[Any] | None) -> list[dict[str, str]]:
