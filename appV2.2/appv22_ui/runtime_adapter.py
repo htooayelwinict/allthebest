@@ -58,10 +58,14 @@ class RuntimeAdapter:
         )
 
     def _extensions(self) -> list[object]:
-        extensions: list[object] = []
-        for extension_id in self.config.extensions:
-            if extension_id == "file_management":
-                extensions.append(FileManagementExtension())
-            else:
-                raise ValueError(f"unsupported AppV22 UI extension: {extension_id}")
-        return extensions
+        return create_ui_extensions(self.config.extensions)
+
+
+def create_ui_extensions(extension_ids: tuple[str, ...]) -> list[object]:
+    extensions: list[object] = []
+    for extension_id in extension_ids:
+        if extension_id == "file_management":
+            extensions.append(FileManagementExtension())
+        else:
+            raise ValueError(f"unsupported AppV22 UI extension: {extension_id}")
+    return extensions

@@ -57,3 +57,9 @@ class RuntimeExtension(Protocol):
 
     def transform_tool_result(self, result: dict[str, Any]) -> dict[str, Any] | None:
         ...
+
+    def sanitize_world_ref_payload(self, kind: str, payload: Any) -> dict[str, Any]:
+        ...
+
+    def world_ref_has_usable_payload(self, state: AgentState, world_ref: dict[str, Any]) -> bool | None:
+        ...

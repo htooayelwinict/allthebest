@@ -69,6 +69,23 @@ def strip_turn_local_repair_risks(summary: Any) -> dict[str, list[Any]]:
     return normalized
 
 
+def strip_turn_local_operational_progress(summary: Any) -> dict[str, list[Any]]:
+    """Remove runtime optimization notes from durable task progress.
+
+    Duplicate suppression and observation reuse are current-turn execution
+    details. Hermes summaries may keep task progress as reference context, but
+    Pi action evidence for a new request must come from current-request tool
+    results, not from stale operational notes.
+    """
+    normalized = normalized_context_summary(summary)
+    normalized["progress"] = [
+        item
+        for item in normalized.get("progress", [])
+        if not (isinstance(item, str) and is_turn_local_operational_progress(item))
+    ]
+    return normalized
+
+
 def resolve_tool_risks_after_success(summary: Any, tool_id: str) -> dict[str, list[Any]]:
     """Demote same-tool failures from active blockers after later success.
 
@@ -165,6 +182,17 @@ def is_turn_local_repair_risk(risk: str) -> bool:
             "malformed_tool_call",
             "unsupported decision",
             "unsupported_decision",
+        )
+    )
+
+
+def is_turn_local_operational_progress(progress: str) -> bool:
+    lowered = progress.lower()
+    return lowered.startswith(
+        (
+            "observation already satisfied",
+            "observation evidence already exists",
+            "duplicate completed tool call suppressed",
         )
     )
 

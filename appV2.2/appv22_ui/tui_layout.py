@@ -141,8 +141,8 @@ def _display_risks(risks, progress) -> list[str]:
     if not risk_lines:
         return []
     progress_lines = [str(item) for item in progress] if isinstance(progress, list) else []
-    has_successful_observation = any("file_management.repo_snapshot" in item for item in progress_lines)
-    if not has_successful_observation:
+    has_progress = bool(progress_lines)
+    if not has_progress:
         return risk_lines
     stale_markers = ("inactive_tool:list_dir", "list_dir request was denied", "list_dir reported error")
     return [risk for risk in risk_lines if not any(marker in risk for marker in stale_markers)]

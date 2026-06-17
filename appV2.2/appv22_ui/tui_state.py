@@ -52,7 +52,9 @@ class TuiState:
                         and not _looks_like_pasted_tui_output(item["text"])
                     ):
                         state.conversation.append(ConversationLine(item["role"], item["text"]))
-            state.apply_result(session.get("last_result") if isinstance(session.get("last_result"), dict) else session)
+            result = session.get("last_result") if isinstance(session.get("last_result"), dict) else session
+            state.apply_result(result)
+            state.load_result_events(result)
         return state
 
     def add_user(self, text: str) -> None:
@@ -93,9 +95,21 @@ class TuiState:
         if isinstance(result, dict):
             message = result.get("assistant_message")
             if isinstance(message, str) and message.strip():
-                self.conversation.append(ConversationLine("assistant", message.strip()))
+                stripped = message.strip()
+                if not self.conversation or self.conversation[-1] != ConversationLine("assistant", stripped):
+                    self.conversation.append(ConversationLine("assistant", stripped))
         self.status = self.status or "completed"
         self.running = False
+
+    def load_result_events(self, result: dict[str, Any] | None) -> None:
+        if not isinstance(result, dict):
+            return
+        events = result.get("events")
+        if not isinstance(events, list):
+            return
+        for event in events[-80:]:
+            if isinstance(event, dict):
+                self.apply_event(event)
 
 
 def _looks_like_pasted_tui_output(text: str) -> bool:

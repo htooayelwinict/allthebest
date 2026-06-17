@@ -6,7 +6,19 @@ import tempfile
 import unittest
 
 from appv22.extensions.file_management.extension import FileManagementExtension
-from appv22.extensions.file_management.tools import mkdir, repo_snapshot, write_file
+from appv22.extensions.file_management.skills import CODE_SEARCH_SKILL
+from appv22.extensions.file_management.tools import (
+    find_files,
+    grep,
+    mkdir,
+    read_file,
+    read_many,
+    read_range,
+    repo_snapshot,
+    search_text,
+    tree,
+    write_file,
+)
 from appv22.context.freshness import is_world_ref_fresh
 from appv22.runtime.agent_loop import AppV22AgentRuntime
 from appv22.runtime.services import AppV22Services
@@ -39,6 +51,114 @@ class RuntimeProtectionTests(unittest.TestCase):
         self.assertNotIn("secrets", result["text_previews"])
         self.assertNotIn("linked.txt", result["text_previews"])
 
+    def test_repo_snapshot_respects_path_and_default_dependency_excludes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("print('hi')", encoding="utf-8")
+            (root / ".venv" / "lib").mkdir(parents=True)
+            (root / ".venv" / "lib" / "noise.py").write_text("noise", encoding="utf-8")
+
+            result = repo_snapshot({"path": "src"}, {"root_path": root})
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["root"], "src")
+        self.assertIn("src/app.py", result["files"])
+        self.assertFalse(any(path.startswith(".venv/") for path in result["files"]))
+        self.assertFalse(any(path.startswith(".venv/") for path in result["directories"]))
+
+    def test_find_search_and_read_many_support_code_scan_arsenal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("class BrowserBot:\n    pass\n", encoding="utf-8")
+            (root / "src" / "notes.md").write_text("BrowserBot notes\n", encoding="utf-8")
+
+            found = find_files({"path": "src", "patterns": ["*.py"]}, {"root_path": root})
+            searched = search_text({"path": "src", "query": "BrowserBot"}, {"root_path": root})
+            read = read_many({"paths": ["src/app.py", "src/notes.md"]}, {"root_path": root})
+
+        self.assertEqual(found["status"], "completed")
+        self.assertEqual(found["matches"], ["src/app.py"])
+        self.assertEqual(searched["status"], "completed")
+        self.assertEqual({item["path"] for item in searched["matches"]}, {"src/app.py", "src/notes.md"})
+        self.assertEqual(read["status"], "completed")
+        self.assertEqual([item["path"] for item in read["files"]], ["src/app.py", "src/notes.md"])
+
+    def test_read_file_and_read_many_expose_exact_line_counts_to_model_view(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src" / "agents").mkdir(parents=True)
+            content = (
+                "class FacebookSurferAgent:\n"
+                "    def __init__(self):\n"
+                "        self.name = \"facebook\"\n"
+                "\n"
+                "    def invoke(self, task):\n"
+                "        return task\n"
+                "\n"
+                "    def stream(self, task):\n"
+                "        yield task\n"
+            )
+            (root / "src" / "agents" / "facebook_surfer.py").write_text(content, encoding="utf-8")
+
+            single = read_file({"path": "src/agents/facebook_surfer.py"}, {"root_path": root})
+            many = read_many({"paths": ["src/agents/facebook_surfer.py"]}, {"root_path": root})
+
+        self.assertEqual(single["status"], "completed")
+        self.assertEqual(single["line_count"], 9)
+        self.assertEqual(many["files"][0]["line_count"], 9)
+
+        extension = FileManagementExtension()
+        single_view = extension.transform_tool_result(
+            {
+                "tool_id": "file_management.read_file",
+                "status": "completed",
+                "payload": single,
+            }
+        )
+        many_view = extension.transform_tool_result(
+            {
+                "tool_id": "file_management.read_many",
+                "status": "completed",
+                "payload": many,
+            }
+        )
+
+        self.assertIsNotNone(single_view)
+        self.assertIsNotNone(many_view)
+        self.assertIn("Line count: 9", single_view["model_view"])
+        self.assertIn("9 lines", many_view["model_view"])
+
+    def test_tree_grep_and_read_range_support_precise_code_navigation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src" / "agents").mkdir(parents=True)
+            (root / "src" / "agents" / "planner.py").write_text(
+                "class Planner:\n"
+                "    def plan(self):\n"
+                "        return 'ok'\n",
+                encoding="utf-8",
+            )
+            (root / ".venv" / "lib").mkdir(parents=True)
+            (root / ".venv" / "lib" / "noise.py").write_text("class Planner: pass\n", encoding="utf-8")
+
+            layout = tree({"path": "src", "max_depth": 4}, {"root_path": root})
+            matches = grep({"path": "src", "pattern": "def plan", "glob": "*.py"}, {"root_path": root})
+            sliced = read_range(
+                {"path": "src/agents/planner.py", "start_line": 1, "end_line": 2},
+                {"root_path": root},
+            )
+
+        self.assertEqual(layout["status"], "completed")
+        self.assertTrue(any("planner.py" in entry for entry in layout["entries"]))
+        self.assertFalse(any(".venv" in entry for entry in layout["entries"]))
+        self.assertEqual(matches["status"], "completed")
+        self.assertEqual(matches["matches"][0]["path"], "src/agents/planner.py")
+        self.assertEqual(sliced["status"], "completed")
+        self.assertIn("1: class Planner:", sliced["content"])
+        self.assertIn("2:     def plan(self):", sliced["content"])
+
     def test_exact_protected_names_are_denied_for_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -65,6 +185,57 @@ class RuntimeProtectionTests(unittest.TestCase):
             self.assertEqual(result["status"], "completed")
             self.assertTrue(result["overwritten"])
             self.assertEqual((root / "note.txt").read_text(encoding="utf-8"), "new")
+
+    def test_update_named_file_allows_overwrite_while_preserving_existing_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_math_utils.py").write_text("def test_double():\n    assert True\n", encoding="utf-8")
+            context = {
+                "root_path": root,
+                "request": {
+                    "user_goal": "Update tests/test_math_utils.py with a test for square(5) == 25. Preserve the existing tests.",
+                    "active_user_request": (
+                        "Update tests/test_math_utils.py with a test for square(5) == 25. Preserve the existing tests."
+                    ),
+                },
+            }
+
+            result = write_file(
+                {
+                    "path": "tests/test_math_utils.py",
+                    "content": "def test_double():\n    assert True\n\ndef test_square():\n    assert square(5) == 25\n",
+                },
+                context,
+            )
+
+            self.assertEqual(result["status"], "completed")
+            self.assertTrue(result["overwritten"])
+            self.assertIn("test_square", (root / "tests" / "test_math_utils.py").read_text(encoding="utf-8"))
+
+    def test_file_management_guidance_maps_bare_read_file_alias_to_namespaced_tool(self) -> None:
+        guidance = FileManagementExtension().tool_result_guidance(
+            {
+                "tool_id": "read_file",
+                "status": "denied",
+                "payload": {"errors": ["inactive_tool:read_file"]},
+            }
+        )
+
+        self.assertIn("file_management.read_file", guidance)
+        self.assertIn("read_file", guidance)
+
+    def test_file_management_guidance_maps_list_directory_alias_to_tree(self) -> None:
+        guidance = FileManagementExtension().tool_result_guidance(
+            {
+                "tool_id": "file_management.list_directory",
+                "status": "denied",
+                "payload": {"errors": ["inactive_tool:file_management.list_directory"]},
+            }
+        )
+
+        self.assertIn("file_management.tree", guidance)
+        self.assertIn("file_management.list_directory", guidance)
 
     def test_payload_ref_includes_arguments_to_avoid_semantic_collisions(self) -> None:
         registry = ToolRegistry()
@@ -220,6 +391,240 @@ class RuntimeProtectionTests(unittest.TestCase):
         self.assertIn("file_management.write_file", provider.prompt["selection"]["selected_tools"])
         self.assertIn("file_management.delete_file", provider.prompt["selection"]["selected_tools"])
 
+    def test_code_evidence_remains_visible_for_short_continuation_followup(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.continue_run(
+            {
+                "session_id": "sess_old",
+                "world_refs": {
+                    "world://file_management.read_file/facebook": {
+                        "kind": "file_management.read_file",
+                        "freshness": "stable",
+                        "arguments": {"path": "src/agents/facebook_surfer.py"},
+                        "payload": {
+                            "path": "src/agents/facebook_surfer.py",
+                            "content": "class FacebookSurferAgent:\n    pass\n",
+                        },
+                        "summary": "file_management.read_file result",
+                    }
+                },
+                "context_summary": {
+                    "progress": ["file_management.read_file: file_management.read_file result"],
+                    "evidence_refs": ["world://file_management.read_file/facebook"],
+                },
+            },
+            "and ?",
+            active_user_request="and ?",
+        )
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertIn("file_management.code_search", provider.prompt["selection"]["selected_skills"])
+        self.assertIn("file_management.read_file", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("world://file_management.read_file/facebook", provider.prompt["world"]["world_refs"])
+
+    def test_short_continuation_without_code_evidence_does_not_activate_file_tools(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.continue_run(
+            {
+                "session_id": "sess_old",
+                "world_refs": {},
+                "context_summary": {"progress": []},
+            },
+            "and ?",
+            active_user_request="and ?",
+        )
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertEqual(provider.prompt["selection"]["selected_skills"], [])
+        self.assertEqual(provider.prompt["selection"]["selected_tools"], [])
+
+    def test_referential_line_count_followup_keeps_prior_code_evidence_visible(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.continue_run(
+            {
+                "session_id": "sess_old",
+                "world_refs": {
+                    "world://file_management.read_file/facebook": {
+                        "kind": "file_management.read_file",
+                        "freshness": "stable",
+                        "arguments": {"path": "src/agents/facebook_surfer.py"},
+                        "payload": {
+                            "path": "src/agents/facebook_surfer.py",
+                            "content": "line one\nline two\nline three\n",
+                        },
+                        "summary": "file_management.read_file result",
+                    }
+                },
+                "context_summary": {
+                    "progress": ["file_management.read_file: file_management.read_file result"],
+                    "evidence_refs": ["world://file_management.read_file/facebook"],
+                },
+            },
+            "how many lines in that",
+            active_user_request="how many lines in that",
+        )
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertIn("file_management.code_search", provider.prompt["selection"]["selected_skills"])
+        self.assertIn("file_management.read_file", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("world://file_management.read_file/facebook", provider.prompt["world"]["world_refs"])
+
+    def test_retry_followup_keeps_prior_code_search_context_active(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.continue_run(
+            {
+                "session_id": "sess_old",
+                "world_refs": {
+                    "world://file_management.read_file/facebook": {
+                        "kind": "file_management.read_file",
+                        "freshness": "stable",
+                        "arguments": {"path": "src/agents/facebook_surfer.py"},
+                        "payload": {
+                            "path": "src/agents/facebook_surfer.py",
+                            "content": "class FacebookSurferAgent:\n    pass\n",
+                        },
+                        "summary": "file_management.read_file result",
+                    }
+                },
+                "context_summary": {
+                    "progress": ["file_management.read_file: file_management.read_file result"],
+                    "evidence_refs": ["world://file_management.read_file/facebook"],
+                },
+            },
+            "retry",
+            active_user_request="retry",
+        )
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertIn("file_management.code_search", provider.prompt["selection"]["selected_skills"])
+        self.assertIn("file_management.read_file", provider.prompt["selection"]["selected_tools"])
+
+    def test_referential_line_count_without_code_evidence_does_not_activate_file_tools(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.continue_run(
+            {
+                "session_id": "sess_old",
+                "world_refs": {},
+                "context_summary": {"progress": []},
+            },
+            "how many lines in that",
+            active_user_request="how many lines in that",
+        )
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertEqual(provider.prompt["selection"]["selected_skills"], [])
+        self.assertEqual(provider.prompt["selection"]["selected_tools"], [])
+
+    def test_scan_codebase_prompt_selects_repo_snapshot_tool(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.run("scan the codebase", active_user_request="scan the codebase")
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertIn("file_management.repo_snapshot", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.find_files", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.search_text", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.read_many", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.tree", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.grep", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.read_range", provider.prompt["selection"]["selected_tools"])
+
+    def test_code_file_explanation_prompt_selects_file_read_tools(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.run("explain me planner.py; full explanation", active_user_request="explain me planner.py; full explanation")
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertIn("file_management.grep", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.read_range", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.read_file", provider.prompt["selection"]["selected_tools"])
+        self.assertNotIn("file_management.read_many", provider.prompt["selection"]["selected_tools"])
+
+    def test_add_helper_prompt_selects_file_mutation_tools(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.run(
+            "Add a new triple(value: int) -> int helper to src/math_utils.py. Preserve double.",
+            active_user_request="Add a new triple(value: int) -> int helper to src/math_utils.py. Preserve double.",
+        )
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertIn("file_management.file_mutation", provider.prompt["selection"]["selected_skills"])
+        self.assertIn("file_management.write_file", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.read_file", provider.prompt["selection"]["selected_tools"])
+
+    def test_update_test_prompt_selects_file_mutation_tools(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.run(
+            "Update tests/test_math_utils.py with a test for triple(4) == 12.",
+            active_user_request="Update tests/test_math_utils.py with a test for triple(4) == 12.",
+        )
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertIn("file_management.file_mutation", provider.prompt["selection"]["selected_skills"])
+        self.assertIn("file_management.write_file", provider.prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.read_file", provider.prompt["selection"]["selected_tools"])
+
     def test_provider_prompt_requires_full_multistep_completion_before_finalizing(self) -> None:
         prompt = _appv22_decision_prompt(
             {
@@ -253,6 +658,43 @@ class RuntimeProtectionTests(unittest.TestCase):
         self.assertIn("LATEST TOOL RESULTS - HOT PI-STYLE CONTEXT", prompt)
         self.assertIn("alpha.txt", prompt)
         self.assertIn("kind must be finalize", prompt)
+
+    def test_provider_prompt_guides_vague_followups_and_missing_file_recovery(self) -> None:
+        prompt = _appv22_decision_prompt(
+            {
+                "agent": {"request": "next one is pii_redaction.py"},
+                "state": {
+                    "context_summary": {"blockers": []},
+                    "turn_feedback": [
+                        "file_management.read_file reported error: missing_file:src/pii_redaction.py"
+                    ],
+                    "latest_tool_results": [
+                        {
+                            "tool_id": "file_management.read_file",
+                            "status": "failed",
+                            "payload": {"errors": ["missing_file:src/pii_redaction.py"]},
+                        }
+                    ],
+                },
+                "selection": {
+                    "selected_tools": ["file_management.find_files", "file_management.read_file"],
+                },
+            }
+        )
+
+        self.assertIn("For vague follow-ups such as 'next one is X'", prompt)
+        self.assertIn("preserve the previous task shape", prompt)
+        self.assertIn("bare filename", prompt)
+        self.assertIn("file_management.find_files before file_management.read_file", prompt)
+        self.assertIn("missing_file", prompt)
+        self.assertIn("do not finalize with a tool-unavailable answer", prompt)
+
+    def test_file_management_skill_instructions_cover_bare_filename_followups(self) -> None:
+        instructions = " ".join(CODE_SEARCH_SKILL.instructions)
+
+        self.assertIn("bare filename", instructions)
+        self.assertIn("next one is", instructions)
+        self.assertIn("file_management.find_files before file_management.read_file", instructions)
 
     def test_runtime_emits_context_window_and_prompt_token_metrics(self) -> None:
         provider = _CaptureProvider()
@@ -356,7 +798,369 @@ class RuntimeProtectionTests(unittest.TestCase):
             [item["tool_id"] for item in result["tool_results"]],
             ["file_management.repo_snapshot", "file_management.repo_snapshot"],
         )
-        self.assertEqual(provider.kinds, ["tool_call", "tool_call"])
+
+    def test_action_request_cannot_finalize_after_only_observe_evidence(self) -> None:
+        provider = _SequenceProvider(
+            [
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.read_file",
+                        "arguments": {"path": "tests/test_math_utils.py"},
+                    },
+                },
+                {
+                    "kind": "finalize",
+                    "payload": {
+                        "message": (
+                            "tests/test_math_utils.py:\n"
+                            "from src.math_utils import double\n\n"
+                            "def test_double():\n"
+                            "    assert double(3) == 6"
+                        )
+                    },
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_math_utils.py").write_text(
+                "from src.math_utils import double\n\n"
+                "def test_double():\n"
+                "    assert double(3) == 6\n",
+                encoding="utf-8",
+            )
+            services = create_appv22_services(
+                root_path=root,
+                provider=provider,
+                extensions=[FileManagementExtension()],
+            )
+            runtime = AppV22AgentRuntime(root_path=root, services=services, max_turns=2)
+
+            result = runtime.run(
+                "Update tests/test_math_utils.py with a test for triple(4) == 12.",
+                active_user_request="Update tests/test_math_utils.py with a test for triple(4) == 12.",
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "max_turns_exceeded")
+        self.assertIn("file_management.read_file", [item["tool_id"] for item in result["tool_results"]])
+        self.assertTrue(
+            any("action tool" in feedback and "finalize" in feedback for feedback in result["turn_feedback"]),
+            result["turn_feedback"],
+        )
+
+    def test_action_request_cannot_pause_complete_from_stale_action_evidence(self) -> None:
+        provider = _SequenceProvider([{"kind": "pause", "payload": {"pause_type": "tool_blocked"}}])
+        previous_result = {
+            "session_id": "sess_old",
+            "world_refs": {
+                "world://file_management.write_file/old": {
+                    "kind": "file_management.write_file",
+                    "arguments": {"path": "src/math_utils.py", "content": "old", "overwrite": True},
+                    "payload": {"path": "src/math_utils.py", "bytes_written": 3},
+                    "summary": "file_management.write_file result",
+                    "request_id": "req_old",
+                    "run_id": "run_old",
+                    "freshness": "stable",
+                }
+            },
+            "context_summary": {
+                "progress": ["file_management.write_file: file_management.write_file result"],
+                "evidence_refs": ["world://file_management.write_file/old"],
+            },
+        }
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        result = runtime.continue_run(
+            previous_result,
+            "Update tests/test_math_utils.py with a test for triple(4) == 12.",
+            active_user_request="Update tests/test_math_utils.py with a test for triple(4) == 12.",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "max_turns_exceeded")
+        self.assertTrue(any("Pause is premature" in feedback for feedback in result["turn_feedback"]))
+
+    def test_action_request_exhaustion_reports_missing_current_action_evidence(self) -> None:
+        provider = _SequenceProvider(
+            [
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.read_file",
+                        "arguments": {"path": "src/math_utils.py"},
+                    },
+                },
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.read_file",
+                        "arguments": {"path": "src/math_utils.py"},
+                    },
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "math_utils.py").write_text("def double(x):\n    return x * 2\n", encoding="utf-8")
+            services = create_appv22_services(
+                root_path=root,
+                provider=provider,
+                extensions=[FileManagementExtension()],
+            )
+            runtime = AppV22AgentRuntime(root_path=root, services=services, max_turns=2)
+
+            result = runtime.run(
+                "Add negate(x) to src/math_utils.py.",
+                active_user_request="Add negate(x) to src/math_utils.py.",
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "max_turns_exceeded")
+        self.assertTrue(any("current action evidence" in feedback for feedback in result["turn_feedback"]))
+        self.assertIn("current action evidence", result["assistant_message"])
+
+    def test_repeated_observe_in_action_request_guides_to_action_without_reexecuting(self) -> None:
+        updated_source = (
+            "def word_count(text):\n"
+            "    return len(text.split())\n\n\n"
+            "def character_count(text):\n"
+            "    return len(text)\n"
+        )
+        provider = _SequenceProvider(
+            [
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.read_file",
+                        "arguments": {"path": "src/text_metrics.py"},
+                    },
+                },
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.read_file",
+                        "arguments": {"path": "src/text_metrics.py"},
+                    },
+                },
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.write_file",
+                        "arguments": {"path": "src/text_metrics.py", "content": updated_source, "overwrite": True},
+                    },
+                },
+                {"kind": "finalize", "payload": {"message": "character_count added"}},
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "text_metrics.py").write_text(
+                "def word_count(text):\n    return len(text.split())\n",
+                encoding="utf-8",
+            )
+            services = create_appv22_services(
+                root_path=root,
+                provider=provider,
+                extensions=[FileManagementExtension()],
+            )
+            runtime = AppV22AgentRuntime(root_path=root, services=services, max_turns=4)
+
+            result = runtime.run(
+                "Add character_count(text) to src/text_metrics.py.",
+                active_user_request="Add character_count(text) to src/text_metrics.py.",
+            )
+
+            written = (root / "src" / "text_metrics.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("def character_count", written)
+        self.assertEqual(
+            [item["tool_id"] for item in result["tool_results"]],
+            ["file_management.read_file", "file_management.write_file"],
+        )
+        self.assertTrue(any("Repeated observe evidence" in feedback for feedback in result["turn_feedback"]))
+
+    def test_action_request_exhaustion_reports_partial_current_action_evidence(self) -> None:
+        updated_source = "def double(x):\n    return x * 2\n\n\ndef negate(x):\n    return -x\n"
+        provider = _SequenceProvider(
+            [
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.write_file",
+                        "arguments": {"path": "src/math_utils.py", "content": updated_source, "overwrite": True},
+                    },
+                },
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.read_file",
+                        "arguments": {"path": "tests/test_math_utils.py"},
+                    },
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            (root / "src" / "math_utils.py").write_text("def double(x):\n    return x * 2\n", encoding="utf-8")
+            (root / "tests" / "test_math_utils.py").write_text("from src.math_utils import double\n", encoding="utf-8")
+            services = create_appv22_services(
+                root_path=root,
+                provider=provider,
+                extensions=[FileManagementExtension()],
+            )
+            runtime = AppV22AgentRuntime(root_path=root, services=services, max_turns=2)
+
+            result = runtime.run(
+                "Add negate(x) to src/math_utils.py and update tests/test_math_utils.py for negate.",
+                active_user_request="Add negate(x) to src/math_utils.py and update tests/test_math_utils.py for negate.",
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["reason"], "max_turns_exceeded")
+        self.assertTrue(any("partial current action evidence" in feedback for feedback in result["turn_feedback"]))
+        self.assertIn("partial current action evidence", result["assistant_message"])
+        self.assertTrue(
+            any(ref.get("arguments", {}).get("path") == "src/math_utils.py" for ref in result["world_refs"].values())
+        )
+
+    def test_stale_duplicate_action_evidence_does_not_complete_new_mutation_request(self) -> None:
+        old_content = (
+            "def double(x):\n"
+            "    return x * 2\n\n"
+            "def triple(x):\n"
+            "    return x * 3\n"
+        )
+        new_content = old_content + "\n\ndef negate(x):\n    return -x\n"
+        provider = _SequenceProvider(
+            [
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.write_file",
+                        "arguments": {"path": "src/math_utils.py", "content": old_content, "overwrite": True},
+                    },
+                },
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "file_management.write_file",
+                        "arguments": {"path": "src/math_utils.py", "content": new_content, "overwrite": True},
+                    },
+                },
+                {"kind": "finalize", "payload": {"assistant_message": "negate added"}},
+            ]
+        )
+        previous_result = {
+            "session_id": "sess_old",
+            "world_refs": {
+                "world://file_management.write_file/old": {
+                    "kind": "file_management.write_file",
+                    "arguments": {"path": "src/math_utils.py", "content": old_content, "overwrite": True},
+                    "payload": {"path": "src/math_utils.py", "bytes_written": len(old_content)},
+                    "summary": "file_management.write_file result",
+                    "request_id": "req_old",
+                    "run_id": "run_old",
+                    "freshness": "stable",
+                }
+            },
+            "context_summary": {
+                "progress": ["file_management.write_file: file_management.write_file result"],
+                "evidence_refs": ["world://file_management.write_file/old"],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "math_utils.py").write_text(old_content, encoding="utf-8")
+            services = create_appv22_services(
+                root_path=root,
+                provider=provider,
+                extensions=[FileManagementExtension()],
+            )
+            runtime = AppV22AgentRuntime(root_path=root, services=services, max_turns=3)
+
+            result = runtime.continue_run(
+                previous_result,
+                "Add negate(x) to math_utils and add pytest coverage for positive, negative, and zero values.",
+                active_user_request="Add negate(x) to math_utils and add pytest coverage for positive, negative, and zero values.",
+            )
+
+            written = (root / "src" / "math_utils.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIn("def negate", written)
+        self.assertTrue(any("stale action evidence" in feedback for feedback in result["turn_feedback"]))
+        self.assertFalse(
+            any(
+                "Duplicate completed tool call suppressed" in progress
+                for progress in result["context_summary"].get("progress", [])
+            )
+        )
+
+    def test_action_request_pause_repairs_into_selected_action_tool_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "math_utils.py").write_text(
+                "def double(value: int) -> int:\n"
+                "    return value * 2\n\n"
+                "def triple(value: int) -> int:\n"
+                "    return value * 3\n",
+                encoding="utf-8",
+            )
+            updated = (
+                "def double(value: int) -> int:\n"
+                "    return value * 2\n\n"
+                "def triple(value: int) -> int:\n"
+                "    return value * 3\n\n"
+                "def square(value: int) -> int:\n"
+                "    return value * value\n"
+            )
+            provider = _SequenceProvider(
+                [
+                    {"kind": "pause", "payload": {"pause_type": "tool_blocked"}},
+                    {
+                        "kind": "tool_call",
+                        "payload": {
+                            "tool_id": "file_management.write_file",
+                            "arguments": {"path": "src/math_utils.py", "content": updated, "overwrite": True},
+                        },
+                    },
+                    {"kind": "finalize", "payload": {"message": "Added square."}},
+                ]
+            )
+            services = create_appv22_services(
+                root_path=root,
+                provider=provider,
+                extensions=[FileManagementExtension()],
+            )
+            runtime = AppV22AgentRuntime(root_path=root, services=services, max_turns=3)
+
+            result = runtime.run(
+                "Add a square(value: int) -> int helper to src/math_utils.py. Preserve the existing helpers.",
+                active_user_request=(
+                    "Add a square(value: int) -> int helper to src/math_utils.py. Preserve the existing helpers."
+                ),
+            )
+            final_content = (root / "src" / "math_utils.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(provider.kinds, ["pause", "tool_call", "finalize"])
+        self.assertIn("def square(value: int) -> int:", final_content)
+        self.assertTrue(any("pause" in feedback.lower() for feedback in result["turn_feedback"]))
 
     def test_context_harness_promotes_latest_tool_results_as_hot_lane(self) -> None:
         services = create_appv22_services(
@@ -465,6 +1269,101 @@ class RuntimeProtectionTests(unittest.TestCase):
         self.assertEqual(packet.provider_prompt["tools"], [])
         self.assertEqual(packet.provider_prompt["state"]["latest_tool_results"][-1]["payload"]["files"], ["alpha.txt"])
 
+    def test_repeated_observe_does_not_close_action_tool_surface(self) -> None:
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=_CaptureProvider(),
+            extensions=[FileManagementExtension()],
+        )
+        state = AgentState(
+            "sess_test",
+            "run_test",
+            RequestEnvelope(
+                "req_test",
+                "Update tests/test_math_utils.py with a test for triple(4) == 12.",
+                ".",
+                active_user_request="Update tests/test_math_utils.py with a test for triple(4) == 12.",
+            ),
+        )
+        for index in range(2):
+            state.tool_results[f"toolres_{index + 1:06d}"] = {
+                "tool_result_id": f"toolres_{index + 1:06d}",
+                "tool_id": "file_management.read_file",
+                "status": "completed",
+                "arguments": {"path": "tests/test_math_utils.py"},
+                "payload": {"path": "tests/test_math_utils.py", "content": "from src.math_utils import double\n"},
+                "evidence_refs": [f"world://file_management.read_file/current{index}"],
+            }
+        resolved = services.extension_registry.resolve_active(state)
+
+        packet = services.context_harness.prepare_turn(state, resolved)
+
+        self.assertIn("file_management.file_mutation", packet.provider_prompt["selection"]["selected_skills"])
+        self.assertIn("file_management.write_file", packet.provider_prompt["selection"]["selected_tools"])
+        self.assertIn("file_management.read_file", packet.provider_prompt["selection"]["selected_tools"])
+
+    def test_context_harness_hides_prior_request_action_refs_for_new_mutation_prompt(self) -> None:
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=_CaptureProvider(),
+            extensions=[FileManagementExtension()],
+        )
+        state = AgentState(
+            "sess_test",
+            "run_new",
+            RequestEnvelope(
+                "req_new",
+                "Add negate(x) to src/math_utils.py and update tests.",
+                ".",
+                active_user_request="Add negate(x) to src/math_utils.py and update tests.",
+            ),
+        )
+        state.world_refs = {
+            "world://file_management.write_file/old": {
+                "kind": "file_management.write_file",
+                "arguments": {"path": "src/math_utils.py", "content": "def square(x):\n    return x * x\n"},
+                "summary": "file_management.write_file result",
+                "payload": {"path": "src/math_utils.py", "bytes_written": 32},
+                "request_id": "req_old",
+                "run_id": "run_old",
+                "freshness": "stable",
+                "mutation_seq": 1,
+            },
+            "world://file_management.read_file/current": {
+                "kind": "file_management.read_file",
+                "arguments": {"path": "src/math_utils.py"},
+                "summary": "file_management.read_file result",
+                "payload": {"path": "src/math_utils.py", "content": "def square(x):\n    return x * x\n"},
+                "request_id": "req_old",
+                "run_id": "run_old",
+                "freshness": "stable",
+                "mutation_seq": 1,
+            },
+        }
+        state.mutation_seq = 1
+        state.context_summary = {
+            "progress": [
+                "file_management.write_file: file_management.write_file result",
+                "file_management.read_file: file_management.read_file result",
+            ],
+            "evidence_refs": [
+                "world://file_management.write_file/old",
+                "world://file_management.read_file/current",
+            ],
+        }
+        resolved = services.extension_registry.resolve_active(state)
+
+        packet = services.context_harness.prepare_turn(state, resolved)
+
+        self.assertIn("file_management.write_file", packet.provider_prompt["selection"]["selected_tools"])
+        self.assertNotIn("world://file_management.write_file/old", packet.provider_prompt["world"]["world_refs"])
+        self.assertIn("world://file_management.read_file/current", packet.provider_prompt["world"]["world_refs"])
+        summary = packet.provider_prompt["state"]["context_summary"]
+        self.assertNotIn("world://file_management.write_file/old", summary["evidence_refs"])
+        self.assertIn("world://file_management.read_file/current", summary["evidence_refs"])
+        self.assertNotIn("file_management.write_file: file_management.write_file result", summary["progress"])
+        self.assertIn("file_management.read_file: file_management.read_file result", summary["progress"])
+
     def test_continue_run_resolves_blockers_from_existing_world_refs_before_prompt(self) -> None:
         provider = _CaptureProvider()
         services = create_appv22_services(
@@ -491,8 +1390,8 @@ class RuntimeProtectionTests(unittest.TestCase):
                     "progress": ["file_management.read_file: file_management.read_file result"],
                 },
             },
-            "list files",
-            active_user_request="list files",
+            "read note.txt",
+            active_user_request="read note.txt",
         )
 
         self.assertIsNotNone(provider.prompt)
@@ -581,6 +1480,169 @@ class RuntimeProtectionTests(unittest.TestCase):
 
         self.assertFalse(exists)
 
+    def test_read_file_evidence_is_stale_after_workspace_mutation(self) -> None:
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=_CaptureProvider(),
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services)
+        state = AgentState(
+            "sess_test",
+            "run_test",
+            RequestEnvelope(
+                "req_test",
+                "Please inspect tests/test_math_utils.py and tell me what behavior it now covers.",
+                ".",
+                active_user_request="Please inspect tests/test_math_utils.py and tell me what behavior it now covers.",
+            ),
+        )
+        state.mutation_seq = 1
+        state.world_refs = {
+            "world://file_management.read_file/stale": {
+                "kind": "file_management.read_file",
+                "arguments": {"path": "tests/test_math_utils.py"},
+                "summary": "file_management.read_file result",
+                "payload": {
+                    "path": "tests/test_math_utils.py",
+                    "content": "from src.math_utils import double\n",
+                    "line_count": 1,
+                },
+                "mutation_seq": 0,
+            }
+        }
+        resolved = services.extension_registry.resolve_active(state)
+        state.active_extension_ids = list(resolved.extension_ids)
+
+        self.assertFalse(runtime._observation_contract_satisfied(state, resolved))
+        self.assertFalse(
+            runtime._tool_call_evidence_already_exists(
+                state,
+                "file_management.read_file",
+                {"path": "tests/test_math_utils.py"},
+            )
+        )
+
+    def test_continue_run_restores_mutation_sequence_from_persisted_world_refs(self) -> None:
+        provider = _CaptureProvider()
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=1)
+
+        runtime.continue_run(
+            {
+                "session_id": "sess_old",
+                "world_refs": {
+                    "world://file_management.read_file/before": {
+                        "kind": "file_management.read_file",
+                        "arguments": {"path": "src/math_utils.py"},
+                        "payload": {"path": "src/math_utils.py", "content": "def double(value):\n    return value * 2\n"},
+                        "summary": "file_management.read_file result",
+                        "mutation_seq": 0,
+                    },
+                    "world://file_management.write_file/after": {
+                        "kind": "file_management.write_file",
+                        "arguments": {"path": "src/math_utils.py"},
+                        "payload": {"path": "src/math_utils.py", "bytes_written": 90},
+                        "summary": "file_management.write_file result",
+                        "mutation_seq": 1,
+                    },
+                },
+                "context_summary": {
+                    "progress": [
+                        "file_management.read_file: file_management.read_file result",
+                        "file_management.write_file: file_management.write_file result",
+                    ],
+                    "evidence_refs": [
+                        "world://file_management.read_file/before",
+                        "world://file_management.write_file/after",
+                    ],
+                },
+            },
+            "how many lines are in that file now",
+            active_user_request="how many lines are in that file now",
+        )
+
+        self.assertIsNotNone(provider.prompt)
+        self.assertNotIn("world://file_management.read_file/before", provider.prompt["world"]["world_refs"])
+
+    def test_clipped_read_file_evidence_without_line_count_does_not_satisfy_line_count_followup(self) -> None:
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=_CaptureProvider(),
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services)
+        state = AgentState(
+            "sess_test",
+            "run_test",
+            RequestEnvelope("req_test", "how many lines in that", ".", active_user_request="how many lines in that"),
+        )
+        state.world_refs = {
+            "world://file_management.read_file/clipped": {
+                "kind": "file_management.read_file",
+                "arguments": {"path": "src/agents/facebook_surfer.py"},
+                "summary": "file_management.read_file result",
+                "payload": {
+                    "path": "src/agents/facebook_surfer.py",
+                    "content": "x" * 12000,
+                    "content_truncated_by_session": True,
+                },
+            }
+        }
+        resolved = services.extension_registry.resolve_active(state)
+        state.active_extension_ids = list(resolved.extension_ids)
+
+        self.assertIn("file_management.code_search", [card.skill_id for card in resolved.skill_cards])
+        self.assertFalse(runtime._observation_contract_satisfied(state, resolved))
+        self.assertFalse(
+            runtime._tool_call_evidence_already_exists(
+                state,
+                "file_management.read_file",
+                {"path": "src/agents/facebook_surfer.py"},
+            )
+        )
+
+    def test_clipped_read_file_evidence_with_line_count_satisfies_line_count_followup(self) -> None:
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=_CaptureProvider(),
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services)
+        state = AgentState(
+            "sess_test",
+            "run_test",
+            RequestEnvelope("req_test", "how many lines in that", ".", active_user_request="how many lines in that"),
+        )
+        state.world_refs = {
+            "world://file_management.read_file/clipped": {
+                "kind": "file_management.read_file",
+                "arguments": {"path": "src/agents/facebook_surfer.py"},
+                "summary": "file_management.read_file result",
+                "payload": {
+                    "path": "src/agents/facebook_surfer.py",
+                    "content": "x" * 12000,
+                    "content_truncated_by_session": True,
+                    "line_count": 828,
+                },
+            }
+        }
+        resolved = services.extension_registry.resolve_active(state)
+        state.active_extension_ids = list(resolved.extension_ids)
+
+        self.assertTrue(runtime._observation_contract_satisfied(state, resolved))
+        self.assertTrue(
+            runtime._tool_call_evidence_already_exists(
+                state,
+                "file_management.read_file",
+                {"path": "src/agents/facebook_surfer.py"},
+            )
+        )
+
     def test_turn_scoped_world_ref_is_not_fresh_across_requests(self) -> None:
         registry = ToolRegistry()
         definition = ToolDefinition(
@@ -623,7 +1685,7 @@ class RuntimeProtectionTests(unittest.TestCase):
             provider=_CaptureProvider(),
             extensions=[FileManagementExtension()],
         )
-        state = AgentState("sess_test", "run_new", RequestEnvelope("req_new", "list files", "."))
+        state = AgentState("sess_test", "run_new", RequestEnvelope("req_new", "read note.txt", "."))
         state.world_refs = {
             "world://file_management.repo_snapshot/stale": {
                 "kind": "file_management.repo_snapshot",
@@ -714,11 +1776,63 @@ class RuntimeProtectionTests(unittest.TestCase):
 
         runtime._handle_tool_call(state, decision, resolved)
 
-        self.assertEqual(state.context_summary["blockers"], [])
+        self.assertEqual(state.context_summary.get("blockers", []), [])
         self.assertIn(
             "Malformed tool_call decision was missing payload.tool_id; treated as turn-local provider repair feedback. Continue from selected tools or existing evidence.",
             state.turn_feedback,
         )
+
+    def test_inactive_directory_observe_denial_names_selected_file_tools(self) -> None:
+        provider = _SequenceProvider(
+            [
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "observe_directory",
+                        "arguments": {"path": "src"},
+                    },
+                },
+                {"kind": "finalize", "payload": {"assistant_message": "continued from prior evidence"}},
+            ]
+        )
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=2)
+
+        result = runtime.run("what's inside src", active_user_request="what's inside src")
+
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(any("observe_directory" in feedback for feedback in result["turn_feedback"]))
+        self.assertTrue(any("file_management.tree" in feedback for feedback in result["turn_feedback"]))
+        self.assertTrue(any("file_management.repo_snapshot" in feedback for feedback in result["turn_feedback"]))
+
+    def test_inactive_tool_denial_does_not_emit_duplicate_context_summary_updates(self) -> None:
+        provider = _SequenceProvider(
+            [
+                {
+                    "kind": "tool_call",
+                    "payload": {
+                        "tool_id": "observe_directory",
+                        "arguments": {"path": "src"},
+                    },
+                },
+                {"kind": "finalize", "payload": {"assistant_message": "continued from prior evidence"}},
+            ]
+        )
+        services = create_appv22_services(
+            root_path=Path("."),
+            provider=provider,
+            extensions=[FileManagementExtension()],
+        )
+        runtime = AppV22AgentRuntime(root_path=Path("."), services=services, max_turns=2)
+
+        result = runtime.run("what's inside src", active_user_request="what's inside src")
+
+        summary_update_count = sum(1 for event in result["events"] if event["event_type"] == "ContextSummaryUpdated")
+        self.assertLessEqual(summary_update_count, 1)
 
 
 def _unused_services() -> AppV22Services:

@@ -13,6 +13,7 @@ SUMMARY_PREFIX = (
     "not active instructions. The latest user request after this summary is authoritative. "
     "Do not resume completed historical tasks unless the latest request explicitly asks.\n"
 )
+EMPTY_FALLBACK_FACT = "Earlier UI conversation existed but contained no stable facts needed for future turns."
 
 
 @dataclass
@@ -103,8 +104,8 @@ class TuiContextManager:
 def _compaction_input(existing_summary: str, cold_lines: list[ConversationLine]) -> str:
     lines = [
         "Summarize this UI session as reference-only memory.",
-        "Preserve stable user facts, preferences, unresolved asks, and completed task outcomes.",
-        "Mark historical tasks as completed when they were completed. Do not preserve stale instructions as active work.",
+        "Preserve stable user facts, preferences, and Pi/Hermes/TUI context preferences.",
+        "Do not infer task status from prose. Do not preserve stale instructions as active work.",
     ]
     if existing_summary:
         lines.extend(["Existing summary:", existing_summary])
@@ -117,21 +118,44 @@ def _compaction_input(existing_summary: str, cold_lines: list[ConversationLine])
 
 def _fallback_summary(existing_summary: str, cold_lines: list[ConversationLine]) -> str:
     facts: list[str] = []
-    if existing_summary.strip():
-        facts.append(existing_summary.strip())
+    if (
+        existing_summary.strip()
+        and not _has_unsafe_active_claim(existing_summary)
+        and not _is_empty_fallback_summary(existing_summary)
+    ):
+        _extend_existing_summary_facts(facts, existing_summary)
     for item in cold_lines:
         text = _single_line(item.text)
         lowered = text.lower()
         name = _extract_name(text)
         if name:
             _append_unique(facts, f"User name: {name}.")
-        if "created" in lowered or "deleted" in lowered or "removed" in lowered or "completed" in lowered:
-            _append_unique(facts, f"Historical task outcome: {text[:220]}")
         if "pi" in lowered or "hermes" in lowered or "tui" in lowered or "context" in lowered:
             _append_unique(facts, f"User preference/context: {text[:220]}")
     if not facts:
-        facts.append("Earlier UI conversation existed but contained no stable facts needed for future turns.")
+        facts.append(EMPTY_FALLBACK_FACT)
     return "\n".join(f"- {fact}" for fact in facts[-20:])
+
+
+def _has_unsafe_active_claim(summary: str) -> bool:
+    lowered = summary.lower()
+    return any(marker in lowered for marker in ("unresolved", "not yet", "no changes have been made"))
+
+
+def _is_empty_fallback_summary(summary: str) -> bool:
+    normalized = _single_line(summary).strip()
+    while normalized.startswith("- "):
+        normalized = normalized[2:].strip()
+    return normalized == EMPTY_FALLBACK_FACT
+
+
+def _extend_existing_summary_facts(facts: list[str], summary: str) -> None:
+    for line in summary.splitlines():
+        fact = _single_line(line).strip()
+        while fact.startswith("- "):
+            fact = fact[2:].strip()
+        if fact:
+            _append_unique(facts, fact)
 
 
 def _extract_name(text: str) -> str:

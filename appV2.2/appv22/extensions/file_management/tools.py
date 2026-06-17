@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import fnmatch
+import os
 from pathlib import Path
 import re
 import shutil
@@ -8,21 +10,71 @@ from uuid import uuid4
 from appv22.extensions.file_management.schemas import (
     COPY_FILE_OUTPUT_SCHEMA,
     DELETE_FILE_OUTPUT_SCHEMA,
+    FIND_FILES_OUTPUT_SCHEMA,
+    GREP_OUTPUT_SCHEMA,
     MKDIR_OUTPUT_SCHEMA,
+    READ_MANY_OUTPUT_SCHEMA,
+    READ_RANGE_OUTPUT_SCHEMA,
     MOVE_FILE_OUTPUT_SCHEMA,
     READ_FILE_OUTPUT_SCHEMA,
     REPO_SNAPSHOT_OUTPUT_SCHEMA,
+    SEARCH_TEXT_OUTPUT_SCHEMA,
+    TREE_OUTPUT_SCHEMA,
     WRITE_FILE_OUTPUT_SCHEMA,
 )
 from appv22.tools.definitions import ToolDefinition
 
 _PROTECTED_PATH_PARTS = {".git", "secrets", "assets"}
-_SNAPSHOT_TEXT_SUFFIXES = {".md", ".txt", ".log", ".json", ".yaml", ".yml"}
+_DEFAULT_OBSERVE_EXCLUDES = (
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    "dist",
+    "build",
+    ".next",
+    ".turbo",
+    "coverage",
+    ".coverage",
+)
+_SNAPSHOT_TEXT_SUFFIXES = {
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".jsx",
+    ".log",
+    ".md",
+    ".py",
+    ".rs",
+    ".sh",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
 _SNAPSHOT_MAX_FILES = 600
 _SNAPSHOT_MAX_DIRECTORIES = 300
 _SNAPSHOT_MAX_PREVIEWS = 80
 _SNAPSHOT_PREVIEW_BYTES = 4096
 _SNAPSHOT_PREVIEW_CHARS = 700
+_FIND_MAX_RESULTS = 500
+_SEARCH_MAX_MATCHES = 120
+_READ_MANY_MAX_FILES = 12
+_READ_MANY_MAX_BYTES_PER_FILE = 24_000
+_READ_MANY_MAX_TOTAL_BYTES = 80_000
+_TREE_MAX_ENTRIES = 500
+_READ_RANGE_MAX_LINES = 240
+_READ_RANGE_MAX_CHARS = 40_000
 
 
 def register_file_management_tools(registry) -> None:
@@ -31,14 +83,158 @@ def register_file_management_tools(registry) -> None:
             "file_management.repo_snapshot",
             "observe",
             "low",
-            {"type": "object", "properties": {}},
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "exclude": {"type": "array", "items": {"type": "string"}},
+                    "include_globs": {"type": "array", "items": {"type": "string"}},
+                    "max_files": {"type": "integer"},
+                    "max_directories": {"type": "integer"},
+                },
+            },
             REPO_SNAPSHOT_OUTPUT_SCHEMA,
             "runtime_observed",
-            "List workspace files and directories relative to the root. Includes dotfiles, sorted paths, and clipped text previews for common text files.",
+            "List workspace files and directories under an optional relative path. Excludes dependency/build caches by default and returns clipped text previews for useful text/code files.",
             freshness="turn",
             invalidated_by_mutation=True,
         ),
         repo_snapshot,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.find_files",
+            "observe",
+            "low",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "patterns": {"type": "array", "items": {"type": "string"}},
+                    "exclude": {"type": "array", "items": {"type": "string"}},
+                    "max_results": {"type": "integer"},
+                },
+            },
+            FIND_FILES_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Find workspace files by glob/name patterns under an optional relative path. Use before reading many files in a code scan.",
+            freshness="turn",
+            invalidated_by_mutation=True,
+        ),
+        find_files,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.search_text",
+            "observe",
+            "low",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "path": {"type": "string"},
+                    "glob": {"type": "string"},
+                    "exclude": {"type": "array", "items": {"type": "string"}},
+                    "max_matches": {"type": "integer"},
+                },
+                "required": ["query"],
+            },
+            SEARCH_TEXT_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Search text/code files by literal query under an optional relative path. Returns bounded path/line/snippet matches.",
+            freshness="turn",
+            invalidated_by_mutation=True,
+        ),
+        search_text,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.read_many",
+            "observe",
+            "low",
+            {
+                "type": "object",
+                "properties": {
+                    "paths": {"type": "array", "items": {"type": "string"}},
+                    "max_bytes_per_file": {"type": "integer"},
+                    "max_total_bytes": {"type": "integer"},
+                },
+                "required": ["paths"],
+            },
+            READ_MANY_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Read several exact workspace text files with strict per-file and total byte limits. Use after find_files/repo_snapshot selects important files.",
+            invalidated_by_mutation=True,
+        ),
+        read_many,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.tree",
+            "observe",
+            "low",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "exclude": {"type": "array", "items": {"type": "string"}},
+                    "max_entries": {"type": "integer"},
+                    "max_depth": {"type": "integer"},
+                },
+            },
+            TREE_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Return a compact directory tree under an optional relative path. Use before grep/read_range to understand code layout without flooding context.",
+            freshness="turn",
+            invalidated_by_mutation=True,
+        ),
+        tree,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.grep",
+            "observe",
+            "low",
+            {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "path": {"type": "string"},
+                    "glob": {"type": "string"},
+                    "exclude": {"type": "array", "items": {"type": "string"}},
+                    "max_matches": {"type": "integer"},
+                    "regex": {"type": "boolean"},
+                },
+                "required": ["pattern"],
+            },
+            GREP_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Search text/code files by literal or regex pattern. Returns bounded path/line/snippet matches for code navigation.",
+            freshness="turn",
+            invalidated_by_mutation=True,
+        ),
+        grep,
+    )
+    registry.register(
+        ToolDefinition(
+            "file_management.read_range",
+            "observe",
+            "low",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                },
+                "required": ["path", "start_line", "end_line"],
+            },
+            READ_RANGE_OUTPUT_SCHEMA,
+            "runtime_observed",
+            "Read an exact bounded line range from one workspace text file. Prefer after grep/tree to inspect only relevant code slices.",
+            invalidated_by_mutation=True,
+        ),
+        read_range,
     )
     registry.register(
         ToolDefinition(
@@ -53,6 +249,7 @@ def register_file_management_tools(registry) -> None:
             READ_FILE_OUTPUT_SCHEMA,
             "runtime_observed",
             "Read exact text content from one workspace file by relative path.",
+            invalidated_by_mutation=True,
         ),
         read_file,
     )
@@ -153,16 +350,28 @@ def register_file_management_tools(registry) -> None:
 
 def repo_snapshot(_args: dict, context: dict) -> dict:
     root = Path(context["root_path"]).resolve()
+    start_result = _observe_start(root, str(_args.get("path") or ""))
+    if start_result.get("status") != "completed":
+        return {
+            "status": start_result["status"],
+            "root": start_result.get("path", ""),
+            "files": [],
+            "directories": [],
+            "text_previews": {},
+            "errors": start_result.get("errors", []),
+        }
+    start = start_result["absolute_path"]
+    scan_root = start_result["path"]
+    exclude_patterns = _observe_excludes(_args)
+    include_globs = _string_list(_args.get("include_globs"))
+    max_files = _positive_int(_args.get("max_files"), _SNAPSHOT_MAX_FILES, maximum=_SNAPSHOT_MAX_FILES)
+    max_directories = _positive_int(_args.get("max_directories"), _SNAPSHOT_MAX_DIRECTORIES, maximum=_SNAPSHOT_MAX_DIRECTORIES)
     files: list[str] = []
     directories: list[str] = []
     text_previews: dict[str, str] = {}
     errors: list[str] = []
-    for path in root.rglob("*"):
-        try:
-            relative = path.relative_to(root).as_posix()
-        except ValueError:
-            continue
-        if _protected_path(relative) or path.is_symlink():
+    for path, relative in _iter_workspace_paths(root, start, exclude_patterns=exclude_patterns):
+        if include_globs and path.is_file() and not _matches_any(relative, include_globs):
             continue
         try:
             is_file = path.is_file()
@@ -171,7 +380,7 @@ def repo_snapshot(_args: dict, context: dict) -> dict:
             errors.append(f"snapshot_stat_error:{relative}")
             continue
         if is_file:
-            if len(files) >= _SNAPSHOT_MAX_FILES:
+            if len(files) >= max_files:
                 errors.append("snapshot_file_limit_reached")
                 continue
             files.append(relative)
@@ -179,15 +388,350 @@ def repo_snapshot(_args: dict, context: dict) -> dict:
             if preview is not None and len(text_previews) < _SNAPSHOT_MAX_PREVIEWS:
                 text_previews[relative] = preview
         elif is_dir:
-            if len(directories) >= _SNAPSHOT_MAX_DIRECTORIES:
+            if len(directories) >= max_directories:
                 errors.append("snapshot_directory_limit_reached")
                 continue
             directories.append(relative)
     return {
         "status": "completed",
+        "root": scan_root,
         "files": sorted(files),
         "directories": sorted(directories),
         "text_previews": dict(sorted(text_previews.items())),
+        "errors": sorted(set(errors)),
+    }
+
+
+def find_files(args: dict, context: dict) -> dict:
+    root = Path(context["root_path"]).resolve()
+    start_result = _observe_start(root, str(args.get("path") or ""))
+    if start_result.get("status") != "completed":
+        return {
+            "status": start_result["status"],
+            "root": start_result.get("path", ""),
+            "matches": [],
+            "errors": start_result.get("errors", []),
+        }
+    patterns = _string_list(args.get("patterns")) or ["*"]
+    exclude_patterns = _observe_excludes(args)
+    max_results = _positive_int(args.get("max_results"), _FIND_MAX_RESULTS, maximum=_FIND_MAX_RESULTS)
+    matches: list[str] = []
+    errors: list[str] = []
+    for path, relative in _iter_workspace_paths(root, start_result["absolute_path"], exclude_patterns=exclude_patterns):
+        if not path.is_file():
+            continue
+        if _matches_any(relative, patterns) or _matches_any(Path(relative).name, patterns):
+            matches.append(relative)
+            if len(matches) >= max_results:
+                errors.append("find_files_limit_reached")
+                break
+    return {
+        "status": "completed",
+        "root": start_result["path"],
+        "matches": sorted(matches),
+        "errors": sorted(set(errors)),
+    }
+
+
+def search_text(args: dict, context: dict) -> dict:
+    root = Path(context["root_path"]).resolve()
+    query = str(args.get("query") or "")
+    if not query:
+        return {"status": "failed", "root": "", "matches": [], "errors": ["missing_query"]}
+    start_result = _observe_start(root, str(args.get("path") or ""))
+    if start_result.get("status") != "completed":
+        return {
+            "status": start_result["status"],
+            "root": start_result.get("path", ""),
+            "matches": [],
+            "errors": start_result.get("errors", []),
+        }
+    glob = str(args.get("glob") or "*")
+    exclude_patterns = _observe_excludes(args)
+    max_matches = _positive_int(args.get("max_matches"), _SEARCH_MAX_MATCHES, maximum=_SEARCH_MAX_MATCHES)
+    lowered_query = query.lower()
+    matches: list[dict] = []
+    errors: list[str] = []
+    for path, relative in _iter_workspace_paths(root, start_result["absolute_path"], exclude_patterns=exclude_patterns):
+        if not path.is_file() or not _matches_any(relative, (glob,)):
+            continue
+        if not _safe_text_file(path, max_bytes=1_000_000):
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if lowered_query in line.lower():
+                        matches.append(
+                            {
+                                "path": relative,
+                                "line": line_number,
+                                "snippet": line.strip()[:300],
+                            }
+                        )
+                        if len(matches) >= max_matches:
+                            errors.append("search_text_limit_reached")
+                            return {
+                                "status": "completed",
+                                "root": start_result["path"],
+                                "matches": matches,
+                                "errors": sorted(set(errors)),
+                            }
+        except OSError:
+            errors.append(f"search_read_error:{relative}")
+    return {
+        "status": "completed",
+        "root": start_result["path"],
+        "matches": matches,
+        "errors": sorted(set(errors)),
+    }
+
+
+def read_many(args: dict, context: dict) -> dict:
+    root = Path(context["root_path"]).resolve()
+    paths = _string_list(args.get("paths"))[:_READ_MANY_MAX_FILES]
+    max_bytes_per_file = _positive_int(
+        args.get("max_bytes_per_file"),
+        _READ_MANY_MAX_BYTES_PER_FILE,
+        maximum=_READ_MANY_MAX_BYTES_PER_FILE,
+    )
+    max_total_bytes = _positive_int(
+        args.get("max_total_bytes"),
+        _READ_MANY_MAX_TOTAL_BYTES,
+        maximum=_READ_MANY_MAX_TOTAL_BYTES,
+    )
+    files: list[dict] = []
+    errors: list[str] = []
+    total_bytes = 0
+    if len(_string_list(args.get("paths"))) > len(paths):
+        errors.append("read_many_file_limit_reached")
+    for requested_path in paths:
+        canonical_relative = _canonical_relative_path(root, requested_path)
+        if canonical_relative is None:
+            errors.append(f"path_outside_root:{requested_path}")
+            continue
+        if _protected_read(canonical_relative):
+            errors.append(f"protected_path:{canonical_relative}")
+            continue
+        path = root / canonical_relative
+        if not path.is_file():
+            errors.append(f"missing_file:{canonical_relative}")
+            continue
+        if path.suffix.lower() not in _SNAPSHOT_TEXT_SUFFIXES:
+            errors.append(f"unsupported_text_file:{canonical_relative}")
+            continue
+        try:
+            with path.open("rb") as handle:
+                raw = handle.read(max_bytes_per_file + 1)
+        except OSError:
+            errors.append(f"read_error:{canonical_relative}")
+            continue
+        truncated = len(raw) > max_bytes_per_file
+        clipped = raw[:max_bytes_per_file]
+        if total_bytes + len(clipped) > max_total_bytes:
+            errors.append("read_many_total_bytes_limit_reached")
+            break
+        try:
+            content = clipped.decode("utf-8")
+        except UnicodeDecodeError:
+            errors.append(f"decode_error:{canonical_relative}")
+            continue
+        total_bytes += len(clipped)
+        files.append(
+            {
+                "path": canonical_relative,
+                "content": content,
+                "bytes_read": len(clipped),
+                "line_count": _line_count(content),
+                "truncated": truncated,
+            }
+        )
+    return {"status": "completed", "files": files, "errors": sorted(set(errors))}
+
+
+def tree(args: dict, context: dict) -> dict:
+    root = Path(context["root_path"]).resolve()
+    start_result = _observe_start(root, str(args.get("path") or ""))
+    if start_result.get("status") != "completed":
+        return {
+            "status": start_result["status"],
+            "root": start_result.get("path", ""),
+            "entries": [],
+            "errors": start_result.get("errors", []),
+        }
+    exclude_patterns = _observe_excludes(args)
+    max_entries = _positive_int(args.get("max_entries"), _TREE_MAX_ENTRIES, maximum=_TREE_MAX_ENTRIES)
+    max_depth = _positive_int(args.get("max_depth"), 8, maximum=20)
+    base_depth = len(start_result["absolute_path"].relative_to(root).parts)
+    entries: list[str] = []
+    errors: list[str] = []
+    for path, relative in _iter_workspace_paths(root, start_result["absolute_path"], exclude_patterns=exclude_patterns):
+        depth = len(path.relative_to(root).parts) - base_depth
+        if depth > max_depth:
+            continue
+        marker = "/" if path.is_dir() else ""
+        indent = "  " * max(depth - 1, 0)
+        entries.append(f"{indent}{Path(relative).name}{marker}")
+        if len(entries) >= max_entries:
+            errors.append("tree_entry_limit_reached")
+            break
+    return {
+        "status": "completed",
+        "root": start_result["path"],
+        "entries": entries,
+        "errors": sorted(set(errors)),
+    }
+
+
+def grep(args: dict, context: dict) -> dict:
+    root = Path(context["root_path"]).resolve()
+    pattern = str(args.get("pattern") or "")
+    if not pattern:
+        return {"status": "failed", "root": "", "matches": [], "errors": ["missing_pattern"]}
+    start_result = _observe_start(root, str(args.get("path") or ""))
+    if start_result.get("status") != "completed":
+        return {
+            "status": start_result["status"],
+            "root": start_result.get("path", ""),
+            "matches": [],
+            "errors": start_result.get("errors", []),
+        }
+    glob = str(args.get("glob") or "*")
+    exclude_patterns = _observe_excludes(args)
+    max_matches = _positive_int(args.get("max_matches"), _SEARCH_MAX_MATCHES, maximum=_SEARCH_MAX_MATCHES)
+    use_regex = bool(args.get("regex", False))
+    compiled = None
+    errors: list[str] = []
+    if use_regex:
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            return {"status": "failed", "root": start_result["path"], "matches": [], "errors": [f"invalid_regex:{exc}"]}
+    lowered_pattern = pattern.lower()
+    matches: list[dict] = []
+    for path, relative in _iter_workspace_paths(root, start_result["absolute_path"], exclude_patterns=exclude_patterns):
+        if not path.is_file() or not _matches_any(relative, (glob,)):
+            continue
+        if not _safe_text_file(path, max_bytes=1_000_000):
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    matched = bool(compiled.search(line)) if compiled is not None else lowered_pattern in line.lower()
+                    if not matched:
+                        continue
+                    matches.append({"path": relative, "line": line_number, "snippet": line.strip()[:300]})
+                    if len(matches) >= max_matches:
+                        errors.append("grep_match_limit_reached")
+                        return {
+                            "status": "completed",
+                            "root": start_result["path"],
+                            "matches": matches,
+                            "errors": sorted(set(errors)),
+                        }
+        except OSError:
+            errors.append(f"grep_read_error:{relative}")
+    return {
+        "status": "completed",
+        "root": start_result["path"],
+        "matches": matches,
+        "errors": sorted(set(errors)),
+    }
+
+
+def read_range(args: dict, context: dict) -> dict:
+    root = Path(context["root_path"]).resolve()
+    relative = str(args.get("path") or "")
+    start_line = _positive_int(args.get("start_line"), 1, maximum=1_000_000)
+    end_line = _positive_int(args.get("end_line"), start_line, maximum=1_000_000)
+    if end_line < start_line:
+        return {
+            "status": "failed",
+            "path": relative,
+            "start_line": start_line,
+            "end_line": end_line,
+            "content": "",
+            "errors": ["invalid_line_range"],
+        }
+    if end_line - start_line + 1 > _READ_RANGE_MAX_LINES:
+        end_line = start_line + _READ_RANGE_MAX_LINES - 1
+    canonical_relative = _canonical_relative_path(root, relative)
+    if canonical_relative is None:
+        return {
+            "status": "denied",
+            "path": relative,
+            "start_line": start_line,
+            "end_line": end_line,
+            "content": "",
+            "errors": [f"path_outside_root:{relative}"],
+        }
+    if _protected_read(canonical_relative):
+        return {
+            "status": "denied",
+            "path": canonical_relative,
+            "start_line": start_line,
+            "end_line": end_line,
+            "content": "",
+            "errors": [f"protected_path:{canonical_relative}"],
+        }
+    path = root / canonical_relative
+    if not path.is_file():
+        return {
+            "status": "failed",
+            "path": canonical_relative,
+            "start_line": start_line,
+            "end_line": end_line,
+            "content": "",
+            "errors": [f"missing_file:{canonical_relative}"],
+        }
+    if path.suffix.lower() not in _SNAPSHOT_TEXT_SUFFIXES:
+        return {
+            "status": "failed",
+            "path": canonical_relative,
+            "start_line": start_line,
+            "end_line": end_line,
+            "content": "",
+            "errors": [f"unsupported_text_file:{canonical_relative}"],
+        }
+    lines: list[str] = []
+    errors: list[str] = []
+    char_count = 0
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if line_number < start_line:
+                    continue
+                if line_number > end_line:
+                    break
+                rendered = f"{line_number}: {line.rstrip()}"
+                char_count += len(rendered) + 1
+                if char_count > _READ_RANGE_MAX_CHARS:
+                    errors.append("read_range_char_limit_reached")
+                    break
+                lines.append(rendered)
+    except UnicodeDecodeError:
+        return {
+            "status": "failed",
+            "path": canonical_relative,
+            "start_line": start_line,
+            "end_line": end_line,
+            "content": "",
+            "errors": [f"decode_error:{canonical_relative}"],
+        }
+    except OSError:
+        return {
+            "status": "failed",
+            "path": canonical_relative,
+            "start_line": start_line,
+            "end_line": end_line,
+            "content": "",
+            "errors": [f"read_error:{canonical_relative}"],
+        }
+    return {
+        "status": "completed",
+        "path": canonical_relative,
+        "start_line": start_line,
+        "end_line": end_line,
+        "content": "\n".join(lines),
         "errors": sorted(set(errors)),
     }
 
@@ -199,13 +743,23 @@ def _safe_text_preview(relative: str, path: Path, *, root: Path, max_chars: int 
         path.resolve().relative_to(root)
     except ValueError:
         return None
+    if not _safe_text_file(path, max_bytes=_SNAPSHOT_PREVIEW_BYTES):
+        return None
+    return _read_text_preview(path, max_chars=max_chars)
+
+
+def _safe_text_file(path: Path, *, max_bytes: int) -> bool:
     if path.suffix.lower() not in _SNAPSHOT_TEXT_SUFFIXES:
-        return None
+        return False
     try:
-        if path.stat().st_size > _SNAPSHOT_PREVIEW_BYTES:
-            return None
+        if path.stat().st_size > max_bytes:
+            return False
     except OSError:
-        return None
+        return False
+    return True
+
+
+def _read_text_preview(path: Path, *, max_chars: int) -> str | None:
     try:
         with path.open("rb") as handle:
             raw = handle.read(_SNAPSHOT_PREVIEW_BYTES + 1)
@@ -218,6 +772,88 @@ def _safe_text_preview(relative: str, path: Path, *, root: Path, max_chars: int 
     except UnicodeDecodeError:
         return None
     return content[:max_chars]
+
+
+def _observe_start(root: Path, relative: str) -> dict:
+    if _absolute(relative):
+        return {"status": "denied", "path": relative, "errors": [f"absolute_path:path:{relative}"]}
+    canonical_relative = _canonical_relative_path(root, relative or ".")
+    if canonical_relative is None:
+        return {"status": "denied", "path": relative, "errors": [f"path_outside_root:{relative}"]}
+    if canonical_relative != "." and _protected_read(canonical_relative):
+        return {"status": "denied", "path": canonical_relative, "errors": [f"protected_path:{canonical_relative}"]}
+    absolute_path = root / canonical_relative
+    if not absolute_path.exists():
+        return {"status": "failed", "path": canonical_relative, "errors": [f"missing_path:{canonical_relative}"]}
+    if not absolute_path.is_dir():
+        return {"status": "failed", "path": canonical_relative, "errors": [f"observe_target_not_directory:{canonical_relative}"]}
+    return {"status": "completed", "path": canonical_relative, "absolute_path": absolute_path, "errors": []}
+
+
+def _observe_excludes(args: dict) -> tuple[str, ...]:
+    return tuple(dict.fromkeys([*_DEFAULT_OBSERVE_EXCLUDES, *_string_list(args.get("exclude"))]))
+
+
+def _string_list(value) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if not isinstance(value, list | tuple):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
+def _positive_int(value, default: int, *, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return min(parsed, maximum)
+
+
+def _iter_workspace_paths(root: Path, start: Path, *, exclude_patterns: tuple[str, ...]):
+    for current_root, dirnames, filenames in os.walk(start):
+        current = Path(current_root)
+        relative_current = current.relative_to(root).as_posix()
+        if relative_current == ".":
+            relative_current = ""
+        kept_dirnames = []
+        for dirname in dirnames:
+            candidate = current / dirname
+            relative = _join_relative(relative_current, dirname)
+            if candidate.is_symlink() or _protected_path(relative) or _excluded(relative, exclude_patterns):
+                continue
+            kept_dirnames.append(dirname)
+            yield candidate, relative
+        dirnames[:] = kept_dirnames
+        for filename in filenames:
+            candidate = current / filename
+            relative = _join_relative(relative_current, filename)
+            if candidate.is_symlink() or _protected_path(relative) or _excluded(relative, exclude_patterns):
+                continue
+            yield candidate, relative
+
+
+def _join_relative(parent: str, child: str) -> str:
+    return child if not parent else f"{parent}/{child}"
+
+
+def _excluded(relative: str, patterns: tuple[str, ...]) -> bool:
+    parts = [part for part in relative.split("/") if part]
+    for pattern in patterns:
+        normalized = pattern.strip().strip("/")
+        if not normalized:
+            continue
+        if normalized in parts:
+            return True
+        if fnmatch.fnmatch(relative, normalized) or fnmatch.fnmatch(Path(relative).name, normalized):
+            return True
+    return False
+
+
+def _matches_any(value: str, patterns) -> bool:
+    return any(fnmatch.fnmatch(value, pattern) for pattern in patterns)
 
 
 def read_file(args: dict, context: dict) -> dict:
@@ -243,7 +879,17 @@ def read_file(args: dict, context: dict) -> dict:
             "content": "",
             "errors": [f"missing_file:{canonical_relative}"],
         }
-    return {"status": "completed", "path": canonical_relative, "content": path.read_text(encoding="utf-8")}
+    content = path.read_text(encoding="utf-8")
+    return {
+        "status": "completed",
+        "path": canonical_relative,
+        "content": content,
+        "line_count": _line_count(content),
+    }
+
+
+def _line_count(content: str) -> int:
+    return len(content.splitlines())
 
 
 def write_file(args: dict, context: dict) -> dict:
@@ -302,6 +948,8 @@ def write_file(args: dict, context: dict) -> dict:
             "overwritten": False,
             "errors": [f"write_target_is_directory:{canonical_relative}"],
         }
+    if path.exists() and not overwrite and _request_allows_named_update(context, canonical_relative):
+        overwrite = True
     if path.exists() and not overwrite:
         suggested_path = _available_sibling_path(root, canonical_relative)
         return {
@@ -492,10 +1140,20 @@ def _request_forbids_overwrite(context: dict) -> bool:
             "no overwrite",
             "without overwriting",
             "not overwrite",
-            "keep existing",
-            "preserve existing",
         )
     )
+
+
+def _request_allows_named_update(context: dict, relative: str) -> bool:
+    request = context.get("request") if isinstance(context.get("request"), dict) else {}
+    goal = str(request.get("active_user_request") or request.get("user_goal", "")).lower()
+    if not goal or _request_forbids_overwrite(context):
+        return False
+    normalized_path = relative.lower()
+    basename = Path(relative).name.lower()
+    if normalized_path not in goal and basename not in goal:
+        return False
+    return any(term in goal for term in ("update", "edit", "modify", "patch", "replace", "add"))
 
 
 def _obsolete_identifier_error(content: str) -> str:

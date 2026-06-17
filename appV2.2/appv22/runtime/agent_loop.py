@@ -27,6 +27,17 @@ def _active_request_text(state: AgentState) -> str:
     return state.request.active_user_request or state.request.user_goal
 
 
+def _mutation_seq_from_world_refs(world_refs: dict[str, dict[str, Any]]) -> int:
+    latest = 0
+    for ref in world_refs.values():
+        if not isinstance(ref, dict):
+            continue
+        mutation_seq = ref.get("mutation_seq")
+        if isinstance(mutation_seq, int):
+            latest = max(latest, mutation_seq)
+    return latest
+
+
 class AppV22AgentRuntime:
     """Pi-style agent loop with Hermes-style context governance.
 
@@ -95,6 +106,7 @@ class AppV22AgentRuntime:
         world_refs = previous_result.get("world_refs")
         if isinstance(world_refs, dict):
             state.world_refs = deepcopy(world_refs)
+            state.mutation_seq = _mutation_seq_from_world_refs(state.world_refs)
         context_summary = previous_result.get("context_summary")
         if isinstance(context_summary, dict):
             state.context_summary = resolve_tool_risks_from_world_refs(context_summary, state.world_refs)
@@ -150,7 +162,7 @@ class AppV22AgentRuntime:
             if state.terminal:
                 return {**state.result, "events": [event.to_dict() for event in self.events]}
 
-        self._apply(state, RuntimeEvent("RunFailed", self._fail_payload(state, reason="max_turns_exceeded")))
+        self._apply(state, RuntimeEvent("RunFailed", self._max_turns_failure_payload(state)))
         return {**state.result, "events": [event.to_dict() for event in self.events]}
 
     def _decide_with_provider_retries(self, state: AgentState, provider_prompt: dict) -> Any:
@@ -183,6 +195,16 @@ class AppV22AgentRuntime:
             return
 
         if decision.kind == "finalize":
+            if self._active_action_tools_without_current_evidence(state, resolved):
+                self._record_runtime_guidance(
+                    state,
+                    turn_feedback=(
+                        "Finalize is premature for the latest request: selected tools include an action tool, "
+                        "but the current run has only observe evidence. The next decision must call a selected "
+                        "action tool or finalize only after current action evidence proves the request is complete."
+                    ),
+                )
+                return
             self._complete_from_tool_loop(
                 state,
                 reason="tool_loop_completed",
@@ -193,6 +215,16 @@ class AppV22AgentRuntime:
         if decision.kind == "pause":
             if self._has_completed_non_observe_tool(state):
                 self._complete_from_tool_loop(state, reason="tool_loop_completed")
+            elif self._active_action_tools_without_current_evidence(state, resolved):
+                self._record_runtime_guidance(
+                    state,
+                    turn_feedback=(
+                        "Pause is premature for the latest request: selected tools include an action tool, "
+                        "but the current run has no completed action evidence. The next decision must call a "
+                        "selected action tool, ask the user a concrete clarification, or pause only when no "
+                        "selected action can satisfy the request."
+                    ),
+                )
             else:
                 self._apply(state, RuntimeEvent("RunFailed", self._fail_payload(state, reason="paused")))
             return
@@ -271,12 +303,34 @@ class AppV22AgentRuntime:
 
         if self._tool_call_evidence_already_exists(state, tool_id, arguments):
             if not self._is_observe_tool(tool_id):
+                if self._tool_call_evidence_matches_current_request(state, tool_id, arguments):
+                    self._record_runtime_guidance(
+                        state,
+                        progress="Duplicate completed tool call suppressed; existing tool result already proves the requested action.",
+                    )
+                    self._complete_from_tool_loop(state, reason="tool_loop_completed")
+                    return
+                self._apply(state, RuntimeEvent("ModeChanged", {"mode": "THINK"}))
                 self._record_runtime_guidance(
                     state,
-                    progress="Duplicate completed tool call suppressed; existing tool result already proves the requested action.",
+                    turn_feedback=(
+                        f"{tool_id} has matching stale action evidence from an earlier request; "
+                        "treat it as historical context only. It does not prove the latest mutation request is complete."
+                    ),
                 )
-                self._complete_from_tool_loop(state, reason="tool_loop_completed")
                 return
+
+        if self._repeated_current_observe_during_action_request(state, resolved, tool_id, arguments):
+            self._apply(state, RuntimeEvent("ModeChanged", {"mode": "THINK"}))
+            self._record_runtime_guidance(
+                state,
+                turn_feedback=(
+                    f"Repeated observe evidence is already available for {tool_id} with the same arguments during "
+                    "the latest mutation request. Consume the latest tool result and call a selected action tool; "
+                    "do not spend another turn re-reading identical current evidence."
+                ),
+            )
+            return
 
         existing_denial = self._existing_tool_call_denial(state, tool_id, arguments)
         if existing_denial is not None:
@@ -591,7 +645,9 @@ class AppV22AgentRuntime:
                 blockers.append(blocker)
         if turn_feedback and turn_feedback not in state.turn_feedback:
             state.turn_feedback.append(turn_feedback)
-        self._apply(state, RuntimeEvent("ContextSummaryUpdated", self._normalized_context_summary(summary)))
+        normalized = self._normalized_context_summary(summary)
+        if normalized != self._normalized_context_summary(state.context_summary):
+            self._apply(state, RuntimeEvent("ContextSummaryUpdated", normalized))
 
     def _record_tool_recovery_guidance(self, state: AgentState, guidance_messages: tuple[str, ...]) -> None:
         for message in guidance_messages:
@@ -660,13 +716,17 @@ class AppV22AgentRuntime:
                 continue
             evidence_refs = getattr(contract, "evidence_refs", ())
             if evidence_refs and any(
-                ref in state.world_refs and self._world_ref_fresh_for_tool(state, state.world_refs[ref])
+                ref in state.world_refs
+                and self._world_ref_fresh_for_tool(state, state.world_refs[ref])
+                and self._world_ref_has_usable_payload(state, resolved, state.world_refs[ref])
                 for ref in evidence_refs
             ):
                 return True
             evidence_kinds = getattr(contract, "evidence_kinds", ())
             if evidence_kinds and any(
-                ref.get("kind") in evidence_kinds and self._world_ref_fresh_for_tool(state, ref)
+                ref.get("kind") in evidence_kinds
+                and self._world_ref_fresh_for_tool(state, ref)
+                and self._world_ref_has_usable_payload(state, resolved, ref)
                 for ref in state.world_refs.values()
                 if isinstance(ref, dict)
             ):
@@ -684,10 +744,44 @@ class AppV22AgentRuntime:
             existing_arguments = world_ref.get("arguments")
             if isinstance(existing_arguments, dict) and existing_arguments == arguments:
                 definition = self._tool_definition(tool_id)
-                if definition is not None and definition.category == "observe" and not self._world_ref_has_usable_payload(world_ref):
+                if (
+                    definition is not None
+                    and definition.category == "observe"
+                    and not self._world_ref_has_usable_payload(state, None, world_ref)
+                ):
                     return False
                 if not self._world_ref_fresh_for_tool(state, world_ref):
                     return False
+                return True
+        return False
+
+    def _tool_call_evidence_matches_current_request(self, state: AgentState, tool_id: str, arguments: Any) -> bool:
+        if not isinstance(arguments, dict):
+            return False
+        for world_ref in state.world_refs.values():
+            if not isinstance(world_ref, dict) or world_ref.get("kind") != tool_id:
+                continue
+            if world_ref.get("request_id") != state.request.request_id:
+                continue
+            existing_arguments = world_ref.get("arguments")
+            if isinstance(existing_arguments, dict) and existing_arguments == arguments:
+                return self._world_ref_fresh_for_tool(state, world_ref)
+        return False
+
+    def _repeated_current_observe_during_action_request(
+        self, state: AgentState, resolved, tool_id: str, arguments: Any
+    ) -> bool:
+        if not isinstance(arguments, dict) or not self._is_observe_tool(tool_id):
+            return False
+        if not self._active_action_tools_without_current_evidence(state, resolved):
+            return False
+        for result in state.tool_results.values():
+            if not isinstance(result, dict) or result.get("status") != "completed":
+                continue
+            if result.get("tool_id") != tool_id:
+                continue
+            existing_arguments = result.get("arguments")
+            if isinstance(existing_arguments, dict) and existing_arguments == arguments:
                 return True
         return False
 
@@ -706,16 +800,18 @@ class AppV22AgentRuntime:
             return True
         return is_world_ref_fresh(state, world_ref, definition)
 
-    @staticmethod
-    def _world_ref_has_usable_payload(world_ref: dict[str, Any]) -> bool:
+    def _world_ref_has_usable_payload(self, state: AgentState, resolved, world_ref: dict[str, Any]) -> bool:
+        extension_ids = getattr(resolved, "extension_ids", None)
+        if not isinstance(extension_ids, tuple):
+            extension_ids = tuple(state.active_extension_ids)
+        hook = getattr(self.services.extension_registry, "world_ref_has_usable_payload", None)
+        if callable(hook):
+            hook_result = hook(extension_ids, state, world_ref)
+            if isinstance(hook_result, bool):
+                return hook_result
         payload = world_ref.get("payload")
         if not isinstance(payload, dict) or not payload:
             return False
-        kind = world_ref.get("kind")
-        if kind == "file_management.repo_snapshot":
-            return isinstance(payload.get("files"), list) or isinstance(payload.get("directories"), list)
-        if kind == "file_management.read_file":
-            return isinstance(payload.get("content"), str)
         return True
 
     def _existing_tool_call_denial(self, state: AgentState, tool_id: str, arguments: Any) -> dict[str, Any] | None:
@@ -810,13 +906,36 @@ class AppV22AgentRuntime:
         return definition is not None and definition.category == "observe"
 
     def _has_completed_non_observe_tool(self, state: AgentState) -> bool:
-        for world_ref in state.world_refs.values():
-            if not isinstance(world_ref, dict):
+        return bool(self._completed_non_observe_tool_results(state))
+
+    def _completed_non_observe_tool_results(self, state: AgentState) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for result in state.tool_results.values():
+            if not isinstance(result, dict) or result.get("status") != "completed":
                 continue
-            kind = world_ref.get("kind")
-            if isinstance(kind, str) and not self._is_observe_tool(kind):
-                return True
-        return False
+            tool_id = result.get("tool_id")
+            if isinstance(tool_id, str) and not self._is_observe_tool(tool_id):
+                results.append(result)
+        return results
+
+    def _active_action_tools_without_current_evidence(self, state: AgentState, resolved) -> bool:
+        has_active_action_tool = False
+        for tool_id in getattr(resolved, "tool_ids", ()):
+            if not isinstance(tool_id, str):
+                continue
+            definition = self._tool_definition(tool_id)
+            if definition is not None and definition.category != "observe":
+                has_active_action_tool = True
+                break
+        if not has_active_action_tool:
+            return False
+        for result in state.tool_results.values():
+            if not isinstance(result, dict) or result.get("status") != "completed":
+                continue
+            tool_id = result.get("tool_id")
+            if isinstance(tool_id, str) and not self._is_observe_tool(tool_id):
+                return False
+        return True
 
     def _active_tool_id_mentioned(self, decision, active_tool_ids) -> str | None:
         text = f"{getattr(decision, 'reason', '')} {json.dumps(getattr(decision, 'payload', {}), sort_keys=True, default=str)}"
@@ -892,3 +1011,63 @@ class AppV22AgentRuntime:
             "usage": self._usage_payload(state),
             **extra,
         }
+
+    def _max_turns_failure_payload(self, state: AgentState) -> dict[str, Any]:
+        extra: dict[str, Any] = {}
+        try:
+            resolved = self.services.extension_registry.resolve_active(state)
+        except Exception:  # noqa: BLE001 - terminal failure reporting must not mask the original failure.
+            resolved = None
+        if resolved is not None:
+            current_action_results = self._completed_non_observe_tool_results(state)
+            if self._active_action_tools_without_current_evidence(state, resolved):
+                feedback = (
+                    "Turn budget exhausted before current action evidence was produced for the latest mutation request. "
+                    "Continue by inspecting only if needed, then call a selected action tool; old action refs are historical context only."
+                )
+                if feedback not in state.turn_feedback:
+                    state.turn_feedback.append(feedback)
+                extra["message"] = feedback
+                extra["assistant_message"] = (
+                    "I could not complete this turn: the turn budget was exhausted before any current action evidence "
+                    "proved the requested workspace change."
+                )
+            elif current_action_results:
+                refs = self._current_action_refs(current_action_results)
+                tool_ids = self._current_action_tool_ids(current_action_results)
+                refs_text = ", ".join(refs) if refs else "current action tool results"
+                tools_text = ", ".join(tool_ids) if tool_ids else "selected action tools"
+                feedback = (
+                    "Turn budget exhausted after partial current action evidence was produced for the latest mutation request. "
+                    f"Current action evidence: {refs_text}. Continue by using that evidence as current state, then call the "
+                    f"remaining selected action tool if the requested change is still incomplete. Current action tools used: {tools_text}."
+                )
+                if feedback not in state.turn_feedback:
+                    state.turn_feedback.append(feedback)
+                extra["message"] = feedback
+                extra["assistant_message"] = (
+                    "I could not complete this turn: the turn budget was exhausted after partial current action evidence "
+                    "was produced, so the requested workspace change may still be incomplete."
+                )
+        return self._fail_payload(state, reason="max_turns_exceeded", **extra)
+
+    @staticmethod
+    def _current_action_refs(results: list[dict[str, Any]]) -> list[str]:
+        refs: list[str] = []
+        for result in results:
+            for ref in result.get("evidence_refs", ()):
+                if isinstance(ref, str) and ref not in refs:
+                    refs.append(ref)
+            payload_ref = result.get("payload_ref")
+            if isinstance(payload_ref, str) and payload_ref not in refs:
+                refs.append(payload_ref)
+        return refs
+
+    @staticmethod
+    def _current_action_tool_ids(results: list[dict[str, Any]]) -> list[str]:
+        tool_ids: list[str] = []
+        for result in results:
+            tool_id = result.get("tool_id")
+            if isinstance(tool_id, str) and tool_id not in tool_ids:
+                tool_ids.append(tool_id)
+        return tool_ids
