@@ -4,9 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "tui": "node appv22_ui/pi_tui/app.mjs"
+    "tui": "python3 scripts/appv22_tui.py"
   },
-  "dependencies": {
-    "@earendil-works/pi-tui": "file:../pi/packages/tui"
-  }
+  "dependencies": {}
 }

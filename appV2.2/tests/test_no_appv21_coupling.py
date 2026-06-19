@@ -5,6 +5,16 @@ from pathlib import Path
 APP_ROOT = Path(__file__).resolve().parents[1]  # appV2.2/
 
 _TOKENS = ("appv21", "appV2.1")
+_REMOVED_LEGACY_PATHS = (
+    "appv22/runtime",
+    "appv22/context",
+    "appv22/extensions",
+    "appv22/state",
+    "appv22/tools",
+    "appv22/prompts",
+    "appv22/providers",
+    "appv22_ui",
+)
 
 
 def test_no_appv21_references_in_source() -> None:
@@ -20,13 +30,22 @@ def test_no_appv21_references_in_source() -> None:
     assert offenders == [], f"appv21 references remain: {offenders}"
 
 
-def test_legacy_provider_returns_null_when_disabled(tmp_path: Path, monkeypatch) -> None:
-    from appv22.providers import create_appv22_provider_from_appv2_env
+def test_legacy_divergent_paths_removed() -> None:
+    offenders = [path for path in _REMOVED_LEGACY_PATHS if (APP_ROOT / path).exists()]
+    assert offenders == []
+
+
+def test_new_ai_provider_returns_null_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    from appv22.ai.providers.appv2_env import create_appv2_env_provider
+    from appv22.ai.types import Context, Model
 
     for key in ("APPV2_WORKER_LLM_ENABLED", "APPV2_WORKER_LLM_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     env = tmp_path / ".env"
     env.write_text("OPENROUTER_API_KEY=k\n", encoding="utf-8")  # not enabled
-    provider = create_appv22_provider_from_appv2_env(str(env))
-    decision = provider.decide({"selection": {}, "state": {}})
-    assert decision.kind == "pause"
+    provider = create_appv2_env_provider(dotenv_path=str(env))
+    model = Model(id="m", name="m", api="openai-completions", provider="openrouter", base_url="")
+    stream = provider.stream(model, Context(messages=[]), None)
+    message = stream.result_sync()
+    assert message.stop_reason == "error"
+    assert "not configured" in (message.error_message or "")

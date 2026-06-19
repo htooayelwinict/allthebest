@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from appv22.ai.overflow import is_context_overflow
-from appv22.runtime.provider_errors import is_context_overflow_error
 
 
 def test_detects_overflow_messages() -> None:
@@ -14,7 +13,3 @@ def test_ignores_rate_limit_and_throttling() -> None:
     assert not is_context_overflow("Throttling error: slow down")
     assert not is_context_overflow("rate limit reached, too many requests")
     assert not is_context_overflow("")
-
-
-def test_runtime_alias_still_works() -> None:
-    assert is_context_overflow_error("exceeds the context window") is True
