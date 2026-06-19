@@ -32,10 +32,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("prompt", nargs="*", help="Prompt to run. If omitted, starts a small stdin loop.")
     parser.add_argument("--cwd", default=".", help="Working directory for tools")
     parser.add_argument("--dotenv", default=".env", help="Dotenv file for APPV2_WORKER_LLM/OpenRouter settings")
+    parser.add_argument("--tui", action="store_true", help="Render live agent events with the ported differential TUI")
     args = parser.parse_args(argv)
 
     register_builtin_providers(dotenv_path=args.dotenv)
-    app = CodingApp(cwd=str(Path(args.cwd).resolve()), model=_model_from_env(args.dotenv))
+    app = CodingApp(cwd=str(Path(args.cwd).resolve()), model=_model_from_env(args.dotenv), enable_tui=args.tui)
 
     prompt = " ".join(args.prompt).strip()
     if prompt:
