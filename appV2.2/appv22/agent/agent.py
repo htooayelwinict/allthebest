@@ -47,6 +47,7 @@ class Agent:
         tool_execution: str = "parallel",
         before_tool_call=None,
         after_tool_call=None,
+        transform_context=None,
     ) -> None:
         self._state = AgentState(
             system_prompt=system_prompt,
@@ -58,6 +59,7 @@ class Agent:
         self._tool_execution = tool_execution
         self._before_tool_call = before_tool_call
         self._after_tool_call = after_tool_call
+        self._transform_context = transform_context
         self._listeners: list[Listener] = []
         self._signal = AbortSignal()
         self._steering: list[AgentMessage] = []
@@ -104,6 +106,7 @@ class Agent:
             tool_execution=self._tool_execution,
             before_tool_call=self._before_tool_call,
             after_tool_call=self._after_tool_call,
+            transform_context=self._transform_context,
             reasoning=None if self._state.thinking_level == "off" else self._state.thinking_level,
         )
 

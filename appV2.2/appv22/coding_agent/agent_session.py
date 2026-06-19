@@ -33,6 +33,7 @@ class AgentSession:
         convert_to_llm: Optional[Callable[[list[AgentMessage]], list[Message]]] = None,
         custom_prompt: str | None = None,
         append_system_prompt: str | None = None,
+        transform_context=None,
     ) -> None:
         self.cwd = cwd
         self._tools = tools if tools is not None else create_all_tools(cwd)
@@ -46,6 +47,7 @@ class AgentSession:
             model=model,
             convert_to_llm=self._convert_to_llm,
             tools=self._tools,
+            transform_context=transform_context,
         )
 
     def _build_system_prompt(self) -> str:
