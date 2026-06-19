@@ -4,6 +4,22 @@ Date: 2026-06-19
 Status: Approved (decomposition + approach)
 Owner: appv22 alignment effort
 
+## Progress
+
+All six sub-project parity packages are ported and tested, plus an end-to-end
+capstone integration. **252 tests green** (188 legacy + 64 new parity/integration).
+Zero `pi`/`hermes`/`appv21` runtime imports anywhere under `appV2.2/`.
+
+| # | Sub-project | appv22 package | Status |
+|---|---|---|---|
+| 1 | ai-parity | `appv22/ai/` | DONE (25 tests) |
+| 2 | agent-loop-core | `appv22/agent/` | DONE (6 tests) |
+| 3 | coding-agent | `appv22/coding_agent/` | DONE (10 tests) |
+| 4 | hermes dual-pass | `appv22/compaction/compressor.py` | DONE (6 tests) |
+| 5 | hermes timing | `appv22/compaction/timing.py` | DONE (6 tests) |
+| 6 | ui-rendering | `appv22/tui/` | DONE (9 tests) |
+| – | capstone integration | `appv22/app.py` (`CodingApp`) | DONE (2 tests) |
+
 ## Goal
 
 Make `appV2.2/appv22` (the Python "appv22" agent core) and `appV2.2/appv22_ui`
@@ -116,4 +132,37 @@ Dependency order (each layer builds on the previous):
 ## Sub-project specs
 
 - 1: `2026-06-19-appv22-ai-parity-design.md`
-- 2–6: written just-in-time when each sub-project starts.
+- 2: `2026-06-19-appv22-agent-loop-core-design.md`
+- 3: `2026-06-19-appv22-coding-agent-design.md`
+- 4/5: `2026-06-19-appv22-hermes-compaction-design.md`
+- 6: `2026-06-19-appv22-ui-rendering-design.md`
+
+## Removal manifest (divergent legacy code — superseded, pending explicit go-ahead)
+
+The pi+hermes-compliant stack (`appv22/ai`, `appv22/agent`, `appv22/coding_agent`,
+`appv22/compaction`, `appv22/tui`, `appv22/app.py`) now supersedes the original
+divergent implementation. These legacy modules do not match pi/hermes design and
+are slated for deletion:
+
+- `appv22/runtime/` — decision-routed loop (`agent_loop.py:_run_state`,
+  `decisions.py`, `reducer.py`, `services.py`); superseded by `appv22/agent` +
+  `appv22/app.py`. (`provider_errors.py` already aliases `appv22/ai/overflow.py`.)
+- `appv22/context/` — bespoke harness/compressor/summary heuristics; superseded by
+  `appv22/compaction`.
+- `appv22/extensions/file_management/` (+ `extensions/`) — 14 bespoke tools +
+  heuristics; superseded by `appv22/coding_agent/tools` (read/bash/edit/write/
+  grep/find/ls).
+- `appv22/state/`, `appv22/tools/`, `appv22/prompts/` — superseded by
+  `appv22/ai/types`, `appv22/agent/types`, `appv22/coding_agent`.
+- `appv22/providers/` (legacy `decide()` shim + `json_client`) — superseded by
+  `appv22/ai/providers`.
+- `appv22_ui/` (+ `pi_tui/` node frontend) — superseded by `appv22/tui`.
+
+**Why not auto-deleted in this pass:** removing them also retires the 184 legacy
+tests (`test_runtime_protection.py`, `test_tui_app.py`, `test_live_ui_event_sink.py`)
+that encode the divergent behavior, plus the `scripts/` TUI bridge. Per the repo
+rule "always ask before removing functionality that appears intentional," this
+destructive deletion is gated on an explicit go-ahead. On approval: delete the
+modules above + their tests, repoint `scripts/` and `appV2.2/package.json` to
+`appv22/app.py`, and run `python -m pytest` to confirm the new-stack suite stays
+green.
