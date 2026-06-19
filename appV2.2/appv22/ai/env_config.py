@@ -1,4 +1,4 @@
-"""Fresh env config for the appv22 ai provider (no appv21)."""
+"""Fresh env config for the appv22 ai provider (self-contained)."""
 
 from __future__ import annotations
 

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 from hashlib import sha256
-from importlib import import_module
-import importlib.util
 import json
 from pathlib import Path
-import sys
 from typing import Any, Mapping
 
+from appv22.ai.env_config import load_model_config
+from appv22.providers.json_client import JsonModelClient
 from appv22.runtime.decisions import KNOWN_DECISION_KINDS, RuntimeDecision
 
 
@@ -68,25 +67,29 @@ class AppV22NativeProvider:
         return {}
 
 
+class NullDecisionProvider:
+    provider_id = "null-model"
+
+    def decide(self, prompt_payload: dict) -> RuntimeDecision:
+        return RuntimeDecision(
+            kind="pause",
+            reason="No provider is configured for autonomous decisions.",
+            payload={"pause_type": "missing_context"},
+        )
+
+    def usage_snapshot(self, *, reset: bool = False) -> dict[str, Any]:
+        return {}
+
+
 def create_appv22_provider_from_appv2_env(
     dotenv_path: str | Path,
-) -> AppV22NativeProvider:
-    """Create an AppV2.2-native provider from the appv2-env model settings."""
+) -> Any:
+    """Create an AppV2.2-native provider from env model settings (no legacy transport)."""
 
-    _ensure_local_appv21_import_path()
-    try:
-        env_config = import_module("appv21.providers.env_config")
-        null_model = import_module("appv21.providers.null_model")
-    except ImportError as exc:
-        raise ImportError(
-            "AppV2.1 appv2-env transport is unavailable; ensure appv21 is importable "
-            "before creating the AppV2.2 native provider."
-        ) from exc
-
-    client = env_config.build_appv21_model_client("APPV2_WORKER_LLM", dotenv_path=dotenv_path)
-    if client is None:
-        return null_model.NullModelProvider()
-    return AppV22NativeProvider(client=client)
+    config = load_model_config("APPV2_WORKER_LLM", dotenv_path)
+    if not (config.enabled and config.api_key):
+        return NullDecisionProvider()
+    return AppV22NativeProvider(client=JsonModelClient(config))
 
 
 def _appv22_decision_prompt(prompt_payload: dict) -> str:
@@ -94,6 +97,7 @@ def _appv22_decision_prompt(prompt_payload: dict) -> str:
     open_risks = _active_open_risk_lines(prompt_payload)
     turn_feedback = _turn_feedback_lines(prompt_payload)
     latest_tool_results = _latest_tool_result_lines(prompt_payload)
+    no_tool_guidance = _no_selected_tool_lines(prompt_payload)
     return "\n".join(
         [
             "You are the AppV2.2 Pi-Hermes coding agent decision engine.",
@@ -122,6 +126,7 @@ def _appv22_decision_prompt(prompt_payload: dict) -> str:
             *open_risks,
             *turn_feedback,
             *latest_tool_results,
+            *no_tool_guidance,
             json.dumps(prompt_payload, indent=2, sort_keys=True, default=str),
         ]
     )
@@ -197,25 +202,17 @@ def _latest_tool_result_lines(prompt_payload: dict) -> list[str]:
     return lines
 
 
-def _ensure_local_appv21_import_path() -> None:
-    if importlib.util.find_spec("appv21") is not None:
-        return
-
-    appv21_root = _discover_local_appv21_root(Path(__file__))
-    if appv21_root is None:
-        return
-
-    appv21_root_str = str(appv21_root)
-    if appv21_root_str not in sys.path:
-        sys.path.insert(0, appv21_root_str)
-
-
-def _discover_local_appv21_root(anchor: Path) -> Path | None:
-    for parent in anchor.resolve().parents:
-        candidate = parent / "appV2.1"
-        if (candidate / "appv21").is_dir():
-            return candidate
-    return None
+def _no_selected_tool_lines(prompt_payload: dict) -> list[str]:
+    selection = prompt_payload.get("selection") if isinstance(prompt_payload, dict) else {}
+    if not isinstance(selection, dict):
+        return []
+    selected_tools = selection.get("selected_tools")
+    if isinstance(selected_tools, list) and selected_tools:
+        return []
+    return [
+        "NO SELECTED TOOLS:",
+        "Do not emit kind=tool_call. For greetings, acknowledgements, or answerable chat, use kind=finalize with payload.message. If more information is required, use kind=pause.",
+    ]
 
 
 def normalize_appv22_decision_payload(raw: Any) -> RuntimeDecision:
