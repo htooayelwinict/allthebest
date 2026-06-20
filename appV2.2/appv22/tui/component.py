@@ -268,6 +268,9 @@ class Input(Component):
             elif data.startswith("\x1b[3~", index):
                 self._delete_char_forward()
                 index += 4
+            elif alt_delete_match := re.match(r"\x1b\[3;3(?::[123])?~", data[index:]):
+                self._delete_word_forward()
+                index += len(alt_delete_match.group(0))
             elif data.startswith("\x1b[H", index):
                 self.cursor = 0
                 self._last_action = None
