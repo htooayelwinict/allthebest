@@ -1,0 +1,263 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from appv22.compaction import CompactionManager, ContextCompressor, SessionLineage, estimate_tokens
+from appv22.ai.types import UserMessage, now_ms
+
+
+def _big_messages(n: int = 40, size: int = 200) -> list:
+    msgs = [UserMessage(content="goal", timestamp=now_ms())]
+    for i in range(n):
+        msgs.append(UserMessage(content=(f"m{i} " * size), timestamp=now_ms()))
+    msgs.append(UserMessage(content="latest", timestamp=now_ms()))
+    return msgs
+
+
+def _summarizer(prompt: str) -> str:
+    return "## Goal\nshort"
+
+
+def _manager(**kwargs) -> CompactionManager:
+    compressor = ContextCompressor(context_length=2000, protect_first_n=1, protect_last_n=4)
+    return CompactionManager(compressor, summarizer=_summarizer, **kwargs)
+
+
+def test_preflight_compresses_over_threshold_then_defers() -> None:
+    manager = _manager()
+    messages = _big_messages()
+    out = manager.maybe_compress_preflight(messages)
+    assert len(out) < len(messages)
+    assert manager.awaiting_real_usage_after_compression is True
+    # second preflight defers (awaiting real usage), returns unchanged
+    out2 = manager.maybe_compress_preflight(out)
+    assert out2 is out
+
+
+def test_post_response_sentinel_minus_one_treated_as_zero() -> None:
+    manager = _manager()
+    messages = _big_messages()
+    out = manager.maybe_compress_post_response(messages, prompt_tokens=-1)
+    assert out is messages  # 0 tokens -> below threshold -> no compress
+    assert manager.awaiting_real_usage_after_compression is False
+
+
+def test_post_response_real_tokens_compresses() -> None:
+    manager = _manager()
+    messages = _big_messages()
+    out = manager.maybe_compress_post_response(messages, prompt_tokens=5000)
+    assert len(out) < len(messages)
+
+
+def test_compressor_update_from_response_tracks_real_usage_for_deferral() -> None:
+    compressor = ContextCompressor(context_length=100_000, threshold_percent=0.5)
+    compressor.awaiting_real_usage_after_compression = True
+    compressor.last_compression_rough_tokens = 90_000
+
+    compressor.update_from_response({
+        "prompt_tokens": 5_000,
+        "completion_tokens": 1_000,
+        "total_tokens": 6_000,
+    })
+
+    assert compressor.last_prompt_tokens == 5_000
+    assert compressor.last_completion_tokens == 1_000
+    assert compressor.last_total_tokens == 6_000
+    assert compressor.last_real_prompt_tokens == 5_000
+    assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
+    assert compressor.awaiting_real_usage_after_compression is False
+    assert compressor.should_defer_preflight_to_real_usage(93_000) is True
+    assert compressor.last_rough_tokens_when_real_prompt_fit == 93_000
+    assert compressor.should_defer_preflight_to_real_usage(100_000) is False
+
+
+def test_preflight_defers_after_real_usage_proved_rough_estimate_noisy() -> None:
+    compressor = ContextCompressor(context_length=100_000, threshold_percent=0.5, protect_first_n=1, protect_last_n=4)
+    manager = CompactionManager(compressor, summarizer=_summarizer)
+    messages = _big_messages(n=20, size=6200)
+    rough_tokens = estimate_tokens(messages)
+    assert rough_tokens > compressor.threshold_tokens
+
+    compressor.last_real_prompt_tokens = 5_000
+    compressor.last_rough_tokens_when_real_prompt_fit = rough_tokens - 1_000
+
+    out = manager.maybe_compress_preflight(messages)
+
+    assert out is messages
+    assert compressor.last_rough_tokens_when_real_prompt_fit == rough_tokens
+    assert compressor.compression_count == 0
+
+
+def test_overflow_recovery_force_and_bounded() -> None:
+    manager = _manager(max_overflow_attempts=2)
+    small = [UserMessage(content="a", timestamp=now_ms()), UserMessage(content="b", timestamp=now_ms()),
+             UserMessage(content="c", timestamp=now_ms()), UserMessage(content="d", timestamp=now_ms()),
+             UserMessage(content="e", timestamp=now_ms()), UserMessage(content="f", timestamp=now_ms()),
+             UserMessage(content="g", timestamp=now_ms()), UserMessage(content="h", timestamp=now_ms())]
+    # force compresses even below threshold (only if there is a middle to compact)
+    big = _big_messages()
+    _, c1 = manager.recover_overflow(big)
+    _, c2 = manager.recover_overflow(big)
+    _, c3 = manager.recover_overflow(big)
+    assert c1 is True and c2 is True
+    assert c3 is False  # bounded at 2 attempts
+    _ = small
+
+
+def test_manual_force_clears_cooldown() -> None:
+    fake_time = {"t": 100.0}
+    compressor = ContextCompressor(context_length=2000, protect_first_n=1, protect_last_n=4)
+
+    def failing_summarizer(prompt: str) -> str:
+        raise RuntimeError("summary model down")
+
+    manager = CompactionManager(compressor, summarizer=failing_summarizer, clock=lambda: fake_time["t"])
+    messages = _big_messages()
+    # Hermes default: summary failure inserts a deterministic fallback, not a manager-level no-op.
+    out = manager.maybe_compress_preflight(messages)
+    assert len(out) < len(messages)
+    assert compressor._last_summary_fallback_used is True
+    assert manager._in_cooldown() is False
+
+    # manual force still bypasses and clears an existing cooldown.
+    manager._summary_failure_cooldown_until = fake_time["t"] + 60
+    manager._summarizer = _summarizer
+    forced = manager.compress_manual(messages)
+    assert len(forced) < len(messages)
+    assert manager._in_cooldown() is False
+
+
+def test_summary_failure_sets_compressor_cooldown_and_skips_retry() -> None:
+    fake_time = {"t": 100.0}
+    compressor = ContextCompressor(
+        context_length=2000,
+        protect_first_n=1,
+        protect_last_n=4,
+        clock=lambda: fake_time["t"],
+    )
+    messages = _big_messages()
+    calls = {"count": 0}
+
+    def failing_summarizer(prompt: str) -> str:
+        calls["count"] += 1
+        raise RuntimeError("summary provider down")
+
+    first = compressor.compress(messages, summarizer=failing_summarizer)
+    second = compressor.compress(messages, summarizer=failing_summarizer)
+
+    assert first.compressed is True
+    assert second.compressed is True
+    assert calls["count"] == 1
+    assert compressor._summary_failure_cooldown_until == fake_time["t"] + 60.0
+    assert compressor._last_summary_fallback_used is True
+
+
+def test_manual_compression_force_clears_compressor_cooldown() -> None:
+    fake_time = {"t": 100.0}
+    compressor = ContextCompressor(
+        context_length=2000,
+        protect_first_n=1,
+        protect_last_n=4,
+        clock=lambda: fake_time["t"],
+    )
+    manager = CompactionManager(compressor, summarizer=_summarizer, clock=lambda: fake_time["t"])
+    compressor._summary_failure_cooldown_until = fake_time["t"] + 999.0
+    calls: list[str] = []
+
+    def ok_summarizer(prompt: str) -> str:
+        calls.append(prompt)
+        return "## Historical Task Snapshot\nmanual retry worked"
+
+    messages = _big_messages()
+    forced = manager.compress_manual(messages, summarizer=ok_summarizer)
+
+    assert len(forced) < len(messages)
+    assert calls
+    assert compressor._summary_failure_cooldown_until == 0.0
+    assert compressor._last_summary_fallback_used is False
+
+
+def test_manual_compression_focus_reaches_summary_prompt() -> None:
+    seen_prompts: list[str] = []
+
+    def focused_summarizer(prompt: str) -> str:
+        seen_prompts.append(prompt)
+        return "## Historical Task Snapshot\nNone."
+
+    manager = _manager()
+    manager.compress_manual(_big_messages(), summarizer=focused_summarizer, focus="database schema")
+
+    assert 'FOCUS TOPIC: "database schema"' in seen_prompts[0]
+    assert "PRIORITISE preserving all information related to the focus topic above" in seen_prompts[0]
+    assert "60-70% of the summary token budget" in seen_prompts[0]
+    assert "NEVER preserve API keys, tokens, passwords, or credentials" in seen_prompts[0]
+
+
+def test_manual_compression_status_reports_success_and_focus() -> None:
+    manager = _manager()
+    messages = _big_messages()
+
+    status = manager.compress_manual_with_status(
+        messages,
+        summarizer=lambda prompt: "## Historical Task Snapshot\nmanual summary",
+        focus="database schema",
+    )
+
+    assert status.noop is False
+    assert status.compressed is True
+    assert status.focus == "database schema"
+    assert status.headline == f"Compressed: {len(messages)} → {len(status.messages)} messages"
+    assert "Approx request size:" in status.token_line
+    assert status.warning is None
+    assert status.info is None
+
+
+def test_manual_compression_status_warns_when_compression_aborts() -> None:
+    compressor = ContextCompressor(
+        context_length=2000,
+        protect_first_n=1,
+        protect_last_n=4,
+        abort_on_summary_failure=True,
+    )
+    manager = CompactionManager(compressor, summarizer=lambda prompt: (_ for _ in ()).throw(RuntimeError("down")))
+    status = manager.compress_manual_with_status(_big_messages())
+
+    assert status.compressed is False
+    assert status.noop is True
+    assert status.warning is not None
+    assert "Compression aborted" in status.warning
+    assert "down" in status.warning
+    assert "No messages were dropped" in status.warning
+
+
+def test_session_lineage_rotation() -> None:
+    ids = iter(["s1", "s2", "s3"])
+    lineage = SessionLineage(id_factory=lambda: next(ids))
+    assert lineage.current.id == "s1"
+    rotated = lineage.rotate(reason="compression")
+    assert rotated.id == "s2"
+    assert rotated.parent_session_id == "s1"
+    assert lineage.history[0].end_reason == "compression"
+    lineage.rotate()
+    assert lineage.lineage() == ["s1", "s2", "s3"]
+
+
+def test_session_lineage_persists_parent_chain_across_reload(tmp_path: Path) -> None:
+    from appv22.compaction import SessionLineageStore
+
+    ids = iter(["s1", "s2", "s3"])
+    store = SessionLineageStore(tmp_path / "state.db")
+    lineage = SessionLineage(id_factory=lambda: next(ids), store=store)
+
+    lineage.rotate(reason="compression")
+    lineage.rotate(reason="compression")
+
+    reloaded = SessionLineage.load(
+        SessionLineageStore(tmp_path / "state.db"),
+        current_id=lineage.current.id,
+    )
+
+    assert reloaded.current.id == "s3"
+    assert reloaded.current.parent_session_id == "s2"
+    assert reloaded.lineage() == ["s1", "s2", "s3"]
+    assert [record.end_reason for record in reloaded.history] == ["compression", "compression", None]

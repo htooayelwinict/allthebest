@@ -1,0 +1,7 @@
+{
+  "name": "allthebest-appv22",
+  "private": true,
+  "scripts": {
+    "tui": "npm --prefix appV2.2 run tui --"
+  }
+}

@@ -1,3 +1,3 @@
-from appv22.runtime.agent_loop import AppV22AgentRuntime
+from appv22.app import CodingApp
 
-__all__ = ["AppV22AgentRuntime"]
+__all__ = ["CodingApp"]
