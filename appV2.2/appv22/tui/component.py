@@ -312,6 +312,12 @@ class Input(Component):
                 elif char == "\x05":
                     self.cursor = len(self.value)
                     self._last_action = None
+                elif char == "\x02":
+                    self.cursor = max(0, self.cursor - 1)
+                    self._last_action = None
+                elif char == "\x06":
+                    self.cursor = min(len(self.value), self.cursor + 1)
+                    self._last_action = None
                 elif char == "\x17":
                     self._delete_word_backward()
                 elif char == "\x04":
