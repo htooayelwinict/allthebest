@@ -268,6 +268,9 @@ class Input(Component):
             elif data.startswith("\x1b[3~", index):
                 self._delete_char_forward()
                 index += 4
+            elif alt_delete_match := re.match(r"\x1b\[3;3(?::[123])?~", data[index:]):
+                self._delete_word_forward()
+                index += len(alt_delete_match.group(0))
             elif data.startswith("\x1b[H", index):
                 self.cursor = 0
                 self._last_action = None
@@ -311,6 +314,12 @@ class Input(Component):
                     self._last_action = None
                 elif char == "\x05":
                     self.cursor = len(self.value)
+                    self._last_action = None
+                elif char == "\x02":
+                    self.cursor = max(0, self.cursor - 1)
+                    self._last_action = None
+                elif char == "\x06":
+                    self.cursor = min(len(self.value), self.cursor + 1)
                     self._last_action = None
                 elif char == "\x17":
                     self._delete_word_backward()

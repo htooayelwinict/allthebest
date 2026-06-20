@@ -285,6 +285,23 @@ def test_input_ports_pi_alt_d_delete_word_forward_keybinding() -> None:
     assert input_component.get_value() == "hello world"
 
 
+def test_input_ports_pi_alt_delete_delete_word_forward_keybinding() -> None:
+    input_component = Input()
+    input_component.set_value("hello world")
+    input_component.handle_input("\x01")
+
+    input_component.handle_input("\x1b[3;3~")
+    assert input_component.get_value() == " world"
+    assert input_component.cursor == 0
+
+    input_component.handle_input("\x1b[3;3:1~")
+    assert input_component.get_value() == ""
+    assert input_component.cursor == 0
+
+    input_component.handle_input("\x19")
+    assert input_component.get_value() == "hello world"
+
+
 def test_input_ports_pi_bracketed_paste_sanitization() -> None:
     input_component = Input()
     input_component.set_value("prefixsuffix")
@@ -308,6 +325,27 @@ def test_input_ports_pi_delete_key_forward_deletion() -> None:
     input_component.cursor = len(input_component.get_value())
     input_component.handle_input("\x1b[3~")
     assert input_component.get_value() == "hllo"
+
+
+def test_input_ports_pi_ctrl_b_ctrl_f_cursor_navigation() -> None:
+    input_component = Input()
+    input_component.set_value("hello")
+
+    input_component.handle_input("\x02")
+    assert input_component.cursor == len("hell")
+
+    input_component.handle_input("\x02")
+    input_component.handle_input("\x02")
+    input_component.handle_input("\x02")
+    input_component.handle_input("\x02")
+    assert input_component.cursor == 0
+
+    input_component.handle_input("\x06")
+    assert input_component.cursor == 1
+
+    for _ in range(10):
+        input_component.handle_input("\x06")
+    assert input_component.cursor == len("hello")
 
 
 def test_input_ports_pi_ctrl_d_delete_char_forward_keybinding() -> None:
