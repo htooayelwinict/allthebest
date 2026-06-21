@@ -253,6 +253,59 @@ def test_coding_app_recovers_context_overflow_by_compacting_and_retrying(tmp_pat
     )
 
 
+def test_coding_app_recovers_output_cap_error_by_lowering_max_tokens_without_compaction(tmp_path: Path) -> None:
+    model = faux_model()
+    model.max_tokens = 8192
+    seen_max_tokens: list[int | None] = []
+
+    def stream_fn(m, c, options):
+        seen_max_tokens.append(options.max_tokens)
+        return create_faux_provider(lambda _m, _c: text_response_events(_m, "recovered with lower output cap")).stream_simple(
+            m,
+            c,
+            options,
+        )
+
+    app = CodingApp(
+        cwd=str(tmp_path),
+        model=model,
+        terminal=FakeTerminal(),
+        context_length=2000,
+        summarizer=lambda prompt: "should not compact",
+    )
+    app.session.agent.state.messages = [
+        UserMessage(content=[TextContent(text="finish the scan")], timestamp=now_ms()),
+        AssistantMessage(
+            content=[TextContent(text="")],
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=empty_usage(),
+            stop_reason="error",
+            error_message=(
+                "max_tokens: 8192 > context_window: 2000 - input_tokens: 1900 "
+                "= available_tokens: 100"
+            ),
+            timestamp=now_ms(),
+        ),
+    ]
+
+    app.run_turn("hi", stream_fn=stream_fn)
+
+    assert seen_max_tokens == [100]
+    assert model.max_tokens == 100
+    assert app.compaction.compressor.compression_count == 0
+    assert all(getattr(message, "stop_reason", None) != "error" for message in app.messages)
+    assert any(
+        isinstance(message, AssistantMessage)
+        and any(
+            isinstance(block, TextContent) and block.text == "recovered with lower output cap"
+            for block in message.content
+        )
+        for message in app.messages
+    )
+
+
 def test_coding_app_default_compaction_summarizer_uses_active_model(tmp_path: Path) -> None:
     model = faux_model()
     summary_prompts: list[str] = []
