@@ -608,6 +608,42 @@ def test_missing_summary_provider_uses_hermes_fallback_bookkeeping_and_cooldown(
     assert "LLM context summarizer was unavailable" in fallback_text
 
 
+def test_compress_does_not_rewrite_existing_summary_when_no_new_middle_turns() -> None:
+    messages = [_user("scan the codebase")]
+    for i in range(32):
+        messages.append(_user(f"user turn {i} " * 120))
+        messages.append(_assistant(f"assistant turn {i} " * 120))
+    messages.append(_user("latest request"))
+
+    compressor = ContextCompressor(
+        context_length=30_000,
+        threshold_percent=0.5,
+        protect_first_n=3,
+        protect_last_n=20,
+    )
+    first = compressor.compress(
+        messages,
+        summarizer=lambda prompt: (_ for _ in ()).throw(RuntimeError("summary provider rejected first pass")),
+        force=True,
+    )
+    assert first.compressed is True
+    assert compressor._last_summary_fallback_used is True
+
+    calls: list[str] = []
+
+    def expanding_summarizer(prompt: str) -> str:
+        calls.append(prompt)
+        return "## Historical Task Snapshot\n" + ("expanded successful summary " * 500)
+
+    before_tokens = estimate_tokens(first.messages)
+    second = compressor.compress(first.messages, summarizer=expanding_summarizer, force=True)
+
+    assert second.compressed is False
+    assert second.messages == first.messages
+    assert estimate_tokens(second.messages) == before_tokens
+    assert calls == []
+
+
 def test_summary_failure_flags_clear_on_subsequent_success() -> None:
     messages = [_user("first goal")]
     for i in range(12):
