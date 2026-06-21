@@ -6,6 +6,7 @@ import threading
 import pytest
 
 from appv22.agent import (
+    AbortSignal,
     Agent,
     AgentContext,
     AgentLoopTurnUpdate,
@@ -138,6 +139,50 @@ def test_tool_call_turn_executes_and_continues() -> None:
     assert "tool_execution_end" in events
     assert any(getattr(m, "role", None) == "toolResult" for m in msgs)
     assert calls["n"] == 2
+
+
+def test_agent_loop_stops_after_signal_aborted_during_tool_execution() -> None:
+    model = faux_model()
+    calls = {"n": 0}
+    signal = AbortSignal()
+
+    def script(m, c):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return tool_call_response_events(m, "aborter", {})
+        return text_response_events(m, "should not run after abort")
+
+    register_api_provider(create_faux_provider(script))
+
+    def aborter_execute(tool_call_id, args, signal=None, on_update=None):
+        assert signal is not None
+        signal.abort()
+        raise RuntimeError("Operation aborted")
+
+    aborter = AgentTool(
+        name="aborter",
+        description="aborter",
+        parameters={"type": "object", "properties": {}},
+        label="Aborter",
+        execute=aborter_execute,
+    )
+    events: list[str] = []
+
+    msgs = run_agent_loop(
+        [UserMessage(content="go", timestamp=now_ms())],
+        _ctx(tools=[aborter]),
+        _config(model),
+        lambda e: events.append(e.type),
+        signal,
+    )
+
+    assert calls["n"] == 1
+    assert events[-1] == "agent_end"
+    assert any(
+        getattr(message, "role", None) == "toolResult"
+        and any(getattr(block, "text", "") == "Operation aborted" for block in message.content)
+        for message in msgs
+    )
 
 
 def test_duplicate_tool_calls_in_same_assistant_turn_execute_once() -> None:

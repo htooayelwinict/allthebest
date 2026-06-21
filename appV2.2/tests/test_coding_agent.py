@@ -1368,9 +1368,13 @@ def test_agent_session_exposes_state_resource_loader_and_prompt_templates(tmp_pa
     assert session.promptTemplates == session.prompt_templates
 
 
-def test_resource_loader_resolves_package_skills_prompts_and_themes(tmp_path: Path) -> None:
+def test_resource_loader_resolves_package_skills_prompts_and_themes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from appv22.coding_agent import DefaultResourceLoader
 
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     agent_dir = tmp_path / "agent"
     project = tmp_path / "repo"
     package = tmp_path / "pkg"
@@ -1430,9 +1434,13 @@ def test_resource_loader_resolves_package_skills_prompts_and_themes(tmp_path: Pa
     assert str(skill_dir / "SKILL.md") in session.system_prompt
 
 
-def test_default_resource_loader_uses_pi_settings_manager_resource_paths(tmp_path: Path) -> None:
+def test_default_resource_loader_uses_pi_settings_manager_resource_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from appv22.coding_agent import DefaultResourceLoader
 
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     agent_dir = tmp_path / "agent"
     project = tmp_path / "repo"
     skill_dir = project / "configured-skills" / "audit"
@@ -1467,9 +1475,44 @@ def test_default_resource_loader_uses_pi_settings_manager_resource_paths(tmp_pat
     assert [theme.name for theme in loader.get_themes()["themes"]] == ["configured"]
 
 
-def test_create_agent_session_services_ports_pi_settings_resource_wiring(tmp_path: Path) -> None:
+def test_default_resource_loader_loads_user_agents_skills_like_pi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from appv22.coding_agent import DefaultResourceLoader
+    from appv22.coding_agent.resource_loader import format_skills_for_prompt
+
+    home = tmp_path / "home"
+    project = home / "repo"
+    agent_dir = home / ".pi" / "agent"
+    user_skill_dir = home / ".agents" / "skills" / "systematic-debugging"
+    project.mkdir(parents=True)
+    agent_dir.mkdir(parents=True)
+    user_skill_dir.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    (user_skill_dir / "SKILL.md").write_text(
+        "---\nname: systematic-debugging\ndescription: Find root causes before fixing bugs\n---\nSkill body\n",
+        encoding="utf-8",
+    )
+
+    loader = DefaultResourceLoader(
+        cwd=str(project),
+        agent_dir=str(agent_dir),
+        project_trusted=False,
+    )
+    loader.reload()
+
+    skills = loader.get_skills()["skills"]
+    assert [skill.name for skill in skills] == ["systematic-debugging"]
+    assert skills[0].sourceInfo.scope == "user"
+    assert skills[0].sourceInfo.baseDir == str(home / ".agents")
+    assert str(user_skill_dir / "SKILL.md") in format_skills_for_prompt(skills)
+
+
+def test_create_agent_session_services_ports_pi_settings_resource_wiring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from appv22.coding_agent import create_agent_session_from_services, create_agent_session_services
 
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     agent_dir = tmp_path / "agent"
     project = tmp_path / "repo"
     skill_dir = project / "skills" / "audit"
@@ -2503,6 +2546,50 @@ def test_agent_session_injects_recovery_steering_on_bash_no_progress_warning(tmp
     assert "idempotent_no_progress_warning" in tool_results[-1].content[0].text
     assert any("Tool loop recovery instruction" in users[-1] for users in seen_user_messages if users)
     assert assistants[-1].content[0].text == "I will use the first listing and read the relevant files."
+
+
+def test_agent_session_reissues_recovery_steering_for_escalating_tool_loop_warnings(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    recovery_lengths: list[int] = []
+    repeated_args = {"command": "ls -la src/metrics"}
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="Command exited with code 1")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        users = [_user_text(message) for message in c.messages if getattr(message, "role", None) == "user"]
+        recoveries = [text for text in users if "Tool loop recovery instruction" in text]
+        recovery_lengths.append(len(recoveries))
+        if len(recoveries) >= 2:
+            return text_response_events(m, "I will stop retrying bash and use the existing failure.")
+        return tool_call_response_events(m, "bash", repeated_args, call_id=f"call_{provider_calls['n']}")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("scan metrics")
+
+    assistants = [m for m in session.messages if getattr(m, "role", None) == "assistant"]
+    assert provider_calls["n"] == 4
+    assert executions == [repeated_args, repeated_args, repeated_args]
+    assert max(recovery_lengths) >= 2
+    assert assistants[-1].content[0].text == "I will stop retrying bash and use the existing failure."
 
 
 def test_agent_session_blocks_consecutive_repeated_bash_loop_and_stops(tmp_path: Path) -> None:

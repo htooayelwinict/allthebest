@@ -17,6 +17,7 @@ from appv22.ai.types import (
     Context,
     ImageContent,
     Model,
+    SimpleStreamOptions,
     TextContent,
     ThinkingContent,
     Tool,
@@ -208,6 +209,66 @@ def test_appv2_env_provider_formats_unread_streaming_http_error_without_thread_c
     assert "OpenRouter authorization failed" in message.error_message
     assert "HTTP 403" in message.error_message
     assert "Provider message: Forbidden" in message.error_message
+
+
+def test_appv2_env_provider_runtime_max_tokens_overrides_env_config(monkeypatch) -> None:
+    captured_body: dict = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_lines(self):
+            return iter(["data: [DONE]"])
+
+    class FakeStream:
+        def __enter__(self):
+            return FakeResponse()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *args, **kwargs):
+            captured_body.update(kwargs["json"])
+            return FakeStream()
+
+    monkeypatch.setattr(appv2_env.httpx, "Client", FakeClient)
+    provider = AppV2EnvProvider(
+        ModelConfig(
+            enabled=True,
+            api_key="configured-key",
+            model="qwen/qwen3-coder-next",
+            base_url="https://openrouter.ai/api/v1",
+            timeout_seconds=60,
+            temperature=0,
+            top_p=None,
+            frequency_penalty=None,
+            presence_penalty=None,
+            seed=None,
+            max_tokens=8192,
+        )
+    )
+
+    provider.stream(
+        _model(),
+        Context(messages=[UserMessage(content="hi")]),
+        SimpleStreamOptions(max_tokens=4096),
+    ).result_sync()
+
+    assert captured_body["max_tokens"] == 4096
 
 
 def test_convert_messages_maps_roles_and_tools() -> None:

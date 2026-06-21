@@ -551,7 +551,7 @@ class AgentSession:
         )
         self._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
         self._tool_guardrail_halt_response_emitted = False
-        self._tool_loop_recovery_steered = False
+        self._tool_loop_recovery_steered_keys: set[tuple[str, str, int]] = set()
         self._scoped_models = list(scoped_models or [])
         self._convert_to_llm = convert_to_llm or default_convert_to_llm
         self._caller_transform_context = transform_context
@@ -1178,8 +1178,6 @@ class AgentSession:
     followUp = follow_up
 
     def _steer_tool_loop_recovery(self, decision: ToolGuardrailDecision) -> None:
-        if self._tool_loop_recovery_steered:
-            return
         if decision.action != "warn" or decision.code not in {
             "idempotent_consecutive_warning",
             "idempotent_no_progress_warning",
@@ -1187,10 +1185,14 @@ class AgentSession:
             "same_tool_failure_warning",
         }:
             return
-        self._tool_loop_recovery_steered = True
+        key = (decision.code, decision.tool_name, decision.count)
+        if key in self._tool_loop_recovery_steered_keys:
+            return
+        self._tool_loop_recovery_steered_keys.add(key)
         self.agent.steer(
             _user_message(
-                "Tool loop recovery instruction: the last tool result already contains the information "
+                f"Tool loop recovery instruction ({decision.code}, count={decision.count}): "
+                "the last tool result already contains the information "
                 "or failure signal you need. Do not repeat the same tool call unchanged. If bash returned "
                 "a directory listing, find output, rg output, grep output, or file preview, do not call bash "
                 "again for the same inventory. For codebase scans, treat that output as inventory you already "
@@ -1822,7 +1824,7 @@ class AgentSession:
         self._tool_guardrails.reset_for_turn()
         self._tool_guardrail_halt_decision = None
         self._tool_guardrail_halt_response_emitted = False
-        self._tool_loop_recovery_steered = False
+        self._tool_loop_recovery_steered_keys = set()
         active_stream_fn = stream_fn or self._stream_fn
         try:
             new_messages = list(self.agent.prompt(prompt_message, stream_fn=active_stream_fn))

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import builtins
+import os
+import select
 import threading
 import time
 
@@ -79,7 +81,7 @@ from appv22.agent.types import (
     ToolExecutionStartEvent,
     TurnEndEvent,
 )
-from appv22.agent.types import AgentToolResult
+from appv22.agent.types import AgentTool, AgentToolResult
 from appv22.ai.providers.faux import create_faux_provider, faux_model, text_response_events, tool_call_response_events
 from appv22.ai.models import get_api_key_for_provider, get_provider_auth_status, reset_models
 from appv22.ai.stream import register_api_provider, reset_api_providers
@@ -979,6 +981,21 @@ def test_process_terminal_ports_pi_start_stop_progress_cleanup() -> None:
     ]
 
 
+def test_process_terminal_ports_pi_utf8_text_decoding_before_stdin_buffer() -> None:
+    terminal = ProcessTerminal()
+    seen: list[str] = []
+    terminal.input_handler = seen.append
+    terminal._stdin_buffer = StdinBuffer({"timeout": 10})
+    terminal._stdin_buffer.on("data", terminal._forward_input_sequence)
+
+    emoji_bytes = "👨‍💻".encode("utf-8")
+    terminal._process_stdin_bytes(emoji_bytes[:2])
+    assert seen == []
+
+    terminal._process_stdin_bytes(emoji_bytes[2:])
+    assert seen == ["👨", "\u200d", "💻"]
+
+
 def test_tui_ports_pi_start_stop_terminal_lifecycle() -> None:
     terminal = FakeTerminal(columns=40)
     tui = TUI(terminal)
@@ -1009,6 +1026,51 @@ def test_interactive_mode_ports_pi_tui_lifecycle_on_run_exit(tmp_path) -> None:
     assert terminal.writes[0] == "\x1b[?2004h"
     assert terminal.writes[1] == "\x1b[?25l"
     assert terminal.writes[-2:] == ["\x1b[?25h", "\x1b[?2004l"]
+
+
+def test_tui_stop_ports_pi_drain_input_before_terminal_restore() -> None:
+    class DrainingTerminal(FakeTerminal):
+        def __init__(self) -> None:
+            super().__init__(columns=40)
+            self.lifecycle: list[str] = []
+
+        def drain_input(self, max_ms: int = 1000, idle_ms: int = 50) -> None:
+            self.lifecycle.append(f"drain:{max_ms}:{idle_ms}")
+
+        def show_cursor(self) -> None:
+            self.lifecycle.append("show_cursor")
+            super().show_cursor()
+
+        def stop(self) -> None:
+            self.lifecycle.append("stop")
+            super().stop()
+
+    terminal = DrainingTerminal()
+    tui = TUI(terminal)
+    tui.start()
+
+    tui.stop()
+
+    assert terminal.lifecycle == ["drain:1000:50", "show_cursor", "stop"]
+
+
+def test_process_terminal_drain_input_discards_pending_bytes() -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"\x1b[27;3u")
+        terminal = ProcessTerminal()
+        terminal._stdin_fd = read_fd
+        seen: list[str] = []
+        terminal.input_handler = seen.append
+
+        terminal.drain_input(max_ms=50, idle_ms=1)
+
+        readable, _writable, _errors = select.select([read_fd], [], [], 0)
+        assert readable == []
+        assert seen == []
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 def test_interactive_mode_default_uses_raw_tui_input_for_prompt_submit(monkeypatch, tmp_path) -> None:
@@ -1070,6 +1132,67 @@ def test_interactive_mode_default_uses_raw_tui_input_for_prompt_submit(monkeypat
     assert "raw reply" in strip_ansi(terminal.output)
 
 
+def test_interactive_mode_persists_pi_prompt_history_between_editors(tmp_path) -> None:
+    seen_prompts: list[str] = []
+
+    def script(model, context):
+        text = ""
+        if context.messages and getattr(context.messages[-1], "role", None) == "user":
+            content = context.messages[-1].content
+            if isinstance(content, str):
+                text = content
+            else:
+                text = "".join(block.text for block in content if isinstance(block, TextContent))
+        seen_prompts.append(text)
+        return text_response_events(model, "ok")
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app)
+    outcome: dict[str, object] = {}
+
+    def run_mode() -> None:
+        try:
+            outcome["code"] = mode.run()
+        except BaseException as error:  # noqa: BLE001 - test thread must surface failures.
+            outcome["error"] = error
+
+    thread = threading.Thread(target=run_mode)
+    thread.start()
+    try:
+        assert _wait_until(lambda: terminal.input_handler is not None and mode.active_editor is not None)
+        terminal.input_handler("first\r")
+        assert _wait_until(lambda: seen_prompts == ["first"], timeout=2)
+        assert _wait_until(lambda: not mode._is_turn_active() and mode.active_editor is not None, timeout=2)
+
+        terminal.input_handler("second\r")
+        assert _wait_until(lambda: seen_prompts == ["first", "second"], timeout=2)
+        assert _wait_until(lambda: not mode._is_turn_active() and mode.active_editor is not None, timeout=2)
+
+        terminal.input_handler("\x1b[A")
+        assert _wait_until(lambda: mode.active_editor is not None and mode.active_editor.get_value() == "second")
+        terminal.input_handler("\x1b[A")
+        assert _wait_until(lambda: mode.active_editor is not None and mode.active_editor.get_value() == "first")
+        terminal.input_handler("\x1b[B")
+        assert _wait_until(lambda: mode.active_editor is not None and mode.active_editor.get_value() == "second")
+        terminal.input_handler("\x1b[B")
+        assert _wait_until(lambda: mode.active_editor is not None and mode.active_editor.get_value() == "")
+
+        terminal.input_handler("/exit\r")
+        thread.join(timeout=2)
+    finally:
+        if thread.is_alive():
+            mode._shutdown_requested = True
+            if terminal.input_handler is not None:
+                terminal.input_handler("/exit\r")
+            thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert outcome["code"] == 0
+
+
 def test_interactive_mode_editor_escape_aborts_active_turn(tmp_path, monkeypatch) -> None:
     terminal = FakeTerminal(columns=120)
     app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
@@ -1083,6 +1206,115 @@ def test_interactive_mode_editor_escape_aborts_active_turn(tmp_path, monkeypatch
 
     assert aborts == [True]
     assert mode.status._message == "Aborting"
+
+
+def test_interactive_mode_editor_escape_aborts_active_turn_bash(tmp_path, monkeypatch) -> None:
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    aborts: list[str] = []
+
+    monkeypatch.setattr(mode, "_is_turn_active", lambda: True)
+    app.session._bash_signal = object()
+    monkeypatch.setattr(app.session.agent, "abort", lambda: aborts.append("agent"))
+    monkeypatch.setattr(app.session, "abort_bash", lambda: aborts.append("bash"))
+
+    try:
+        mode._handle_editor_escape()
+    finally:
+        app.session._bash_signal = None
+
+    assert aborts == ["agent", "bash"]
+    assert mode.status._message == "Aborting"
+
+
+def test_interactive_mode_escape_aborted_tool_turn_returns_to_idle(tmp_path) -> None:
+    started = threading.Event()
+    finished = threading.Event()
+    provider_calls = {"n": 0}
+
+    def script(model, context):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return tool_call_response_events(model, "aborter", {})
+        return text_response_events(model, "should not run after abort")
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+
+    def aborter_execute(tool_call_id, args, signal=None, on_update=None):
+        started.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if signal and signal.aborted:
+                finished.set()
+                raise RuntimeError("Operation aborted")
+            time.sleep(0.005)
+        raise RuntimeError("abort signal was not delivered")
+
+    app.session.agent.state.tools = [
+        AgentTool(
+            name="aborter",
+            description="aborter",
+            parameters={"type": "object", "properties": {}},
+            label="Aborter",
+            execute=aborter_execute,
+        )
+    ]
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    mode.init()
+
+    mode.status.set_message("Running")
+    mode._start_turn_thread("run aborter", 0, 0)
+    assert started.wait(timeout=2)
+
+    mode._handle_editor_escape()
+    mode._wait_for_active_turn()
+
+    assert finished.is_set()
+    assert provider_calls["n"] == 1
+    assert mode.status._message == "Idle"
+
+
+def test_interactive_mode_ctrl_c_exits_idle_tui(tmp_path) -> None:
+    calls = {"n": 0}
+
+    def script(model, context):
+        calls["n"] += 1
+        return text_response_events(model, "should not run")
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app)
+    outcome: dict[str, object] = {}
+
+    def run_mode() -> None:
+        try:
+            outcome["code"] = mode.run()
+        except BaseException as error:  # noqa: BLE001 - test thread must surface failures.
+            outcome["error"] = error
+
+    thread = threading.Thread(target=run_mode)
+    thread.start()
+    exited_after_ctrl_c = False
+    try:
+        assert _wait_until(lambda: terminal.input_handler is not None and mode.active_editor is not None)
+        terminal.input_handler("\x03")
+        exited_after_ctrl_c = _wait_until(lambda: not thread.is_alive(), timeout=0.5)
+    finally:
+        if thread.is_alive():
+            mode._shutdown_requested = True
+            if terminal.input_handler is not None:
+                terminal.input_handler("/exit\r")
+            thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert exited_after_ctrl_c is True
+    assert outcome["code"] == 0
+    assert calls["n"] == 0
 
 
 def test_tui_ports_pi_input_listener_transform_consume_and_unsubscribe() -> None:
@@ -1676,6 +1908,52 @@ def test_input_render_scrolls_to_cursor_and_uses_pi_fake_cursor() -> None:
     assert "\x1b[7m \x1b[27m" in rendered
     assert "z" in plain
     assert "abc" not in plain
+
+
+def test_input_ports_pi_grapheme_cursor_and_delete_behavior() -> None:
+    input_component = Input()
+    input_component.set_value("a👨‍💻b")
+
+    input_component.handle_input("\x1b[D")
+    assert input_component.cursor == len("a👨‍💻")
+    input_component.handle_input("\x1b[D")
+    assert input_component.cursor == len("a")
+
+    input_component.handle_input("\x1b[C")
+    assert input_component.cursor == len("a👨‍💻")
+
+    input_component.handle_input("\x7f")
+    assert input_component.get_value() == "ab"
+    assert input_component.cursor == len("a")
+
+    input_component.set_value("a👨‍💻b")
+    input_component.cursor = len("a")
+    input_component.handle_input("\x1b[3~")
+    assert input_component.get_value() == "ab"
+    assert input_component.cursor == len("a")
+
+
+def test_input_ports_pi_up_down_prompt_history_navigation() -> None:
+    input_component = Input(value="draft")
+    input_component.addToHistory("first")
+    input_component.addToHistory("second")
+    input_component.addToHistory("second")
+
+    input_component.handle_input("\x1b[A")
+    assert input_component.get_value() == "second"
+    assert input_component.cursor == 0
+
+    input_component.handle_input("\x1b[A")
+    assert input_component.get_value() == "first"
+    assert input_component.cursor == 0
+
+    input_component.handle_input("\x1b[B")
+    assert input_component.get_value() == "second"
+    assert input_component.cursor == len("second")
+
+    input_component.handle_input("\x1b[B")
+    assert input_component.get_value() == "draft"
+    assert input_component.cursor == len("draft")
 
 
 def test_input_ports_pi_alt_d_delete_word_forward_keybinding() -> None:
@@ -3516,6 +3794,26 @@ def test_interactive_mode_manual_compress_renders_feedback_and_updates_footer(tm
     assert "faux-model" in rendered
 
 
+def test_interactive_mode_manual_compress_failure_resets_status(tmp_path) -> None:
+    register_api_provider(create_faux_provider(lambda m, c: text_response_events(m, "unused")))
+    terminal = FakeTerminal(columns=140)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+
+    def fail_manual_compress(*args, **kwargs):
+        raise RuntimeError("summary provider stuck")
+
+    app.compaction.compress_manual_with_status = fail_manual_compress
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    mode.init()
+
+    mode._run_manual_compress("/compress")
+
+    rendered = "\n".join(app.tui.render(140))
+    assert mode.status._message == "Idle"
+    assert "compact: Compression failed: summary provider stuck" in rendered
+    assert "status: Compressing" not in rendered
+
+
 def test_interactive_mode_compact_alias_is_local_and_does_not_call_model(tmp_path) -> None:
     calls = {"n": 0}
 
@@ -3648,16 +3946,24 @@ def test_interactive_mode_login_api_key_is_local_tui_command(tmp_path) -> None:
     assert "model should not run" not in rendered
 
 
-def test_interactive_mode_bad_read_numeric_string_returns_tool_error_not_traceback(tmp_path) -> None:
+def test_interactive_mode_coerces_read_numeric_string_like_pi_validation(tmp_path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "file.py").write_text("print('ok')\n", encoding="utf-8")
     calls = {"count": 0}
+    seen_tool_result = {"text": ""}
 
     def script(model, context):
         calls["count"] += 1
         if calls["count"] == 1:
             return tool_call_response_events(model, "read", {"path": "src/file.py", "limit": "100.0"})
-        return text_response_events(model, "handled invalid read")
+        seen_tool_result["text"] = "\n".join(
+            block.text
+            for message in context.messages
+            if getattr(message, "role", None) == "toolResult"
+            for block in getattr(message, "content", [])
+            if hasattr(block, "text")
+        )
+        return text_response_events(model, "handled read")
 
     register_api_provider(create_faux_provider(script))
     terminal = FakeTerminal(columns=120)
@@ -3667,8 +3973,9 @@ def test_interactive_mode_bad_read_numeric_string_returns_tool_error_not_traceba
 
     rendered = "\n".join(app.tui.render(120))
     assert "read src/file.py" in rendered
-    assert "read.limit: expected number" in rendered
+    assert "read.limit: expected number" not in rendered
     assert "Traceback" not in rendered
+    assert "print('ok')" in seen_tool_result["text"]
     assert calls["count"] == 2
 
 

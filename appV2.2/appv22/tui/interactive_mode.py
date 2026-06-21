@@ -76,6 +76,7 @@ class InteractiveMode:
         self.hidden_thinking_label = self.default_hidden_thinking_label
         self.hide_thinking_block = False
         self.editor_text = ""
+        self.prompt_history: list[str] = []
         self.active_editor: Input | None = None
         self.extension_statuses: dict[str, str] = {}
         self.extension_widgets_above: dict[str, Component] = {}
@@ -235,6 +236,7 @@ class InteractiveMode:
                     submitted_queue.put(value)
 
                 prompt_component = Input(value=self.editor_text, prompt=self.prompt_label, on_submit=on_submit)
+                prompt_component.set_history(self.prompt_history)
                 prompt_component.on_escape = self._handle_editor_escape
                 prompt_component.onEscape = self._handle_editor_escape
                 prompt_component.set_autocomplete_provider(self.autocomplete_provider)
@@ -293,6 +295,7 @@ class InteractiveMode:
                     return 0
                 if not prompt:
                     continue
+                prompt_component.add_to_history(prompt)
                 bash_command = _parse_bash_command(prompt)
                 if bash_command:
                     self._run_bash_command(bash_command[0], exclude_from_context=bash_command[1])
@@ -336,6 +339,15 @@ class InteractiveMode:
         return None
 
     def _handle_tui_terminal_input(self, data: str):
+        if data == "\x03":
+            if self._is_turn_active() or self.app.session.is_streaming or self.app.session.is_bash_running:
+                self._handle_editor_escape()
+            else:
+                self._shutdown_requested = True
+                self.status.set_message("Exiting")
+                self._refresh_footer()
+                self.tui.request_render()
+            return {"consume": True}
         consumed, current = self._dispatch_terminal_input(data)
         if consumed:
             return {"consume": True}
@@ -450,6 +462,8 @@ class InteractiveMode:
         if self._is_turn_active() or self.app.session.is_streaming:
             self.status.set_message("Aborting")
             self.app.session.agent.abort()
+            if self.app.session.is_bash_running:
+                self.app.session.abort_bash()
             self._refresh_footer()
             self.tui.request_render()
             return
@@ -537,22 +551,26 @@ class InteractiveMode:
         self._refresh_footer()
         self.tui.request_render()
 
-        status = self.app.compaction.compress_manual_with_status(
-            self.app.messages,
-            focus=focus,
-        )
-        self.app.session.agent.state.messages = status.messages
-        self.history.add(StatusLine(status.headline, kind="compact"))
-        self.history.add(Text(status.token_line))
-        if status.note:
-            self.history.add(StatusLine(status.note, kind="note"))
-        if status.warning:
-            self.history.add(StatusLine(status.warning, kind="warning"))
-        if status.info:
-            self.history.add(StatusLine(status.info, kind="info"))
-        self.status.set_message("Idle")
-        self._refresh_footer()
-        self.tui.request_render()
+        try:
+            status = self.app.compaction.compress_manual_with_status(
+                self.app.messages,
+                focus=focus,
+            )
+            self.app.session.agent.state.messages = status.messages
+            self.history.add(StatusLine(status.headline, kind="compact"))
+            self.history.add(Text(status.token_line))
+            if status.note:
+                self.history.add(StatusLine(status.note, kind="note"))
+            if status.warning:
+                self.history.add(StatusLine(status.warning, kind="warning"))
+            if status.info:
+                self.history.add(StatusLine(status.info, kind="info"))
+        except Exception as error:  # noqa: BLE001 - mirror Hermes: report local command failure without trapping TUI.
+            self.history.add(StatusLine(f"Compression failed: {error}", kind="compact"))
+        finally:
+            self.status.set_message("Idle")
+            self._refresh_footer()
+            self.tui.request_render()
 
     def _run_auth_command(self, command: str, provider_query: str | None) -> None:
         if command == "login":

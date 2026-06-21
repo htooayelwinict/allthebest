@@ -196,6 +196,10 @@ def _run_loop(
 
             _emit_event(emit, TurnEndEvent(message=message, tool_results=tool_results))
 
+            if signal and signal.aborted:
+                _emit_event(emit, AgentEndEvent(messages=new_messages))
+                return
+
             next_turn_ctx = ShouldStopAfterTurnContext(
                 message=message, tool_results=tool_results, context=current_context, new_messages=new_messages
             )

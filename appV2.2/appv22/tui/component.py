@@ -7,6 +7,7 @@ import math
 import os
 import re
 import threading
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -659,6 +660,71 @@ class CombinedAutocompleteProvider:
         return suggestions
 
 
+def _next_grapheme_text(text: str, cursor: int) -> str:
+    cursor = max(0, min(cursor, len(text)))
+    end = _next_grapheme_end(text, cursor)
+    return text[cursor:end]
+
+
+def _next_grapheme_end(text: str, cursor: int) -> int:
+    cursor = max(0, min(cursor, len(text)))
+    if cursor >= len(text):
+        return len(text)
+
+    index = cursor + 1
+    if _is_regional_indicator(text[cursor]) and index < len(text) and _is_regional_indicator(text[index]):
+        return index + 1
+
+    index = _consume_grapheme_extenders(text, index)
+    while index < len(text) and text[index] == "\u200d":
+        index += 1
+        if index >= len(text):
+            break
+        index += 1
+        index = _consume_grapheme_extenders(text, index)
+    return index
+
+
+def _previous_grapheme_start(text: str, cursor: int) -> int:
+    cursor = max(0, min(cursor, len(text)))
+    if cursor <= 0:
+        return 0
+
+    index = cursor - 1
+    if _is_regional_indicator(text[index]) and index > 0 and _is_regional_indicator(text[index - 1]):
+        return index - 1
+
+    while index > 0 and _is_grapheme_extender(text[index]):
+        index -= 1
+    while index > 0 and text[index - 1] == "\u200d":
+        index = max(0, index - 2)
+        while index > 0 and _is_grapheme_extender(text[index]):
+            index -= 1
+    return index
+
+
+def _consume_grapheme_extenders(text: str, index: int) -> int:
+    while index < len(text) and _is_grapheme_extender(text[index]):
+        index += 1
+    return index
+
+
+def _is_grapheme_extender(char: str) -> bool:
+    codepoint = ord(char)
+    return (
+        unicodedata.combining(char) != 0
+        or unicodedata.category(char).startswith("M")
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0x1F3FB <= codepoint <= 0x1F3FF
+        or 0xE0100 <= codepoint <= 0xE01EF
+    )
+
+
+def _is_regional_indicator(char: str) -> bool:
+    codepoint = ord(char)
+    return 0x1F1E6 <= codepoint <= 0x1F1FF
+
+
 class Input(Component):
     """Single-line input with basic editing and submit callback."""
 
@@ -671,6 +737,9 @@ class Input(Component):
         self.onEscape: Callable[[], None] | None = None
         self.focused = False
         self.autocomplete_provider: object | None = None
+        self._history: list[str] = []
+        self._history_index = -1
+        self._history_draft: tuple[str, int] | None = None
         self._kill_ring: list[str] = []
         self._last_action: str | None = None
         self._undo_stack: list[tuple[str, int]] = []
@@ -683,9 +752,27 @@ class Input(Component):
     def set_value(self, value: str) -> None:
         self.value = value
         self.cursor = len(value)
+        self._exit_history_browsing()
 
     def get_value(self) -> str:
         return self.value
+
+    def set_history(self, history: list[str]) -> None:
+        self._history = history
+        self._exit_history_browsing()
+
+    setHistory = set_history
+
+    def add_to_history(self, text: str) -> None:
+        trimmed = text.strip()
+        if not trimmed:
+            return
+        if self._history and self._history[0] == trimmed:
+            return
+        self._history.insert(0, trimmed)
+        del self._history[100:]
+
+    addToHistory = add_to_history
 
     def apply_autocomplete(self, *, force: bool = True) -> bool:
         if self.autocomplete_provider is None:
@@ -722,8 +809,10 @@ class Input(Component):
         lines = result.get("lines")
         if not isinstance(lines, list) or not lines:
             return False
+        self._push_undo()
         self.value = str(lines[0])
         self.cursor = int(result.get("cursorCol", len(self.value)))
+        self._exit_history_browsing()
         return True
 
     def handle_input(self, data: str) -> None:
@@ -738,11 +827,25 @@ class Input(Component):
                     paste = data[index + 6 : end]
                     index = end + 6
                 self._insert_paste(paste)
+            elif data.startswith("\x1b[A", index):
+                if self._history:
+                    self._navigate_history(-1)
+                else:
+                    self.cursor = 0
+                    self._last_action = None
+                index += 3
+            elif data.startswith("\x1b[B", index):
+                if self._history_index > -1:
+                    self._navigate_history(1)
+                else:
+                    self.cursor = len(self.value)
+                    self._last_action = None
+                index += 3
             elif data.startswith("\x1b[D", index):
-                self.cursor = max(0, self.cursor - 1)
+                self.cursor = _previous_grapheme_start(self.value, self.cursor)
                 index += 3
             elif data.startswith("\x1b[C", index):
-                self.cursor = min(len(self.value), self.cursor + 1)
+                self.cursor = _next_grapheme_end(self.value, self.cursor)
                 self._last_action = None
                 index += 3
             elif word_left_match := re.match(r"\x1b\[1;[35](?::[123])?D", data[index:]):
@@ -797,6 +900,7 @@ class Input(Component):
                         self.on_submit(submitted)
                     self.value = ""
                     self.cursor = 0
+                    self._exit_history_browsing()
                     self._last_action = None
                 elif char == "\x01":
                     self.cursor = 0
@@ -805,10 +909,10 @@ class Input(Component):
                     self.cursor = len(self.value)
                     self._last_action = None
                 elif char == "\x02":
-                    self.cursor = max(0, self.cursor - 1)
+                    self.cursor = _previous_grapheme_start(self.value, self.cursor)
                     self._last_action = None
                 elif char == "\x06":
-                    self.cursor = min(len(self.value), self.cursor + 1)
+                    self.cursor = _next_grapheme_end(self.value, self.cursor)
                     self._last_action = None
                 elif char == "\x17":
                     self._delete_word_backward()
@@ -823,14 +927,17 @@ class Input(Component):
                 elif char in ("\x7f", "\b"):
                     if self.cursor > 0:
                         self._push_undo()
-                        self.value = self.value[: self.cursor - 1] + self.value[self.cursor :]
-                        self.cursor -= 1
+                        delete_from = _previous_grapheme_start(self.value, self.cursor)
+                        self.value = self.value[:delete_from] + self.value[self.cursor :]
+                        self.cursor = delete_from
+                        self._exit_history_browsing()
                     self._last_action = None
                 elif char >= " ":
                     if char.isspace() or self._last_action != "type-word":
                         self._push_undo()
                     self.value = self.value[: self.cursor] + char + self.value[self.cursor :]
                     self.cursor += 1
+                    self._exit_history_browsing()
                     self._last_action = "type-word"
                 index += 1
 
@@ -864,7 +971,7 @@ class Input(Component):
                 cursor_display = 0
 
         before_cursor = visible_text[:cursor_display]
-        at_cursor = visible_text[cursor_display : cursor_display + 1] or " "
+        at_cursor = _next_grapheme_text(visible_text, cursor_display) or " "
         after_cursor = visible_text[cursor_display + len(at_cursor) :]
         marker = CURSOR_MARKER if self.focused else ""
         text_with_cursor = before_cursor + marker + f"\x1b[7m{at_cursor}\x1b[27m" + after_cursor
@@ -898,13 +1005,16 @@ class Input(Component):
         clean = paste.replace("\r\n", "").replace("\r", "").replace("\n", "").replace("\t", "    ")
         self.value = self.value[: self.cursor] + clean + self.value[self.cursor :]
         self.cursor += len(clean)
+        self._exit_history_browsing()
         self._last_action = None
 
     def _delete_char_forward(self) -> None:
         self._last_action = None
         if self.cursor < len(self.value):
             self._push_undo()
-            self.value = self.value[: self.cursor] + self.value[self.cursor + 1 :]
+            delete_to = _next_grapheme_end(self.value, self.cursor)
+            self.value = self.value[: self.cursor] + self.value[delete_to:]
+            self._exit_history_browsing()
 
     def _move_word_backward(self) -> None:
         if self.cursor > 0:
@@ -926,6 +1036,7 @@ class Input(Component):
         self._push_kill(deleted, prepend=True, accumulate=was_kill)
         self.value = self.value[:delete_from] + self.value[self.cursor :]
         self.cursor = delete_from
+        self._exit_history_browsing()
         self._last_action = "kill"
 
     def _delete_word_forward(self) -> None:
@@ -937,6 +1048,7 @@ class Input(Component):
         deleted = self.value[self.cursor : delete_to]
         self._push_kill(deleted, prepend=False, accumulate=was_kill)
         self.value = self.value[: self.cursor] + self.value[delete_to:]
+        self._exit_history_browsing()
         self._last_action = "kill"
 
     def _delete_to_line_start(self) -> None:
@@ -947,6 +1059,7 @@ class Input(Component):
         self._push_kill(deleted, prepend=True, accumulate=self._last_action == "kill")
         self.value = self.value[self.cursor :]
         self.cursor = 0
+        self._exit_history_browsing()
         self._last_action = "kill"
 
     def _delete_to_line_end(self) -> None:
@@ -956,6 +1069,7 @@ class Input(Component):
         deleted = self.value[self.cursor :]
         self._push_kill(deleted, prepend=False, accumulate=self._last_action == "kill")
         self.value = self.value[: self.cursor]
+        self._exit_history_browsing()
         self._last_action = "kill"
 
     def _yank(self) -> None:
@@ -965,6 +1079,7 @@ class Input(Component):
         text = self._kill_ring[0]
         self.value = self.value[: self.cursor] + text + self.value[self.cursor :]
         self.cursor += len(text)
+        self._exit_history_browsing()
         self._last_action = "yank"
 
     def _yank_pop(self) -> None:
@@ -980,7 +1095,39 @@ class Input(Component):
         text = self._kill_ring[0]
         self.value = self.value[: self.cursor] + text + self.value[self.cursor :]
         self.cursor += len(text)
+        self._exit_history_browsing()
         self._last_action = "yank"
+
+    def _navigate_history(self, direction: int) -> None:
+        self._last_action = None
+        if not self._history:
+            return
+
+        new_index = self._history_index - direction
+        if new_index < -1 or new_index >= len(self._history):
+            return
+
+        if self._history_index == -1 and new_index >= 0:
+            self._push_undo()
+            self._history_draft = (self.value, self.cursor)
+
+        self._history_index = new_index
+        if self._history_index == -1:
+            draft = self._history_draft
+            self._history_draft = None
+            if draft is None:
+                self.value = ""
+                self.cursor = 0
+            else:
+                self.value, self.cursor = draft
+            return
+
+        self.value = self._history[self._history_index] or ""
+        self.cursor = 0 if direction == -1 else len(self.value)
+
+    def _exit_history_browsing(self) -> None:
+        self._history_index = -1
+        self._history_draft = None
 
     def _notify_escape(self) -> None:
         callbacks: list[Callable[[], None]] = []
