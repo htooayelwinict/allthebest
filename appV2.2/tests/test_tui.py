@@ -1085,6 +1085,26 @@ def test_interactive_mode_editor_escape_aborts_active_turn(tmp_path, monkeypatch
     assert mode.status._message == "Aborting"
 
 
+def test_interactive_mode_editor_escape_aborts_active_turn_bash(tmp_path, monkeypatch) -> None:
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    aborts: list[str] = []
+
+    monkeypatch.setattr(mode, "_is_turn_active", lambda: True)
+    app.session._bash_signal = object()
+    monkeypatch.setattr(app.session.agent, "abort", lambda: aborts.append("agent"))
+    monkeypatch.setattr(app.session, "abort_bash", lambda: aborts.append("bash"))
+
+    try:
+        mode._handle_editor_escape()
+    finally:
+        app.session._bash_signal = None
+
+    assert aborts == ["agent", "bash"]
+    assert mode.status._message == "Aborting"
+
+
 def test_tui_ports_pi_input_listener_transform_consume_and_unsubscribe() -> None:
     terminal = FakeTerminal(columns=40)
     tui = TUI(terminal)

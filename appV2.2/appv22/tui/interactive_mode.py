@@ -450,6 +450,8 @@ class InteractiveMode:
         if self._is_turn_active() or self.app.session.is_streaming:
             self.status.set_message("Aborting")
             self.app.session.agent.abort()
+            if self.app.session.is_bash_running:
+                self.app.session.abort_bash()
             self._refresh_footer()
             self.tui.request_render()
             return
