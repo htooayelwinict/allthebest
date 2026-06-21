@@ -196,7 +196,14 @@ class CompactionManager:
         if self.overflow_attempts >= self.max_overflow_attempts:
             return messages, False
         self.overflow_attempts += 1
-        return self._run_compress(messages, summarizer, force=True)
+        recovered_messages, compressed = self._run_compress(messages, summarizer, force=True)
+        if compressed:
+            return recovered_messages, True
+        already_compacted = any(
+            self.compressor._is_context_summary_message(message)  # noqa: SLF001 - recovery needs compressor boundary state.
+            for message in recovered_messages
+        )
+        return recovered_messages, already_compacted
 
     def reset_overflow_attempts(self) -> None:
         self.overflow_attempts = 0

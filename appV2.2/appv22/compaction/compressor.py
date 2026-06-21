@@ -1049,6 +1049,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
             middle = pruned[max(head_end, summary_index + 1):tail_start]
+            if not middle:
+                self.last_compression_savings_pct = 0.0
+                self._ineffective_compression_count += 1
+                return CompressionResult(messages=messages, compressed=False, savings_pct=0.0)
         elif self._previous_summary:
             self._previous_summary = None
         try:
