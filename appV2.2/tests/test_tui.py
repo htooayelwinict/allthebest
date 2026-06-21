@@ -1698,6 +1698,29 @@ def test_input_render_scrolls_to_cursor_and_uses_pi_fake_cursor() -> None:
     assert "abc" not in plain
 
 
+def test_input_ports_pi_grapheme_cursor_and_delete_behavior() -> None:
+    input_component = Input()
+    input_component.set_value("a👨‍💻b")
+
+    input_component.handle_input("\x1b[D")
+    assert input_component.cursor == len("a👨‍💻")
+    input_component.handle_input("\x1b[D")
+    assert input_component.cursor == len("a")
+
+    input_component.handle_input("\x1b[C")
+    assert input_component.cursor == len("a👨‍💻")
+
+    input_component.handle_input("\x7f")
+    assert input_component.get_value() == "ab"
+    assert input_component.cursor == len("a")
+
+    input_component.set_value("a👨‍💻b")
+    input_component.cursor = len("a")
+    input_component.handle_input("\x1b[3~")
+    assert input_component.get_value() == "ab"
+    assert input_component.cursor == len("a")
+
+
 def test_input_ports_pi_alt_d_delete_word_forward_keybinding() -> None:
     input_component = Input()
     input_component.set_value("hello world")

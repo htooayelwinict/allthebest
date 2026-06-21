@@ -7,6 +7,7 @@ import math
 import os
 import re
 import threading
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -659,6 +660,71 @@ class CombinedAutocompleteProvider:
         return suggestions
 
 
+def _next_grapheme_text(text: str, cursor: int) -> str:
+    cursor = max(0, min(cursor, len(text)))
+    end = _next_grapheme_end(text, cursor)
+    return text[cursor:end]
+
+
+def _next_grapheme_end(text: str, cursor: int) -> int:
+    cursor = max(0, min(cursor, len(text)))
+    if cursor >= len(text):
+        return len(text)
+
+    index = cursor + 1
+    if _is_regional_indicator(text[cursor]) and index < len(text) and _is_regional_indicator(text[index]):
+        return index + 1
+
+    index = _consume_grapheme_extenders(text, index)
+    while index < len(text) and text[index] == "\u200d":
+        index += 1
+        if index >= len(text):
+            break
+        index += 1
+        index = _consume_grapheme_extenders(text, index)
+    return index
+
+
+def _previous_grapheme_start(text: str, cursor: int) -> int:
+    cursor = max(0, min(cursor, len(text)))
+    if cursor <= 0:
+        return 0
+
+    index = cursor - 1
+    if _is_regional_indicator(text[index]) and index > 0 and _is_regional_indicator(text[index - 1]):
+        return index - 1
+
+    while index > 0 and _is_grapheme_extender(text[index]):
+        index -= 1
+    while index > 0 and text[index - 1] == "\u200d":
+        index = max(0, index - 2)
+        while index > 0 and _is_grapheme_extender(text[index]):
+            index -= 1
+    return index
+
+
+def _consume_grapheme_extenders(text: str, index: int) -> int:
+    while index < len(text) and _is_grapheme_extender(text[index]):
+        index += 1
+    return index
+
+
+def _is_grapheme_extender(char: str) -> bool:
+    codepoint = ord(char)
+    return (
+        unicodedata.combining(char) != 0
+        or unicodedata.category(char).startswith("M")
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0x1F3FB <= codepoint <= 0x1F3FF
+        or 0xE0100 <= codepoint <= 0xE01EF
+    )
+
+
+def _is_regional_indicator(char: str) -> bool:
+    codepoint = ord(char)
+    return 0x1F1E6 <= codepoint <= 0x1F1FF
+
+
 class Input(Component):
     """Single-line input with basic editing and submit callback."""
 
@@ -739,10 +805,10 @@ class Input(Component):
                     index = end + 6
                 self._insert_paste(paste)
             elif data.startswith("\x1b[D", index):
-                self.cursor = max(0, self.cursor - 1)
+                self.cursor = _previous_grapheme_start(self.value, self.cursor)
                 index += 3
             elif data.startswith("\x1b[C", index):
-                self.cursor = min(len(self.value), self.cursor + 1)
+                self.cursor = _next_grapheme_end(self.value, self.cursor)
                 self._last_action = None
                 index += 3
             elif word_left_match := re.match(r"\x1b\[1;[35](?::[123])?D", data[index:]):
@@ -805,10 +871,10 @@ class Input(Component):
                     self.cursor = len(self.value)
                     self._last_action = None
                 elif char == "\x02":
-                    self.cursor = max(0, self.cursor - 1)
+                    self.cursor = _previous_grapheme_start(self.value, self.cursor)
                     self._last_action = None
                 elif char == "\x06":
-                    self.cursor = min(len(self.value), self.cursor + 1)
+                    self.cursor = _next_grapheme_end(self.value, self.cursor)
                     self._last_action = None
                 elif char == "\x17":
                     self._delete_word_backward()
@@ -823,8 +889,9 @@ class Input(Component):
                 elif char in ("\x7f", "\b"):
                     if self.cursor > 0:
                         self._push_undo()
-                        self.value = self.value[: self.cursor - 1] + self.value[self.cursor :]
-                        self.cursor -= 1
+                        delete_from = _previous_grapheme_start(self.value, self.cursor)
+                        self.value = self.value[:delete_from] + self.value[self.cursor :]
+                        self.cursor = delete_from
                     self._last_action = None
                 elif char >= " ":
                     if char.isspace() or self._last_action != "type-word":
@@ -864,7 +931,7 @@ class Input(Component):
                 cursor_display = 0
 
         before_cursor = visible_text[:cursor_display]
-        at_cursor = visible_text[cursor_display : cursor_display + 1] or " "
+        at_cursor = _next_grapheme_text(visible_text, cursor_display) or " "
         after_cursor = visible_text[cursor_display + len(at_cursor) :]
         marker = CURSOR_MARKER if self.focused else ""
         text_with_cursor = before_cursor + marker + f"\x1b[7m{at_cursor}\x1b[27m" + after_cursor
@@ -904,7 +971,8 @@ class Input(Component):
         self._last_action = None
         if self.cursor < len(self.value):
             self._push_undo()
-            self.value = self.value[: self.cursor] + self.value[self.cursor + 1 :]
+            delete_to = _next_grapheme_end(self.value, self.cursor)
+            self.value = self.value[: self.cursor] + self.value[delete_to:]
 
     def _move_word_backward(self) -> None:
         if self.cursor > 0:
