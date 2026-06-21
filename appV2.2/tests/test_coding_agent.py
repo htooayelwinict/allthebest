@@ -1368,9 +1368,13 @@ def test_agent_session_exposes_state_resource_loader_and_prompt_templates(tmp_pa
     assert session.promptTemplates == session.prompt_templates
 
 
-def test_resource_loader_resolves_package_skills_prompts_and_themes(tmp_path: Path) -> None:
+def test_resource_loader_resolves_package_skills_prompts_and_themes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from appv22.coding_agent import DefaultResourceLoader
 
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     agent_dir = tmp_path / "agent"
     project = tmp_path / "repo"
     package = tmp_path / "pkg"
@@ -1430,9 +1434,13 @@ def test_resource_loader_resolves_package_skills_prompts_and_themes(tmp_path: Pa
     assert str(skill_dir / "SKILL.md") in session.system_prompt
 
 
-def test_default_resource_loader_uses_pi_settings_manager_resource_paths(tmp_path: Path) -> None:
+def test_default_resource_loader_uses_pi_settings_manager_resource_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from appv22.coding_agent import DefaultResourceLoader
 
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     agent_dir = tmp_path / "agent"
     project = tmp_path / "repo"
     skill_dir = project / "configured-skills" / "audit"
@@ -1467,9 +1475,44 @@ def test_default_resource_loader_uses_pi_settings_manager_resource_paths(tmp_pat
     assert [theme.name for theme in loader.get_themes()["themes"]] == ["configured"]
 
 
-def test_create_agent_session_services_ports_pi_settings_resource_wiring(tmp_path: Path) -> None:
+def test_default_resource_loader_loads_user_agents_skills_like_pi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from appv22.coding_agent import DefaultResourceLoader
+    from appv22.coding_agent.resource_loader import format_skills_for_prompt
+
+    home = tmp_path / "home"
+    project = home / "repo"
+    agent_dir = home / ".pi" / "agent"
+    user_skill_dir = home / ".agents" / "skills" / "systematic-debugging"
+    project.mkdir(parents=True)
+    agent_dir.mkdir(parents=True)
+    user_skill_dir.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    (user_skill_dir / "SKILL.md").write_text(
+        "---\nname: systematic-debugging\ndescription: Find root causes before fixing bugs\n---\nSkill body\n",
+        encoding="utf-8",
+    )
+
+    loader = DefaultResourceLoader(
+        cwd=str(project),
+        agent_dir=str(agent_dir),
+        project_trusted=False,
+    )
+    loader.reload()
+
+    skills = loader.get_skills()["skills"]
+    assert [skill.name for skill in skills] == ["systematic-debugging"]
+    assert skills[0].sourceInfo.scope == "user"
+    assert skills[0].sourceInfo.baseDir == str(home / ".agents")
+    assert str(user_skill_dir / "SKILL.md") in format_skills_for_prompt(skills)
+
+
+def test_create_agent_session_services_ports_pi_settings_resource_wiring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from appv22.coding_agent import create_agent_session_from_services, create_agent_session_services
 
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     agent_dir = tmp_path / "agent"
     project = tmp_path / "repo"
     skill_dir = project / "skills" / "audit"
