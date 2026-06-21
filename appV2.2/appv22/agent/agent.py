@@ -217,6 +217,7 @@ class Agent:
             max_retry_delay_ms=self.max_retry_delay_ms,
             on_payload=self.on_payload,
             on_response=self.on_response,
+            max_tokens=self._state.model.max_tokens or None,
             max_iterations=self.max_iterations,
             iteration_budget=IterationBudget(self.max_iterations),
         )

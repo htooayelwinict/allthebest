@@ -12,7 +12,7 @@ from typing import Callable, Mapping, Optional
 
 from appv22.ai.stream import complete_simple_sync
 from appv22.ai.model_resolver import ScopedModel
-from appv22.ai.overflow import is_context_overflow
+from appv22.ai.overflow import is_context_overflow, parse_available_output_tokens_from_error
 from appv22.ai.types import Context, Model, SimpleStreamOptions, TextContent, ToolResultMessage, UserMessage, now_ms
 from appv22.ai.types import AssistantMessage
 from appv22.coding_agent.agent_session import AgentSession
@@ -119,10 +119,15 @@ class CodingApp:
         stream_fn=None,
         on_post_response_compaction_start: Callable[[], object] | None = None,
     ):
-        self._recover_context_overflow(stream_fn=stream_fn)
+        if self._recover_output_cap(stream_fn=stream_fn):
+            return []
+        if self._recover_context_overflow(stream_fn=stream_fn):
+            return []
         self._compact_failed_turn_context()
         before_prompt_compressions = self.compaction.compressor.compression_count
         new_messages = self.session.prompt(prompt, stream_fn=stream_fn)
+        if self._recover_output_cap(stream_fn=stream_fn):
+            return new_messages
         if self._recover_context_overflow(stream_fn=stream_fn):
             return new_messages
         just_compacted = self.compaction.compressor.compression_count > before_prompt_compressions
@@ -294,6 +299,30 @@ class CodingApp:
             )
             self.session._end_compaction(reason="threshold", result=result, aborted=False, will_retry=False)
             return result is not None
+
+    def _recover_output_cap(self, *, stream_fn=None) -> bool:
+        message = _last_assistant_message(self.session.messages)
+        if message is None or message.stop_reason != "error":
+            return False
+        available_tokens = parse_available_output_tokens_from_error(message.error_message or "")
+        if available_tokens is None:
+            return False
+
+        model = self.session.agent.state.model
+        current_max_tokens = int(model.max_tokens or 0)
+        if current_max_tokens > 0 and available_tokens >= current_max_tokens:
+            return False
+
+        model.max_tokens = max(1, available_tokens)
+        retained = [item for item in self.session.messages if item is not message]
+        self.session.agent.state.messages = retained
+        self.compaction.reset_overflow_attempts()
+        if not retained or getattr(retained[-1], "role", None) == "assistant":
+            return True
+
+        self.session.agent.continue_(stream_fn=stream_fn)
+        self._compact_post_response()
+        return True
 
 
 def _model_summarizer(model: Model, *, thinking_level: str = "off"):

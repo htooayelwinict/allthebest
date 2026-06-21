@@ -79,7 +79,7 @@ from appv22.ai.models import (
     unregister_provider_models,
     unregisterProviderModels,
 )
-from appv22.ai.overflow import is_context_overflow
+from appv22.ai.overflow import is_context_overflow, parse_available_output_tokens_from_error
 from appv22.ai.register_builtins import register_builtin_providers
 from appv22.ai.stream import (
     ApiProvider,
@@ -200,6 +200,7 @@ __all__ = [
     "has_configured_auth",
     "hasConfiguredAuth",
     "is_context_overflow",
+    "parse_available_output_tokens_from_error",
     "list_auth_providers",
     "listAuthProviders",
     "login_oauth_provider",

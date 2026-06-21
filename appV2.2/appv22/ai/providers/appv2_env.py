@@ -1019,8 +1019,11 @@ class AppV2EnvProvider:
             }
             if tools:
                 body["tools"] = tools
-            if self.config.max_tokens is not None:
-                body["max_tokens"] = self.config.max_tokens
+            max_tokens = getattr(options, "max_tokens", None) if options is not None else None
+            if max_tokens is None:
+                max_tokens = self.config.max_tokens
+            if max_tokens is not None:
+                body["max_tokens"] = max_tokens
             if self.config.provider_sort:
                 body["provider"] = {"sort": self.config.provider_sort, "allow_fallbacks": True}
             headers = {"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"}
