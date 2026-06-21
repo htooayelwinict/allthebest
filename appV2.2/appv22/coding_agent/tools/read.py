@@ -22,8 +22,8 @@ READ_SCHEMA = {
     "type": "object",
     "properties": {
         "path": {"type": "string", "description": "Path to the file to read (relative or absolute)"},
-        "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed)"},
-        "limit": {"type": "integer", "description": "Maximum number of lines to read"},
+        "offset": {"type": "number", "description": "Line number to start reading from (1-indexed)"},
+        "limit": {"type": "number", "description": "Maximum number of lines to read"},
     },
     "required": ["path"],
 }
@@ -101,8 +101,8 @@ def _execute_read(
 ):
     _check_aborted(signal)
     path = args["path"]
-    offset = args.get("offset")
-    limit = args.get("limit")
+    offset = _number_arg(args.get("offset"))
+    limit = _number_arg(args.get("limit"))
     absolute_path = resolve_read_path(path, cwd)
     _check_aborted(signal)
     operations.access(absolute_path)
@@ -202,8 +202,8 @@ def _format_read_line_range(args) -> str:
         return ""
     raw_offset = args.get("offset")
     raw_limit = args.get("limit")
-    start_line = _integer_arg(raw_offset) if raw_offset is not None else 1
-    limit = _integer_arg(raw_limit) if raw_limit is not None else None
+    start_line = _number_arg(raw_offset) if raw_offset is not None else 1
+    limit = _number_arg(raw_limit) if raw_limit is not None else None
     if start_line is None:
         return ""
     if raw_limit is not None:
@@ -214,10 +214,12 @@ def _format_read_line_range(args) -> str:
     return f":{start_line}" if raw_offset is not None else ""
 
 
-def _integer_arg(value) -> int | None:
-    if isinstance(value, bool):
+def _number_arg(value) -> int | None:
+    if value is None or isinstance(value, bool):
         return None
-    return value if isinstance(value, int) else None
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
 
 
 def _ctx_value(ctx, key: str, default=None):

@@ -7,6 +7,7 @@ iterated synchronously; `agent_loop` runs the loop in a worker thread.
 from __future__ import annotations
 
 import copy
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -14,7 +15,7 @@ from typing import Any, Callable, Optional, Union
 
 from appv22.ai.event_stream import EventStream
 from appv22.ai.stream import stream_simple as default_stream_simple
-from appv22.ai.types import AssistantMessage, Context, SimpleStreamOptions, ToolResultMessage, now_ms
+from appv22.ai.types import AssistantMessage, Context, SimpleStreamOptions, ToolResultMessage, UserMessage, now_ms
 from appv22.ai.validation import validate_tool_arguments
 from appv22.agent.types import (
     AbortSignal,
@@ -148,6 +149,7 @@ def _run_loop(
     current_context = initial_context
     config = initial_config
     first_turn = True
+    api_call_count = 0
     pending_messages: list[AgentMessage] = list(config.get_steering_messages() or []) if config.get_steering_messages else []
 
     while True:
@@ -167,6 +169,12 @@ def _run_loop(
                     new_messages.append(message)
                 pending_messages = []
 
+            if _iteration_budget_exhausted(api_call_count, config):
+                _request_iteration_summary(current_context, new_messages, config, signal, emit, stream_fn, api_call_count)
+                return
+
+            _consume_iteration_budget(config)
+            api_call_count += 1
             message = _stream_assistant_response(current_context, config, signal, emit, stream_fn)
             new_messages.append(message)
 
@@ -222,6 +230,55 @@ def _run_loop(
     _emit_event(emit, AgentEndEvent(messages=new_messages))
 
 
+def _iteration_budget_exhausted(api_call_count: int, config: AgentLoopConfig) -> bool:
+    max_iterations = max(1, int(config.max_iterations or 90))
+    if api_call_count >= max_iterations:
+        return True
+    budget = config.iteration_budget
+    return bool(budget is not None and getattr(budget, "remaining", 1) <= 0)
+
+
+def _consume_iteration_budget(config: AgentLoopConfig) -> None:
+    budget = config.iteration_budget
+    if budget is not None:
+        budget.consume()
+
+
+def _request_iteration_summary(
+    current_context: AgentContext,
+    new_messages: list[AgentMessage],
+    config: AgentLoopConfig,
+    signal: Optional[AbortSignal],
+    emit: AgentEventSink,
+    stream_fn: Optional[Callable],
+    api_call_count: int,
+) -> None:
+    max_iterations = max(1, int(config.max_iterations or 90))
+    summary_request = UserMessage(
+        content=(
+            "You've reached the maximum number of tool-calling iterations allowed. "
+            "Please provide a final response summarizing what you've found and accomplished so far, "
+            "without calling any more tools."
+        ),
+        timestamp=now_ms(),
+    )
+    _emit_event(emit, MessageStartEvent(message=summary_request))
+    _emit_event(emit, MessageEndEvent(message=summary_request))
+    current_context.messages.append(summary_request)
+    new_messages.append(summary_request)
+
+    summary_context = AgentContext(
+        system_prompt=current_context.system_prompt,
+        messages=current_context.messages,
+        tools=[],
+    )
+    summary_config = replace(config, max_iterations=max_iterations, iteration_budget=None)
+    message = _stream_assistant_response(summary_context, summary_config, signal, emit, stream_fn)
+    new_messages.append(message)
+    _emit_event(emit, TurnEndEvent(message=message, tool_results=[]))
+    _emit_event(emit, AgentEndEvent(messages=new_messages))
+
+
 def _stream_assistant_response(
     context: AgentContext,
     config: AgentLoopConfig,
@@ -269,6 +326,7 @@ def _stream_assistant_response(
                 _emit_event(emit, MessageUpdateEvent(message=copy.copy(event.partial), assistant_message_event=event))
         elif event.type in ("done", "error"):
             final_message = response.result_sync()
+            _deduplicate_tool_calls(final_message)
             if partial_added:
                 context.messages[-1] = final_message
             else:
@@ -278,6 +336,7 @@ def _stream_assistant_response(
             return final_message
 
     final_message = response.result_sync()
+    _deduplicate_tool_calls(final_message)
     if partial_added:
         context.messages[-1] = final_message
     else:
@@ -285,6 +344,44 @@ def _stream_assistant_response(
         _emit_event(emit, MessageStartEvent(message=copy.copy(final_message)))
     _emit_event(emit, MessageEndEvent(message=final_message))
     return final_message
+
+
+def _deduplicate_tool_calls(message: AssistantMessage) -> None:
+    content = getattr(message, "content", None)
+    if not content:
+        return
+    seen: set[tuple[str, str]] = set()
+    next_content = []
+    changed = False
+    for item in content:
+        if getattr(item, "type", None) != "toolCall":
+            next_content.append(item)
+            continue
+        key = (getattr(item, "name", ""), _canonical_tool_call_arguments(getattr(item, "arguments", None)))
+        if key in seen:
+            changed = True
+            continue
+        seen.add(key)
+        next_content.append(item)
+    if changed:
+        message.content = next_content
+
+
+def _canonical_tool_call_arguments(arguments: Any) -> str:
+    try:
+        return json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    except TypeError:
+        return str(arguments)
+
+
+def _is_guardrail_block_result(reason: str | None) -> bool:
+    if not reason:
+        return False
+    try:
+        parsed = json.loads(reason)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(parsed, dict) and isinstance(parsed.get("guardrail"), dict)
 
 
 class _ExecutedBatch:
@@ -320,7 +417,7 @@ def _execute_sequential(current_context, assistant_message, tool_calls, config, 
         )
         preparation = _prepare_tool_call(current_context, assistant_message, tool_call, config, signal)
         if preparation["kind"] == "immediate":
-            finalized = {"tool_call": tool_call, "result": preparation["result"], "is_error": preparation["is_error"]}
+            finalized = _finalize_immediate(current_context, assistant_message, tool_call, preparation, config, signal)
         else:
             executed = _execute_prepared(preparation, signal, emit)
             finalized = _finalize(current_context, assistant_message, preparation, executed, config, signal)
@@ -343,7 +440,7 @@ def _execute_parallel(current_context, assistant_message, tool_calls, config, si
         )
         preparation = _prepare_tool_call(current_context, assistant_message, tool_call, config, signal)
         if preparation["kind"] == "immediate":
-            finalized = {"tool_call": tool_call, "result": preparation["result"], "is_error": preparation["is_error"]}
+            finalized = _finalize_immediate(current_context, assistant_message, tool_call, preparation, config, signal)
             _emit_tool_end(finalized, emit)
             entries.append(finalized)
             if signal and signal.aborted:
@@ -389,7 +486,15 @@ def _should_terminate(finalized_calls: list[dict]) -> bool:
 def _prepare_tool_call(current_context, assistant_message, tool_call, config, signal) -> dict:
     tool = next((t for t in (current_context.tools or []) if t.name == tool_call.name), None)
     if tool is None:
-        return {"kind": "immediate", "result": _error_result(f"Tool {tool_call.name} not found"), "is_error": True}
+        return {
+            "kind": "immediate",
+            "tool_call": tool_call,
+            "args": getattr(tool_call, "arguments", {}),
+            "result": _error_result(f"Tool {tool_call.name} not found"),
+            "is_error": True,
+            "apply_after_tool_call": True,
+        }
+    prepared_call = tool_call
     try:
         prepared_call = _prepare_arguments(tool, tool_call)
         validated_args = validate_tool_arguments(tool, prepared_call)
@@ -398,18 +503,38 @@ def _prepare_tool_call(current_context, assistant_message, tool_call, config, si
                 _before_ctx(assistant_message, tool_call, validated_args, current_context), signal
             )
             if signal and signal.aborted:
-                return {"kind": "immediate", "result": _error_result("Operation aborted"), "is_error": True}
+                return {
+                    "kind": "immediate",
+                    "result": _error_result("Operation aborted"),
+                    "is_error": True,
+                    "apply_after_tool_call": False,
+                }
             if before and before.block:
                 return {
                     "kind": "immediate",
+                    "tool_call": prepared_call,
+                    "args": validated_args,
                     "result": _error_result(before.reason or "Tool execution was blocked"),
                     "is_error": True,
+                    "apply_after_tool_call": not _is_guardrail_block_result(before.reason),
                 }
         if signal and signal.aborted:
-            return {"kind": "immediate", "result": _error_result("Operation aborted"), "is_error": True}
+            return {
+                "kind": "immediate",
+                "result": _error_result("Operation aborted"),
+                "is_error": True,
+                "apply_after_tool_call": False,
+            }
         return {"kind": "prepared", "tool_call": prepared_call, "tool": tool, "args": validated_args}
     except Exception as error:  # noqa: BLE001
-        return {"kind": "immediate", "result": _error_result(str(error)), "is_error": True}
+        return {
+            "kind": "immediate",
+            "tool_call": prepared_call,
+            "args": getattr(prepared_call, "arguments", getattr(tool_call, "arguments", {})),
+            "result": _error_result(str(error)),
+            "is_error": True,
+            "apply_after_tool_call": True,
+        }
 
 
 def _prepare_arguments(tool: AgentTool, tool_call):
@@ -490,6 +615,22 @@ def _finalize(current_context, assistant_message, prepared, executed, config, si
             result = _error_result(str(error))
             is_error = True
     return {"tool_call": prepared["tool_call"], "result": result, "is_error": is_error}
+
+
+def _finalize_immediate(current_context, assistant_message, tool_call, preparation, config, signal) -> dict:
+    finalized = {
+        "tool_call": preparation.get("tool_call", tool_call),
+        "result": preparation["result"],
+        "is_error": preparation["is_error"],
+    }
+    if not preparation.get("apply_after_tool_call"):
+        return finalized
+    prepared = {
+        "tool_call": finalized["tool_call"],
+        "args": preparation.get("args", getattr(finalized["tool_call"], "arguments", {})),
+    }
+    executed = {"result": finalized["result"], "is_error": finalized["is_error"]}
+    return _finalize(current_context, assistant_message, prepared, executed, config, signal)
 
 
 def _error_result(message: str) -> AgentToolResult:

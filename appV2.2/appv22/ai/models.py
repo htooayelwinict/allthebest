@@ -414,6 +414,42 @@ def clamp_thinking_level(model: Model, level: str) -> str:
     return available_levels[0] if available_levels else "off"
 
 
+def models_are_equal(left: Model | None, right: Model | None) -> bool:
+    return bool(left and right and left.id == right.id and left.provider == right.provider)
+
+
+registerModel = register_model
+unregisterProviderModels = unregister_provider_models
+setProviderModels = set_provider_models
+getModel = get_model
+getModels = get_models
+getProviders = get_providers
+resetModels = reset_models
+registerProviderAuthConfig = register_provider_auth_config
+unregisterProviderAuthConfig = unregister_provider_auth_config
+registerModelRequestHeaders = register_model_request_headers
+setRuntimeApiKey = set_runtime_api_key
+removeRuntimeApiKey = remove_runtime_api_key
+setAuthCredential = set_auth_credential
+removeAuthCredential = remove_auth_credential
+getAuthCredential = get_auth_credential
+listAuthProviders = list_auth_providers
+loginOAuthProvider = login_oauth_provider
+logoutProvider = logout_provider
+drainAuthErrors = drain_auth_errors
+hasAuth = has_auth
+hasConfiguredAuth = has_configured_auth
+getProviderAuthStatus = get_provider_auth_status
+getProviderDisplayName = get_provider_display_name
+getApiKeyForProvider = get_api_key_for_provider
+getApiKeyAndHeaders = get_api_key_and_headers
+getOAuthProviders = get_oauth_providers
+calculateCost = calculate_cost
+getSupportedThinkingLevels = get_supported_thinking_levels
+clampThinkingLevel = clamp_thinking_level
+modelsAreEqual = models_are_equal
+
+
 def _env_api_key(provider: str) -> str | None:
     return get_env_api_key(provider)
 

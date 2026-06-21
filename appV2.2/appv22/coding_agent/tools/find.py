@@ -149,7 +149,6 @@ def create_find_tool_definition(cwd: str, operations: FindOperations | None = No
         ),
         parameters=FIND_SCHEMA,
         prompt_snippet="Find files by glob pattern (respects .gitignore)",
-        prompt_guidelines=["Use find to locate files by glob pattern."],
         execute=lambda tid, args, signal=None, on_update=None, ctx=None: _execute_find(
             cwd, ops, tid, args, signal, on_update, ctx
         ),

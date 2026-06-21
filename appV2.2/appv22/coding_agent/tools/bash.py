@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal as signal_module
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -110,7 +111,7 @@ def create_local_bash_operations(shell_path: str | None = None) -> BashOperation
         process = subprocess.Popen(
             [shell, "-c", command],
             cwd=cwd,
-            env=options.env or os.environ.copy(),
+            env=_with_python_bin_on_path(options.env or os.environ.copy()),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -149,8 +150,17 @@ def create_local_bash_operations(shell_path: str | None = None) -> BashOperation
     return BashOperations(exec=exec_command)
 
 
+def _with_python_bin_on_path(env: dict[str, str]) -> dict[str, str]:
+    python_bin = os.path.dirname(sys.executable)
+    current_path = env.get("PATH", "")
+    if python_bin and python_bin not in current_path.split(os.pathsep):
+        env = dict(env)
+        env["PATH"] = python_bin + (os.pathsep + current_path if current_path else "")
+    return env
+
+
 def _resolve_spawn_context(command: str, cwd: str, spawn_hook: BashSpawnHook | None = None) -> BashSpawnContext:
-    context = BashSpawnContext(command=command, cwd=cwd, env=os.environ.copy())
+    context = BashSpawnContext(command=command, cwd=cwd, env=_with_python_bin_on_path(os.environ.copy()))
     return spawn_hook(context) if spawn_hook else context
 
 
@@ -291,7 +301,6 @@ def create_bash_tool_definition(
         ),
         parameters=BASH_SCHEMA,
         prompt_snippet="Execute bash commands (ls, grep, find, etc.)",
-        prompt_guidelines=["Use bash for commands; prefer rg over grep -r."],
         execute=lambda tid, args, signal=None, on_update=None, ctx=None: _execute_bash(
             cwd, ops, command_prefix, spawn_hook, tid, args, signal, on_update, ctx
         ),

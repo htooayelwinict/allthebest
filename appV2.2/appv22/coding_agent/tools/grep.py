@@ -221,7 +221,6 @@ def create_grep_tool_definition(cwd: str, operations: GrepOperations | None = No
         ),
         parameters=GREP_SCHEMA,
         prompt_snippet="Search file contents for patterns (respects .gitignore)",
-        prompt_guidelines=["Use grep to find code by pattern."],
         execute=lambda tid, args, signal=None, on_update=None, ctx=None: _execute_grep(
             cwd, ops, tid, args, signal, on_update, ctx
         ),

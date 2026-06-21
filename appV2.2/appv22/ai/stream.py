@@ -26,12 +26,18 @@ class ApiProvider:
     stream: StreamFn
     stream_simple: SimpleStreamFn
 
+    @property
+    def streamSimple(self) -> SimpleStreamFn:
+        return self.stream_simple
+
 
 _API_PROVIDERS: dict[str, ApiProvider] = {}
+_API_PROVIDER_SOURCES: dict[str, str | None] = {}
 
 
-def register_api_provider(provider: ApiProvider) -> None:
+def register_api_provider(provider: ApiProvider, source_id: str | None = None) -> None:
     _API_PROVIDERS[provider.api] = provider
+    _API_PROVIDER_SOURCES[provider.api] = source_id
 
 
 def get_api_provider(api: str) -> ApiProvider:
@@ -41,8 +47,28 @@ def get_api_provider(api: str) -> ApiProvider:
     return provider
 
 
+def get_api_providers() -> list[ApiProvider]:
+    return list(_API_PROVIDERS.values())
+
+
+def unregister_api_providers(source_id: str) -> None:
+    for api, registered_source_id in list(_API_PROVIDER_SOURCES.items()):
+        if registered_source_id == source_id:
+            _API_PROVIDER_SOURCES.pop(api, None)
+            _API_PROVIDERS.pop(api, None)
+
+
 def reset_api_providers() -> None:
     _API_PROVIDERS.clear()
+    _API_PROVIDER_SOURCES.clear()
+
+
+clear_api_providers = reset_api_providers
+registerApiProvider = register_api_provider
+getApiProvider = get_api_provider
+getApiProviders = get_api_providers
+unregisterApiProviders = unregister_api_providers
+clearApiProviders = clear_api_providers
 
 
 def _with_model_auth(model: Model, options, options_type=StreamOptions):
@@ -101,3 +127,7 @@ def complete_simple_sync(
     model: Model, context: Context, options: SimpleStreamOptions | None = None
 ) -> AssistantMessage:
     return stream_simple(model, context, options).result_sync()
+
+
+streamSimple = stream_simple
+completeSimple = complete_simple

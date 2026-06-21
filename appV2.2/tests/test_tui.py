@@ -1,42 +1,107 @@
 from __future__ import annotations
 
+import base64
+import builtins
+import threading
+import time
+
 from appv22.tui import (
+    Image,
     Component,
     Container,
     FooterComponent,
     FakeTerminal,
+    formatCwdForFooter,
+    allocateImageId,
+    calculateImageRows,
+    fuzzyFilter,
+    fuzzyMatch,
+    CancellableLoader,
+    CombinedAutocompleteProvider,
+    deleteAllKittyImages,
+    deleteKittyImage,
+    detectCapabilities,
+    decodeKittyPrintable,
+    encodeITerm2,
+    encodeKitty,
+    getCapabilities,
+    getCellDimensions,
+    getGifDimensions,
+    getImageDimensions,
     Input,
     InteractiveMode,
     InteractiveRenderer,
+    KeybindingsManager,
+    Loader,
     Markdown,
+    parseOsc11BackgroundColor,
+    ProcessTerminal,
     SelectItem,
     SelectList,
+    SettingsList,
+    SimpleAutocompleteProvider,
     StatusLine,
+    StdinBuffer,
+    getPngDimensions,
+    hyperlink,
+    imageFallback,
+    isImageLine,
+    isFocusable,
+    renderImage,
+    resetCapabilitiesCache,
+    setCapabilities,
+    setCellDimensions,
     TUI,
     Text,
     ToolExecutionComponent,
+    TruncatedText,
+    TUI_KEYBINDINGS,
+    getKeybindings,
+    setKeybindings,
+    extractSegments,
+    extract_segments,
     strip_ansi,
+    slice_by_column,
+    slice_with_width,
+    truncateToWidth,
     truncate_to_width,
+    visibleWidth,
     visible_width,
+    wrapTextWithAnsi,
     wrap_text,
 )
 from appv22.agent.types import (
+    AgentEndEvent,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
+    TurnEndEvent,
 )
 from appv22.agent.types import AgentToolResult
 from appv22.ai.providers.faux import create_faux_provider, faux_model, text_response_events, tool_call_response_events
 from appv22.ai.models import get_api_key_for_provider, get_provider_auth_status, reset_models
 from appv22.ai.stream import register_api_provider, reset_api_providers
-from appv22.ai.types import AssistantMessage, TextContent, ThinkingContent, UserMessage, empty_usage, now_ms
+from appv22.ai.types import (
+    AssistantMessage,
+    Cost,
+    ErrorEvent,
+    TextContent,
+    ThinkingContent,
+    Usage,
+    UserMessage,
+    empty_usage,
+    now_ms,
+)
+from appv22.ai.model_resolver import ScopedModel
 from appv22.app import CodingApp
 from appv22.coding_agent import BashResult
 from appv22.coding_agent.session_store import BashExecutionMessage, BranchSummaryMessage, CustomMessage
 from appv22.coding_agent.tools.bash import BashOperations
 from appv22.coding_agent.tools.read import create_read_tool_definition
+from appv22.ai.event_stream import create_assistant_message_event_stream
+from appv22.ai.stream import ApiProvider
 
 
 def setup_function() -> None:
@@ -44,15 +109,640 @@ def setup_function() -> None:
     reset_models()
 
 
+def _visible_index_of(line: str, text: str) -> int:
+    index = line.index(text)
+    return visible_width(line[:index])
+
+
+def _wait_until(predicate, timeout: float = 2.0, interval: float = 0.02) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
 def test_visible_width_strips_ansi() -> None:
     assert visible_width("\x1b[31mred\x1b[0m") == 3
     assert visible_width("plain") == 5
 
 
+def test_visible_width_ports_pi_tabs_wide_unicode_and_apc() -> None:
+    assert visible_width("\t\x1b[31m界\x1b[0m") == 5
+    assert visible_width("🙂界") == 4
+    assert visible_width("a\x1b_pi:c\x07b") == 2
+
+
+def test_fuzzy_match_ports_pi_scoring_and_swapped_model_tokens() -> None:
+    assert fuzzyMatch("", "anything").matches is True
+    assert fuzzyMatch("", "anything").score == 0
+    assert fuzzyMatch("longquery", "short").matches is False
+    assert fuzzyMatch("abc", "aXbXc").matches is True
+    assert fuzzyMatch("abc", "cba").matches is False
+    assert fuzzyMatch("ABC", "abc").matches is True
+
+    consecutive = fuzzyMatch("foo", "foobar")
+    scattered = fuzzyMatch("foo", "f_o_o_bar")
+    assert consecutive.matches is True
+    assert scattered.matches is True
+    assert consecutive.score < scattered.score
+
+    at_boundary = fuzzyMatch("fb", "foo-bar")
+    not_at_boundary = fuzzyMatch("fb", "afbx")
+    assert at_boundary.matches is True
+    assert not_at_boundary.matches is True
+    assert at_boundary.score < not_at_boundary.score
+
+    assert fuzzyMatch("codex52", "gpt-5.2-codex").matches is True
+
+
+def test_fuzzy_filter_ports_pi_tokenized_sorting_and_custom_text() -> None:
+    assert fuzzyFilter(["apple", "banana", "cherry"], "", lambda value: value) == ["apple", "banana", "cherry"]
+    assert fuzzyFilter(["apple", "banana", "cherry"], "an", lambda value: value) == ["banana"]
+    assert fuzzyFilter(["a_p_p", "app", "application"], "app", lambda value: value)[0] == "app"
+    assert fuzzyFilter(["clone", "cl"], "cl", lambda value: value) == ["cl", "clone"]
+
+    items = [
+        {"name": "foo", "id": 1},
+        {"name": "bar", "id": 2},
+        {"name": "foobar", "id": 3},
+    ]
+    filtered = fuzzyFilter(items, "foo", lambda item: item["name"])
+    assert [item["name"] for item in filtered] == ["foo", "foobar"]
+
+    model = {"id": "gpt-5.5", "provider": "openai-codex"}
+    assert fuzzyFilter([model], "openai-codex/gpt-5.5", lambda item: f"{item['id']} {item['provider']}") == [model]
+
+
+def test_footer_ports_pi_home_path_formatting() -> None:
+    assert formatCwdForFooter("/home/user2", "/home/user") == "/home/user2"
+    assert formatCwdForFooter("/home/user", "/home/user") == "~"
+    assert formatCwdForFooter("/home/user/project", "/home/user") == "~/project"
+
+    footer = FooterComponent(cwd="/home/user/project", model="faux-model", home="/home/user")
+    assert footer.render(80)[0] == "~/project"
+
+
+def test_simple_autocomplete_provider_ports_pi_fuzzy_command_filtering() -> None:
+    provider = SimpleAutocompleteProvider(
+        [
+            {"name": "clear-cache", "description": "Clear cache", "argumentHint": "<scope>"},
+            {"value": "commit", "description": "Commit changes"},
+            {"name": "model", "description": "Switch model"},
+        ]
+    )
+
+    fuzzy_result = provider.get_suggestions(["/cc"], 0, len("/cc"))
+    assert fuzzy_result is not None
+    assert fuzzy_result["prefix"] == "/cc"
+    assert fuzzy_result["items"][0] == {
+        "value": "clear-cache",
+        "label": "clear-cache",
+        "description": "<scope> — Clear cache",
+    }
+
+    item_result = provider.get_suggestions(["/cm"], 0, len("/cm"))
+    assert item_result is not None
+    assert item_result["items"][0]["value"] == "commit"
+
+
+def test_combined_autocomplete_provider_ports_pi_commands_files_and_attachments(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("print('hi')", encoding="utf-8")
+    (tmp_path / "src" / "pkg").mkdir()
+    (tmp_path / "notes file.md").write_text("notes", encoding="utf-8")
+
+    provider = CombinedAutocompleteProvider(
+        [{"name": "compact", "description": "Compress context", "argumentHint": "[focus]"}],
+        str(tmp_path),
+    )
+
+    command_suggestions = provider.getSuggestions(["/co"], 0, 3, {"signal": None, "force": False})
+    assert command_suggestions["prefix"] == "/co"
+    assert command_suggestions["items"][0] == {
+        "value": "compact",
+        "label": "compact",
+        "description": "[focus] — Compress context",
+    }
+    applied_command = provider.applyCompletion(["/co"], 0, 3, command_suggestions["items"][0], "/co")
+    assert applied_command == {"lines": ["/compact "], "cursorLine": 0, "cursorCol": len("/compact ")}
+
+    path_suggestions = provider.getSuggestions(["open src/"], 0, len("open src/"), {"signal": None, "force": False})
+    assert path_suggestions["prefix"] == "src/"
+    assert path_suggestions["items"][:2] == [
+        {"value": "src/pkg/", "label": "pkg/"},
+        {"value": "src/app.py", "label": "app.py"},
+    ]
+
+    at_suggestions = provider.getSuggestions(['@"notes'], 0, len('@"notes'), {"signal": None, "force": True})
+    assert at_suggestions["prefix"] == '@"notes'
+    assert at_suggestions["items"][0] == {"value": '@"notes file.md"', "label": "notes file.md"}
+    applied_at = provider.applyCompletion(['@"notes'], 0, len('@"notes'), at_suggestions["items"][0], '@"notes')
+    assert applied_at == {"lines": ['@"notes file.md" '], "cursorLine": 0, "cursorCol": len('@"notes file.md" ')}
+
+    assert provider.shouldTriggerFileCompletion(["/compact"], 0, len("/compact")) is False
+    assert provider.shouldTriggerFileCompletion(["/compact s"], 0, len("/compact s")) is True
+
+
+def test_stdin_buffer_ports_pi_split_sequences_and_kitty_regressions() -> None:
+    buffer = StdinBuffer({"timeout": 10})
+    emitted: list[str] = []
+    buffer.on("data", emitted.append)
+
+    buffer.process("abc\x1b[A")
+    assert emitted == ["a", "b", "c", "\x1b[A"]
+
+    buffer.process("\x1b[<3")
+    buffer.process("5;1")
+    buffer.process("5;")
+    assert buffer.getBuffer() == "\x1b[<35;15;"
+    buffer.process("10m")
+    assert emitted[-1] == "\x1b[<35;15;10m"
+
+    emitted.clear()
+    buffer.process("\x1b\x1b[27;129:3u")
+    assert emitted == ["\x1b", "\x1b[27;129:3u"]
+
+    emitted.clear()
+    buffer.process("\x1b[64u")
+    buffer.process("@")
+    assert emitted == ["\x1b[64u"]
+
+
+def test_stdin_buffer_ports_pi_bracketed_paste_events() -> None:
+    buffer = StdinBuffer({"timeout": 10})
+    emitted: list[str] = []
+    pasted: list[str] = []
+    buffer.on("data", emitted.append)
+    buffer.on("paste", pasted.append)
+
+    buffer.process("a")
+    buffer.process("\x1b[200~hello ")
+    buffer.process("world\x1b[201~")
+    buffer.process("b")
+
+    assert emitted == ["a", "b"]
+    assert pasted == ["hello world"]
+
+
+def test_parse_osc11_background_color_ports_pi_formats() -> None:
+    assert parseOsc11BackgroundColor("\x1b]11;rgb:0000/8000/ffff\x07") == {"r": 0, "g": 128, "b": 255}
+    assert parseOsc11BackgroundColor("\x1b]11;#ffffff\x1b\\") == {"r": 255, "g": 255, "b": 255}
+    assert parseOsc11BackgroundColor("\x1b]11;#000000\x07") == {"r": 0, "g": 0, "b": 0}
+    assert parseOsc11BackgroundColor("x\x1b]11;#ffffff\x07") is None
+    assert parseOsc11BackgroundColor("\x1b]10;#ffffff\x07") is None
+    assert parseOsc11BackgroundColor("\x1b]11;#ffffff\x07x") is None
+
+
+def test_tui_query_terminal_background_color_consumes_osc11_response() -> None:
+    terminal = FakeTerminal()
+    tui = TUI(terminal)
+    seen_inputs: list[str] = []
+    tui.add_input_listener(lambda data: seen_inputs.append(data))
+    tui.start()
+    try:
+        query = tui.query_terminal_background_color({"timeout_ms": 1000})
+        assert "\x1b]11;?\x07" in terminal.writes
+        assert terminal.input_handler is not None
+        terminal.input_handler("\x1b]11;#ffffff\x07")
+        assert query.result(timeout=1) == {"r": 255, "g": 255, "b": 255}
+        assert seen_inputs == []
+    finally:
+        tui.stop()
+
+
+def test_tui_query_terminal_background_color_ports_pi_reply_edges() -> None:
+    class Recorder(Component):
+        def __init__(self) -> None:
+            self.events: list[str] = []
+
+        def render(self, width: int) -> list[str]:
+            return ["recorder"]
+
+        def handle_input(self, data: str) -> None:
+            self.events.append(data)
+
+    terminal = FakeTerminal()
+    tui = TUI(terminal)
+    recorder = Recorder()
+    seen_inputs: list[str] = []
+    tui.add(recorder)
+    tui.set_focus(recorder)
+    tui.add_input_listener(lambda data: seen_inputs.append(data))
+    tui.start()
+
+    try:
+        invalid_query = tui.queryTerminalBackgroundColor({"timeoutMs": 1000})
+        assert terminal.input_handler is not None
+        terminal.input_handler("\x1b]11;not-a-color\x07")
+        assert invalid_query.result(timeout=1) is None
+        assert seen_inputs == []
+        assert recorder.events == []
+
+        pass_through_query = tui.query_terminal_background_color({"timeout_ms": 1000})
+        terminal.input_handler("x")
+        assert pass_through_query.done() is False
+        assert seen_inputs == ["x"]
+        assert recorder.events == ["x"]
+        terminal.input_handler("\x1b]11;#ffffff\x07")
+        assert pass_through_query.result(timeout=1) == {"r": 255, "g": 255, "b": 255}
+
+        timeout_query = tui.query_terminal_background_color({"timeout_ms": 1})
+        assert timeout_query.result(timeout=1) is None
+        time.sleep(0.01)
+        terminal.input_handler("\x1b]11;#000000\x07")
+        assert seen_inputs == ["x"]
+        assert recorder.events == ["x"]
+    finally:
+        tui.stop()
+
+
+def test_keybindings_manager_ports_pi_defaults_conflicts_and_globals() -> None:
+    keybindings = KeybindingsManager(
+        TUI_KEYBINDINGS,
+        {
+            "tui.input.submit": ["enter", "ctrl+enter"],
+            "tui.select.confirm": "ctrl+x",
+            "tui.input.copy": "ctrl+x",
+        },
+    )
+
+    assert keybindings.getKeys("tui.input.submit") == ["enter", "ctrl+enter"]
+    assert keybindings.getKeys("tui.editor.cursorLeft") == ["left", "ctrl+b"]
+    assert keybindings.getConflicts() == [
+        {"key": "ctrl+x", "keybindings": ["tui.select.confirm", "tui.input.copy"]}
+    ]
+    assert keybindings.matches("\x1b[D", "tui.editor.cursorLeft") is True
+
+    setKeybindings(keybindings)
+    assert getKeybindings() is keybindings
+
+
+def test_keys_ports_pi_parse_match_and_release_surface() -> None:
+    from appv22.tui.keys import is_key_release, matches_key, parse_key
+
+    assert parse_key("\x03") == "ctrl+c"
+    assert parse_key("\r") == "enter"
+    assert parse_key("\n") == "enter"
+    assert parse_key("\t") == "tab"
+    assert parse_key("\x7f") == "backspace"
+    assert parse_key("\x1bb") == "alt+b"
+    assert parse_key("\x1b[A") == "up"
+    assert parse_key("\x1b[1;5D") == "ctrl+left"
+    assert parse_key("\x1b[97;5u") == "ctrl+a"
+    assert parse_key("\x1b[97;1:3u") == "a"
+
+    assert matches_key("\x03", "ctrl+c") is True
+    assert matches_key("\x1b[1;5D", "ctrl+left") is True
+    assert matches_key("\x1b[97;5u", "ctrl+a") is True
+    assert matches_key("\x1b[97;1:3u", "a") is True
+
+    assert is_key_release("\x1b[97;1:3u") is True
+    assert is_key_release("\x1b[200~90:62:3F:A5\x1b[201~") is False
+
+
+def test_tui_package_exports_pi_key_helpers() -> None:
+    from appv22.tui import isKeyRelease, is_key_release, matchesKey, matches_key, parseKey, parse_key
+
+    assert parse_key("\x03") == "ctrl+c"
+    assert parseKey("\x1bb") == "alt+b"
+    assert matches_key("\x1b[A", "up") is True
+    assert matchesKey("\x1b[97;5u", "ctrl+a") is True
+    assert is_key_release("\x1b[97;1:3u") is True
+    assert isKeyRelease("\x1b[200~90:62:3F:A5\x1b[201~") is False
+
+
+def test_keys_ports_pi_key_object_kitty_state_and_repeat_surface() -> None:
+    from appv22.tui.keys import (
+        Key,
+        isKeyRepeat,
+        isKittyProtocolActive,
+        is_key_repeat,
+        is_kitty_protocol_active,
+        matches_key,
+        setKittyProtocolActive,
+        set_kitty_protocol_active,
+    )
+
+    set_kitty_protocol_active(False)
+    assert is_kitty_protocol_active() is False
+    setKittyProtocolActive(True)
+    assert isKittyProtocolActive() is True
+
+    assert Key.escape == "escape"
+    assert Key.backtick == "`"
+    assert Key.ctrl("c") == "ctrl+c"
+    assert Key.ctrlShift("p") == "ctrl+shift+p"
+    assert Key.altSuper("?") == "alt+super+?"
+    assert matches_key("\x1b[112;6u", Key.ctrlShift("p")) is True
+
+    assert is_key_repeat("\x1b[97;1:2u") is True
+    assert isKeyRepeat("\x1b[200~90:62:2F:A5\x1b[201~") is False
+
+
+def test_keys_and_utils_export_pi_decode_printable_and_camel_aliases() -> None:
+    assert decodeKittyPrintable("\x1b[97u") == "a"
+    assert decodeKittyPrintable("\x1b[97:65:97;2u") == "A"
+    assert decodeKittyPrintable("\x1b[97;5u") is None
+
+    assert visibleWidth("\x1b[31mred\x1b[0m") == 3
+    truncated = truncateToWidth("abcdef", 4)
+    assert truncated == "a\x1b[0m...\x1b[0m"
+    assert visibleWidth(truncated) == 4
+    assert wrapTextWithAnsi("\x1b[31mhello world\x1b[0m", 6) == ["\x1b[31mhello", "world\x1b[0m"]
+
+
+def test_tui_package_exports_pi_extended_key_helpers() -> None:
+    from appv22.tui import Key, isKeyRepeat, isKittyProtocolActive, setKittyProtocolActive
+
+    setKittyProtocolActive(False)
+    assert isKittyProtocolActive() is False
+    assert Key.ctrlAlt("x") == "ctrl+alt+x"
+    assert isKeyRepeat("\x1b[120;1:2u") is True
+
+
 def test_truncate_to_width_passes_ansi() -> None:
-    assert truncate_to_width("hello world", 5) == "hello"
+    assert truncate_to_width("hello world", 5) == "hello\x1b[0m"
     styled = "\x1b[31mhello world\x1b[0m"
     assert visible_width(truncate_to_width(styled, 5)) == 5
+
+
+def test_truncate_to_width_streams_very_large_unicode_input() -> None:
+    truncated = truncate_to_width("🙂界" * 100_000, 40, "…")
+
+    assert visible_width(truncated) <= 40
+    assert truncated.endswith("…\x1b[0m")
+
+
+def test_truncate_to_width_ports_pi_no_ellipsis_reset() -> None:
+    truncated = truncate_to_width(f"\x1b[31m{'hello' * 100}", 10, "")
+
+    assert visible_width(truncated) <= 10
+    assert truncated.endswith("\x1b[0m")
+
+
+def test_truncate_to_width_ports_pi_wide_character_boundaries() -> None:
+    assert truncate_to_width("🙂界abc", 4) == "🙂界\x1b[0m"
+    assert truncate_to_width("a\t界", 4) == "a\t\x1b[0m"
+
+
+def test_truncate_to_width_ports_pi_optional_ellipsis_and_padding() -> None:
+    truncated = truncate_to_width("abcdef", 4, "…")
+    assert truncated == "abc\x1b[0m…\x1b[0m"
+    assert visible_width(truncated) == 4
+
+    padded = truncate_to_width("🙂界🙂界x", 8, "…", True)
+    assert padded == "🙂界🙂\x1b[0m…\x1b[0m "
+    assert visible_width(padded) == 8
+
+
+def test_truncated_text_ports_pi_padding_truncation_and_first_line_only() -> None:
+    padded = TruncatedText("Hello world", 1, 0).render(30)
+    assert len(padded) == 1
+    assert visible_width(padded[0]) == 30
+    assert "Hello world" in padded[0]
+
+    vertical = TruncatedText("Hello", 0, 2).render(12)
+    assert len(vertical) == 5
+    assert all(visible_width(line) == 12 for line in vertical)
+
+    truncated = TruncatedText("This is a very long first line that needs truncation\nSecond line", 1, 0).render(25)
+    assert len(truncated) == 1
+    assert visible_width(truncated[0]) == 25
+    assert "..." in truncated[0]
+    assert "Second line" not in truncated[0]
+
+
+def test_loader_and_cancellable_loader_port_pi_rendering_and_escape_cancel() -> None:
+    terminal = FakeTerminal()
+    tui = TUI(terminal)
+    loader = Loader(tui, lambda value: f"<{value}>", lambda value: value.upper(), "Working", {"frames": ["*"]})
+
+    try:
+        rendered = loader.render(40)
+        assert rendered[0] == ""
+        assert "* WORKING" in rendered[1]
+
+        aborted: list[bool] = []
+        cancellable = CancellableLoader(tui, lambda value: value, lambda value: value, "Working", {"frames": [""]})
+        cancellable.onAbort = lambda: aborted.append(True)
+        assert cancellable.aborted is False
+
+        cancellable.handle_input("\x1b")
+
+        assert cancellable.signal.aborted is True
+        assert cancellable.aborted is True
+        assert aborted == [True]
+    finally:
+        loader.stop()
+
+
+def test_terminal_image_ports_pi_capabilities_encoding_dimensions_and_helpers(monkeypatch) -> None:
+    resetCapabilitiesCache()
+    monkeypatch.setenv("KITTY_WINDOW_ID", "1")
+    assert detectCapabilities() == {"images": "kitty", "trueColor": True, "hyperlinks": True}
+    assert getCapabilities() == {"images": "kitty", "trueColor": True, "hyperlinks": True}
+
+    setCapabilities({"images": "kitty", "trueColor": True, "hyperlinks": True})
+    setCellDimensions({"widthPx": 10, "heightPx": 20})
+    assert getCellDimensions() == {"widthPx": 10, "heightPx": 20}
+
+    assert encodeKitty("AAAA", {"columns": 2, "rows": 2, "imageId": 42, "moveCursor": False}) == (
+        "\x1b_Ga=T,f=100,q=2,C=1,c=2,r=2,i=42;AAAA\x1b\\"
+    )
+    chunked = encodeKitty("A" * 4100)
+    assert ",m=1;" in chunked
+    assert "\x1b_Gm=0;" in chunked
+    assert deleteKittyImage(42) == "\x1b_Ga=d,d=I,i=42,q=2\x1b\\"
+    assert deleteAllKittyImages() == "\x1b_Ga=d,d=A,q=2\x1b\\"
+
+    assert encodeITerm2("AAAA", {"width": 2, "height": "auto", "name": "pixel", "preserveAspectRatio": False}) == (
+        "\x1b]1337;File=inline=1;width=2;height=auto;name=cGl4ZWw=;preserveAspectRatio=0:AAAA\x07"
+    )
+
+    png_1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    gif_2x3 = base64.b64encode(
+        b"GIF89a" + (2).to_bytes(2, "little") + (3).to_bytes(2, "little") + b"\x00\x00\x00"
+    ).decode("ascii")
+    assert getPngDimensions(png_1x1) == {"widthPx": 1, "heightPx": 1}
+    assert getGifDimensions(gif_2x3) == {"widthPx": 2, "heightPx": 3}
+    assert getImageDimensions(png_1x1, "image/png") == {"widthPx": 1, "heightPx": 1}
+
+    rendered = renderImage("AAAA", {"widthPx": 20, "heightPx": 20}, {
+        "maxWidthCells": 2,
+        "imageId": 7,
+        "moveCursor": False,
+    })
+    assert rendered == {
+        "sequence": "\x1b_Ga=T,f=100,q=2,C=1,c=2,r=1,i=7;AAAA\x1b\\",
+        "rows": 1,
+        "imageId": 7,
+    }
+    assert calculateImageRows({"widthPx": 20, "heightPx": 40}, 2, {"widthPx": 10, "heightPx": 20}) == 2
+    assert isImageLine(rendered["sequence"]) is True
+    assert hyperlink("Open", "https://example.com") == "\x1b]8;;https://example.com\x1b\\Open\x1b]8;;\x1b\\"
+    assert imageFallback("image/png", {"widthPx": 1, "heightPx": 1}, "pixel.png") == (
+        "[Image: pixel.png [image/png] 1x1]"
+    )
+    assert 1 <= allocateImageId() <= 0xFFFFFFFF
+
+
+def test_image_component_ports_pi_fallback_and_kitty_rendering() -> None:
+    resetCapabilitiesCache()
+    setCellDimensions({"widthPx": 10, "heightPx": 20})
+
+    setCapabilities({"images": None, "trueColor": False, "hyperlinks": False})
+    png_1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    fallback = Image(
+        png_1x1,
+        "image/png",
+        {"fallbackColor": lambda value: f"<{value}>"},
+        {"filename": "pixel.png", "maxWidthCells": 10},
+    )
+    assert fallback.render(40) == ["<[Image: pixel.png [image/png] 1x1]>"]
+
+    setCapabilities({"images": "kitty", "trueColor": True, "hyperlinks": True})
+    image = Image(
+        "AAAA",
+        "image/png",
+        {"fallbackColor": lambda value: value},
+        {"imageId": 42, "maxWidthCells": 2},
+        {"widthPx": 20, "heightPx": 20},
+    )
+
+    assert image.getImageId() == 42
+    assert image.render(80) == ["\x1b_Ga=T,f=100,q=2,C=1,c=2,r=1,i=42;AAAA\x1b\\"]
+    assert image.render(80) == ["\x1b_Ga=T,f=100,q=2,C=1,c=2,r=1,i=42;AAAA\x1b\\"]
+
+
+def test_tui_ports_pi_terminal_image_cell_size_query_and_response() -> None:
+    class InvalidatingText(Text):
+        def __init__(self, text: str) -> None:
+            super().__init__(text)
+            self.invalidations = 0
+
+        def invalidate(self) -> None:
+            self.invalidations += 1
+            super().invalidate()
+
+    resetCapabilitiesCache()
+    setCapabilities({"images": "kitty", "trueColor": True, "hyperlinks": True})
+    setCellDimensions({"widthPx": 9, "heightPx": 18})
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    text = InvalidatingText("ready")
+    tui.add(text)
+    tui.start()
+
+    try:
+        assert "\x1b[16t" in terminal.writes
+        assert terminal.input_handler is not None
+
+        terminal.input_handler("\x1b[6;24;12t")
+
+        assert getCellDimensions() == {"widthPx": 12, "heightPx": 24}
+        assert text.invalidations == 1
+    finally:
+        tui.stop()
+
+
+def test_tui_ports_pi_kitty_image_cleanup_and_image_line_output() -> None:
+    setCapabilities({"images": "kitty", "trueColor": True, "hyperlinks": True})
+    terminal = FakeTerminal(columns=80)
+    image_line = "\x1b_Ga=T,f=100,q=2,C=1,c=2,r=1,i=42;AAAA\x1b\\"
+    text = Text(image_line)
+    tui = TUI(terminal)
+    tui.add(text)
+
+    tui.request_render()
+    assert image_line in terminal.writes[-1]
+    assert image_line + "\x1b[0m" not in terminal.writes[-1]
+
+    text.set_text("plain")
+    tui.request_render()
+
+    assert deleteKittyImage(42) in terminal.writes[-1]
+    assert "plain" in terminal.writes[-1]
+
+
+def test_tui_ports_pi_overlay_focus_handle_and_composition() -> None:
+    class FocusBox(Component):
+        def __init__(self, text: str) -> None:
+            self.text = text
+            self.focused = False
+
+        def render(self, width: int) -> list[str]:
+            return [self.text]
+
+    terminal = FakeTerminal(columns=20, rows=6)
+    tui = TUI(terminal)
+    tui.add(Text("base"))
+    overlay = FocusBox("OV")
+
+    assert isFocusable(overlay) is True
+    assert isFocusable(Text("plain")) is False
+    assert isFocusable(None) is False
+
+    handle = tui.showOverlay(overlay, {"row": 1, "col": 4, "width": 6})
+
+    assert tui.hasOverlay() is True
+    assert handle.isFocused() is True
+    assert overlay.focused is True
+    assert tui.last_render is not None
+    assert len(tui.last_render.lines) == 6
+    assert tui.last_render.lines[0] == "base"
+    assert strip_ansi(tui.last_render.lines[1]).startswith("    OV")
+
+    handle.setHidden(True)
+    assert handle.isHidden() is True
+    assert tui.hasOverlay() is False
+    assert overlay.focused is False
+    assert tui.last_render is not None
+    assert "OV" not in "\n".join(tui.last_render.lines)
+
+    handle.setHidden(False)
+    assert handle.isHidden() is False
+    assert handle.isFocused() is True
+
+    handle.unfocus({"target": None})
+    assert handle.isFocused() is False
+    assert tui.hasOverlay() is True
+
+    handle.focus()
+    assert handle.isFocused() is True
+    tui.hideOverlay()
+    assert tui.hasOverlay() is False
+    assert overlay.focused is False
+
+
+def test_slice_with_width_ports_pi_tab_and_wide_boundaries() -> None:
+    text = "out 192M\t.pi/skill-tests/results-ha"
+    sliced = slice_with_width(text, 0, 10, strict=True)
+    assert sliced == {"text": "out 192M", "width": 8}
+    assert visible_width(sliced["text"]) == sliced["width"]
+
+    assert slice_by_column("🙂界abc", 0, 4, strict=True) == "🙂界"
+    assert slice_by_column("a🙂b", 1, 2, strict=True) == "🙂"
+
+
+def test_extract_segments_ports_pi_tab_width_regression() -> None:
+    text = "out 192M\t.pi/skill-tests/results-ha"
+    segments = extract_segments(text, 10, 13, 10, strict_after=True)
+
+    assert segments["before"] == "out 192M\t"
+    assert segments["beforeWidth"] == 11
+    assert visible_width(segments["before"]) == segments["beforeWidth"]
+    assert extractSegments(text, 10, 13, 10, True) == segments
+
+
+def test_tui_composite_line_ports_pi_segment_reset_and_style_resume() -> None:
+    reset = "\x1b[0m\x1b]8;;\x07"
+
+    line = TUI._composite_line_at("\x1b[31m0123456789ABCD", "XX", 4, 2, 12)
+
+    assert visible_width(line) == 12
+    assert line == f"\x1b[31m0123{reset}XX{reset}\x1b[31m6789AB"
 
 
 def test_wrap_text_wraps_to_width() -> None:
@@ -93,6 +783,430 @@ def test_tui_full_then_diff_single_line() -> None:
     assert "first" not in terminal.writes[-1]
 
 
+def test_tui_ports_pi_synchronized_output_wrapping_for_full_and_diff_renders() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    text = Text("first")
+    tui.add(text)
+
+    tui.request_render()
+    assert terminal.writes[-1].startswith("\x1b[?2026h")
+    assert terminal.writes[-1].endswith("\x1b[?2026l")
+
+    text.set_text("second")
+    tui.request_render()
+    assert terminal.writes[-1].startswith("\x1b[?2026h")
+    assert terminal.writes[-1].endswith("\x1b[?2026l")
+
+
+def test_tui_ports_pi_first_render_without_screen_clear() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    tui.add(Text("first"))
+
+    tui.request_render()
+
+    assert terminal.writes[-1].startswith("\x1b[?2026hfirst")
+    assert "\x1b[2J\x1b[H" not in terminal.writes[-1]
+
+
+def test_tui_ports_pi_forced_full_render_clears_scrollback() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    tui.add(Text("first"))
+    tui.request_render()
+
+    tui.request_render(force=True)
+
+    assert "\x1b[2J\x1b[H\x1b[3J" in terminal.writes[-1]
+
+
+def test_tui_ports_pi_clear_on_shrink_api_and_env(monkeypatch) -> None:
+    monkeypatch.delenv("PI_CLEAR_ON_SHRINK", raising=False)
+    tui = TUI(FakeTerminal(columns=40))
+
+    assert tui.get_clear_on_shrink() is False
+    assert tui.getClearOnShrink() is False
+
+    tui.set_clear_on_shrink(True)
+    assert tui.get_clear_on_shrink() is True
+
+    tui.setClearOnShrink(False)
+    assert tui.getClearOnShrink() is False
+
+    monkeypatch.setenv("PI_CLEAR_ON_SHRINK", "1")
+    assert TUI(FakeTerminal(columns=40)).get_clear_on_shrink() is True
+
+
+def test_tui_ports_pi_clear_on_shrink_uses_clearing_full_redraw() -> None:
+    terminal = FakeTerminal(columns=40, rows=10)
+    tui = TUI(terminal)
+    tui.set_clear_on_shrink(True)
+    tui.add(Text("first"))
+    second = Text("second")
+    tui.add(second)
+    tui.request_render()
+
+    tui.remove(second)
+    info = tui.request_render()
+
+    assert info.full is True
+    assert "\x1b[2J\x1b[H\x1b[3J" in terminal.writes[-1]
+
+
+def test_tui_ports_pi_full_redraw_counter() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    text = Text("first")
+    tui.add(text)
+
+    assert tui.full_redraws == 0
+    assert tui.fullRedraws == 0
+
+    tui.request_render()
+    assert tui.full_redraws == 1
+    assert tui.fullRedraws == 1
+
+    text.set_text("second")
+    tui.request_render()
+    assert tui.full_redraws == 1
+
+    tui.request_render(force=True)
+    assert tui.full_redraws == 2
+
+
+def test_tui_ports_pi_hardware_cursor_api_and_env(monkeypatch) -> None:
+    monkeypatch.delenv("PI_HARDWARE_CURSOR", raising=False)
+    assert TUI(FakeTerminal(columns=40)).get_show_hardware_cursor() is False
+
+    explicit = TUI(FakeTerminal(columns=40), show_hardware_cursor=True)
+    assert explicit.get_show_hardware_cursor() is True
+    assert explicit.getShowHardwareCursor() is True
+
+    monkeypatch.setenv("PI_HARDWARE_CURSOR", "1")
+    assert TUI(FakeTerminal(columns=40)).get_show_hardware_cursor() is True
+    assert TUI(FakeTerminal(columns=40), show_hardware_cursor=False).getShowHardwareCursor() is False
+
+
+def test_tui_ports_pi_disabling_hardware_cursor_hides_terminal_cursor() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal, show_hardware_cursor=True)
+    tui.add(Text("first"))
+    tui.request_render()
+
+    tui.set_show_hardware_cursor(False)
+
+    assert tui.get_show_hardware_cursor() is False
+    assert "\x1b[?25l" in terminal.writes[-1]
+
+
+def test_terminal_ports_pi_movement_and_clear_operations() -> None:
+    terminal = FakeTerminal(columns=40)
+
+    terminal.move_by(2)
+    terminal.moveBy(-1)
+    terminal.move_by(0)
+    terminal.clear_line()
+    terminal.clearLine()
+    terminal.clear_from_cursor()
+    terminal.clearFromCursor()
+    terminal.clear_screen()
+    terminal.clearScreen()
+
+    assert terminal.writes == [
+        "\x1b[2B",
+        "\x1b[1A",
+        "\x1b[K",
+        "\x1b[K",
+        "\x1b[J",
+        "\x1b[J",
+        "\x1b[2J\x1b[H",
+        "\x1b[2J\x1b[H",
+    ]
+
+
+def test_terminal_ports_pi_progress_sequences() -> None:
+    terminal = FakeTerminal(columns=40)
+
+    terminal.set_progress(True)
+    terminal.setProgress(False)
+
+    assert terminal.writes == ["\x1b]9;4;3\x07", "\x1b]9;4;0;\x07"]
+
+
+def test_process_terminal_ports_pi_progress_keepalive_and_clear() -> None:
+    class RecordingProcessTerminal(ProcessTerminal):
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            super().__init__(progress_keepalive_seconds=0.01)
+
+        def write(self, data: str) -> None:
+            self.writes.append(data)
+
+    terminal = RecordingProcessTerminal()
+
+    terminal.set_progress(True)
+    time.sleep(0.035)
+    terminal.set_progress(False)
+    writes_after_clear = list(terminal.writes)
+    time.sleep(0.03)
+
+    assert terminal.writes.count("\x1b]9;4;3\x07") >= 2
+    assert terminal.writes[-1] == "\x1b]9;4;0;\x07"
+    assert terminal.writes == writes_after_clear
+
+
+def test_process_terminal_ports_pi_start_stop_progress_cleanup() -> None:
+    class RecordingProcessTerminal(ProcessTerminal):
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            super().__init__(progress_keepalive_seconds=10)
+
+        def write(self, data: str) -> None:
+            self.writes.append(data)
+
+    terminal = RecordingProcessTerminal()
+
+    terminal.start(lambda data: None, lambda: None)
+    terminal.set_progress(True)
+    terminal.stop()
+
+    assert terminal.writes == [
+        "\x1b[?2004h",
+        "\x1b]9;4;3\x07",
+        "\x1b]9;4;0;\x07",
+        "\x1b[?2004l",
+    ]
+
+
+def test_tui_ports_pi_start_stop_terminal_lifecycle() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    tui.add(Text("ready"))
+
+    tui.start()
+
+    assert terminal.writes[0] == "\x1b[?2004h"
+    assert terminal.writes[1] == "\x1b[?25l"
+    assert terminal.input_handler is not None
+    assert terminal.resize_handler is not None
+    assert "ready" in terminal.output
+
+    tui.stop()
+
+    assert terminal.writes[-2:] == ["\x1b[?25h", "\x1b[?2004l"]
+
+
+def test_interactive_mode_ports_pi_tui_lifecycle_on_run_exit(tmp_path) -> None:
+    register_api_provider(create_faux_provider(lambda m, c: text_response_events(m, "unused")))
+    terminal = FakeTerminal(columns=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+
+    exit_code = mode.run()
+
+    assert exit_code == 0
+    assert terminal.writes[0] == "\x1b[?2004h"
+    assert terminal.writes[1] == "\x1b[?25l"
+    assert terminal.writes[-2:] == ["\x1b[?25h", "\x1b[?2004l"]
+
+
+def test_interactive_mode_default_uses_raw_tui_input_for_prompt_submit(monkeypatch, tmp_path) -> None:
+    def forbidden_input(prompt: str) -> str:
+        raise AssertionError("raw TUI mode must not call Python input()")
+
+    monkeypatch.setattr(builtins, "input", forbidden_input)
+    seen_prompts: list[str] = []
+
+    def script(model, context):
+        user_messages = [message for message in context.messages if getattr(message, "role", None) == "user"]
+        if user_messages:
+            content = user_messages[-1].content
+            if isinstance(content, str):
+                seen_prompts.append(content)
+            else:
+                seen_prompts.append("".join(block.text for block in content if isinstance(block, TextContent)))
+        return text_response_events(model, "raw reply")
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app)
+    outcome: dict[str, object] = {}
+
+    def run_mode() -> None:
+        try:
+            outcome["code"] = mode.run()
+        except BaseException as error:  # noqa: BLE001 - test thread must surface failures.
+            outcome["error"] = error
+
+    thread = threading.Thread(target=run_mode)
+    thread.start()
+    try:
+        assert _wait_until(lambda: terminal.input_handler is not None and mode.active_editor is not None)
+        assert mode.active_editor is not None
+        assert mode.active_editor.focused is True
+
+        terminal.input_handler("h")
+        terminal.input_handler("i")
+        assert _wait_until(lambda: mode.active_editor is not None and mode.active_editor.get_value() == "hi")
+        terminal.input_handler("\r")
+
+        assert _wait_until(lambda: seen_prompts == ["hi"], timeout=2)
+        assert _wait_until(lambda: not mode._is_turn_active(), timeout=2)
+        assert _wait_until(lambda: mode.active_editor is not None, timeout=2)
+        terminal.input_handler("/exit\r")
+        thread.join(timeout=2)
+    finally:
+        if thread.is_alive():
+            mode._shutdown_requested = True
+            if terminal.input_handler is not None:
+                terminal.input_handler("/exit\r")
+            thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert outcome["code"] == 0
+    assert "raw reply" in strip_ansi(terminal.output)
+
+
+def test_interactive_mode_editor_escape_aborts_active_turn(tmp_path, monkeypatch) -> None:
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    aborts: list[bool] = []
+
+    monkeypatch.setattr(mode, "_is_turn_active", lambda: True)
+    monkeypatch.setattr(app.session.agent, "abort", lambda: aborts.append(True))
+
+    mode._handle_editor_escape()
+
+    assert aborts == [True]
+    assert mode.status._message == "Aborting"
+
+
+def test_tui_ports_pi_input_listener_transform_consume_and_unsubscribe() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    events: list[tuple[str, str]] = []
+
+    def transform(data: str):
+        events.append(("transform", data))
+        return {"data": f"{data}!"}
+
+    def consume(data: str):
+        events.append(("consume", data))
+        return {"consume": True}
+
+    unsubscribe_transform = tui.add_input_listener(transform)
+    tui.addInputListener(consume)
+    tui.start()
+
+    assert terminal.input_handler is not None
+    terminal.input_handler("a")
+
+    unsubscribe_transform()
+    tui.removeInputListener(consume)
+    terminal.input_handler("b")
+
+    assert events == [("transform", "a"), ("consume", "a!")]
+
+
+def test_tui_ports_pi_terminal_input_to_focused_component() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    editor = Input(prompt="> ")
+    tui.add(editor)
+    tui.add(Text("footer"))
+    tui.add_input_listener(lambda data: {"data": data.upper()})
+
+    tui.set_focus(editor)
+    tui.start()
+    before_writes = len(terminal.writes)
+    assert editor.focused is True
+
+    assert terminal.input_handler is not None
+    terminal.input_handler("a")
+
+    assert editor.get_value() == "A"
+    assert len(terminal.writes) > before_writes
+    assert "A" in terminal.writes[-1]
+
+    tui.setFocus(None)
+    assert editor.focused is False
+
+
+def test_tui_ports_pi_invisible_focused_overlay_redirects_to_visible_capturing_overlay() -> None:
+    class Recorder(Component):
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.focused = False
+            self.events: list[str] = []
+
+        def render(self, width: int) -> list[str]:
+            return [self.label]
+
+        def handle_input(self, data: str) -> None:
+            self.events.append(data)
+
+    terminal = FakeTerminal(columns=80, rows=24)
+    tui = TUI(terminal)
+    fallback = Recorder("FALLBACK")
+    non_capturing = Recorder("NC")
+    primary = Recorder("PRIMARY")
+    is_visible = True
+
+    tui.add(Text(""))
+    tui.start()
+    tui.showOverlay(fallback)
+    tui.showOverlay(non_capturing, {"nonCapturing": True})
+    tui.showOverlay(primary, {"visible": lambda _width, _height: is_visible})
+    assert primary.focused is True
+
+    is_visible = False
+    assert terminal.input_handler is not None
+    terminal.input_handler("x")
+
+    assert fallback.events == ["x"]
+    assert non_capturing.events == []
+    assert primary.events == []
+    assert fallback.focused is True
+
+
+def test_tui_ports_pi_key_release_filtering_for_focused_component() -> None:
+    class RecordingInput(Component):
+        def __init__(self, *, wants_key_release: bool = False) -> None:
+            self.events: list[str] = []
+            self.focused = False
+            self.wants_key_release = wants_key_release
+
+        def render(self, width: int) -> list[str]:
+            return ["events:" + ",".join(self.events)]
+
+        def handle_input(self, data: str) -> None:
+            self.events.append(data)
+
+    release_sequence = "\x1b[97;1:3u"
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    default = RecordingInput()
+    wants_release = RecordingInput(wants_key_release=True)
+    tui.add(default)
+    tui.add(wants_release)
+    tui.start()
+
+    assert terminal.input_handler is not None
+    tui.set_focus(default)
+    terminal.input_handler(release_sequence)
+    terminal.input_handler("a")
+
+    tui.set_focus(wants_release)
+    terminal.input_handler(release_sequence)
+
+    assert default.events == ["a"]
+    assert wants_release.events == [release_sequence]
+
+
 def test_tui_no_change_yields_empty_diff() -> None:
     terminal = FakeTerminal()
     tui = TUI(terminal)
@@ -116,6 +1230,45 @@ def test_tui_strips_pi_cursor_marker_and_tracks_cursor_position() -> None:
     assert "\x1b_pi:c\x07" not in "\n".join(info.lines)
     assert [strip_ansi(line).rstrip() for line in info.lines] == ["> hello"]
     assert info.cursor_position == (0, 4)
+
+
+def test_tui_positions_hardware_cursor_for_focused_input() -> None:
+    terminal = FakeTerminal(columns=40, rows=5)
+    tui = TUI(terminal, show_hardware_cursor=True)
+    editor = Input(value="hello", prompt="> ")
+    editor.cursor = 2
+    tui.add(editor)
+    tui.set_focus(editor)
+
+    info = tui.request_render()
+
+    assert info.cursor_position == (0, 4)
+    assert "\x1b[5G" in terminal.output
+    assert "\x1b[?25h" in terminal.output
+
+
+def test_tui_ports_pi_terminal_output_normalization_without_mutating_lines() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    tui.add(Text("กำ ກຳ"))
+
+    info = tui.request_render()
+
+    assert info.lines == ["กำ ກຳ"]
+    assert "กํา ກໍາ" in terminal.output
+    assert "กำ ກຳ" not in terminal.output
+
+
+def test_tui_ports_pi_line_resets_after_terminal_output_lines() -> None:
+    terminal = FakeTerminal(columns=40)
+    tui = TUI(terminal)
+    tui.add(Text("\x1b[3mItalic"))
+    tui.add(Text("Plain"))
+
+    info = tui.request_render()
+
+    assert info.lines == ["\x1b[3mItalic", "Plain"]
+    assert "\x1b[3mItalic\x1b[0m\x1b]8;;\x07\r\nPlain\x1b[0m\x1b]8;;\x07" in terminal.output
 
 
 def _assistant(text: str) -> AssistantMessage:
@@ -146,6 +1299,30 @@ def test_interactive_renderer_assistant_and_tool() -> None:
     assert any("file body" in line for line in lines)
 
 
+def test_interactive_renderer_skips_non_visual_turn_events() -> None:
+    terminal = FakeTerminal()
+    tui = TUI(terminal)
+    renderer = InteractiveRenderer(tui)
+    render_calls = {"n": 0}
+    original_request_render = tui.request_render
+
+    def counting_request_render(*args, **kwargs):
+        render_calls["n"] += 1
+        return original_request_render(*args, **kwargs)
+
+    tui.request_render = counting_request_render
+
+    message = _assistant("Visible reply")
+    renderer.handle_event(MessageStartEvent(message=message))
+    renderer.handle_event(MessageEndEvent(message=message))
+    calls_after_visible_reply = render_calls["n"]
+
+    renderer.handle_event(TurnEndEvent(message=message, tool_results=[]))
+    renderer.handle_event(AgentEndEvent(messages=[message]))
+
+    assert render_calls["n"] == calls_after_visible_reply
+
+
 def test_markdown_input_select_and_footer_components() -> None:
     markdown = Markdown("# Title\n\n- one\n**bold** and `code`")
     assert markdown.render(40) == ["Title", "", "- one", "bold and code"]
@@ -172,10 +1349,10 @@ def test_markdown_input_select_and_footer_components() -> None:
     )
     select.handle_input("\x1b[B")
     rendered = "\n".join(select.render(40))
-    assert "> Beta" in rendered
+    assert "→ Beta" in rendered
     assert "(2/3)" in rendered
     select.set_filter("ga")
-    assert select.render(40)[0].startswith("> Gamma")
+    assert select.render(40)[0].startswith("→ Gamma")
     cancelled: list[bool] = []
     select.on_cancel = lambda: cancelled.append(True)
     select.set_filter("none")
@@ -183,19 +1360,232 @@ def test_markdown_input_select_and_footer_components() -> None:
     assert cancelled == [True]
 
     footer = FooterComponent(cwd="/tmp/project", model="faux-model", thinking_level="high", pending=2)
-    assert footer.render(80) == ["cwd: /tmp/project | model: faux-model | think: high | pending: 2"]
+    assert footer.render(25) == ["/tmp/project", "0.0%/0 (auto)  faux-model"]
     footer = FooterComponent(
         cwd="/tmp/project",
         model="faux-model",
+        provider="faux",
         context_tokens=1200,
         context_threshold=16000,
+        context_window=16000,
         compression_count=2,
+        available_provider_count=2,
+        git_branch="main",
+        extension_statuses={"plan": "ready\nnow"},
     )
-    assert footer.render(120) == [
-        "model: faux-model | think: off | ctx: 1,200/16,000 | compactions: 2 | cwd: /tmp/project"
+    assert footer.render(35) == [
+        "/tmp/project (main)",
+        "7.5%/16k (auto)   (faux) faux-model",
+        "ready now",
     ]
+    footer = FooterComponent(
+        cwd="/tmp/project",
+        model="faux-model",
+        git_branch="main",
+        session_name="work session",
+    )
+    assert footer.render(80)[0] == "/tmp/project (main) • work session"
+    footer = FooterComponent(
+        cwd="/tmp/project",
+        model="faux-model",
+        context_window=200000,
+        context_percent=12.3,
+        total_input=12345,
+        total_output=6789,
+        total_cache_read=50,
+        total_cache_write=50,
+        latest_cache_hit_rate=25.0,
+        total_cost=1.234,
+    )
+    assert footer.render(80)[1] == "↑12k ↓6.8k R50 W50 CH25.0% $1.234 12.3%/200k (auto)                   faux-model"
+    footer = FooterComponent(
+        cwd="/tmp/project",
+        model="faux-model",
+        context_window=200000,
+        context_percent_unknown=True,
+    )
+    assert footer.render(40)[1] == "?/200k (auto)                 faux-model"
     status = StatusLine("Retrying\nsoon", kind="info")
     assert status.render(40) == ["info: Retrying soon"]
+
+
+def test_select_list_ports_pi_ctrl_c_cancel_keybinding() -> None:
+    select = SelectList(
+        [
+            SelectItem(value="alpha", label="Alpha"),
+            SelectItem(value="beta", label="Beta"),
+        ],
+        max_visible=2,
+    )
+    cancelled: list[bool] = []
+    select.on_cancel = lambda: cancelled.append(True)
+
+    select.handle_input("\x03")
+
+    assert cancelled == [True]
+
+
+def test_select_list_ports_pi_selection_change_and_public_api() -> None:
+    select = SelectList(
+        [
+            SelectItem(value="alpha", label="Alpha"),
+            SelectItem(value="beta", label="Beta"),
+            SelectItem(value="gamma", label="Gamma"),
+        ],
+        max_visible=2,
+    )
+    changed: list[str] = []
+    selected: list[str] = []
+    cancelled: list[bool] = []
+    select.onSelectionChange = lambda item: changed.append(item.value)
+    select.onSelect = lambda item: selected.append(item.value)
+    select.onCancel = lambda: cancelled.append(True)
+
+    select.handle_input("\x1b[B")
+    assert changed == ["beta"]
+    assert select.getSelectedItem() == SelectItem(value="beta", label="Beta")
+
+    select.setSelectedIndex(99)
+    assert select.getSelectedItem() == SelectItem(value="gamma", label="Gamma")
+
+    select.setFilter("be")
+    assert select.getSelectedItem() == SelectItem(value="beta", label="Beta")
+
+    select.handle_input("\r")
+    select.handle_input("\x03")
+    assert selected == ["beta"]
+    assert cancelled == [True]
+
+
+def test_select_list_ports_pi_display_value_and_description_normalization() -> None:
+    select = SelectList(
+        [
+            SelectItem(value="alpha", label="", description="line one\nline two"),
+        ],
+        max_visible=1,
+    )
+
+    assert select.render(80) == ["→ alpha" + (" " * 27) + "line one line two"]
+
+
+def test_select_list_ports_pi_layout_alignment_and_truncation_hook() -> None:
+    seen_contexts: list[dict[str, object]] = []
+
+    def truncate_primary(context: dict[str, object]) -> str:
+        seen_contexts.append(context)
+        text = str(context["text"])
+        max_width = int(context["maxWidth"])
+        if len(text) <= max_width:
+            return text
+        return text[: max(0, max_width - 1)] + "*"
+
+    select = SelectList(
+        [
+            SelectItem(value="very-long-command-name", label="very-long-command-name", description="first"),
+            SelectItem(value="short", label="short", description="second"),
+        ],
+        max_visible=5,
+        layout={
+            "minPrimaryColumnWidth": 12,
+            "maxPrimaryColumnWidth": 12,
+            "truncatePrimary": truncate_primary,
+        },
+    )
+
+    rendered = select.render(80)
+
+    assert rendered[0].startswith("→ very-long*")
+    assert _visible_index_of(rendered[0], "first") == _visible_index_of(rendered[1], "second") == 14
+    assert seen_contexts[0]["text"] == "very-long-command-name"
+    assert seen_contexts[0]["maxWidth"] == 10
+    assert seen_contexts[0]["columnWidth"] == 12
+    assert seen_contexts[0]["item"] == SelectItem(
+        value="very-long-command-name",
+        label="very-long-command-name",
+        description="first",
+    )
+    assert seen_contexts[0]["isSelected"] is True
+
+
+def test_settings_list_ports_pi_search_cycle_cancel_and_submenu() -> None:
+    setKeybindings(KeybindingsManager(TUI_KEYBINDINGS))
+    theme = {
+        "label": lambda text, selected: f"<{text}>" if selected else text,
+        "value": lambda text, selected: f"[{text}]" if selected else text,
+        "description": lambda text: f"desc:{text}",
+        "cursor": "->",
+        "hint": lambda text: f"hint:{text}",
+    }
+    changes: list[tuple[str, str]] = []
+    cancelled: list[bool] = []
+    settings = SettingsList(
+        [
+            {
+                "id": "theme",
+                "label": "Theme",
+                "description": "Color theme",
+                "currentValue": "dark",
+                "values": ["dark", "light"],
+            },
+            {"id": "api", "label": "API key", "currentValue": "unset", "values": ["unset", "set"]},
+        ],
+        5,
+        theme,
+        lambda item_id, value: changes.append((item_id, value)),
+        lambda: cancelled.append(True),
+        {"enableSearch": True},
+    )
+
+    rendered = "\n".join(settings.render(48))
+    assert "Theme" in rendered
+    assert "Color theme" in rendered
+
+    settings.handleInput("\r")
+    assert changes == [("theme", "light")]
+    assert "light" in "\n".join(settings.render(48))
+
+    settings.updateValue("theme", "dark")
+    assert "dark" in "\n".join(settings.render(48))
+
+    settings.handleInput("a")
+    filtered = "\n".join(settings.render(48))
+    assert "API key" in filtered
+    assert "Theme" not in filtered
+
+    settings.handleInput("\x1b")
+    assert cancelled == [True]
+
+    class Submenu(Component):
+        def __init__(self, done) -> None:
+            self.done = done
+
+        def render(self, width: int) -> list[str]:
+            return ["submenu"]
+
+        def handle_input(self, data: str) -> None:
+            if data == "s":
+                self.done("selected")
+
+    submenu_changes: list[tuple[str, str]] = []
+    submenu_settings = SettingsList(
+        [
+            {
+                "id": "mode",
+                "label": "Mode",
+                "currentValue": "auto",
+                "submenu": lambda current, done: Submenu(done),
+            }
+        ],
+        3,
+        theme,
+        lambda item_id, value: submenu_changes.append((item_id, value)),
+        lambda: None,
+    )
+    submenu_settings.handleInput("\r")
+    assert submenu_settings.render(40) == ["submenu"]
+    submenu_settings.handleInput("s")
+    assert submenu_changes == [("mode", "selected")]
+    assert "selected" in "\n".join(submenu_settings.render(40))
 
 
 def test_input_ports_pi_line_movement_and_kill_yank_keybindings() -> None:
@@ -216,6 +1606,24 @@ def test_input_ports_pi_line_movement_and_kill_yank_keybindings() -> None:
 
     assert input_component.get_value() == "bazfoo bar "
     assert input_component.cursor == len("baz")
+
+
+def test_input_ports_pi_on_escape_cancel_keybinding() -> None:
+    input_component = Input(value="draft")
+    cancelled: list[str] = []
+    input_component.onEscape = lambda: cancelled.append("escape")
+
+    input_component.handle_input("\x1b")
+
+    assert cancelled == ["escape"]
+    assert input_component.get_value() == "draft"
+
+    input_component.onEscape = None
+    input_component.on_escape = lambda: cancelled.append("ctrl+c")
+    input_component.handle_input("\x03")
+
+    assert cancelled == ["escape", "ctrl+c"]
+    assert input_component.get_value() == "draft"
 
 
 def test_input_ports_pi_line_kill_and_yank_pop_keybindings() -> None:
@@ -348,6 +1756,28 @@ def test_input_ports_pi_ctrl_b_ctrl_f_cursor_navigation() -> None:
     assert input_component.cursor == len("hello")
 
 
+def test_input_ports_pi_alternate_home_end_key_sequences() -> None:
+    for sequence in ("\x1bOH", "\x1b[1~", "\x1b[7~"):
+        input_component = Input()
+        input_component.set_value("hello")
+        input_component.cursor = len("he")
+
+        input_component.handle_input(sequence)
+
+        assert input_component.get_value() == "hello"
+        assert input_component.cursor == 0
+
+    for sequence in ("\x1bOF", "\x1b[4~", "\x1b[8~"):
+        input_component = Input()
+        input_component.set_value("hello")
+        input_component.cursor = len("he")
+
+        input_component.handle_input(sequence)
+
+        assert input_component.get_value() == "hello"
+        assert input_component.cursor == len("hello")
+
+
 def test_input_ports_pi_ctrl_d_delete_char_forward_keybinding() -> None:
     input_component = Input()
     input_component.set_value("hello")
@@ -402,6 +1832,25 @@ def test_input_ports_pi_alt_b_alt_f_word_navigation() -> None:
 
     input_component.handle_input("\x1bf")
     assert input_component.cursor == len("hello world")
+
+
+def test_input_ports_pi_modified_arrow_word_navigation() -> None:
+    input_component = Input()
+    input_component.set_value("alpha beta gamma")
+
+    input_component.handle_input("\x1b[1;3D")
+    assert input_component.get_value() == "alpha beta gamma"
+    assert input_component.cursor == len("alpha beta ")
+
+    input_component.handle_input("\x1b[1;5D")
+    assert input_component.cursor == len("alpha ")
+
+    input_component.handle_input("\x1b[1;3C")
+    assert input_component.get_value() == "alpha beta gamma"
+    assert input_component.cursor == len("alpha beta")
+
+    input_component.handle_input("\x1b[1;5C")
+    assert input_component.cursor == len("alpha beta gamma")
 
 
 def test_input_ports_pi_alt_backspace_delete_word_backward() -> None:
@@ -512,6 +1961,17 @@ def test_tool_execution_collapses_long_generic_results_until_expanded() -> None:
 
     component.set_expanded(True)
     assert "line 11" in "\n".join(component.render(80))
+
+
+def test_tool_execution_collapses_huge_single_line_generic_result_before_rendering() -> None:
+    component = ToolExecutionComponent("huge", {})
+    result = AgentToolResult(content=[TextContent(text="x" * 80_000)], details=None)
+
+    component.update_result(result, is_error=False)
+    rendered = "\n".join(component.render(80))
+
+    assert "more chars, to expand" in rendered
+    assert len(rendered) < 8_000
 
 
 def test_user_and_skill_invocation_components_render_like_pi() -> None:
@@ -772,7 +2232,7 @@ def test_interactive_mode_extension_shortcut_can_set_footer_status(tmp_path) -> 
     mode.run()
 
     rendered = strip_ansi("\n".join(app.tui.render(140)))
-    assert "ext: ready" in rendered
+    assert "\nready" in rendered
     assert "ctrl+s" not in rendered
 
 
@@ -818,7 +2278,7 @@ def test_interactive_mode_extension_shortcut_can_hide_working_status(tmp_path) -
 
     rendered = strip_ansi("\n".join(app.tui.render(140)))
     assert "status: Hidden extension status" not in rendered
-    assert "model:" in rendered
+    assert "faux-model" in rendered
     assert "ctrl+h" not in rendered
 
 
@@ -1125,8 +2585,202 @@ def test_interactive_mode_extension_shortcut_can_replace_and_restore_footer(tmp_
     restored = strip_ansi("\n".join(app.tui.render(140)))
     assert custom_footers[-1].disposed is True
     assert "custom footer" not in restored
-    assert "model:" in restored
-    assert "plan: ready" in restored
+    assert "faux-model" in restored
+    assert "\nready" in restored
+
+
+def test_interactive_footer_data_provider_ports_pi_nested_git_branch_and_changes(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    nested = repo / "src" / "nested"
+    git_dir = repo / ".git"
+    nested.mkdir(parents=True)
+    git_dir.mkdir()
+    head = git_dir / "HEAD"
+    head.write_text("ref: refs/heads/main\n")
+
+    app = CodingApp(cwd=str(nested), model=faux_model(), terminal=FakeTerminal(), enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    provider = mode.footer_data_provider
+
+    try:
+        assert provider.getGitBranch() == "main"
+        assert provider.get_available_provider_count() == 0
+
+        seen: list[str | None] = []
+        unsubscribe = provider.onBranchChange(lambda: seen.append(provider.getGitBranch()))
+        head.write_text("ref: refs/heads/feature\n")
+        provider.refresh_git_branch()
+        unsubscribe()
+        head.write_text("ref: refs/heads/ignored\n")
+        provider.refresh_git_branch()
+
+        assert provider.get_git_branch() == "ignored"
+        assert seen == ["feature"]
+    finally:
+        provider.dispose()
+
+
+def test_interactive_footer_data_provider_ports_pi_worktree_and_detached_resolution(tmp_path) -> None:
+    common_git_dir = tmp_path / "repo" / ".git"
+    git_dir = common_git_dir / "worktrees" / "src"
+    worktree = tmp_path / "worktree"
+    git_dir.mkdir(parents=True)
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {git_dir}\n")
+    (git_dir / "HEAD").write_text("ref: refs/heads/worktree-branch\n")
+    (git_dir / "commondir").write_text("../..\n")
+
+    app = CodingApp(cwd=str(worktree), model=faux_model(), terminal=FakeTerminal(), enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    try:
+        assert mode.footer_data_provider.getGitBranch() == "worktree-branch"
+    finally:
+        mode.footer_data_provider.dispose()
+
+    detached = tmp_path / "detached"
+    detached_git_dir = detached / ".git"
+    detached_git_dir.mkdir(parents=True)
+    (detached_git_dir / "HEAD").write_text("abcdef123456\n")
+    detached_app = CodingApp(cwd=str(detached), model=faux_model(), terminal=FakeTerminal(), enable_tui=True)
+    detached_mode = InteractiveMode(detached_app, input_fn=lambda prompt: "/exit")
+    try:
+        assert detached_mode.footer_data_provider.getGitBranch() == "detached"
+    finally:
+        detached_mode.footer_data_provider.dispose()
+
+
+def test_interactive_mode_builtin_footer_renders_pi_git_branch(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    git_dir = repo / ".git"
+    repo.mkdir()
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    app = CodingApp(cwd=str(repo), model=faux_model(), terminal=FakeTerminal(columns=360), enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+
+    try:
+        mode.init()
+        rendered = strip_ansi("\n".join(app.tui.render(360)))
+        assert f"{repo} (main)" in rendered
+    finally:
+        mode.footer_data_provider.dispose()
+        app.tui.stop()
+
+
+def test_interactive_footer_data_provider_auto_refreshes_head_changes_and_rerenders(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    git_dir = repo / ".git"
+    repo.mkdir()
+    git_dir.mkdir()
+    head = git_dir / "HEAD"
+    head.write_text("ref: refs/heads/main\n")
+    app = CodingApp(cwd=str(repo), model=faux_model(), terminal=FakeTerminal(columns=360), enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    seen: list[str | None] = []
+
+    mode.init()
+    unsubscribe = mode.footer_data_provider.onBranchChange(lambda: seen.append(mode.footer_data_provider.getGitBranch()))
+    try:
+        assert mode.footer_data_provider.getGitBranch() == "main"
+
+        head.write_text("ref: refs/heads/feature\n")
+
+        assert _wait_until(
+            lambda: seen == ["feature"]
+            and f"{repo} (feature)" in strip_ansi("\n".join(app.tui.render(360)))
+        )
+    finally:
+        unsubscribe()
+        mode.footer_data_provider.dispose()
+        app.tui.stop()
+
+
+def test_interactive_mode_footer_ports_pi_available_provider_count_for_scoped_models(tmp_path) -> None:
+    primary = faux_model()
+    secondary = faux_model(api="other")
+    secondary.provider = "other"
+    secondary.id = "other-model"
+    secondary.name = "Other"
+    app = CodingApp(
+        cwd=str(tmp_path),
+        model=primary,
+        scoped_models=[ScopedModel(model=primary), ScopedModel(model=secondary)],
+        terminal=FakeTerminal(columns=140),
+        enable_tui=True,
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+
+    try:
+        mode.init()
+        rendered = strip_ansi("\n".join(app.tui.render(140)))
+
+        assert mode.footer_data_provider.getAvailableProviderCount() == 2
+        assert "(faux) faux-model" in rendered
+    finally:
+        mode.footer_data_provider.dispose()
+        app.tui.stop()
+
+
+def test_interactive_mode_footer_ports_pi_usage_stats_from_session_messages(tmp_path) -> None:
+    model = faux_model()
+    model.context_window = 200_000
+    usage = Usage(input=12345, output=6789, cache_read=50, cache_write=50)
+    usage.cost = Cost(total=1.234)
+    assistant = AssistantMessage(
+        content=[TextContent(text="done")],
+        api=model.api,
+        provider=model.provider,
+        model=model.id,
+        usage=usage,
+        stop_reason="stop",
+        timestamp=now_ms(),
+    )
+    app = CodingApp(cwd=str(tmp_path), model=model, terminal=FakeTerminal(columns=160), enable_tui=True)
+    app.session.agent.state.messages = [assistant]
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+
+    try:
+        mode.init()
+        rendered = strip_ansi("\n".join(app.tui.render(160)))
+
+        assert "↑12k ↓6.8k R50 W50 CH0.4% $1.234" in rendered
+        assert "faux-model" in rendered
+    finally:
+        mode.footer_data_provider.dispose()
+        app.tui.stop()
+
+
+def test_interactive_mode_footer_ports_pi_unknown_context_usage(tmp_path) -> None:
+    model = faux_model()
+    model.context_window = 200_000
+    app = CodingApp(cwd=str(tmp_path), model=model, terminal=FakeTerminal(columns=160), enable_tui=True)
+    app.session.get_context_usage = lambda: {"tokens": None, "contextWindow": 200_000, "percent": None}
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+
+    try:
+        mode.init()
+        rendered = strip_ansi("\n".join(app.tui.render(160)))
+
+        assert "?/200k (auto)" in rendered
+        assert "0.0%/200k" not in rendered
+    finally:
+        mode.footer_data_provider.dispose()
+        app.tui.stop()
+
+
+def test_interactive_mode_footer_ports_pi_session_name_updates(tmp_path) -> None:
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=FakeTerminal(columns=160), enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+
+    try:
+        mode.init()
+        app.session.set_session_name("work session")
+        rendered = strip_ansi("\n".join(app.tui.render(160)))
+
+        assert f"{tmp_path} • work session" in rendered
+    finally:
+        mode.footer_data_provider.dispose()
+        app.tui.stop()
 
 
 def test_interactive_mode_extension_shortcut_can_replace_and_restore_header(tmp_path) -> None:
@@ -1409,7 +3063,7 @@ def test_tui_footer_status_diff_and_width_constraints() -> None:
 
     assert first.full is True
     assert second.full is False
-    assert second.first_changed == 1
+    assert second.first_changed == 2
     assert all(visible_width(line) <= 24 for line in second.lines)
 
 
@@ -1456,6 +3110,121 @@ def test_interactive_mode_renders_real_prompt_loop(tmp_path) -> None:
     assert input_prompts == ["", ""]
 
 
+def test_interactive_mode_queues_prompt_while_turn_is_streaming(tmp_path) -> None:
+    first_stream_started = threading.Event()
+    first_stream_released = threading.Event()
+    first_stream_finished = threading.Event()
+    second_input_requested = threading.Event()
+    stream_calls = {"n": 0}
+
+    def stream_fn(model, context, options):
+        stream_calls["n"] += 1
+        events = text_response_events(model, f"turn {stream_calls['n']}")
+        if stream_calls["n"] > 1:
+            provider = create_faux_provider(lambda m, c: events)
+            return provider.stream_simple(model, context, options)
+
+        stream = create_assistant_message_event_stream()
+        stream.push(events[0])
+        first_stream_started.set()
+
+        def finish() -> None:
+            first_stream_released.wait(timeout=2)
+            for event in events[1:]:
+                stream.push(event)
+            first_stream_finished.set()
+
+        threading.Thread(target=finish, daemon=True).start()
+        return stream
+
+    register_api_provider(ApiProvider(api="faux", stream=stream_fn, stream_simple=stream_fn))
+    terminal = FakeTerminal(columns=100)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    input_calls = {"n": 0}
+
+    def input_fn(prompt: str) -> str:
+        index = input_calls["n"]
+        input_calls["n"] += 1
+        if index == 0:
+            return "first"
+        if index == 1:
+            second_input_requested.set()
+            return "second"
+        if index == 2:
+            first_stream_finished.wait(timeout=2)
+            return "/exit"
+        raise EOFError
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    thread = threading.Thread(target=mode.run)
+    thread.start()
+
+    assert first_stream_started.wait(timeout=2)
+    try:
+        assert second_input_requested.wait(timeout=0.25)
+        assert app.session.get_steering_messages() == ["second"]
+        assert app.session.pending_message_count == 1
+    finally:
+        first_stream_released.set()
+        thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
+def test_interactive_mode_runs_bang_bash_while_turn_is_streaming(tmp_path) -> None:
+    first_stream_started = threading.Event()
+    first_stream_released = threading.Event()
+    first_stream_finished = threading.Event()
+    stream_calls = {"n": 0}
+
+    def stream_fn(model, context, options):
+        stream_calls["n"] += 1
+        events = text_response_events(model, "turn")
+        stream = create_assistant_message_event_stream()
+        stream.push(events[0])
+        first_stream_started.set()
+
+        def finish() -> None:
+            first_stream_released.wait(timeout=2)
+            for event in events[1:]:
+                stream.push(event)
+            first_stream_finished.set()
+
+        threading.Thread(target=finish, daemon=True).start()
+        return stream
+
+    register_api_provider(ApiProvider(api="faux", stream=stream_fn, stream_simple=stream_fn))
+    terminal = FakeTerminal(columns=100)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    inputs = iter(["first", "! printf streamed", "/exit"])
+
+    def input_fn(prompt: str) -> str:
+        value = next(inputs)
+        if value == "! printf streamed":
+            assert first_stream_started.wait(timeout=2)
+        if value == "/exit":
+            first_stream_finished.wait(timeout=2)
+        return value
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    thread = threading.Thread(target=mode.run)
+    thread.start()
+
+    assert first_stream_started.wait(timeout=2)
+    time.sleep(0.1)
+    try:
+        assert app.session.get_steering_messages() == []
+        assert app.session.has_pending_bash_messages is True
+        assert mode.status._message == "Running"
+    finally:
+        first_stream_released.set()
+        thread.join(timeout=2)
+    assert not thread.is_alive()
+
+    rendered = strip_ansi("\n".join(app.tui.render(100)))
+    assert "$ printf streamed" in rendered
+    assert "streamed" in rendered
+
+
 def test_interactive_mode_keeps_agent_output_above_status_footer(tmp_path) -> None:
     register_api_provider(create_faux_provider(lambda m, c: text_response_events(m, "ordered reply")))
     terminal = FakeTerminal(columns=100)
@@ -1469,9 +3238,145 @@ def test_interactive_mode_keeps_agent_output_above_status_footer(tmp_path) -> No
     prompt_index = next(index for index, line in enumerate(rendered) if "hi" in strip_ansi(line))
     reply_index = next(index for index, line in enumerate(rendered) if line == "ordered reply")
     status_index = next(index for index, line in enumerate(rendered) if line.startswith("status:"))
-    footer_index = next(index for index, line in enumerate(rendered) if line.startswith("model:"))
+    footer_index = next(index for index, line in enumerate(rendered) if "faux-model" in strip_ansi(line))
 
     assert prompt_index < reply_index < status_index < footer_index
+
+
+def test_interactive_mode_labels_post_response_compaction_after_reply(tmp_path) -> None:
+    compression_started = threading.Event()
+    release_compression = threading.Event()
+
+    def script(model, context):
+        events = text_response_events(model, "reply before compaction")
+        events[-1].message.usage.total_tokens = 200_000
+        return events
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(
+        cwd=str(tmp_path),
+        model=faux_model(),
+        terminal=terminal,
+        enable_tui=True,
+        context_length=100_000,
+    )
+    original_compact_post_response = app._compact_post_response
+
+    def blocking_compact_post_response() -> None:
+        compression_started.set()
+        release_compression.wait(timeout=2)
+        original_compact_post_response()
+
+    app._compact_post_response = blocking_compact_post_response
+    input_calls = {"n": 0}
+    allow_exit_input = threading.Event()
+
+    def input_fn(prompt: str) -> str:
+        input_calls["n"] += 1
+        if input_calls["n"] == 1:
+            return "hi"
+        allow_exit_input.wait(timeout=2)
+        return "/exit"
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    thread = threading.Thread(target=mode.run)
+    thread.start()
+
+    assert compression_started.wait(timeout=2)
+    rendered = strip_ansi("\n".join(app.tui.render(120)))
+    assert "reply before compaction" in rendered
+    assert "status: Compressing" in rendered
+    assert "status: Running" not in rendered
+
+    release_compression.set()
+    allow_exit_input.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+
+
+def test_interactive_mode_auto_compaction_notice_uses_actual_compaction_boundary_tokens(tmp_path) -> None:
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=FakeTerminal(columns=120), enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    app.compaction.compressor.compression_count = 1
+    app.compaction.last_compression_before_tokens = 50_000
+    app.compaction.last_compression_after_tokens = 12_000
+
+    mode.init()
+    mode._render_auto_compaction_notice(before_compressions=0, before_tokens=8)
+
+    rendered = strip_ansi("\n".join(app.tui.render(120)))
+    assert "Context compacted: ~50,000 -> ~12,000 tokens" in rendered
+    assert "Context compacted: ~8 ->" not in rendered
+
+
+def test_interactive_mode_footer_marks_context_unknown_while_awaiting_real_usage(tmp_path) -> None:
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=FakeTerminal(columns=120), enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    app.compaction.awaiting_real_usage_after_compression = True
+
+    mode._refresh_footer()
+
+    assert mode.footer.context_percent is None
+    assert mode.footer.context_percent_unknown is True
+    rendered = strip_ansi("\n".join(mode.footer.render(120)))
+    assert "?/" in rendered
+
+
+def test_interactive_mode_renders_auto_retry_status_instead_of_stale_running(tmp_path) -> None:
+    retry_started = threading.Event()
+    allow_exit = threading.Event()
+    stream_calls = {"n": 0}
+
+    def stream_fn(model, context, options):
+        stream_calls["n"] += 1
+        if stream_calls["n"] == 1:
+            stream = create_assistant_message_event_stream()
+            error_message = AssistantMessage(
+                content=[TextContent(text="")],
+                api=model.api,
+                provider=model.provider,
+                model=model.id,
+                usage=empty_usage(),
+                stop_reason="error",
+                error_message="Provider finish_reason: network_error",
+                timestamp=now_ms(),
+            )
+            stream.push(ErrorEvent(reason="error", error=error_message))
+            return stream
+        return create_faux_provider(lambda m, c: text_response_events(m, "retry recovered")).stream_simple(
+            model, context, options
+        )
+
+    register_api_provider(ApiProvider(api="faux", stream=stream_fn, stream_simple=stream_fn))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.session.set_auto_retry_enabled(True)
+    app.session._max_retries = 1
+    app.session._retry_delay_ms = 5000
+    app.session.subscribe(lambda event: retry_started.set() if event.type == "auto_retry_start" else None)
+    input_calls = {"n": 0}
+
+    def input_fn(prompt: str) -> str:
+        input_calls["n"] += 1
+        if input_calls["n"] == 1:
+            return "hi"
+        allow_exit.wait(timeout=2)
+        return "/exit"
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    thread = threading.Thread(target=mode.run)
+    thread.start()
+
+    assert retry_started.wait(timeout=2)
+    try:
+        assert mode.status._message.startswith("Retrying (1/1) in 5s")
+        assert mode.status._message != "Running"
+    finally:
+        app.session.abort_retry()
+        allow_exit.set()
+        thread.join(timeout=2)
+    assert not thread.is_alive()
 
 
 def test_interactive_mode_bang_runs_bash_without_model_and_records_context(tmp_path) -> None:
@@ -1565,7 +3470,10 @@ def test_interactive_mode_bang_uses_user_bash_extension_operations(tmp_path) -> 
         return {"exit_code": 0}
 
     def handle_user_bash(event):
-        return {"operations": BashOperations(exec=exec_command)}
+        return {
+            "operations": BashOperations(exec=exec_command),
+            "commandPrefix": "source ~/.profile",
+        }
 
     app.session.extension_runner.on("user_bash", handle_user_bash)
     inputs = iter(["! printf from-shell", "/exit"])
@@ -1575,8 +3483,9 @@ def test_interactive_mode_bang_uses_user_bash_extension_operations(tmp_path) -> 
 
     rendered = strip_ansi("\n".join(app.tui.render(120)))
     bash_messages = [message for message in app.messages if getattr(message, "role", None) == "bashExecution"]
-    assert exec_calls == [("printf from-shell", str(tmp_path))]
+    assert exec_calls == [("source ~/.profile\nprintf from-shell", str(tmp_path))]
     assert "from custom operations" in rendered
+    assert bash_messages[-1].command == "printf from-shell"
     assert bash_messages[-1].output == "from custom operations\n"
 
 
@@ -1603,8 +3512,8 @@ def test_interactive_mode_manual_compress_renders_feedback_and_updates_footer(tm
     rendered = "\n".join(app.tui.render(140))
     assert "compact: Compressed:" in rendered
     assert "Approx request size:" in rendered
-    assert "ctx:" in rendered
-    assert "compactions: 1" in rendered
+    assert "%/" in rendered
+    assert "faux-model" in rendered
 
 
 def test_interactive_mode_compact_alias_is_local_and_does_not_call_model(tmp_path) -> None:
@@ -1637,7 +3546,7 @@ def test_interactive_mode_compact_alias_is_local_and_does_not_call_model(tmp_pat
     assert calls["n"] == 0
     assert "compact: Compressed:" in rendered
     assert "model should not run" not in rendered
-    assert "compactions: 1" in rendered
+    assert "%/" in rendered
 
 
 def test_interactive_mode_login_logout_oauth_are_local_tui_commands(tmp_path) -> None:
@@ -1758,9 +3667,44 @@ def test_interactive_mode_bad_read_numeric_string_returns_tool_error_not_traceba
 
     rendered = "\n".join(app.tui.render(120))
     assert "read src/file.py" in rendered
-    assert "read.limit: expected integer" in rendered
+    assert "read.limit: expected number" in rendered
     assert "Traceback" not in rendered
     assert calls["count"] == 2
+
+
+def test_pi_standalone_editor_helpers_are_exported_and_match_core_behavior() -> None:
+    from appv22.tui import KillRing, UndoStack, findWordBackward, findWordForward, isNativeModifierPressed
+
+    ring = KillRing()
+    ring.push("foo", {"prepend": False})
+    ring.push("bar", {"prepend": False, "accumulate": True})
+    ring.push("pre-", {"prepend": True, "accumulate": True})
+    assert ring.peek() == "pre-foobar"
+    ring.push("older", {"prepend": False})
+    assert ring.length == 2
+    ring.rotate()
+    assert ring.peek() == "pre-foobar"
+
+    stack = UndoStack()
+    state = {"items": [1]}
+    stack.push(state)
+    state["items"].append(2)
+    assert stack.length == 1
+    assert stack.pop() == {"items": [1]}
+    assert stack.pop() is None
+    stack.push({"value": "x"})
+    stack.clear()
+    assert stack.length == 0
+
+    assert findWordBackward("foo bar", 7) == 4
+    assert findWordForward("foo bar", 0) == 3
+    assert findWordBackward("foo.bar", 7) == 4
+    assert findWordForward("foo.bar", 0) == 3
+    assert findWordForward("  word", 0) == 6
+    assert findWordBackward("word  ", 6) == 0
+
+    assert isNativeModifierPressed("shift") is False
+    assert isNativeModifierPressed("command") is False
 
 
 def test_strip_ansi_helper() -> None:

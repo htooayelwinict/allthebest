@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import inspect
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from appv22.coding_agent.event_bus import EventBusController, create_event_bus
+from appv22.coding_agent.extensions import ExtensionRunner
+from appv22.coding_agent.settings_manager import SettingsManager
 from appv22.coding_agent.source_info import SourceInfo, create_synthetic_source_info
 
 CONFIG_DIR_NAME = ".pi"
@@ -216,9 +220,16 @@ class DefaultResourceLoader:
         cwd: str,
         agent_dir: str | None = None,
         no_context_files: bool = False,
-        project_trusted: bool = True,
+        project_trusted: bool | None = None,
+        settings_manager: object | None = None,
         system_prompt: str | None = None,
         append_system_prompt: list[str] | None = None,
+        event_bus: EventBusController | None = None,
+        eventBus: EventBusController | None = None,
+        additional_extension_paths: list[str] | None = None,
+        extension_factories: list[Callable[[ExtensionRunner], object]] | None = None,
+        no_extensions: bool = False,
+        extensions_override: Callable[[dict[str, object]], dict[str, object]] | None = None,
         package_paths: list[str] | None = None,
         additional_skill_paths: list[str] | None = None,
         additional_prompt_template_paths: list[str] | None = None,
@@ -236,14 +247,33 @@ class DefaultResourceLoader:
     ) -> None:
         self.cwd = str(Path(cwd).expanduser().resolve())
         self.agent_dir = str(Path(agent_dir).expanduser().resolve()) if agent_dir else str(Path.home() / ".pi" / "agent")
+        self.settings_manager = settings_manager or SettingsManager.create(self.cwd, self.agent_dir)
+        self.event_bus = event_bus or eventBus or create_event_bus()
+        self.eventBus = self.event_bus
         self.no_context_files = no_context_files
-        self.project_trusted = project_trusted
+        self.project_trusted = (
+            _settings_value(self.settings_manager, "isProjectTrusted", "is_project_trusted")
+            if project_trusted is None
+            else project_trusted
+        )
+        self.project_trusted = True if self.project_trusted is None else bool(self.project_trusted)
         self.system_prompt_source = system_prompt
         self.append_system_prompt_source = append_system_prompt
-        self.package_paths = list(package_paths or [])
-        self.additional_skill_paths = list(additional_skill_paths or [])
-        self.additional_prompt_template_paths = list(additional_prompt_template_paths or [])
-        self.additional_theme_paths = list(additional_theme_paths or [])
+        self.additional_extension_paths = list(additional_extension_paths or [])
+        self.extension_factories = list(extension_factories or [])
+        self.no_extensions = no_extensions
+        self.extensions_override = extensions_override
+        self.package_paths = _settings_package_paths(self.settings_manager) + list(package_paths or [])
+        self.additional_skill_paths = _settings_list(self.settings_manager, "getSkillPaths") + list(
+            additional_skill_paths or []
+        )
+        self.additional_prompt_template_paths = _settings_list(
+            self.settings_manager,
+            "getPromptTemplatePaths",
+        ) + list(additional_prompt_template_paths or [])
+        self.additional_theme_paths = _settings_list(self.settings_manager, "getThemePaths") + list(
+            additional_theme_paths or []
+        )
         self.no_skills = no_skills
         self.no_prompt_templates = no_prompt_templates
         self.no_themes = no_themes
@@ -260,7 +290,7 @@ class DefaultResourceLoader:
             project_trusted=self.project_trusted,
         )
 
-        self.extensions_result: dict[str, object] = {"extensions": [], "errors": [], "runtime": None}
+        self.extensions_result: dict[str, object] = {"extensions": [], "errors": [], "runtime": ExtensionRunner(cwd=self.cwd)}
         self.skills_result: dict[str, list[object]] = {"skills": [], "diagnostics": []}
         self.prompts_result: dict[str, list[object]] = {"prompts": [], "diagnostics": []}
         self.themes_result: dict[str, list[object]] = {"themes": [], "diagnostics": []}
@@ -331,6 +361,7 @@ class DefaultResourceLoader:
             for resources in (resolved_paths.skills, resolved_paths.prompts, resolved_paths.themes)
             for resource in resources
         }
+        self._update_extensions()
         self.last_skill_paths = _merge_paths(self.cwd, skill_paths, self.additional_skill_paths)
         self.last_prompt_paths = _merge_paths(self.cwd, prompt_paths, self.additional_prompt_template_paths)
         self.last_theme_paths = _merge_paths(self.cwd, theme_paths, self.additional_theme_paths)
@@ -364,6 +395,31 @@ class DefaultResourceLoader:
         self.append_system_prompt = (
             self.append_system_prompt_override(base_append) if self.append_system_prompt_override else base_append
         )
+
+    def _update_extensions(self) -> None:
+        runtime = ExtensionRunner(cwd=self.cwd)
+        errors: list[dict[str, str]] = []
+        if not self.no_extensions:
+            for path_text in self.additional_extension_paths:
+                path = Path(path_text).expanduser()
+                if not path.is_absolute():
+                    path = Path(self.cwd) / path
+                if not path.exists():
+                    errors.append({"path": str(path.resolve()), "error": f"Extension path does not exist: {path.resolve()}"})
+        for index, factory in enumerate(self.extension_factories, start=1):
+            extension_path = f"<inline:{index}>"
+            try:
+                pending_start = len(runtime.pending_provider_registrations)
+                result = factory(runtime)
+                if inspect.isawaitable(result):
+                    raise RuntimeError("async extension factories are not supported by the Python runtime")
+                for pending_index in range(pending_start, len(runtime._pending_provider_registrations)):  # noqa: SLF001
+                    name, config, _old_path = runtime._pending_provider_registrations[pending_index]  # noqa: SLF001
+                    runtime._pending_provider_registrations[pending_index] = (name, config, extension_path)  # noqa: SLF001
+            except Exception as error:  # noqa: BLE001 - Pi records extension load errors as diagnostics.
+                errors.append({"path": extension_path, "error": str(error)})
+        result = {"extensions": [], "errors": errors, "runtime": runtime}
+        self.extensions_result = self.extensions_override(result) if self.extensions_override else result
 
     def _update_skills_from_paths(self, skill_paths: list[str], metadata_by_path: dict[str, dict[str, object]] | None = None) -> None:
         if self.no_skills and not skill_paths:
@@ -439,6 +495,38 @@ def _resource_paths(entries: list[dict[str, object]]) -> list[str]:
     return paths
 
 
+def _settings_value(settings_manager: object, *names: str):
+    for name in names:
+        value = getattr(settings_manager, name, None)
+        if callable(value):
+            result = value()
+            if result is not None:
+                return result
+        elif value is not None:
+            return value
+    return None
+
+
+def _settings_list(settings_manager: object, *names: str) -> list[str]:
+    value = _settings_value(settings_manager, *names)
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
+
+
+def _settings_package_paths(settings_manager: object) -> list[str]:
+    value = _settings_value(settings_manager, "getPackages")
+    if not isinstance(value, list):
+        return []
+    paths: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            paths.append(item)
+        elif isinstance(item, dict) and isinstance(item.get("source"), str):
+            paths.append(str(item["source"]))
+    return paths
+
+
 def _merge_paths(cwd: str, primary: list[str], additional: list[str]) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
@@ -496,6 +584,17 @@ def load_skills(
             skills_by_name[skill.name] = skill
             seen_real_paths.add(real_path)
     return {"skills": list(skills_by_name.values()), "diagnostics": diagnostics}
+
+
+def load_skills_from_dir(options: dict[str, object]) -> dict[str, list[object]]:
+    directory = str(options.get("dir") or options.get("path") or "")
+    cwd = str(options.get("cwd") or Path(directory).parent or ".")
+    metadata_by_path = options.get("metadataByPath") or options.get("metadata_by_path")
+    return load_skills([directory], cwd=cwd, metadata_by_path=metadata_by_path if isinstance(metadata_by_path, dict) else None)
+
+
+loadSkills = load_skills
+loadSkillsFromDir = load_skills_from_dir
 
 
 def load_prompt_templates(
@@ -641,6 +740,9 @@ def format_skills_for_prompt(skills: list[Skill]) -> str:
         )
     lines.append("</available_skills>")
     return "\n".join(lines)
+
+
+formatSkillsForPrompt = format_skills_for_prompt
 
 
 def _parse_frontmatter(raw: str) -> tuple[dict[str, Any], str]:

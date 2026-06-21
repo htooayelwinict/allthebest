@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from dataclasses import replace
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from appv22.agent.agent import Agent
 from appv22.agent.types import AbortSignal
@@ -15,6 +17,14 @@ from appv22.agent.types import AgentTool
 from appv22.agent.types import AgentMessage
 from appv22.agent.types import BeforeToolCallResult
 from appv22.agent.types import MessageEndEvent, MessageStartEvent
+from appv22.agent.tool_guardrails import (
+    ToolCallGuardrailConfig,
+    ToolCallGuardrailController,
+    ToolGuardrailDecision,
+    append_toolguard_guidance,
+    classify_tool_failure,
+    toolguard_synthetic_result,
+)
 from appv22.ai.model_resolver import ScopedModel
 from appv22.ai.models import (
     clamp_thinking_level,
@@ -42,6 +52,7 @@ from appv22.coding_agent.session_store import (
     SessionStore,
     deserialize_message,
 )
+from appv22.coding_agent.settings_manager import SettingsManager
 from appv22.coding_agent.source_info import SourceInfo, create_synthetic_source_info
 from appv22.coding_agent.system_prompt import BuildSystemPromptOptions, build_system_prompt
 from appv22.coding_agent.tools import create_all_tool_definitions
@@ -87,6 +98,16 @@ _RETRYABLE_ERROR_MARKERS = (
     "timed out",
     "timeout",
     "terminated",
+)
+_NON_RETRYABLE_PROVIDER_LIMIT_MARKERS = (
+    "gousagelimiterror",
+    "freeusagelimiterror",
+    "monthly usage limit reached",
+    "available balance",
+    "insufficient_quota",
+    "out of budget",
+    "quota exceeded",
+    "billing",
 )
 
 
@@ -216,6 +237,9 @@ class ExtensionCompactionResult:
     @property
     def tokensBefore(self) -> int:
         return self.tokens_before
+
+
+CompactionResult = ExtensionCompactionResult
 
 
 @dataclass
@@ -398,6 +422,60 @@ def _bash_execution_to_text(message) -> str:
     return text
 
 
+def _tool_result_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if not content:
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, TextContent) or getattr(block, "type", None) == "text":
+            parts.append(str(getattr(block, "text", "")))
+        elif isinstance(block, ImageContent) or getattr(block, "type", None) == "image":
+            parts.append("[image]")
+        else:
+            parts.append(str(block))
+    return "\n".join(parts)
+
+
+def _append_toolguard_content(content, decision: ToolGuardrailDecision):
+    blocks = list(content or [])
+    if not blocks:
+        return [TextContent(text=append_toolguard_guidance("", decision))]
+    for index, block in enumerate(blocks):
+        if isinstance(block, TextContent):
+            blocks[index] = replace(block, text=append_toolguard_guidance(block.text, decision))
+            return blocks
+        if getattr(block, "type", None) == "text":
+            text = str(getattr(block, "text", ""))
+            blocks[index] = TextContent(text=append_toolguard_guidance(text, decision))
+            return blocks
+    blocks.append(TextContent(text=append_toolguard_guidance("", decision)))
+    return blocks
+
+
+def _coerce_tool_guardrail_config(
+    value: ToolCallGuardrailConfig | Mapping[str, object] | None,
+) -> ToolCallGuardrailConfig:
+    if isinstance(value, ToolCallGuardrailConfig):
+        return value
+    if isinstance(value, Mapping):
+        return ToolCallGuardrailConfig.from_mapping(value)
+    return ToolCallGuardrailConfig()
+
+
+def _settings_value(settings_manager: object, *names: str):
+    for name in names:
+        value = getattr(settings_manager, name, None)
+        if callable(value):
+            result = value()
+            if result is not None:
+                return result
+        elif value is not None:
+            return value
+    return None
+
+
 class AgentSession:
     """Wires an agent.Agent with coding tools + a built system prompt."""
 
@@ -419,6 +497,9 @@ class AgentSession:
         scoped_models: list[ScopedModel] | None = None,
         steering_mode: str = "one-at-a-time",
         follow_up_mode: str = "one-at-a-time",
+        transport: str | None = None,
+        thinking_budgets: dict[str, int] | None = None,
+        max_retry_delay_ms: int | None = None,
         compaction_manager: CompactionManager | None = None,
         retry_enabled: bool = False,
         max_retries: int = 0,
@@ -426,12 +507,19 @@ class AgentSession:
         retryable_error_predicate: Callable[[AssistantMessage], bool] | None = None,
         session_path: str | None = None,
         parent_session_path: str | None = None,
+        session_id: str | None = None,
         extension_runner: ExtensionRunner | None = None,
         session_start_event: dict[str, object] | None = None,
         resource_loader: DefaultResourceLoader | None = None,
         agent_dir: str | None = None,
+        settings_manager: object | None = None,
+        stream_fn=None,
+        max_iterations: int = 90,
+        tool_loop_guardrails: ToolCallGuardrailConfig | Mapping[str, object] | None = None,
     ) -> None:
         self.cwd = cwd
+        self.settings_manager = settings_manager or SettingsManager.inMemory()
+        self._stream_fn = stream_fn
         self._allowed_tool_names = set(allowed_tool_names) if allowed_tool_names is not None else None
         self._excluded_tool_names = set(excluded_tool_names or [])
         self._tool_by_name: dict[str, AgentTool] = {}
@@ -457,6 +545,13 @@ class AgentSession:
         self._pending_next_turn_messages: list[AgentMessage] = []
         self._pending_bash_messages: list[BashExecutionMessage] = []
         self._bash_signal: AbortSignal | None = None
+        self._tool_guardrails = ToolCallGuardrailController(
+            _coerce_tool_guardrail_config(tool_loop_guardrails),
+            cwd=self.cwd,
+        )
+        self._tool_guardrail_halt_decision: ToolGuardrailDecision | None = None
+        self._tool_guardrail_halt_response_emitted = False
+        self._tool_loop_recovery_steered = False
         self._scoped_models = list(scoped_models or [])
         self._convert_to_llm = convert_to_llm or default_convert_to_llm
         self._caller_transform_context = transform_context
@@ -474,6 +569,7 @@ class AgentSession:
         self._context_files: list[tuple[str, str]] = []
         self._refresh_resource_prompt_inputs()
         self._compaction_manager = compaction_manager
+        self._compaction_running = False
         self._session_name: str | None = None
         self._retry_enabled = retry_enabled
         self._max_retries = max(0, max_retries)
@@ -482,7 +578,9 @@ class AgentSession:
         self._retry_signal: AbortSignal | None = None
         self._retryable_error_predicate = retryable_error_predicate
         self._session_store = (
-            SessionStore(session_path, cwd=cwd, parent_session=parent_session_path) if session_path else None
+            SessionStore(session_path, cwd=cwd, parent_session=parent_session_path, session_id=session_id)
+            if session_path
+            else None
         )
         self._session_start_event = session_start_event or {"type": "session_start", "reason": "startup"}
         restored_context = self._session_store.build_context(default_thinking_level=thinking_level) if self._session_store else None
@@ -510,7 +608,7 @@ class AgentSession:
                 for definition in base_definitions
             }
         else:
-            base_definitions = create_all_tool_definitions(cwd)
+            base_definitions = create_all_tool_definitions(cwd, self._builtin_tool_options())
             base_tools = [
                 wrap_tool_definition(definition, lambda: ToolContext(cwd=self.cwd, model=self.model))
                 for definition in base_definitions
@@ -544,11 +642,17 @@ class AgentSession:
             tools=[],
             before_tool_call=self._before_tool_call,
             after_tool_call=self._after_tool_call,
+            should_stop_after_turn=self._should_stop_after_turn,
             transform_context=self._transform_context,
             steering_mode=steering_mode,
             follow_up_mode=follow_up_mode,
+            transport=transport or "auto",
+            thinking_budgets=thinking_budgets,
+            max_retry_delay_ms=max_retry_delay_ms,
             on_payload=self._on_provider_payload,
             on_response=self._on_provider_response,
+            session_id=self.session_id or None,
+            max_iterations=max_iterations,
         )
         self._extension_runner.bind_provider_actions(
             self._register_extension_provider,
@@ -568,6 +672,40 @@ class AgentSession:
         return (
             self._allowed_tool_names is None or name in self._allowed_tool_names
         ) and name not in self._excluded_tool_names
+
+    def _settings_shell_command_prefix(self) -> str | None:
+        return _settings_value(
+            self.settings_manager,
+            "getShellCommandPrefix",
+            "get_shell_command_prefix",
+            "shellCommandPrefix",
+            "shell_command_prefix",
+        )
+
+    def _settings_shell_path(self) -> str | None:
+        return _settings_value(
+            self.settings_manager,
+            "getShellPath",
+            "get_shell_path",
+            "shellPath",
+            "shell_path",
+        )
+
+    def _builtin_tool_options(self) -> dict[str, dict[str, object]]:
+        auto_resize_images = _settings_value(
+            self.settings_manager,
+            "getImageAutoResize",
+            "get_image_auto_resize",
+            "imageAutoResize",
+            "image_auto_resize",
+        )
+        return {
+            "read": {"auto_resize_images": True if auto_resize_images is None else bool(auto_resize_images)},
+            "bash": {
+                "command_prefix": self._settings_shell_command_prefix(),
+                "shell_path": self._settings_shell_path(),
+            },
+        }
 
     def _refresh_tool_registry(self) -> None:
         definition_by_name = dict(self._base_definition_by_name)
@@ -793,7 +931,7 @@ class AgentSession:
             prompt_messages = self._apply_before_agent_start(current_text, current_images, prompt_messages)
             return self._run_agent_prompt(prompt_messages, stream_fn=stream_fn)
 
-        prompt_message = _user_message(current_text, current_images) if current_images else current_text
+        prompt_message = _user_message(current_text, current_images)
         prompt_message = self._apply_before_agent_start(current_text, current_images, prompt_message)
         return self._run_agent_prompt(prompt_message, stream_fn=stream_fn)
 
@@ -925,10 +1063,12 @@ class AgentSession:
         options = options or {}
         cwd = str(options.get("cwd") or self.cwd)
         timeout = options.get("timeout")
+        env = _with_python_bin_on_path(os.environ.copy())
         try:
             completed = subprocess.run(
                 [command, *args],
                 cwd=cwd,
+                env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -1012,7 +1152,7 @@ class AgentSession:
         )
 
     def continue_(self, stream_fn=None) -> list[AgentMessage]:
-        return self.agent.continue_(stream_fn=stream_fn)
+        return self.agent.continue_(stream_fn=stream_fn or self._stream_fn)
 
     def subscribe(self, listener: Callable[[object], None]) -> Callable[[], None]:
         self._event_listeners.append(listener)
@@ -1036,6 +1176,29 @@ class AgentSession:
         self.agent.follow_up(_user_message(text, images))
 
     followUp = follow_up
+
+    def _steer_tool_loop_recovery(self, decision: ToolGuardrailDecision) -> None:
+        if self._tool_loop_recovery_steered:
+            return
+        if decision.action != "warn" or decision.code not in {
+            "idempotent_consecutive_warning",
+            "idempotent_no_progress_warning",
+            "repeated_exact_failure_warning",
+            "same_tool_failure_warning",
+        }:
+            return
+        self._tool_loop_recovery_steered = True
+        self.agent.steer(
+            _user_message(
+                "Tool loop recovery instruction: the last tool result already contains the information "
+                "or failure signal you need. Do not repeat the same tool call unchanged. If bash returned "
+                "a directory listing, find output, rg output, grep output, or file preview, do not call bash "
+                "again for the same inventory. For codebase scans, treat that output as inventory you already "
+                "have; choose relevant paths from it, then use read with path/offset/limit for file contents. "
+                "Use edit/write only for requested changes. If the result is insufficient, change the "
+                "query/path/glob once, or explain the blocker without calling the same command again."
+            )
+        )
 
     def send_custom_message(self, message: dict, options: dict | None = None, stream_fn=None) -> list[AgentMessage]:
         options = options or {}
@@ -1497,7 +1660,7 @@ class AgentSession:
     def compact(self, focus: str | None = None, summarizer=None):
         if self._compaction_manager is None:
             raise RuntimeError("No compaction manager configured")
-        self._emit(CompactionStartEvent(reason="manual"))
+        self._begin_compaction("manual")
         try:
             status = self._compaction_manager.compress_manual_with_status(
                 self.messages,
@@ -1512,32 +1675,73 @@ class AgentSession:
                     first_kept,
                     0,
                 )
-            self._emit(
-                CompactionEndEvent(
-                    reason="manual",
-                    result=status,
-                    aborted=False,
-                    will_retry=False,
-                )
-            )
+            self._end_compaction(reason="manual", result=status, aborted=False, will_retry=False)
             return status
         except Exception as error:  # noqa: BLE001
             message = str(error)
             aborted = message == "Compaction cancelled"
-            self._emit(
-                CompactionEndEvent(
-                    reason="manual",
-                    result=None,
-                    aborted=aborted,
-                    will_retry=False,
-                    error_message=None if aborted else f"Compaction failed: {message}",
-                )
+            self._end_compaction(
+                reason="manual",
+                result=None,
+                aborted=aborted,
+                will_retry=False,
+                error_message=None if aborted else f"Compaction failed: {message}",
             )
             raise
 
+    def set_compaction_manager(self, manager: CompactionManager | None) -> None:
+        self._compaction_manager = manager
+
+    setCompactionManager = set_compaction_manager
+
+    @property
+    def is_compacting(self) -> bool:
+        return self._compaction_running
+
+    @property
+    def isCompacting(self) -> bool:
+        return self.is_compacting
+
+    def _begin_compaction(self, reason: str) -> None:
+        self._compaction_running = True
+        self._emit(CompactionStartEvent(reason=reason))
+
+    def _end_compaction(
+        self,
+        *,
+        reason: str,
+        result: object | None,
+        aborted: bool,
+        will_retry: bool,
+        error_message: str | None = None,
+    ) -> None:
+        try:
+            self._emit(
+                CompactionEndEvent(
+                    reason=reason,
+                    result=result,
+                    aborted=aborted,
+                    will_retry=will_retry,
+                    error_message=error_message,
+                )
+            )
+        finally:
+            self._compaction_running = False
+
     def execute_bash(self, command: str, on_chunk=None, options: dict | None = None) -> BashResult:
         options = options or {}
-        operations: BashOperations = options.get("operations") or create_local_bash_operations()
+        command_prefix = options.get("commandPrefix")
+        if command_prefix is None:
+            command_prefix = options.get("command_prefix")
+        if command_prefix is None:
+            command_prefix = self._settings_shell_command_prefix()
+        shell_path = options.get("shellPath")
+        if shell_path is None:
+            shell_path = options.get("shell_path")
+        if shell_path is None:
+            shell_path = self._settings_shell_path()
+        operations: BashOperations = options.get("operations") or create_local_bash_operations(shell_path=shell_path)
+        resolved_command = f"{command_prefix}\n{command}" if command_prefix else command
         output = OutputAccumulator(temp_file_prefix="pi-user-bash")
         self._bash_signal = AbortSignal()
 
@@ -1550,7 +1754,7 @@ class AgentSession:
         cancelled = False
         try:
             result = operations.exec(
-                command,
+                resolved_command,
                 self.cwd,
                 BashExecOptions(on_data=handle_data, signal=self._bash_signal),
             )
@@ -1615,10 +1819,15 @@ class AgentSession:
 
     def _run_agent_prompt(self, prompt_message, stream_fn=None) -> list[AgentMessage]:
         self._flush_pending_bash_messages()
+        self._tool_guardrails.reset_for_turn()
+        self._tool_guardrail_halt_decision = None
+        self._tool_guardrail_halt_response_emitted = False
+        self._tool_loop_recovery_steered = False
+        active_stream_fn = stream_fn or self._stream_fn
         try:
-            new_messages = list(self.agent.prompt(prompt_message, stream_fn=stream_fn))
+            new_messages = list(self.agent.prompt(prompt_message, stream_fn=active_stream_fn))
             while self._prepare_retry(_last_assistant_message(new_messages)):
-                retry_messages = list(self.agent.continue_(stream_fn=stream_fn))
+                retry_messages = list(self.agent.continue_(stream_fn=active_stream_fn))
                 new_messages.extend(retry_messages)
                 latest = _last_assistant_message(retry_messages)
                 if latest and latest.stop_reason != "error":
@@ -1688,49 +1897,134 @@ class AgentSession:
         if self._retryable_error_predicate:
             return self._retryable_error_predicate(message)
         error = (message.error_message or "").lower()
+        if any(marker in error for marker in _NON_RETRYABLE_PROVIDER_LIMIT_MARKERS):
+            return False
         return any(marker in error for marker in _RETRYABLE_ERROR_MARKERS)
 
     def _wait_for_retry_abort(self, signal: AbortSignal, delay_ms: int) -> bool:
         return _wait_for_retry_abort(signal, delay_ms)
 
     def _before_tool_call(self, context, signal=None) -> BeforeToolCallResult | None:
-        if not self._extension_runner.has_handlers("tool_call"):
-            return None
-        result = self._extension_runner.emit_tool_call(
-            {
-                "type": "tool_call",
-                "toolName": context.tool_call.name,
-                "toolCallId": context.tool_call.id,
-                "input": context.args,
-            }
-        )
-        if not result:
-            return None
-        return BeforeToolCallResult(
-            block=bool(result.get("block", False)),
-            reason=str(result.get("reason")) if result.get("reason") is not None else None,
-        )
+        if self._extension_runner.has_handlers("tool_call"):
+            result = self._extension_runner.emit_tool_call(
+                {
+                    "type": "tool_call",
+                    "toolName": context.tool_call.name,
+                    "toolCallId": context.tool_call.id,
+                    "input": context.args,
+                }
+            )
+            if result and result.get("block", False):
+                return BeforeToolCallResult(
+                    block=True,
+                    reason=str(result.get("reason")) if result.get("reason") is not None else None,
+                )
+
+        decision = self._tool_guardrails.before_call(context.tool_call.name, context.args)
+        if not decision.allows_execution:
+            self._tool_guardrail_halt_decision = decision
+            return BeforeToolCallResult(block=True, reason=toolguard_synthetic_result(decision))
+        return None
 
     def _after_tool_call(self, context, signal=None) -> AfterToolCallResult | None:
-        if not self._extension_runner.has_handlers("tool_result"):
-            return None
-        result = self._extension_runner.emit_tool_result(
-            {
-                "type": "tool_result",
-                "toolName": context.tool_call.name,
-                "toolCallId": context.tool_call.id,
-                "input": context.args,
-                "content": context.result.content,
-                "details": context.result.details,
-                "isError": context.is_error,
-            }
+        content = context.result.content
+        details = context.result.details
+        is_error = context.is_error
+        content_changed = False
+        details_changed = False
+        is_error_changed = False
+
+        if self._extension_runner.has_handlers("tool_result"):
+            result = self._extension_runner.emit_tool_result(
+                {
+                    "type": "tool_result",
+                    "toolName": context.tool_call.name,
+                    "toolCallId": context.tool_call.id,
+                    "input": context.args,
+                    "content": content,
+                    "details": details,
+                    "isError": is_error,
+                }
+            )
+            if result:
+                if result.get("content") is not None:
+                    content = result.get("content")
+                    content_changed = True
+                if result.get("details") is not None:
+                    details = result.get("details")
+                    details_changed = True
+                if result.get("isError") is not None:
+                    is_error = bool(result.get("isError"))
+                    is_error_changed = True
+
+        result_text = _tool_result_text(content)
+        if not is_error:
+            detected_failure, _ = classify_tool_failure(context.tool_call.name, result_text)
+            if detected_failure:
+                is_error = True
+                is_error_changed = True
+
+        decision = self._tool_guardrails.after_call(
+            context.tool_call.name,
+            context.args,
+            result_text,
+            failed=is_error,
         )
-        if not result:
+        if decision.action in {"warn", "halt"}:
+            content = _append_toolguard_content(content, decision)
+            content_changed = True
+            self._steer_tool_loop_recovery(decision)
+        if decision.should_halt:
+            self._tool_guardrail_halt_decision = decision
+            if not is_error:
+                is_error = True
+                is_error_changed = True
+
+        if not (content_changed or details_changed or is_error_changed or decision.should_halt):
             return None
         return AfterToolCallResult(
-            content=result.get("content"),
-            details=result.get("details"),
-            is_error=result.get("isError"),
+            content=content if content_changed else None,
+            details=details if details_changed else None,
+            is_error=is_error if is_error_changed else None,
+            terminate=True if decision.should_halt else None,
+        )
+
+    def _should_stop_after_turn(self, context) -> bool:
+        decision = self._tool_guardrail_halt_decision
+        if decision is None:
+            return False
+        if not self._tool_guardrail_halt_response_emitted:
+            self._emit_toolguard_controlled_halt_response(context, decision)
+        return True
+
+    def _emit_toolguard_controlled_halt_response(self, context, decision: ToolGuardrailDecision) -> None:
+        self._tool_guardrail_halt_response_emitted = True
+        message = AssistantMessage(
+            content=[TextContent(text=self._toolguard_controlled_halt_response(decision))],
+            api=self.model.api,
+            provider=self.model.provider,
+            model=self.model.id,
+            usage=Usage(),
+            stop_reason="stop",
+        )
+        context.context.messages.append(message)
+        context.new_messages.append(message)
+
+        start_event = MessageStartEvent(message=message)
+        self.agent._process_event(start_event)
+        self._handle_agent_event(start_event)
+
+        end_event = MessageEndEvent(message=message)
+        self.agent._process_event(end_event)
+        self._handle_agent_event(end_event)
+
+    def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
+        tool = decision.tool_name or "a tool"
+        return (
+            f"I stopped retrying {tool} because it hit the tool-call guardrail "
+            f"({decision.code}) after {decision.count} repeated non-progressing "
+            "attempts. The last tool result explains the blocker; the next step is "
+            "to change strategy instead of repeating the same call."
         )
 
     def _handle_agent_event(self, event) -> None:
@@ -2101,6 +2395,15 @@ def _wait_for_retry_abort(signal: AbortSignal, delay_ms: int) -> bool:
         time.sleep(min(remaining, 0.05))
 
 
+def _with_python_bin_on_path(env: dict[str, str]) -> dict[str, str]:
+    python_bin = os.path.dirname(sys.executable)
+    current_path = env.get("PATH", "")
+    if python_bin and python_bin not in current_path.split(os.pathsep):
+        env = dict(env)
+        env["PATH"] = python_bin + (os.pathsep + current_path if current_path else "")
+    return env
+
+
 def _latest_compaction_entry(entries: list[dict]) -> dict | None:
     for entry in reversed(entries):
         if entry.get("type") == "compaction":
@@ -2191,9 +2494,10 @@ def _extract_custom_message_entry_text(entry: dict) -> str:
 
 
 def _user_message(text: str, images: list[ImageContent] | None = None) -> UserMessage:
+    content: list[TextContent | ImageContent] = [TextContent(text=text)]
     if images:
-        return UserMessage(content=[TextContent(text=text), *images])
-    return UserMessage(content=text)
+        content.extend(images)
+    return UserMessage(content=content)
 
 
 def _get_user_message_text(message: UserMessage) -> str:
@@ -2367,6 +2671,7 @@ def create_agent_session(
     session_start_event: dict[str, object] | None = None,
     resource_loader: DefaultResourceLoader | None = None,
     agent_dir: str | None = None,
+    settings_manager: object | None = None,
 ) -> AgentSession:
     return AgentSession(
         cwd=cwd,
@@ -2381,4 +2686,5 @@ def create_agent_session(
         session_start_event=session_start_event,
         resource_loader=resource_loader,
         agent_dir=agent_dir,
+        settings_manager=settings_manager,
     )

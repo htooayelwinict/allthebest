@@ -18,7 +18,7 @@ from typing import Callable, Optional
 from appv22.ai.types import Message
 from appv22.compaction.compressor import ContextCompressor, Summarizer, estimate_tokens
 
-SUMMARY_FAILURE_COOLDOWN_SECONDS = 60.0
+SUMMARY_FAILURE_COOLDOWN_SECONDS = 600.0
 
 
 @dataclass
@@ -86,6 +86,8 @@ class CompactionManager:
         self.max_overflow_attempts = max_overflow_attempts
         self._clock = clock
         self.last_prompt_tokens = 0
+        self.last_compression_before_tokens = 0
+        self.last_compression_after_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self.overflow_attempts = 0
         self._summary_failure_cooldown_until = 0.0
@@ -126,6 +128,7 @@ class CompactionManager:
         summarizer = summarizer or self._summarizer
         if not force and self._in_cooldown():
             return messages, False
+        before_tokens = estimate_tokens(messages)
         try:
             result = self.compressor.compress(messages, summarizer=summarizer, focus_topic=focus, force=force)
         except Exception:  # noqa: BLE001 - summary failure => cooldown, no crash
@@ -133,6 +136,9 @@ class CompactionManager:
             return messages, False
         if force:
             self._summary_failure_cooldown_until = 0.0
+        if result.compressed:
+            self.last_compression_before_tokens = before_tokens
+            self.last_compression_after_tokens = estimate_tokens(result.messages)
         return result.messages, result.compressed
 
     # Phase 1: preflight (rough estimate before the call; defer right after compaction).
@@ -162,6 +168,25 @@ class CompactionManager:
         if not self.compressor.should_compress(real_tokens):
             return messages
         new_messages, compressed = self._run_compress(messages, summarizer, force=False)
+        if compressed:
+            self._mark_compressed(new_messages)
+        return new_messages
+
+    # Pi checks failed assistant turns using estimated context tokens so a
+    # persistent provider error cannot leave a large transcript uncompactable.
+    def maybe_compress_error_context(self, messages: list[Message], summarizer=None) -> list[Message]:
+        tokens = estimate_tokens(messages)
+        if not self.compressor.should_compress(tokens):
+            return messages
+        new_messages, compressed = self._run_compress(messages, summarizer, force=False)
+        if compressed:
+            self._mark_compressed(new_messages)
+        return new_messages
+
+    # Provider guardrail failures are not size failures. Force compression so
+    # the next prompt does not resend the same blocked tool-result payload.
+    def force_compress_error_context(self, messages: list[Message], summarizer=None) -> list[Message]:
+        new_messages, compressed = self._run_compress(messages, summarizer, force=True)
         if compressed:
             self._mark_compressed(new_messages)
         return new_messages

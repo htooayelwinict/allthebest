@@ -47,6 +47,16 @@ class _CliModelRegistry:
 _VALID_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 
 
+def _positive_int_arg(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a positive integer") from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 @dataclass(frozen=True)
 class _StartupModelSelection:
     model: Model
@@ -140,6 +150,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--thinking", help="Set thinking level: off, minimal, low, medium, high, xhigh")
     parser.add_argument("--tui", action="store_true", help="Render live agent events with the ported differential TUI")
     parser.add_argument("--plain", action="store_true", help="Use the plain stdin loop instead of the interactive TUI")
+    parser.add_argument(
+        "--max-iterations",
+        type=_positive_int_arg,
+        help="Maximum tool-calling model iterations per turn (Hermes default: 90)",
+    )
+    parser.add_argument(
+        "--tool-loop-hard-stop",
+        action="store_true",
+        help="Enable Hermes hard-stop thresholds for repeated failed/non-progressing tool calls",
+    )
     parser.add_argument("--export", help="Export a session JSONL file to standalone HTML and exit")
     args = parser.parse_args(argv)
 
@@ -152,6 +172,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"Exported to: {exported_path}")
         return 0
+
+    cwd_path = Path(args.cwd).expanduser().resolve()
+    if not cwd_path.exists():
+        print(f"Error: working directory does not exist: {cwd_path}", file=sys.stderr)
+        return 1
+    if not cwd_path.is_dir():
+        print(f"Error: working directory is not a directory: {cwd_path}", file=sys.stderr)
+        return 1
 
     if args.thinking and args.thinking not in _VALID_THINKING_LEVELS:
         print(
@@ -172,12 +200,19 @@ def main(argv: list[str] | None = None) -> int:
         )
     except ValueError as error:
         parser.error(str(error))
+    runtime_options: dict[str, object] = {}
+    if args.max_iterations is not None:
+        runtime_options["max_iterations"] = args.max_iterations
+    if args.tool_loop_hard_stop:
+        runtime_options["tool_loop_guardrails"] = {"hard_stop_enabled": True}
+
     app = CodingApp(
-        cwd=str(Path(args.cwd).resolve()),
+        cwd=str(cwd_path),
         model=startup.model,
         thinking_level=startup.thinking_level or "off",
         scoped_models=startup.scoped_models,
         enable_tui=args.tui or not args.prompt and not args.plain,
+        **runtime_options,
     )
 
     prompt = " ".join(args.prompt).strip()

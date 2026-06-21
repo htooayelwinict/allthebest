@@ -137,6 +137,8 @@ class AgentLoopConfig:
     on_response: Any | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    max_iterations: int = 90
+    iteration_budget: Any | None = None
 
 
 # --- AgentEvent union (pi AgentEvent) ---

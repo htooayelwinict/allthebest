@@ -195,3 +195,35 @@ def test_get_provider_display_name_resolves_registered_oauth_built_in_and_fallba
         {"oauth": {"name": "OAuth Provider"}},
     )
     assert get_provider_display_name("oauth-provider") == "OAuth Provider"
+
+
+def test_ai_package_exports_pi_model_helper_aliases() -> None:
+    from appv22.ai import (
+        calculateCost,
+        clampThinkingLevel,
+        getModel,
+        getModels,
+        getProviders,
+        getSupportedThinkingLevels,
+        modelsAreEqual,
+        registerModel,
+        resetModels,
+    )
+
+    resetModels()
+    model = _model()
+    other_same = _model()
+    other_provider = _model()
+    other_provider.provider = "other"
+
+    registerModel(model)
+
+    assert getModel("openrouter", "m1") is model
+    assert getModels("openrouter") == [model]
+    assert getProviders() == ["openrouter"]
+    assert getSupportedThinkingLevels(model) == ["off"]
+    assert clampThinkingLevel(model, "high") == "off"
+    assert modelsAreEqual(model, other_same) is True
+    assert modelsAreEqual(model, other_provider) is False
+    assert modelsAreEqual(model, None) is False
+    assert calculateCost(model, {"input": 1_000_000, "output": 0, "cache_read": 0, "cache_write": 0}).input == 1.0

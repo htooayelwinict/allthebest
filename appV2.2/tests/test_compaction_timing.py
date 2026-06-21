@@ -120,7 +120,7 @@ def test_manual_force_clears_cooldown() -> None:
     assert manager._in_cooldown() is False
 
     # manual force still bypasses and clears an existing cooldown.
-    manager._summary_failure_cooldown_until = fake_time["t"] + 60
+    manager._summary_failure_cooldown_until = fake_time["t"] + 600
     manager._summarizer = _summarizer
     forced = manager.compress_manual(messages)
     assert len(forced) < len(messages)
@@ -148,8 +148,30 @@ def test_summary_failure_sets_compressor_cooldown_and_skips_retry() -> None:
     assert first.compressed is True
     assert second.compressed is True
     assert calls["count"] == 1
-    assert compressor._summary_failure_cooldown_until == fake_time["t"] + 60.0
+    assert compressor._summary_failure_cooldown_until == fake_time["t"] + 600.0
     assert compressor._last_summary_fallback_used is True
+
+
+def test_manager_level_summary_failure_uses_hermes_long_cooldown() -> None:
+    fake_time = {"t": 100.0}
+
+    class RaisingCompressor(ContextCompressor):
+        def compress(self, messages, summarizer=None, focus_topic=None, force=False):
+            raise RuntimeError("manager-level failure")
+
+    compressor = RaisingCompressor(
+        context_length=2000,
+        protect_first_n=1,
+        protect_last_n=4,
+        clock=lambda: fake_time["t"],
+    )
+    manager = CompactionManager(compressor, summarizer=_summarizer, clock=lambda: fake_time["t"])
+    messages = _big_messages()
+
+    out = manager.maybe_compress_preflight(messages)
+
+    assert out is messages
+    assert manager._summary_failure_cooldown_until == fake_time["t"] + 600.0
 
 
 def test_manual_compression_force_clears_compressor_cooldown() -> None:

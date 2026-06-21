@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from appv22.coding_agent.source_info import SourceInfo, create_synthetic_source_info
-from appv22.coding_agent.tools.types import ToolDefinition
+from appv22.coding_agent.tools.types import ToolDefinition, wrap_tool_definition
 
 ExtensionEvent = dict[str, Any]
 ExtensionHandler = Callable[[ExtensionEvent], object]
@@ -81,6 +81,73 @@ _STALE_CONTEXT_MESSAGE = (
     "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx "
     "after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload()."
 )
+
+
+def define_tool(tool: ToolDefinition) -> ToolDefinition:
+    return tool
+
+
+defineTool = define_tool
+
+
+def wrap_registered_tool(registered_tool: RegisteredTool, runner: "ExtensionRunner"):
+    return wrap_tool_definition(registered_tool.definition, lambda: runner.create_context())
+
+
+def wrap_registered_tools(registered_tools: list[RegisteredTool], runner: "ExtensionRunner") -> list:
+    return [wrap_registered_tool(registered_tool, runner) for registered_tool in registered_tools]
+
+
+wrapRegisteredTool = wrap_registered_tool
+wrapRegisteredTools = wrap_registered_tools
+
+
+def _tool_name(event: object) -> object:
+    if isinstance(event, dict):
+        return event.get("toolName", event.get("tool_name"))
+    return getattr(event, "toolName", getattr(event, "tool_name", None))
+
+
+def is_bash_tool_result(event: object) -> bool:
+    return _tool_name(event) == "bash"
+
+
+def is_read_tool_result(event: object) -> bool:
+    return _tool_name(event) == "read"
+
+
+def is_edit_tool_result(event: object) -> bool:
+    return _tool_name(event) == "edit"
+
+
+def is_write_tool_result(event: object) -> bool:
+    return _tool_name(event) == "write"
+
+
+def is_grep_tool_result(event: object) -> bool:
+    return _tool_name(event) == "grep"
+
+
+def is_find_tool_result(event: object) -> bool:
+    return _tool_name(event) == "find"
+
+
+def is_ls_tool_result(event: object) -> bool:
+    return _tool_name(event) == "ls"
+
+
+def is_tool_call_event_type(tool_name: str, event: object) -> bool:
+    return _tool_name(event) == tool_name
+
+
+isBashToolResult = is_bash_tool_result
+isReadToolResult = is_read_tool_result
+isEditToolResult = is_edit_tool_result
+isWriteToolResult = is_write_tool_result
+isGrepToolResult = is_grep_tool_result
+isFindToolResult = is_find_tool_result
+isLsToolResult = is_ls_tool_result
+isToolCallEventType = is_tool_call_event_type
 
 
 class ExtensionContextView:
@@ -248,7 +315,7 @@ class ExtensionRunner:
         self._shortcuts: dict[str, ExtensionShortcut] = {}
         self._handlers: dict[str, list[ExtensionHandler]] = {}
         self._error_listeners: list[ExtensionErrorListener] = []
-        self._pending_provider_registrations: list[tuple[str, dict[str, Any]]] = []
+        self._pending_provider_registrations: list[tuple[str, dict[str, Any], str]] = []
         self._register_provider: Callable[[str, dict[str, Any]], None] | None = None
         self._unregister_provider: Callable[[str], None] | None = None
         self._ui_context: object | None = None
@@ -561,24 +628,37 @@ class ExtensionRunner:
         self._unregister_provider = unregister_provider
         pending = list(self._pending_provider_registrations)
         self._pending_provider_registrations.clear()
-        for name, config in pending:
+        for name, config, _extension_path in pending:
             self.register_provider(name, config)
 
     bindProviderActions = bind_provider_actions
 
-    def register_provider(self, name: str, config: dict[str, Any]) -> None:
+    def register_provider(self, name: str, config: dict[str, Any], extension_path: str = "<python-extension>") -> None:
         if self._register_provider is None:
-            self._pending_provider_registrations.append((name, dict(config)))
+            self._pending_provider_registrations.append((name, dict(config), extension_path))
             return
         self._register_provider(name, dict(config))
 
     registerProvider = register_provider
 
+    @property
+    def pending_provider_registrations(self) -> list[tuple[str, dict[str, Any], str]]:
+        return [(name, dict(config), extension_path) for name, config, extension_path in self._pending_provider_registrations]
+
+    @property
+    def pendingProviderRegistrations(self) -> list[tuple[str, dict[str, Any], str]]:
+        return self.pending_provider_registrations
+
+    def clear_pending_provider_registrations(self) -> None:
+        self._pending_provider_registrations.clear()
+
+    clearPendingProviderRegistrations = clear_pending_provider_registrations
+
     def unregister_provider(self, name: str) -> None:
         if self._unregister_provider is None:
             self._pending_provider_registrations = [
-                (provider_name, config)
-                for provider_name, config in self._pending_provider_registrations
+                (provider_name, config, extension_path)
+                for provider_name, config, extension_path in self._pending_provider_registrations
                 if provider_name != name
             ]
             return
