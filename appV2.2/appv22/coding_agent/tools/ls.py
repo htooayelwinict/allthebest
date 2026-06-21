@@ -108,7 +108,6 @@ def create_ls_tool_definition(cwd: str, operations: LsOperations | None = None) 
         ),
         parameters=LS_SCHEMA,
         prompt_snippet="List directory contents",
-        prompt_guidelines=["Use ls to list directory contents."],
         execute=lambda tid, args, signal=None, on_update=None, ctx=None: _execute_ls(
             cwd, ops, tid, args, signal, on_update, ctx
         ),

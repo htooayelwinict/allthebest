@@ -26,6 +26,7 @@ from appv22.ai.stream import register_api_provider, reset_api_providers
 from appv22.ai.types import (
     AssistantMessage,
     DoneEvent,
+    ImageContent,
     Message,
     StartEvent,
     TextContent,
@@ -139,6 +140,58 @@ def test_tool_call_turn_executes_and_continues() -> None:
     assert calls["n"] == 2
 
 
+def test_duplicate_tool_calls_in_same_assistant_turn_execute_once() -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[tuple[str, dict]] = []
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return _multi_tool_call_response_events(
+                m,
+                [
+                    ("call_1", "echo", {"text": "same"}),
+                    ("call_2", "echo", {"text": "same"}),
+                    ("call_3", "echo", {"text": "different"}),
+                ],
+            )
+        return text_response_events(m, "done")
+
+    register_api_provider(create_faux_provider(script))
+
+    def echo_execute(tool_call_id, args, signal=None, on_update=None):
+        executions.append((tool_call_id, dict(args)))
+        return AgentToolResult(content=[TextContent(text=f"echo:{args['text']}")], details={})
+
+    echo = AgentTool(
+        name="echo",
+        description="echo",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+        label="Echo",
+        execute=echo_execute,
+    )
+
+    msgs = run_agent_loop(
+        [UserMessage(content="go", timestamp=now_ms())],
+        _ctx(tools=[echo]),
+        _config(model),
+        lambda e: None,
+    )
+
+    tool_results = [msg for msg in msgs if getattr(msg, "role", None) == "toolResult"]
+    assistant = next(msg for msg in msgs if getattr(msg, "role", None) == "assistant")
+    assert executions == [
+        ("call_1", {"text": "same"}),
+        ("call_3", {"text": "different"}),
+    ]
+    assert [result.tool_call_id for result in tool_results] == ["call_1", "call_3"]
+    assert [call.id for call in assistant.content if getattr(call, "type", None) == "toolCall"] == [
+        "call_1",
+        "call_3",
+    ]
+
+
 def test_prepare_next_turn_snapshot_updates_loop_without_mutating_config() -> None:
     initial_model = faux_model()
     snapshot_model = faux_model()
@@ -213,6 +266,56 @@ def test_should_stop_after_turn_receives_prepare_next_turn_context_snapshot() ->
     )
 
     assert seen_context_prompts == ["snapshot-sys"]
+
+
+def test_max_iterations_requests_toolless_summary_after_unique_tool_loop() -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    tool_iterations = {"n": 0}
+    tool_visibility: list[bool] = []
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        tool_visibility.append(bool(c.tools))
+        if c.tools:
+            tool_iterations["n"] += 1
+            return tool_call_response_events(
+                m,
+                "echo",
+                {"text": f"unique-{tool_iterations['n']}"},
+                call_id=f"call_{tool_iterations['n']}",
+            )
+        return text_response_events(m, "summary without tools")
+
+    register_api_provider(create_faux_provider(script))
+
+    def echo_execute(tool_call_id, args, signal=None, on_update=None):
+        return AgentToolResult(content=[TextContent(text=f"echo:{args['text']}")], details={})
+
+    echo = AgentTool(
+        name="echo",
+        description="echo",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+        label="Echo",
+        execute=echo_execute,
+    )
+    cfg = _config(model)
+    cfg.max_iterations = 3
+
+    messages = run_agent_loop(
+        [UserMessage(content="loop with unique args", timestamp=now_ms())],
+        _ctx(tools=[echo]),
+        cfg,
+        lambda e: None,
+    )
+
+    assert provider_calls["n"] == 4
+    assert tool_iterations["n"] == 3
+    assert tool_visibility == [True, True, True, False]
+    assert getattr(messages[-2], "role", None) == "user"
+    assert "maximum number of tool-calling iterations" in messages[-2].content
+    assert messages[-1].role == "assistant"
+    assert messages[-1].content[0].text == "summary without tools"
 
 
 def test_tool_execution_update_emit_settles_before_tool_execution_end() -> None:
@@ -482,6 +585,39 @@ def test_agent_class_reduces_state() -> None:
     assert "agent_end" in seen
     roles = [getattr(m, "role", None) for m in agent.state.messages]
     assert "user" in roles and "assistant" in roles
+    assert agent.state.is_streaming is False
+
+
+def test_agent_prompt_normalizes_string_input_to_pi_content_blocks() -> None:
+    model = faux_model()
+    register_api_provider(create_faux_provider(lambda m, c: text_response_events(m, "reply")))
+    agent = Agent(system_prompt="sys", model=model, convert_to_llm=_convert)
+
+    agent.prompt("plain")
+
+    user = next(message for message in agent.state.messages if getattr(message, "role", None) == "user")
+    assert user.content == [TextContent(text="plain")]
+
+
+def test_agent_prompt_normalizes_string_input_to_pi_content_blocks_with_images() -> None:
+    model = faux_model()
+    register_api_provider(create_faux_provider(lambda m, c: text_response_events(m, "reply")))
+    agent = Agent(system_prompt="sys", model=model, convert_to_llm=_convert)
+    image = ImageContent(data="aW1n", mime_type="image/png")
+
+    agent.prompt("hello", images=[image])
+
+    user = next(message for message in agent.state.messages if getattr(message, "role", None) == "user")
+    assert user.content == [TextContent(text="hello"), image]
+
+
+def test_agent_reset_clears_streaming_state_like_pi() -> None:
+    model = faux_model()
+    agent = Agent(system_prompt="sys", model=model, convert_to_llm=_convert)
+    agent.state.is_streaming = True
+
+    agent.reset()
+
     assert agent.state.is_streaming is False
 
 

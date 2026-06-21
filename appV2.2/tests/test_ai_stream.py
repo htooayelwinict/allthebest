@@ -144,3 +144,31 @@ def test_stream_simple_passes_registry_headers_and_auth_header() -> None:
         "X-Provider": "provider",
         "Authorization": "Bearer literal-key",
     }
+
+
+def test_model_registry_register_provider_registers_and_unregisters_pi_stream_provider() -> None:
+    from appv22.coding_agent import AuthStorage, ModelRegistry
+
+    seen: dict[str, str] = {}
+
+    def dynamic_stream(model, context, options=None):
+        seen["api"] = model.api
+        seen["provider"] = model.provider
+        return _provider("dynamic-api").stream_simple(model, context, options)
+
+    registry = ModelRegistry.inMemory(AuthStorage.inMemory())
+    registry.registerProvider("dynamic", {"api": "dynamic-api", "streamSimple": dynamic_stream})
+
+    assert get_api_provider("dynamic-api").api == "dynamic-api"
+
+    stream_simple(
+        Model(id="m", name="m", api="dynamic-api", provider="dynamic", base_url=""),
+        Context(messages=[UserMessage(content="q", timestamp=now_ms())]),
+    ).result_sync()
+
+    assert seen == {"api": "dynamic-api", "provider": "dynamic"}
+
+    registry.unregisterProvider("dynamic")
+
+    with pytest.raises(KeyError):
+        get_api_provider("dynamic-api")

@@ -60,6 +60,23 @@ def test_cli_without_prompt_starts_interactive_tui(monkeypatch, tmp_path) -> Non
     assert app.scoped_models == []
 
 
+def test_cli_rejects_missing_cwd_before_starting_app(monkeypatch, tmp_path, capsys) -> None:
+    missing_cwd = tmp_path / "missing-project"
+
+    def fail_startup(*args, **kwargs):
+        raise AssertionError("invalid cwd should stop before provider/model/app startup")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", fail_startup)
+    monkeypatch.setattr(cli, "CodingApp", fail_startup)
+
+    exit_code = cli.main(["--cwd", str(missing_cwd), "--plain", "pwd"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert f"Error: working directory does not exist: {missing_cwd.resolve()}" in captured.err
+
+
 def test_cli_provider_and_model_flags_resolve_registered_model(monkeypatch, tmp_path) -> None:
     created: dict[str, object] = {}
     selected_model = Model(
@@ -111,6 +128,63 @@ def test_cli_provider_and_model_flags_resolve_registered_model(monkeypatch, tmp_
     assert app.enable_tui is False
     assert app.thinking_level == "off"
     assert app.scoped_models == []
+
+
+def test_cli_passes_hermes_loop_runtime_options(monkeypatch, tmp_path) -> None:
+    created: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(
+            self,
+            *,
+            cwd,
+            model,
+            enable_tui,
+            thinking_level,
+            scoped_models,
+            max_iterations=None,
+            tool_loop_guardrails=None,
+        ):
+            self.cwd = cwd
+            self.model = model
+            self.enable_tui = enable_tui
+            self.thinking_level = thinking_level
+            self.scoped_models = scoped_models
+            self.max_iterations = max_iterations
+            self.tool_loop_guardrails = tool_loop_guardrails
+            self.messages = []
+            created["app"] = self
+
+        def run_turn(self, prompt):
+            created["prompt"] = prompt
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda dotenv_path, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url="")
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--max-iterations",
+            "7",
+            "--tool-loop-hard-stop",
+            "--plain",
+            "inspect",
+        ]
+    )
+
+    app = created["app"]
+    assert exit_code == 0
+    assert app.max_iterations == 7
+    assert app.tool_loop_guardrails == {"hard_stop_enabled": True}
+    assert created["prompt"] == "inspect"
 
 
 def test_cli_model_thinking_suffix_sets_initial_thinking_level(monkeypatch, tmp_path) -> None:

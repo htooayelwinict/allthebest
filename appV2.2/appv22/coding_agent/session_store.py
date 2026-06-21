@@ -101,7 +101,14 @@ class CustomMessage:
 class SessionStore:
     """Small JSONL session manager matching Pi's typed entry shape."""
 
-    def __init__(self, path: str, *, cwd: str, parent_session: str | None = None) -> None:
+    def __init__(
+        self,
+        path: str,
+        *,
+        cwd: str,
+        parent_session: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.file_entries: list[dict[str, Any]] = []
@@ -110,13 +117,13 @@ class SessionStore:
         if self.path.exists() and self.path.stat().st_size > 0:
             self._load()
         else:
-            self._write_header(cwd=cwd, parent_session=parent_session)
+            self._write_header(cwd=cwd, parent_session=parent_session, session_id=session_id)
 
-    def _write_header(self, *, cwd: str, parent_session: str | None) -> None:
+    def _write_header(self, *, cwd: str, parent_session: str | None, session_id: str | None = None) -> None:
         header = {
             "type": "session",
             "version": CURRENT_SESSION_VERSION,
-            "id": uuid.uuid4().hex,
+            "id": session_id or uuid.uuid4().hex,
             "timestamp": _timestamp(),
             "cwd": cwd,
         }

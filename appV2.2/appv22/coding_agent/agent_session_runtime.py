@@ -27,13 +27,39 @@ class CreateAgentSessionRuntimeResult:
 
 
 CreateAgentSessionRuntimeFactory = Callable[[dict[str, Any]], CreateAgentSessionRuntimeResult | AgentSession | dict[str, Any]]
+AgentSessionRuntimeDiagnostic = dict[str, Any]
 RebindSession = Callable[[AgentSession], object]
+
+
+@dataclass(frozen=True)
+class SessionCwdIssue:
+    session_cwd: str
+    fallback_cwd: str
+    session_file: str | None = None
+
+    @property
+    def sessionCwd(self) -> str:
+        return self.session_cwd
+
+    @property
+    def fallbackCwd(self) -> str:
+        return self.fallback_cwd
+
+    @property
+    def sessionFile(self) -> str | None:
+        return self.session_file
 
 
 class SessionImportFileNotFoundError(FileNotFoundError):
     def __init__(self, file_path: str) -> None:
         super().__init__(f"File not found: {file_path}")
         self.file_path = file_path
+
+
+class MissingSessionCwdError(RuntimeError):
+    def __init__(self, issue: SessionCwdIssue) -> None:
+        super().__init__(format_missing_session_cwd_error(issue))
+        self.issue = issue
 
 
 class AgentSessionRuntime:
@@ -125,12 +151,17 @@ class AgentSessionRuntime:
         if before_result["cancelled"]:
             return before_result
 
+        cwd_override = options.get("cwd") or options.get("cwdOverride")
+        stored_cwd = _session_cwd(Path(target_session_file))
+        if cwd_override is None:
+            assert_session_cwd_exists(target_session_file, stored_cwd, self.cwd)
+        next_cwd = str(cwd_override or stored_cwd or self.cwd)
         previous_session_file = self._session.session_path
         self._teardown_current("resume", target_session_file)
         self._apply(
             self._create_runtime(
                 {
-                    "cwd": str(options.get("cwd") or self.cwd),
+                    "cwd": next_cwd,
                     "agentDir": self._services.get("agentDir"),
                     "session_path": target_session_file,
                     "session_start_event": {
@@ -213,7 +244,10 @@ class AgentSessionRuntime:
         if destination_path.resolve() != resolved_path:
             shutil.copyfile(resolved_path, destination_path)
 
-        next_cwd = cwd_override or _session_cwd(destination_path) or self.cwd
+        stored_cwd = _session_cwd(destination_path)
+        if cwd_override is None:
+            assert_session_cwd_exists(destination, stored_cwd, self.cwd)
+        next_cwd = cwd_override or stored_cwd or self.cwd
         self._teardown_current("resume", destination)
         self._apply(
             self._create_runtime(
@@ -325,6 +359,66 @@ def _coerce_result(raw_result: CreateAgentSessionRuntimeResult | AgentSession | 
     raise TypeError(f"Unsupported runtime result: {type(raw_result).__name__}")
 
 
+def create_agent_session_runtime(
+    create_runtime: CreateAgentSessionRuntimeFactory,
+    options: dict[str, Any],
+) -> AgentSessionRuntime:
+    session_file, session_cwd = _session_source_file_and_cwd(options)
+    assert_session_cwd_exists(session_file, session_cwd, str(options.get("cwd") or "."))
+    result = _coerce_result(create_runtime(options))
+    return AgentSessionRuntime(
+        result.session,
+        result.services,
+        create_runtime,
+        result.diagnostics,
+        result.model_fallback_message,
+    )
+
+
+createAgentSessionRuntime = create_agent_session_runtime
+
+
+def get_missing_session_cwd_issue(
+    session_file: str | None,
+    session_cwd: str | None,
+    fallback_cwd: str,
+) -> SessionCwdIssue | None:
+    if not session_file or not session_cwd or Path(session_cwd).expanduser().exists():
+        return None
+    return SessionCwdIssue(
+        session_file=str(session_file),
+        session_cwd=str(session_cwd),
+        fallback_cwd=str(fallback_cwd),
+    )
+
+
+def format_missing_session_cwd_error(issue: SessionCwdIssue) -> str:
+    session_file = f"\nSession file: {issue.session_file}" if issue.session_file else ""
+    return (
+        f"Stored session working directory does not exist: {issue.session_cwd}"
+        f"{session_file}\nCurrent working directory: {issue.fallback_cwd}"
+    )
+
+
+def format_missing_session_cwd_prompt(issue: SessionCwdIssue) -> str:
+    return (
+        f"cwd from session file does not exist\n{issue.session_cwd}\n\n"
+        f"continue in current cwd\n{issue.fallback_cwd}"
+    )
+
+
+def assert_session_cwd_exists(session_file: str | None, session_cwd: str | None, fallback_cwd: str) -> None:
+    issue = get_missing_session_cwd_issue(session_file, session_cwd, fallback_cwd)
+    if issue:
+        raise MissingSessionCwdError(issue)
+
+
+getMissingSessionCwdIssue = get_missing_session_cwd_issue
+formatMissingSessionCwdError = format_missing_session_cwd_error
+formatMissingSessionCwdPrompt = format_missing_session_cwd_prompt
+assertSessionCwdExists = assert_session_cwd_exists
+
+
 def _is_cancelled(result: object) -> bool:
     if isinstance(result, dict):
         return result.get("cancel") is True or result.get("cancelled") is True
@@ -354,4 +448,25 @@ def _session_cwd(path: Path) -> str | None:
             return None
     except (OSError, json.JSONDecodeError):
         return None
+    return None
+
+
+def _session_source_file_and_cwd(options: dict[str, Any]) -> tuple[str | None, str | None]:
+    session_file = options.get("session_path") or options.get("sessionPath")
+    session_cwd = options.get("session_cwd") or options.get("sessionCwd")
+    session_manager = options.get("sessionManager") or options.get("session_manager")
+    if session_file is None and session_manager is not None:
+        session_file = _call_optional(session_manager, "getSessionFile", "get_session_file")
+    if session_cwd is None and session_manager is not None:
+        session_cwd = _call_optional(session_manager, "getCwd", "get_cwd")
+    if session_cwd is None and session_file:
+        session_cwd = _session_cwd(Path(str(session_file)))
+    return (str(session_file) if session_file else None, str(session_cwd) if session_cwd else None)
+
+
+def _call_optional(target: object, *names: str) -> object | None:
+    for name in names:
+        method = getattr(target, name, None)
+        if callable(method):
+            return method()
     return None

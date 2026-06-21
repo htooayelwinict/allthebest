@@ -7,8 +7,9 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Union
 
-from appv22.ai.types import AssistantMessage, Message, Model, TextContent, UserMessage, empty_usage, now_ms
+from appv22.ai.types import AssistantMessage, ImageContent, Message, Model, TextContent, UserMessage, empty_usage, now_ms
 from appv22.agent.agent_loop import AgentEventSink, run_agent_loop, run_agent_loop_continue
+from appv22.agent.iteration_budget import IterationBudget
 from appv22.agent.types import (
     AbortSignal,
     AgentEndEvent,
@@ -80,6 +81,7 @@ class Agent:
         tool_execution: str = "parallel",
         before_tool_call=None,
         after_tool_call=None,
+        should_stop_after_turn=None,
         prepare_next_turn=None,
         transform_context=None,
         steering_mode: QueueMode = "one-at-a-time",
@@ -90,6 +92,7 @@ class Agent:
         max_retry_delay_ms: int | None = None,
         on_payload=None,
         on_response=None,
+        max_iterations: int = 90,
     ) -> None:
         self._state = AgentState(
             system_prompt=system_prompt,
@@ -101,6 +104,7 @@ class Agent:
         self._tool_execution = tool_execution
         self._before_tool_call = before_tool_call
         self._after_tool_call = after_tool_call
+        self._should_stop_after_turn = should_stop_after_turn
         self._prepare_next_turn = prepare_next_turn
         self._transform_context = transform_context
         self.session_id = session_id
@@ -109,6 +113,7 @@ class Agent:
         self.max_retry_delay_ms = max_retry_delay_ms
         self.on_payload = on_payload
         self.on_response = on_response
+        self.max_iterations = max(1, int(max_iterations))
         self._listeners: list[Listener] = []
         self._signal = AbortSignal()
         self._run_state_lock = threading.Lock()
@@ -177,6 +182,7 @@ class Agent:
 
     def reset(self) -> None:
         self._state.messages = []
+        self._state.is_streaming = False
         self._state.error_message = None
         self._state.streaming_message = None
         self._state.pending_tool_calls = set()
@@ -202,6 +208,7 @@ class Agent:
             tool_execution=self._tool_execution,
             before_tool_call=self._before_tool_call,
             after_tool_call=self._after_tool_call,
+            should_stop_after_turn=self._should_stop_after_turn,
             transform_context=self._transform_context,
             reasoning=None if self._state.thinking_level == "off" else self._state.thinking_level,
             session_id=self.session_id,
@@ -210,6 +217,8 @@ class Agent:
             max_retry_delay_ms=self.max_retry_delay_ms,
             on_payload=self.on_payload,
             on_response=self.on_response,
+            max_iterations=self.max_iterations,
+            iteration_budget=IterationBudget(self.max_iterations),
         )
 
     def _drain_steering(self) -> list[AgentMessage]:
@@ -225,12 +234,20 @@ class Agent:
             tools=list(self._state.tools),
         )
 
-    def prompt(self, prompt: Union[str, AgentMessage, list[AgentMessage]], stream_fn=None) -> list[AgentMessage]:
+    def prompt(
+        self,
+        prompt: Union[str, AgentMessage, list[AgentMessage]],
+        stream_fn=None,
+        images: list[ImageContent] | None = None,
+    ) -> list[AgentMessage]:
         self._begin_run(
             "Agent is already processing a prompt. Use steer() or follow_up() to queue messages, or wait for completion."
         )
         if isinstance(prompt, str):
-            messages: list[AgentMessage] = [UserMessage(content=prompt, timestamp=now_ms())]
+            content = [TextContent(text=prompt)]
+            if images:
+                content.extend(images)
+            messages: list[AgentMessage] = [UserMessage(content=content, timestamp=now_ms())]
         elif isinstance(prompt, list):
             messages = list(prompt)
         else:

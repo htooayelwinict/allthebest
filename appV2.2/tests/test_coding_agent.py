@@ -18,11 +18,15 @@ from appv22.ai.models import get_model, get_models, register_model, reset_models
 from appv22.ai.event_stream import create_assistant_message_event_stream
 from appv22.ai.types import (
     AssistantMessage,
+    DoneEvent,
     ErrorEvent,
     ImageContent,
     Model,
+    StartEvent,
     TextContent,
     ToolCall,
+    ToolcallEndEvent,
+    ToolcallStartEvent,
     ToolResultMessage,
     Usage,
     UserMessage,
@@ -32,7 +36,9 @@ from appv22.ai.types import (
 from appv22.coding_agent import (
     AgentSession,
     ExtensionRunner,
+    SettingsManager,
     build_system_prompt,
+    create_all_tool_definitions,
     create_all_tools,
     create_coding_tools,
     create_read_only_tools,
@@ -48,12 +54,28 @@ from appv22.coding_agent.tools.truncate import truncate_head
 from appv22.coding_agent.tools.types import ToolContext, ToolDefinition, wrap_tool_definition
 from appv22.ai.providers.faux import create_faux_provider, faux_model, text_response_events, tool_call_response_events
 from appv22.ai.stream import register_api_provider, reset_api_providers
+from appv22.coding_agent.resource_loader import Skill
 from appv22.coding_agent.session_store import BashExecutionMessage, SessionStore
+from appv22.coding_agent.source_info import create_synthetic_source_info
 
 
 def setup_function() -> None:
     reset_api_providers()
     reset_models()
+
+
+def _content_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    return "".join(block.text for block in content if isinstance(block, TextContent))
+
+
+def _user_text(message: UserMessage) -> str:
+    return _content_text(message.content)
+
+
+def _serialized_text_content(text: str) -> list[dict[str, str | None]]:
+    return [{"type": "text", "text": text, "textSignature": None}]
 
 
 def test_truncate_head_line_limit() -> None:
@@ -72,6 +94,23 @@ def test_read_tool_with_offset_and_truncation(tmp_path: Path) -> None:
     assert "line3" in result.content[0].text
     assert "line4" in result.content[0].text
     assert "more lines in file" in result.content[0].text
+
+
+def test_read_tool_schema_and_execution_accept_pi_number_limits(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("\n".join(f"line{i}" for i in range(1, 11)), encoding="utf-8")
+    tool = create_tool("read", str(tmp_path))
+    definition = create_tool_definition("read", str(tmp_path))
+
+    assert tool.parameters["properties"]["offset"]["type"] == "number"
+    assert tool.parameters["properties"]["limit"]["type"] == "number"
+    assert definition.render_call({"path": "f.txt", "offset": 3.0, "limit": 2.0}, {"cwd": str(tmp_path)}) == "read f.txt:3-4"
+
+    result = tool.execute("c1", {"path": "f.txt", "offset": 3.0, "limit": 2.0})
+
+    assert "line3" in result.content[0].text
+    assert "line4" in result.content[0].text
+    assert "line5" not in result.content[0].text
 
 
 def test_read_tool_returns_image_content(tmp_path: Path) -> None:
@@ -491,6 +530,27 @@ def test_bash_tool_uses_operations_prefix_spawn_hook_and_updates(tmp_path: Path)
     assert result.details is None
 
 
+def test_create_all_tool_definitions_accepts_pi_bash_options(tmp_path: Path) -> None:
+    seen: dict[str, str] = {}
+
+    def exec_command(command: str, cwd: str, options) -> dict[str, int | None]:
+        seen["command"] = command
+        seen["cwd"] = cwd
+        options.on_data(b"ok")
+        return {"exit_code": 0}
+
+    definitions = create_all_tool_definitions(
+        str(tmp_path),
+        {"bash": {"operations": BashOperations(exec=exec_command), "commandPrefix": "source ~/.profile"}},
+    )
+    bash_definition = next(definition for definition in definitions if definition.name == "bash")
+
+    result = bash_definition.execute("c1", {"command": "printf hi"})
+
+    assert seen == {"command": "source ~/.profile\nprintf hi", "cwd": str(tmp_path)}
+    assert result.content[0].text == "ok"
+
+
 def test_bash_tool_preserves_output_path_on_timeout_and_abort_errors(tmp_path: Path) -> None:
     for marker, expected in [
         ("timeout:5", "Command timed out after 5 seconds"),
@@ -671,10 +731,168 @@ def test_wrap_tool_definition_injects_ctx(tmp_path: Path) -> None:
     assert seen["cwd"] == str(tmp_path)
 
 
+def test_pi_extension_define_tool_and_registered_tool_wrappers(tmp_path: Path) -> None:
+    from appv22.coding_agent import (
+        ExtensionRunner,
+        RegisteredTool,
+        defineTool,
+        define_tool,
+        wrapRegisteredTool,
+        wrapRegisteredTools,
+    )
+    from appv22.coding_agent.tools.types import ToolDefinition
+
+    seen: dict[str, object] = {}
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        seen["tool_call_id"] = tool_call_id
+        seen["args"] = args
+        seen["cwd"] = ctx.cwd
+        return AgentToolResult(content=[TextContent(text="ok")], details={"wrapped": True})
+
+    definition = ToolDefinition(
+        name="probe",
+        label="probe",
+        description="Probe extension tool",
+        parameters={"type": "object", "properties": {"value": {"type": "string"}}},
+        execute=execute,
+    )
+    defined = defineTool(definition)
+    assert defined is definition
+    assert define_tool(definition) is definition
+
+    runner = ExtensionRunner(cwd=str(tmp_path))
+    registered = RegisteredTool(definition=defined, source_info=create_synthetic_source_info("<test>", source="test"))
+    tool = wrapRegisteredTool(registered, runner)
+
+    result = tool.execute("call-1", {"value": "x"})
+
+    assert result.content[0].text == "ok"
+    assert result.details == {"wrapped": True}
+    assert seen == {"tool_call_id": "call-1", "args": {"value": "x"}, "cwd": str(tmp_path)}
+    assert [wrapped.name for wrapped in wrapRegisteredTools([registered], runner)] == ["probe"]
+
+
+def test_pi_extension_tool_event_type_guards_are_public() -> None:
+    from appv22.coding_agent import (
+        isBashToolResult,
+        isEditToolResult,
+        isFindToolResult,
+        isGrepToolResult,
+        isLsToolResult,
+        isReadToolResult,
+        isToolCallEventType,
+        isWriteToolResult,
+    )
+
+    bash_result = {"type": "tool_result", "toolName": "bash", "details": {"exitCode": 0}}
+    read_result = {"type": "tool_result", "toolName": "read", "details": None}
+    bash_call = {"type": "tool_call", "toolName": "bash", "input": {"command": "pwd"}}
+
+    assert isBashToolResult(bash_result) is True
+    assert isReadToolResult(read_result) is True
+    assert isEditToolResult(bash_result) is False
+    assert isWriteToolResult(bash_result) is False
+    assert isGrepToolResult(bash_result) is False
+    assert isFindToolResult(bash_result) is False
+    assert isLsToolResult(bash_result) is False
+    assert isToolCallEventType("bash", bash_call) is True
+    assert isToolCallEventType("read", bash_call) is False
+
+
 def test_tool_factory_bundles(tmp_path: Path) -> None:
     assert {t.name for t in create_coding_tools(str(tmp_path))} == {"read", "bash", "edit", "write"}
     assert {t.name for t in create_read_only_tools(str(tmp_path))} == {"read", "grep", "find", "ls"}
     assert len(create_all_tools(str(tmp_path))) == 7
+
+
+def test_settings_manager_in_memory_ports_pi_defaults_setters_and_migration() -> None:
+    settings = SettingsManager.inMemory(
+        {
+            "queueMode": "all",
+            "retry": {"maxRetries": 5, "maxDelayMs": 12_345},
+            "terminal": {"imageWidthCells": 0},
+            "images": {"autoResize": False},
+            "skills": {"enableSkillCommands": False, "customDirectories": ["skills/custom"]},
+        }
+    )
+
+    assert settings.getSteeringMode() == "all"
+    assert settings.getRetrySettings() == {"enabled": True, "maxRetries": 5, "baseDelayMs": 2000}
+    assert settings.getProviderRetrySettings() == {"timeoutMs": None, "maxRetries": None, "maxRetryDelayMs": 12_345}
+    assert settings.getImageWidthCells() == 1
+    assert settings.getImageAutoResize() is False
+    assert settings.getEnableSkillCommands() is False
+    assert settings.getSkillPaths() == ["skills/custom"]
+    assert settings.getCompactionSettings() == {"enabled": True, "reserveTokens": 16384, "keepRecentTokens": 20000}
+
+    settings.setShellCommandPrefix("source ~/.profile")
+    settings.setShellPath("/bin/zsh")
+    settings.setImageAutoResize(True)
+    settings.setShowTerminalProgress(True)
+    settings.setDefaultModelAndProvider("openrouter", "qwen/qwen3-coder-next")
+    settings.setEnabledModels(["openrouter/*:low"])
+
+    assert settings.getShellCommandPrefix() == "source ~/.profile"
+    assert settings.getShellPath() == "/bin/zsh"
+    assert settings.getImageAutoResize() is True
+    assert settings.getShowTerminalProgress() is True
+    assert settings.getDefaultProvider() == "openrouter"
+    assert settings.getDefaultModel() == "qwen/qwen3-coder-next"
+    assert settings.getEnabledModels() == ["openrouter/*:low"]
+
+
+def test_settings_manager_create_persists_global_project_and_project_trust(tmp_path: Path) -> None:
+    cwd = tmp_path / "project"
+    agent_dir = tmp_path / "agent"
+    cwd.mkdir()
+
+    settings = SettingsManager.create(str(cwd), str(agent_dir))
+    settings.setShellCommandPrefix("printf persisted;")
+    settings.setProjectSkillPaths(["skills/project"])
+    settings.flush()
+
+    reloaded = SettingsManager.create(str(cwd), str(agent_dir))
+    assert reloaded.getShellCommandPrefix() == "printf persisted;"
+    assert reloaded.getSkillPaths() == ["skills/project"]
+    assert (agent_dir / "settings.json").exists()
+    assert (cwd / ".pi" / "settings.json").exists()
+
+    untrusted = SettingsManager.create(str(cwd), str(agent_dir), {"projectTrusted": False})
+    assert untrusted.getShellCommandPrefix() == "printf persisted;"
+    assert untrusted.getSkillPaths() == []
+    try:
+        untrusted.setProjectSkillPaths(["blocked"])
+        assert False, "expected project settings write to be rejected"
+    except RuntimeError as error:
+        assert "Project is not trusted" in str(error)
+
+
+def test_builtin_tool_definitions_match_pi_prompt_metadata(tmp_path: Path) -> None:
+    prompt_metadata = {
+        "bash": ("Execute bash commands (ls, grep, find, etc.)", []),
+        "grep": ("Search file contents for patterns (respects .gitignore)", []),
+        "find": ("Find files by glob pattern (respects .gitignore)", []),
+        "ls": ("List directory contents", []),
+        "edit": (
+            "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
+            [
+                "Use edit for precise changes (edits[].oldText must match exactly)",
+                "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+                "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
+                "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+            ],
+        ),
+    }
+
+    for name, (snippet, guidelines) in prompt_metadata.items():
+        definition = create_tool_definition(name, str(tmp_path))
+        assert definition.prompt_snippet == snippet
+        assert definition.prompt_guidelines == guidelines
+
+    edit_definition = create_tool_definition("edit", str(tmp_path))
+    assert "If two changes affect the same block or nearby lines, merge them into one edit" in edit_definition.description
+    assert "Do not include large unchanged regions just to connect distant changes." in edit_definition.description
 
 
 def test_build_system_prompt_includes_tools_and_cwd(tmp_path: Path) -> None:
@@ -691,6 +909,44 @@ def test_build_system_prompt_includes_tools_and_cwd(tmp_path: Path) -> None:
     assert "Use read to examine files instead of cat or sed." in prompt
     assert "Be concise in your responses" in prompt
     assert str(tmp_path).replace("\\", "/") in prompt
+
+
+def test_build_system_prompt_includes_pi_docs_resolution_guidance(tmp_path: Path) -> None:
+    prompt = build_system_prompt(BuildSystemPromptOptions(cwd=str(tmp_path)))
+
+    assert "Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):" in prompt
+    assert "- Main documentation:" in prompt
+    assert "- Additional docs:" in prompt
+    assert "- Examples:" in prompt
+    assert (
+        "- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory"
+        in prompt
+    )
+    assert "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)" in prompt
+
+
+def test_custom_prompt_includes_skills_when_selected_tools_unset(tmp_path: Path) -> None:
+    skill_path = tmp_path / "skills" / "audit" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill = Skill(
+        name="audit-skill",
+        description="Inspect code carefully",
+        file_path=str(skill_path),
+        base_dir=str(skill_path.parent),
+        source_info=create_synthetic_source_info(str(skill_path), source="test"),
+    )
+
+    prompt = build_system_prompt(
+        BuildSystemPromptOptions(
+            cwd=str(tmp_path),
+            custom_prompt="Custom system prompt",
+            skills=[skill],
+        )
+    )
+
+    assert "<available_skills>" in prompt
+    assert "<name>audit-skill</name>" in prompt
+    assert str(skill_path) in prompt
 
 
 def test_default_resource_loader_discovers_context_and_system_prompt_files(tmp_path: Path) -> None:
@@ -992,9 +1248,9 @@ def test_agent_session_binds_pi_extension_runner_action_surface(tmp_path: Path) 
 
     def provider(message, context):
         seen_user_messages.extend(
-            msg.content
+            _user_text(msg)
             for msg in context.messages
-            if isinstance(msg, UserMessage) and isinstance(msg.content, str)
+            if isinstance(msg, UserMessage)
         )
         return text_response_events(message, "runner reply")
 
@@ -1038,7 +1294,7 @@ def test_agent_session_binds_pi_extension_runner_action_surface(tmp_path: Path) 
 
     result = runner.sendUserMessage("from runner")
     assert any(isinstance(message, AssistantMessage) and message.model == "second-model" for message in result)
-    assert seen_user_messages == ["from runner"]
+    assert seen_user_messages == ["stored", "from runner"]
 
     persisted = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
     assert any(entry.get("type") == "session_info" and entry.get("name") == "Runner Session" for entry in persisted)
@@ -1174,6 +1430,782 @@ def test_resource_loader_resolves_package_skills_prompts_and_themes(tmp_path: Pa
     assert str(skill_dir / "SKILL.md") in session.system_prompt
 
 
+def test_default_resource_loader_uses_pi_settings_manager_resource_paths(tmp_path: Path) -> None:
+    from appv22.coding_agent import DefaultResourceLoader
+
+    agent_dir = tmp_path / "agent"
+    project = tmp_path / "repo"
+    skill_dir = project / "configured-skills" / "audit"
+    prompt_dir = project / "configured-prompts"
+    theme_dir = project / "configured-themes"
+    skill_dir.mkdir(parents=True)
+    prompt_dir.mkdir(parents=True)
+    theme_dir.mkdir(parents=True)
+    agent_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: configured-audit\ndescription: Inspect configured code\n---\nSkill body\n",
+        encoding="utf-8",
+    )
+    (prompt_dir / "review.md").write_text("---\ndescription: Review\n---\nReview $ARGUMENTS", encoding="utf-8")
+    (theme_dir / "configured.json").write_text(
+        json.dumps({"name": "configured", "colors": {"text": "#fff"}, "vars": {}}),
+        encoding="utf-8",
+    )
+    settings = SettingsManager.inMemory(
+        {
+            "skills": [str(project / "configured-skills")],
+            "prompts": [str(prompt_dir)],
+            "themes": [str(theme_dir)],
+        }
+    )
+
+    loader = DefaultResourceLoader(cwd=str(project), agent_dir=str(agent_dir), settings_manager=settings)
+    loader.reload()
+
+    assert [skill.name for skill in loader.get_skills()["skills"]] == ["configured-audit"]
+    assert [prompt.name for prompt in loader.get_prompts()["prompts"]] == ["review"]
+    assert [theme.name for theme in loader.get_themes()["themes"]] == ["configured"]
+
+
+def test_create_agent_session_services_ports_pi_settings_resource_wiring(tmp_path: Path) -> None:
+    from appv22.coding_agent import create_agent_session_from_services, create_agent_session_services
+
+    agent_dir = tmp_path / "agent"
+    project = tmp_path / "repo"
+    skill_dir = project / "skills" / "audit"
+    skill_dir.mkdir(parents=True)
+    agent_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: service-audit\ndescription: Inspect service code\n---\nSkill body\n",
+        encoding="utf-8",
+    )
+    settings = SettingsManager.inMemory(
+        {
+            "shellCommandPrefix": "printf service-prefix;",
+            "skills": [str(project / "skills")],
+        }
+    )
+
+    services = create_agent_session_services(
+        {
+            "cwd": str(project),
+            "agentDir": str(agent_dir),
+            "settingsManager": settings,
+        }
+    )
+    result = create_agent_session_from_services({"services": services, "model": faux_model()})
+
+    assert services["settingsManager"] is settings
+    assert [skill.name for skill in services["resourceLoader"].get_skills()["skills"]] == ["service-audit"]
+    assert result.session.settings_manager is settings
+    assert result.extensionsResult is services["resourceLoader"].get_extensions()
+    assert result.session.execute_bash("printf user").output == "service-prefixuser"
+
+
+def test_create_agent_session_services_uses_pi_provided_resource_loader(tmp_path: Path) -> None:
+    from appv22.coding_agent import DefaultResourceLoader, create_agent_session_services
+
+    loader = DefaultResourceLoader(cwd=str(tmp_path), agent_dir=str(tmp_path / "agent"))
+    loader.reload()
+
+    services = create_agent_session_services(
+        {
+            "cwd": str(tmp_path),
+            "agentDir": str(tmp_path / "agent"),
+            "resourceLoader": loader,
+        }
+    )
+
+    assert services["resourceLoader"] is loader
+
+
+def test_auth_storage_create_persists_api_key_runtime_and_fallback(tmp_path: Path, monkeypatch) -> None:
+    from appv22.coding_agent import AuthStorage
+
+    auth_path = tmp_path / "auth.json"
+    auth = AuthStorage.create(str(auth_path))
+    auth.set("stored", {"type": "api_key", "key": "stored-key"})
+    auth.setRuntimeApiKey("runtime", "runtime-key")
+    auth.setFallbackResolver(lambda provider: "fallback-key" if provider == "fallback" else None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "env-key")
+
+    reloaded = AuthStorage.create(str(auth_path))
+    reloaded.setFallbackResolver(lambda provider: "fallback-key" if provider == "fallback" else None)
+
+    assert reloaded.get("stored") == {"type": "api_key", "key": "stored-key"}
+    assert reloaded.list() == ["stored"]
+    assert reloaded.getApiKey("stored") == "stored-key"
+    assert auth.getApiKey("runtime") == "runtime-key"
+    assert reloaded.getApiKey("openrouter") == "env-key"
+    assert reloaded.getApiKey("fallback") == "fallback-key"
+    assert reloaded.getApiKey("fallback", {"includeFallback": False}) is None
+    assert reloaded.getAuthStatus("stored") == {"configured": True, "source": "stored"}
+
+    reloaded.remove("stored")
+    assert AuthStorage.create(str(auth_path)).get("stored") is None
+
+
+def test_model_registry_create_loads_models_json_and_resolves_pi_request_auth(tmp_path: Path) -> None:
+    from appv22.coding_agent import AuthStorage, ModelRegistry
+
+    auth = AuthStorage.create(str(tmp_path / "auth.json"))
+    auth.set("proxy", {"type": "api_key", "key": "stored-proxy-key"})
+    models_path = tmp_path / "models.json"
+    models_path.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "proxy": {
+                        "name": "Proxy Provider",
+                        "api": "faux",
+                        "baseUrl": "https://proxy.example.test/v1",
+                        "apiKey": "models-key",
+                        "headers": {"X-Provider": "provider"},
+                        "authHeader": True,
+                        "models": [
+                            {
+                                "id": "fast",
+                                "name": "Fast",
+                                "headers": {"X-Model": "model"},
+                                "contextWindow": 64000,
+                                "maxTokens": 4096,
+                            }
+                        ],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry = ModelRegistry.create(auth, str(models_path))
+    model = registry.find("proxy", "fast")
+
+    assert model is not None
+    assert model.name == "Fast"
+    assert model.api == "faux"
+    assert model.base_url == "https://proxy.example.test/v1"
+    assert model.context_window == 64000
+    assert registry.getProviderDisplayName("proxy") == "proxy"
+    assert registry.hasConfiguredAuth(model) is True
+    assert registry.getAvailable() == [model]
+    assert registry.getApiKeyForProvider("proxy") == "stored-proxy-key"
+    assert registry.getApiKeyAndHeaders(model) == {
+        "ok": True,
+        "apiKey": "stored-proxy-key",
+        "headers": {
+            "X-Provider": "provider",
+            "X-Model": "model",
+            "Authorization": "Bearer stored-proxy-key",
+        },
+    }
+
+
+def test_create_agent_session_services_defaults_pi_auth_storage_and_model_registry(tmp_path: Path) -> None:
+    from appv22.coding_agent import AuthStorage, ModelRegistry, create_agent_session_services
+
+    agent_dir = tmp_path / "agent"
+    project = tmp_path / "repo"
+    agent_dir.mkdir()
+    project.mkdir()
+    (agent_dir / "auth.json").write_text(json.dumps({"proxy": {"type": "api_key", "key": "service-key"}}), encoding="utf-8")
+    (agent_dir / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "proxy": {
+                        "api": "faux",
+                        "baseUrl": "https://proxy.example.test/v1",
+                        "apiKey": "models-key",
+                        "models": [{"id": "service", "name": "Service"}],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    services = create_agent_session_services({"cwd": str(project), "agentDir": str(agent_dir)})
+
+    assert isinstance(services["authStorage"], AuthStorage)
+    assert isinstance(services["modelRegistry"], ModelRegistry)
+    assert services["authStorage"].getApiKey("proxy") == "service-key"
+    model = services["modelRegistry"].find("proxy", "service")
+    assert model is not None
+    assert services["modelRegistry"].getApiKeyAndHeaders(model)["apiKey"] == "service-key"
+
+
+def test_create_agent_session_from_services_resolves_pi_default_model(tmp_path: Path) -> None:
+    from appv22.coding_agent import SettingsManager, create_agent_session_from_services, create_agent_session_services
+
+    agent_dir = tmp_path / "agent"
+    project = tmp_path / "repo"
+    agent_dir.mkdir()
+    project.mkdir()
+    (agent_dir / "auth.json").write_text(json.dumps({"proxy": {"type": "api_key", "key": "service-key"}}), encoding="utf-8")
+    (agent_dir / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "proxy": {
+                        "api": "faux",
+                        "baseUrl": "https://proxy.example.test/v1",
+                        "apiKey": "models-key",
+                        "models": [{"id": "service", "name": "Service"}],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = SettingsManager.inMemory({"defaultProvider": "proxy", "defaultModel": "service"})
+    services = create_agent_session_services(
+        {
+            "cwd": str(project),
+            "agentDir": str(agent_dir),
+            "settingsManager": settings,
+        }
+    )
+
+    result = create_agent_session_from_services({"services": services})
+
+    assert result.session.model.provider == "proxy"
+    assert result.session.model.id == "service"
+    assert result.modelFallbackMessage is None
+
+
+def test_create_agent_session_streams_with_pi_model_registry_auth_and_retry_settings(tmp_path: Path) -> None:
+    from appv22.ai.event_stream import create_assistant_message_event_stream
+    from appv22.ai.stream import ApiProvider
+    from appv22.coding_agent import SettingsManager, create_agent_session
+
+    captured: dict[str, object] = {}
+
+    def stream(model, context, options=None):
+        captured["api_key"] = getattr(options, "api_key", None)
+        captured["headers"] = dict(getattr(options, "headers", {}) or {})
+        captured["timeout_ms"] = getattr(options, "timeout_ms", None)
+        captured["websocket_connect_timeout_ms"] = getattr(options, "websocket_connect_timeout_ms", None)
+        captured["max_retries"] = getattr(options, "max_retries", None)
+        captured["max_retry_delay_ms"] = getattr(options, "max_retry_delay_ms", None)
+        s = create_assistant_message_event_stream()
+        for event in text_response_events(model, "ok"):
+            s.push(event)
+        return s
+
+    register_api_provider(ApiProvider(api="svc-faux", stream=stream, stream_simple=stream))
+    agent_dir = tmp_path / "agent"
+    project = tmp_path / "repo"
+    agent_dir.mkdir()
+    project.mkdir()
+    (agent_dir / "auth.json").write_text(
+        json.dumps({"proxy": {"type": "api_key", "key": "service-key"}}),
+        encoding="utf-8",
+    )
+    (agent_dir / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "proxy": {
+                        "api": "svc-faux",
+                        "baseUrl": "https://proxy.example.test/v1",
+                        "apiKey": "models-key",
+                        "headers": {"X-Provider": "provider"},
+                        "authHeader": True,
+                        "models": [{"id": "service", "name": "Service", "headers": {"X-Model": "model"}}],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = create_agent_session(
+        {
+            "cwd": str(project),
+            "agentDir": str(agent_dir),
+            "settingsManager": SettingsManager.inMemory(
+                {
+                    "defaultProvider": "proxy",
+                    "defaultModel": "service",
+                    "httpIdleTimeoutMs": 0,
+                    "websocketConnectTimeoutMs": 4321,
+                    "retry": {"provider": {"maxRetries": 7, "maxRetryDelayMs": 4567}},
+                }
+            ),
+        }
+    )
+
+    result.session.prompt("hi")
+
+    assert captured == {
+        "api_key": "service-key",
+        "headers": {
+            "X-Provider": "provider",
+            "X-Model": "model",
+            "Authorization": "Bearer service-key",
+        },
+        "timeout_ms": 2147483647,
+        "websocket_connect_timeout_ms": 4321,
+        "max_retries": 7,
+        "max_retry_delay_ms": 4567,
+    }
+
+
+def test_create_agent_session_defaults_pi_session_file_and_stream_session_id(tmp_path: Path) -> None:
+    from appv22.ai.event_stream import create_assistant_message_event_stream
+    from appv22.ai.stream import ApiProvider
+    from appv22.coding_agent import SettingsManager, create_agent_session
+
+    captured: dict[str, object] = {}
+
+    def stream(model, context, options=None):
+        captured["session_id"] = getattr(options, "session_id", None)
+        captured["headers"] = dict(getattr(options, "headers", {}) or {})
+        s = create_assistant_message_event_stream()
+        for event in text_response_events(model, "ok"):
+            s.push(event)
+        return s
+
+    register_api_provider(ApiProvider(api="svc-opencode", stream=stream, stream_simple=stream))
+    agent_dir = tmp_path / "agent"
+    project = tmp_path / "repo"
+    agent_dir.mkdir()
+    project.mkdir()
+    (agent_dir / "auth.json").write_text(
+        json.dumps({"opencode": {"type": "api_key", "key": "service-key"}}),
+        encoding="utf-8",
+    )
+    (agent_dir / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "opencode": {
+                        "api": "svc-opencode",
+                        "baseUrl": "https://opencode.ai/zen/v1",
+                        "apiKey": "models-key",
+                        "authHeader": True,
+                        "models": [{"id": "service", "name": "Service"}],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = create_agent_session(
+        {
+            "cwd": str(project),
+            "agentDir": str(agent_dir),
+            "settingsManager": SettingsManager.inMemory(
+                {"defaultProvider": "opencode", "defaultModel": "service", "defaultThinkingLevel": "low"}
+            ),
+        }
+    )
+
+    session_path = Path(result.session.session_path or "")
+    safe_cwd = f"--{str(project.resolve()).lstrip(os.sep).replace(os.sep, '-').replace(':', '-')}--"
+    assert session_path.parent == agent_dir / "sessions" / safe_cwd
+    assert session_path.name.endswith(f"_{result.session.session_id}.jsonl")
+    entries = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
+    assert entries[0]["id"] == result.session.session_id
+    assert entries[0]["cwd"] == str(project.resolve())
+    assert [entry["type"] for entry in entries[1:]] == ["model_change", "thinking_level_change"]
+    assert entries[1]["provider"] == "opencode"
+    assert entries[1]["modelId"] == "service"
+    assert entries[2]["thinkingLevel"] == "low"
+
+    result.session.prompt("hi")
+
+    assert captured["session_id"] == result.session.session_id
+    assert captured["headers"]["x-opencode-session"] == result.session.session_id
+    assert captured["headers"]["x-opencode-client"] == "pi"
+    assert captured["headers"]["Authorization"] == "Bearer service-key"
+
+
+def test_create_agent_session_restores_existing_pi_session_model_before_settings_default(tmp_path: Path) -> None:
+    from appv22.coding_agent import SettingsManager, create_agent_session
+
+    agent_dir = tmp_path / "agent"
+    project = tmp_path / "repo"
+    agent_dir.mkdir()
+    project.mkdir()
+    (agent_dir / "auth.json").write_text(
+        json.dumps(
+            {
+                "default": {"type": "api_key", "key": "default-key"},
+                "saved": {"type": "api_key", "key": "saved-key"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (agent_dir / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "default": {
+                        "api": "faux",
+                        "baseUrl": "https://default.example.test/v1",
+                        "apiKey": "default-key",
+                        "models": [{"id": "service", "name": "Default"}],
+                    },
+                    "saved": {
+                        "api": "faux",
+                        "baseUrl": "https://saved.example.test/v1",
+                        "apiKey": "saved-key",
+                        "models": [{"id": "session", "name": "Saved"}],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    session_path = tmp_path / "existing.jsonl"
+    store = SessionStore(str(session_path), cwd=str(project.resolve()))
+    store.append_model_change("saved", "session")
+    store.append_thinking_level_change("medium")
+    store.append_message(UserMessage(content=[TextContent(text="previous")], timestamp=now_ms()))
+
+    result = create_agent_session(
+        {
+            "cwd": str(project),
+            "agentDir": str(agent_dir),
+            "sessionPath": str(session_path),
+            "settingsManager": SettingsManager.inMemory(
+                {"defaultProvider": "default", "defaultModel": "service", "defaultThinkingLevel": "off"}
+            ),
+        }
+    )
+
+    assert result.session.model.provider == "saved"
+    assert result.session.model.id == "session"
+    assert result.session.thinking_level == "medium"
+    assert result.modelFallbackMessage is None
+
+
+def test_create_agent_session_ports_pi_settings_request_options_to_agent_loop(tmp_path: Path) -> None:
+    from appv22.ai.event_stream import create_assistant_message_event_stream
+    from appv22.coding_agent import SettingsManager, create_agent_session
+
+    captured: dict[str, object] = {}
+
+    def stream(model, context, options=None):
+        captured["transport"] = getattr(options, "transport", None)
+        captured["thinking_budgets"] = getattr(options, "thinking_budgets", None)
+        captured["max_retry_delay_ms"] = getattr(options, "max_retry_delay_ms", None)
+        s = create_assistant_message_event_stream()
+        for event in text_response_events(model, "ok"):
+            s.push(event)
+        return s
+
+    result = create_agent_session(
+        {
+            "cwd": str(tmp_path),
+            "agentDir": str(tmp_path / "agent"),
+            "model": faux_model(),
+            "settingsManager": SettingsManager.inMemory(
+                {
+                    "transport": "websocket",
+                    "thinkingBudgets": {"low": 1024, "medium": 2048},
+                    "retry": {"provider": {"maxRetryDelayMs": 12345}},
+                }
+            ),
+        }
+    )
+
+    result.session.prompt("hi", stream_fn=stream)
+
+    assert captured == {
+        "transport": "websocket",
+        "thinking_budgets": {"low": 1024, "medium": 2048},
+        "max_retry_delay_ms": 12345,
+    }
+
+
+def test_pi_sdk_provider_attribution_headers_match_pi_precedence(monkeypatch) -> None:
+    from appv22.coding_agent.agent_session_services import merge_provider_attribution_headers
+
+    settings = SettingsManager.inMemory()
+    openrouter = Model(
+        id="m",
+        name="m",
+        api="faux",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    headers = merge_provider_attribution_headers(
+        openrouter,
+        settings,
+        None,
+        {"HTTP-Referer": "https://provider.example", "X-OpenRouter-Categories": "provider-category"},
+        {"X-OpenRouter-Title": "request-title"},
+    )
+
+    assert headers == {
+        "HTTP-Referer": "https://provider.example",
+        "X-OpenRouter-Title": "request-title",
+        "X-OpenRouter-Categories": "provider-category",
+    }
+
+    settings.setEnableInstallTelemetry(False)
+    assert merge_provider_attribution_headers(openrouter, settings, None) is None
+    monkeypatch.setenv("PI_TELEMETRY", "YES")
+    assert merge_provider_attribution_headers(openrouter, settings, None)["X-OpenRouter-Title"] == "pi"
+
+    nvidia = Model(id="m", name="m", api="faux", provider="nvidia", base_url="https://example.test/v1")
+    assert merge_provider_attribution_headers(nvidia, settings, None)["X-BILLING-INVOKE-ORIGIN"] == "Pi"
+
+    opencode = Model(id="m", name="m", api="faux", provider="opencode", base_url="https://opencode.ai/zen/v1")
+    assert merge_provider_attribution_headers(opencode, settings, "session-1") == {
+        "x-opencode-session": "session-1",
+        "x-opencode-client": "pi",
+    }
+
+
+def test_exported_create_agent_session_matches_pi_sdk_result_factory(tmp_path: Path) -> None:
+    from appv22.coding_agent import CreateAgentSessionResult, SettingsManager, createAgentSession, create_agent_session
+
+    agent_dir = tmp_path / "agent"
+    project = tmp_path / "repo"
+    agent_dir.mkdir()
+    project.mkdir()
+    (agent_dir / "auth.json").write_text(json.dumps({"proxy": {"type": "api_key", "key": "service-key"}}), encoding="utf-8")
+    (agent_dir / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "proxy": {
+                        "api": "faux",
+                        "baseUrl": "https://proxy.example.test/v1",
+                        "apiKey": "models-key",
+                        "models": [{"id": "service", "name": "Service"}],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = create_agent_session(
+        {
+            "cwd": str(project),
+            "agentDir": str(agent_dir),
+            "settingsManager": SettingsManager.inMemory(
+                {"defaultProvider": "proxy", "defaultModel": "service"}
+            ),
+        }
+    )
+
+    assert isinstance(result, CreateAgentSessionResult)
+    assert result.session.model.provider == "proxy"
+    assert result.session.model.id == "service"
+    assert createAgentSession is create_agent_session
+
+
+def test_create_agent_session_ports_pi_no_tools_option(tmp_path: Path) -> None:
+    from appv22.coding_agent import create_agent_session
+
+    result = create_agent_session(
+        {
+            "cwd": str(tmp_path),
+            "agentDir": str(tmp_path / "agent"),
+            "model": faux_model(),
+            "noTools": True,
+        }
+    )
+
+    assert result.session.get_active_tool_names() == []
+
+
+def test_create_agent_session_ports_pi_custom_tools_without_replacing_builtins(tmp_path: Path) -> None:
+    from appv22.coding_agent import create_agent_session
+    from appv22.coding_agent.tools.types import ToolDefinition
+
+    definition = ToolDefinition(
+        name="custom",
+        label="custom",
+        description="Custom SDK tool",
+        parameters={"type": "object", "properties": {}},
+        execute=lambda tool_call_id, args, signal=None, on_update=None, ctx=None: AgentToolResult(
+            content=[TextContent(text="ok")],
+            details={},
+        ),
+        prompt_snippet="Run custom SDK tool",
+    )
+
+    result = create_agent_session(
+        {
+            "cwd": str(tmp_path),
+            "agentDir": str(tmp_path / "agent"),
+            "model": faux_model(),
+            "customTools": [definition],
+        }
+    )
+
+    tool_names = {tool["name"] for tool in result.session.get_all_tools()}
+    assert {"read", "bash", "edit", "write", "custom"} <= tool_names
+    assert result.session.get_active_tool_names() == ["read", "bash", "edit", "write"]
+
+
+def test_create_agent_session_wraps_convert_to_llm_with_pi_block_images_setting(tmp_path: Path) -> None:
+    from appv22.coding_agent import create_agent_session
+
+    settings = SettingsManager.inMemory({"images": {"blockImages": True}})
+    result = create_agent_session(
+        {
+            "cwd": str(tmp_path),
+            "agentDir": str(tmp_path / "agent"),
+            "model": faux_model(),
+            "settingsManager": settings,
+        }
+    )
+
+    converted = result.session._convert_to_llm(
+        [
+            UserMessage(
+                content=[
+                    TextContent(text="before"),
+                    ImageContent(data="aW1hZ2Ux", mime_type="image/png"),
+                    ImageContent(data="aW1hZ2Uy", mime_type="image/jpeg"),
+                    TextContent(text="after"),
+                ]
+            ),
+            ToolResultMessage(
+                tool_call_id="call-1",
+                tool_name="read",
+                content=[
+                    ImageContent(data="aW1hZ2Uz", mime_type="image/png"),
+                    TextContent(text="tool text"),
+                ],
+                is_error=False,
+            ),
+        ]
+    )
+
+    assert converted[0].content == [
+        TextContent(text="before"),
+        TextContent(text="Image reading is disabled."),
+        TextContent(text="after"),
+    ]
+    assert converted[1].content == [
+        TextContent(text="Image reading is disabled."),
+        TextContent(text="tool text"),
+    ]
+
+
+def test_default_resource_loader_ports_pi_inline_extension_factories(tmp_path: Path) -> None:
+    from appv22.coding_agent import DefaultResourceLoader, ExtensionRunner
+
+    def extension_factory(pi: ExtensionRunner) -> None:
+        pi.registerFlag("mode", {"type": "string", "default": "safe"})
+        pi.registerProvider(
+            "proxy",
+            {
+                "api": "faux",
+                "baseUrl": "https://proxy.example.test/v1",
+                "apiKey": "factory-key",
+                "models": [{"id": "factory", "name": "Factory"}],
+            },
+        )
+
+    loader = DefaultResourceLoader(
+        cwd=str(tmp_path),
+        agent_dir=str(tmp_path / "agent"),
+        extension_factories=[extension_factory],
+    )
+    loader.reload()
+
+    extensions = loader.get_extensions()
+    runtime = extensions["runtime"]
+
+    assert isinstance(runtime, ExtensionRunner)
+    assert runtime.get_flags()["mode"].default == "safe"
+    assert runtime.get_flag("mode") == "safe"
+    assert runtime.pending_provider_registrations == [
+        (
+            "proxy",
+            {
+                "api": "faux",
+                "baseUrl": "https://proxy.example.test/v1",
+                "apiKey": "factory-key",
+                "models": [{"id": "factory", "name": "Factory"}],
+            },
+            "<inline:1>",
+        )
+    ]
+
+
+def test_create_agent_session_services_ports_pi_provider_and_flag_diagnostics(tmp_path: Path) -> None:
+    from appv22.coding_agent import ExtensionRunner, create_agent_session_services
+
+    def extension_factory(pi: ExtensionRunner) -> None:
+        pi.registerFlag("verbose", {"type": "boolean"})
+        pi.registerFlag("profile", {"type": "string"})
+        pi.registerProvider(
+            "proxy",
+            {
+                "api": "faux",
+                "baseUrl": "https://proxy.example.test/v1",
+                "apiKey": "factory-key",
+                "models": [{"id": "factory", "name": "Factory"}],
+            },
+        )
+
+    services = create_agent_session_services(
+        {
+            "cwd": str(tmp_path),
+            "agentDir": str(tmp_path / "agent"),
+            "resourceLoaderOptions": {"extension_factories": [extension_factory]},
+            "extensionFlagValues": {"verbose": False, "profile": "debug", "missing": True},
+        }
+    )
+    runtime = services["resourceLoader"].get_extensions()["runtime"]
+    model = services["modelRegistry"].find("proxy", "factory")
+
+    assert model is not None
+    assert services["modelRegistry"].getApiKeyAndHeaders(model)["apiKey"] == "factory-key"
+    assert runtime.get_flag("verbose") is True
+    assert runtime.get_flag("profile") == "debug"
+    assert runtime.pending_provider_registrations == []
+    assert services["diagnostics"] == [{"type": "error", "message": "Unknown option: --missing"}]
+
+
+def test_create_agent_session_from_services_uses_loaded_extension_runtime(tmp_path: Path) -> None:
+    from appv22.coding_agent import ExtensionRunner, create_agent_session_from_services, create_agent_session_services
+
+    def extension_factory(pi: ExtensionRunner) -> None:
+        pi.registerCommand(
+            "service-hello",
+            {
+                "description": "Service hello",
+                "handler": lambda args, ctx: ctx.sendMessage(
+                    {
+                        "customType": "service-hello",
+                        "content": "hello from service extension",
+                    }
+                ),
+            },
+        )
+
+    services = create_agent_session_services(
+        {
+            "cwd": str(tmp_path),
+            "agentDir": str(tmp_path / "agent"),
+            "resourceLoaderOptions": {"extension_factories": [extension_factory]},
+        }
+    )
+    result = create_agent_session_from_services({"services": services, "model": faux_model()})
+
+    result.session.prompt("/service-hello")
+
+    assert result.session.extension_runner is services["resourceLoader"].get_extensions()["runtime"]
+    assert any(
+        getattr(message, "role", None) == "custom" and getattr(message, "custom_type", None) == "service-hello"
+        for message in result.session.messages
+    )
+
+
 def test_agent_session_runs_read_tool_call(tmp_path: Path) -> None:
     (tmp_path / "hello.txt").write_text("file body here", encoding="utf-8")
     model = faux_model()
@@ -1193,6 +2225,891 @@ def test_agent_session_runs_read_tool_call(tmp_path: Path) -> None:
     tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
     assert "file body here" in tool_results[0].content[0].text
     assert calls["n"] == 2
+
+
+def test_tool_loop_guardrail_warns_on_repeated_idempotent_no_progress() -> None:
+    from appv22.agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(no_progress_warn_after=2))
+
+    first = controller.after_call("read", {"path": "a.txt"}, "same output", failed=False)
+    second = controller.after_call("read", {"path": "a.txt"}, "same output", failed=False)
+
+    assert first.action == "allow"
+    assert second.action == "warn"
+    assert second.code == "idempotent_no_progress_warning"
+    assert "returned the same result 2 times" in second.message
+
+
+def test_tool_loop_guardrail_treats_bash_file_preview_variants_as_no_progress() -> None:
+    from appv22.agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController()
+    commands = [
+        "head -400 src/agents/facebook_surfer.py | tail -100",
+        "head -360 src/agents/facebook_surfer.py | tail -50",
+        "awk 'NR>=330 && NR<=360' src/agents/facebook_surfer.py",
+    ]
+
+    decisions = [
+        controller.after_call("bash", {"command": command}, "        # Configure model", failed=False)
+        for command in commands
+    ]
+
+    assert decisions[0].action == "allow"
+    assert decisions[1].code == "idempotent_no_progress_warning"
+    assert decisions[2].action == "halt"
+    assert decisions[2].code == "idempotent_no_progress_block"
+    assert "read with path/offset/limit" in decisions[2].message
+
+
+def test_tool_loop_guardrail_treats_bash_inventory_variants_as_no_progress() -> None:
+    from appv22.agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController()
+    commands = [
+        "ls -la src/metrics",
+        "find src/metrics -maxdepth 1 -type f",
+        "rg --files src/metrics",
+    ]
+
+    decisions = [
+        controller.after_call("bash", {"command": command}, "src/metrics/models.py", failed=False)
+        for command in commands
+    ]
+
+    assert decisions[0].action == "allow"
+    assert decisions[1].code == "idempotent_no_progress_warning"
+    assert decisions[2].action == "halt"
+    assert decisions[2].code == "idempotent_no_progress_block"
+    assert "read with path/offset/limit" in decisions[2].message
+
+
+def test_tool_loop_guardrail_normalizes_bash_inventory_paths_against_cwd(tmp_path: Path) -> None:
+    from appv22.agent.tool_guardrails import ToolCallGuardrailController
+
+    project = tmp_path / "bot"
+    project.mkdir()
+    controller = ToolCallGuardrailController(cwd=str(project))
+    commands = [
+        f"cd {project} && ls -la src/metrics/ 2>&1",
+        f"find {project}/src/metrics -maxdepth 1 -type f",
+        f"cd {project} && rg --files ./src/metrics",
+    ]
+
+    decisions = [
+        controller.after_call("bash", {"command": command}, "src/metrics/models.py", failed=False)
+        for command in commands
+    ]
+
+    assert decisions[0].action == "allow"
+    assert decisions[1].code == "idempotent_no_progress_warning"
+    assert decisions[2].action == "halt"
+    assert decisions[2].code == "idempotent_no_progress_block"
+    assert "read with path/offset/limit" in decisions[2].message
+
+
+def test_tool_loop_guardrail_ignores_unknown_bash_args_for_no_progress() -> None:
+    from appv22.agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController()
+    calls = [
+        {"command": "printf ok", "note": "first"},
+        {"command": "printf ok", "note": "second"},
+        {"command": "printf ok", "note": "third"},
+    ]
+
+    decisions = [controller.after_call("bash", args, "ok", failed=False) for args in calls]
+
+    assert decisions[0].action == "allow"
+    assert decisions[1].code == "idempotent_no_progress_warning"
+    assert decisions[2].action == "halt"
+    assert decisions[2].code == "idempotent_no_progress_block"
+    assert "same bash command" in decisions[2].message
+
+
+def test_agent_session_appends_tool_loop_warning_to_repeated_bash_result(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="total 120")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] in (1, 2):
+            return tool_call_response_events(m, "bash", {"command": "ls -la src/metrics"}, call_id=f"call_{provider_calls['n']}")
+        return text_response_events(m, "stopped")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("inspect metrics")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert executions == [{"command": "ls -la src/metrics"}, {"command": "ls -la src/metrics"}]
+    assert len(tool_results) == 2
+    assert "total 120" in tool_results[1].content[0].text
+    assert "idempotent_no_progress_warning" in tool_results[1].content[0].text
+    assert "Use the result already provided" in tool_results[1].content[0].text
+
+
+def test_agent_session_deduplicates_duplicate_bash_calls_in_same_turn(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[tuple[str, dict]] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append((tool_call_id, dict(args)))
+        return AgentToolResult(content=[TextContent(text=f"out:{args['command']}")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def multi_bash_events(model):
+        calls = [
+            ToolCall(id="call_1", name="bash", arguments={"command": "ls -la src/metrics"}),
+            ToolCall(id="call_2", name="bash", arguments={"command": "ls -la src/metrics"}),
+            ToolCall(id="call_3", name="bash", arguments={"command": "pwd"}),
+        ]
+        partial = AssistantMessage(
+            content=list(calls),
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=empty_usage(),
+            stop_reason="toolUse",
+            timestamp=now_ms(),
+        )
+        final = AssistantMessage(
+            content=list(calls),
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=empty_usage(),
+            stop_reason="toolUse",
+            timestamp=now_ms(),
+        )
+        events = [StartEvent(partial=partial)]
+        for index, tool_call in enumerate(calls):
+            events.append(ToolcallStartEvent(content_index=index, partial=partial))
+            events.append(ToolcallEndEvent(content_index=index, tool_call=tool_call, partial=partial))
+        events.append(DoneEvent(reason="toolUse", message=final))
+        return events
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return multi_bash_events(m)
+        return text_response_events(m, "done")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("scan metrics")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assistant = next(m for m in session.messages if getattr(m, "role", None) == "assistant")
+    assert executions == [
+        ("call_1", {"command": "ls -la src/metrics"}),
+        ("call_3", {"command": "pwd"}),
+    ]
+    assert [result.tool_call_id for result in tool_results] == ["call_1", "call_3"]
+    assert [call.id for call in assistant.content if getattr(call, "type", None) == "toolCall"] == [
+        "call_1",
+        "call_3",
+    ]
+
+
+def test_agent_session_injects_recovery_steering_on_bash_no_progress_warning(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    seen_user_messages: list[list[str]] = []
+    repeated_args = {"command": "ls -la src/metrics"}
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        if args == repeated_args:
+            return AgentToolResult(content=[TextContent(text="total 120")], details={})
+        return AgentToolResult(content=[TextContent(text=f"diag:{args['command']}")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def _user_text(message) -> str:
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content
+        return "".join(block.text for block in content if getattr(block, "type", None) == "text")
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        users = [_user_text(message) for message in c.messages if getattr(message, "role", None) == "user"]
+        seen_user_messages.append(users)
+        if users and "Tool loop recovery instruction" in users[-1]:
+            return text_response_events(m, "I will use the first listing and read the relevant files.")
+        if provider_calls["n"] % 2 == 0:
+            return tool_call_response_events(m, "bash", repeated_args, call_id=f"call_{provider_calls['n']}")
+        return tool_call_response_events(
+            m,
+            "bash",
+            {"command": f"pwd && echo diag-{provider_calls['n']}"},
+            call_id=f"call_{provider_calls['n']}",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("scan metrics and explain it")
+
+    repeated_executions = [args for args in executions if args == repeated_args]
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assistants = [m for m in session.messages if getattr(m, "role", None) == "assistant"]
+    assert provider_calls["n"] == 5
+    assert len(repeated_executions) == 2
+    assert "idempotent_no_progress_warning" in tool_results[-1].content[0].text
+    assert any("Tool loop recovery instruction" in users[-1] for users in seen_user_messages if users)
+    assert assistants[-1].content[0].text == "I will use the first listing and read the relevant files."
+
+
+def test_agent_session_blocks_consecutive_repeated_bash_loop_and_stops(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="jsonpatch.py")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    repeated_args = {
+        "command": (
+            "find /Users/htooayelwin/lewis/allthebest/bot/.venv/lib/python3.13/site-packages "
+            "-maxdepth 1 -type f -name 'jsonpatch.py'"
+        )
+    }
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > 5:
+            return text_response_events(m, "loop escaped")
+        return tool_call_response_events(m, "bash", repeated_args, call_id=f"call_{provider_calls['n']}")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("find jsonpatch")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 3
+    assert executions == [repeated_args, repeated_args, repeated_args]
+    assert len(tool_results) == 3
+    assert tool_results[-1].is_error is True
+    assert "idempotent_no_progress_block" in tool_results[-1].content[0].text
+    assert "STOP repeating" in tool_results[-1].content[0].text
+
+
+def test_agent_session_blocks_interleaved_repeated_bash_no_progress_by_default(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    repeated_args = {"command": "ls -la src/metrics"}
+    executions: list[dict] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        if args == repeated_args:
+            return AgentToolResult(content=[TextContent(text="total 120")], details={})
+        return AgentToolResult(content=[TextContent(text=f"diag:{args['command']}")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > 12:
+            return text_response_events(m, "loop escaped")
+        if provider_calls["n"] % 2 == 0:
+            return tool_call_response_events(m, "bash", repeated_args, call_id=f"call_{provider_calls['n']}")
+        return tool_call_response_events(
+            m,
+            "bash",
+            {"command": f"pwd && echo diag-{provider_calls['n']}"},
+            call_id=f"call_{provider_calls['n']}",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("inspect metrics without looping")
+
+    repeated_executions = [args for args in executions if args == repeated_args]
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 6
+    assert len(repeated_executions) == 3
+    assert tool_results[-1].is_error is True
+    assert "idempotent_no_progress_block" in tool_results[-1].content[0].text
+    assert "STOP repeating" in tool_results[-1].content[0].text
+    assert session.messages[-1].role == "assistant"
+    assert "I stopped retrying bash" in session.messages[-1].content[0].text
+    assert "idempotent_no_progress_block" in session.messages[-1].content[0].text
+
+
+def test_agent_session_blocks_semantic_bash_file_preview_loop_by_default(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    commands = [
+        "head -400 src/agents/facebook_surfer.py | tail -100",
+        "head -360 src/agents/facebook_surfer.py | tail -50",
+        "head -350 src/agents/facebook_surfer.py | tail -30",
+        "head -340 src/agents/facebook_surfer.py | tail -20",
+        "head -338 src/agents/facebook_surfer.py | tail -10",
+        "head -337 src/agents/facebook_surfer.py | tail -5",
+        "head -336 src/agents/facebook_surfer.py | tail -10",
+    ]
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="        # Configure model")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > len(commands):
+            return text_response_events(m, "loop escaped")
+        return tool_call_response_events(
+            m,
+            "bash",
+            {"command": commands[provider_calls["n"] - 1]},
+            call_id=f"call_{provider_calls['n']}",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("read every important part of facebook_surfer.py")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 3
+    assert executions == [{"command": command} for command in commands[:3]]
+    assert tool_results[-1].is_error is True
+    assert "idempotent_no_progress_block" in tool_results[-1].content[0].text
+    assert "STOP repeating" in tool_results[-1].content[0].text
+    assert session.messages[-1].role == "assistant"
+    assert "I stopped retrying bash" in session.messages[-1].content[0].text
+
+
+def test_agent_session_blocks_semantic_bash_inventory_loop_by_default(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    commands = [
+        "ls -la src/metrics",
+        "find src/metrics -maxdepth 1 -type f",
+        "rg --files src/metrics",
+        "find ./src/metrics -type f | sort",
+        "ls src/metrics",
+        "find src/metrics -type f | sort",
+    ]
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="src/metrics/models.py")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > len(commands):
+            return text_response_events(m, "loop escaped")
+        return tool_call_response_events(
+            m,
+            "bash",
+            {"command": commands[provider_calls["n"] - 1]},
+            call_id=f"call_{provider_calls['n']}",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("scan src/metrics and explain the files")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 3
+    assert executions == [{"command": command} for command in commands[:3]]
+    assert tool_results[-1].is_error is True
+    assert "idempotent_no_progress_block" in tool_results[-1].content[0].text
+    assert "STOP repeating" in tool_results[-1].content[0].text
+    assert session.messages[-1].role == "assistant"
+    assert "I stopped retrying bash" in session.messages[-1].content[0].text
+
+
+def test_agent_session_blocks_cwd_normalized_bash_inventory_loop_by_default(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    project = tmp_path / "bot"
+    project.mkdir()
+    commands = [
+        f"cd {project} && ls -la src/metrics/ 2>&1",
+        f"find {project}/src/metrics -maxdepth 1 -type f",
+        f"cd {project} && rg --files ./src/metrics",
+        f"ls -la {project}/src/metrics",
+        "find ./src/metrics -type f | sort",
+        "ls src/metrics",
+    ]
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="src/metrics/models.py")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > len(commands):
+            return text_response_events(m, "loop escaped")
+        return tool_call_response_events(
+            m,
+            "bash",
+            {"command": commands[provider_calls["n"] - 1]},
+            call_id=f"call_{provider_calls['n']}",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(project), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("scan src/metrics and explain the files")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 3
+    assert executions == [{"command": command} for command in commands[:3]]
+    assert tool_results[-1].is_error is True
+    assert "idempotent_no_progress_block" in tool_results[-1].content[0].text
+    assert "STOP repeating" in tool_results[-1].content[0].text
+    assert session.messages[-1].role == "assistant"
+    assert "I stopped retrying bash" in session.messages[-1].content[0].text
+
+
+def test_agent_session_blocks_bash_loop_when_only_unknown_args_change(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    calls = [
+        {"command": "printf ok", "note": "first"},
+        {"command": "printf ok", "note": "second"},
+        {"command": "printf ok", "note": "third"},
+        {"command": "printf ok", "note": "fourth"},
+        {"command": "printf ok", "note": "fifth"},
+    ]
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="ok")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > len(calls):
+            return text_response_events(m, "loop escaped")
+        return tool_call_response_events(
+            m,
+            "bash",
+            calls[provider_calls["n"] - 1],
+            call_id=f"call_{provider_calls['n']}",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("run the diagnostic")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 3
+    assert executions == calls[:3]
+    assert tool_results[-1].is_error is True
+    assert "idempotent_no_progress_block" in tool_results[-1].content[0].text
+    assert "STOP repeating" in tool_results[-1].content[0].text
+    assert session.messages[-1].role == "assistant"
+    assert "I stopped retrying bash" in session.messages[-1].content[0].text
+
+
+def test_agent_session_blocks_repeated_missing_bash_tool_loop(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    args = {"command": "ls -la src/metrics"}
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > 8:
+            return text_response_events(m, "loop escaped")
+        return tool_call_response_events(m, "bash", args, call_id=f"call_{provider_calls['n']}")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=model,
+        tool_definitions=[],
+        max_iterations=8,
+    )
+
+    session.prompt("scan metrics")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 4
+    assert len(tool_results) == 4
+    assert tool_results[-1].is_error is True
+    assert "repeated_exact_failure_block" in tool_results[-1].content[0].text
+    assert "STOP repeating" in tool_results[-1].content[0].text
+    assert session.messages[-1].role == "assistant"
+    assert "I stopped retrying bash" in session.messages[-1].content[0].text
+
+
+def test_agent_session_blocks_repeated_extension_blocked_bash_loop(tmp_path: Path) -> None:
+    model = faux_model()
+    runner = ExtensionRunner()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    args = {"command": "ls -la src/metrics"}
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="should not execute")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    runner.on("tool_call", lambda event: {"block": True, "reason": "blocked by extension"})
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > 8:
+            return text_response_events(m, "loop escaped")
+        return tool_call_response_events(m, "bash", args, call_id=f"call_{provider_calls['n']}")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=model,
+        tool_definitions=[bash_definition],
+        extension_runner=runner,
+        max_iterations=8,
+    )
+
+    session.prompt("scan metrics")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 4
+    assert executions == []
+    assert len(tool_results) == 4
+    assert tool_results[-1].is_error is True
+    assert "repeated_exact_failure_block" in tool_results[-1].content[0].text
+    assert "STOP repeating" in tool_results[-1].content[0].text
+    assert session.messages[-1].role == "assistant"
+    assert "I stopped retrying bash" in session.messages[-1].content[0].text
+
+
+def test_agent_session_blocks_repeated_invalid_read_schema_loop_by_default(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > 12:
+            return text_response_events(m, "loop escaped")
+        return tool_call_response_events(m, "read", {}, call_id=f"call_{provider_calls['n']}")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model)
+
+    session.prompt("explain each source file")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 4
+    assert len(tool_results) == 4
+    assert tool_results[-1].is_error is True
+    assert "repeated_exact_failure_block" in tool_results[-1].content[0].text
+    assert "STOP repeating" in tool_results[-1].content[0].text
+    assert session.messages[-1].role == "assistant"
+    assert "I stopped retrying read" in session.messages[-1].content[0].text
+    assert "repeated_exact_failure_block" in session.messages[-1].content[0].text
+
+
+def test_agent_session_injects_recovery_steering_before_consecutive_bash_block(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    seen_user_messages: list[list[str]] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="jsonpatch.py")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+    repeated_args = {"command": "find . -maxdepth 1 -type f -name 'jsonpatch.py'"}
+
+    def _user_text(message) -> str:
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content
+        return "".join(block.text for block in content if getattr(block, "type", None) == "text")
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        users = [_user_text(message) for message in c.messages if getattr(message, "role", None) == "user"]
+        seen_user_messages.append(users)
+        if users and "Tool loop recovery instruction" in users[-1]:
+            return text_response_events(m, "I will use the existing result instead.")
+        return tool_call_response_events(m, "bash", repeated_args, call_id=f"call_{provider_calls['n']}")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("find jsonpatch")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assistants = [m for m in session.messages if getattr(m, "role", None) == "assistant"]
+    assert provider_calls["n"] == 3
+    assert executions == [repeated_args, repeated_args]
+    assert len(tool_results) == 2
+    assert "idempotent_no_progress_warning" in tool_results[-1].content[0].text
+    assert any("Tool loop recovery instruction" in users[-1] for users in seen_user_messages if users)
+    assert assistants[-1].content[0].text == "I will use the existing result instead."
+
+
+def test_agent_session_max_iterations_forces_toolless_summary(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    tool_calls = {"n": 0}
+    saw_tools: list[bool] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        return AgentToolResult(content=[TextContent(text=args["value"])], details={})
+
+    probe_definition = ToolDefinition(
+        name="probe",
+        label="probe",
+        description="Probe",
+        parameters={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        saw_tools.append(bool(c.tools))
+        if c.tools:
+            tool_calls["n"] += 1
+            return tool_call_response_events(
+                m,
+                "probe",
+                {"value": f"run-{tool_calls['n']}"},
+                call_id=f"call_{tool_calls['n']}",
+            )
+        return text_response_events(m, "summary")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=model,
+        tool_definitions=[probe_definition],
+        max_iterations=2,
+    )
+
+    session.prompt("loop")
+
+    assert provider_calls["n"] == 3
+    assert tool_calls["n"] == 2
+    assert saw_tools == [True, True, False]
+    assert session.messages[-1].role == "assistant"
+    assert session.messages[-1].content[0].text == "summary"
+
+
+def test_agent_session_accepts_hermes_tool_loop_guardrail_config(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="Command exited with code 1")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        return tool_call_response_events(
+            m,
+            "bash",
+            {"command": f"bad-{provider_calls['n']}"},
+            call_id=f"call_{provider_calls['n']}",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=model,
+        tool_definitions=[bash_definition],
+        tool_loop_guardrails={
+            "hard_stop_enabled": True,
+            "hard_stop_after": {"same_tool_failure": 2},
+        },
+    )
+
+    session.prompt("fail repeatedly")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 2
+    assert executions == [{"command": "bad-1"}, {"command": "bad-2"}]
+    assert len(tool_results) == 2
+    assert "same_tool_failure_halt" in tool_results[-1].content[0].text
+
+
+def test_tool_loop_guardrail_resets_consecutive_idempotent_count_on_different_tool() -> None:
+    from appv22.agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(consecutive_no_progress_block_after=4)
+    )
+    repeated = {"command": "find . -name jsonpatch.py"}
+
+    for _ in range(3):
+        assert controller.before_call("bash", repeated).action == "allow"
+        controller.after_call("bash", repeated, "jsonpatch.py", failed=False)
+
+    controller.after_call("read", {"path": "README.md"}, "readme", failed=False)
+
+    assert controller.before_call("bash", repeated).action == "allow"
 
 
 def test_agent_session_exposes_default_coding_tools_for_greeting(tmp_path: Path) -> None:
@@ -1223,6 +3140,24 @@ def test_agent_session_keeps_default_coding_tools_for_repo_inspection_prompt(tmp
     session = AgentSession(cwd=str(tmp_path), model=model)
     session.prompt("list files under src")
     assert set(seen["tools"]) == {"read", "bash", "edit", "write"}
+
+
+def test_agent_session_default_prompt_matches_pi_without_codebase_scan_drift(tmp_path: Path) -> None:
+    model = faux_model()
+    seen = {}
+
+    def script(m, c):
+        seen["system_prompt"] = c.system_prompt
+        return text_response_events(m, "ok")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model)
+    session.prompt("analyze the codebase and give me insights")
+
+    assert "For codebase scans" not in seen["system_prompt"]
+    assert "use bash only for concise inventory/search commands" not in seen["system_prompt"]
+    assert "then use read with path/offset/limit" not in seen["system_prompt"]
+    assert "Do not repeat equivalent listings/searches/file previews" not in seen["system_prompt"]
 
 
 def test_agent_session_registry_set_active_tools_and_allowlist(tmp_path: Path) -> None:
@@ -1550,7 +3485,7 @@ def test_agent_session_emits_queue_update_events_before_delivered_user_message(t
         if event.type == "queue_update":
             seen.append(("queue", list(event.steering), list(event.follow_up)))
         elif event.type == "message_start" and isinstance(event.message, UserMessage):
-            seen.append(("user_start", event.message.content))
+            seen.append(("user_start", _user_text(event.message)))
 
     unsubscribe = session.subscribe(listener)
     session.prompt("initial")
@@ -1598,9 +3533,9 @@ def test_agent_session_queue_modes_batch_messages_in_all_mode(tmp_path: Path) ->
         calls["n"] += 1
         seen_user_batches.append(
             [
-                message.content
+                _user_text(message)
                 for message in c.messages
-                if isinstance(message, UserMessage) and isinstance(message.content, str)
+                if isinstance(message, UserMessage)
             ]
         )
         return text_response_events(m, f"turn {calls['n']}")
@@ -1691,7 +3626,7 @@ def test_agent_session_prompt_queues_during_streaming_by_behavior(tmp_path: Path
 
     session.continue_(stream_fn=stream_fn)
 
-    user_contents = [message.content for message in session.messages if isinstance(message, UserMessage)]
+    user_contents = [_user_text(message) for message in session.messages if isinstance(message, UserMessage)]
     assert user_contents[-2:] == ["queued steer", "queued follow"]
     assert session.pending_message_count == 0
 
@@ -1732,7 +3667,9 @@ def test_agent_session_input_extension_transforms_and_handles_prompt(tmp_path: P
 
     assert handled_result == []
     assert provider_user_texts == ["transformed:hello"]
-    assert [message.content for message in session.messages if isinstance(message, UserMessage)] == ["transformed:hello"]
+    assert [_user_text(message) for message in session.messages if isinstance(message, UserMessage)] == [
+        "transformed:hello"
+    ]
     assert [event["text"] for event in seen_inputs] == ["hello", "ping"]
     assert [event["source"] for event in seen_inputs] == ["interactive", "interactive"]
 
@@ -2066,7 +4003,7 @@ def test_agent_session_context_extension_transforms_provider_messages_without_mu
 
     assert provider_user_texts == ["rewritten"]
     stored_user = next(message for message in session.messages if isinstance(message, UserMessage))
-    assert stored_user.content == "original"
+    assert stored_user.content == [TextContent(text="original")]
 
 
 def test_extension_runner_context_handlers_chain_messages() -> None:
@@ -2214,11 +4151,7 @@ def test_agent_session_extension_command_context_can_send_user_message(tmp_path:
 
     def provider(message, context):
         seen_contexts.append(
-            [
-                msg.content
-                for msg in context.messages
-                if isinstance(msg, UserMessage) and isinstance(msg.content, str)
-            ]
+            [_user_text(msg) for msg in context.messages if isinstance(msg, UserMessage)]
         )
         return text_response_events(message, "command user handled")
 
@@ -2233,7 +4166,7 @@ def test_agent_session_extension_command_context_can_send_user_message(tmp_path:
     result = session.prompt("/ask follow through")
 
     assert result == []
-    assert [message.content for message in session.messages if isinstance(message, UserMessage)] == [
+    assert [_user_text(message) for message in session.messages if isinstance(message, UserMessage)] == [
         "from command: follow through"
     ]
     assert seen_contexts == [["from command: follow through"]]
@@ -2245,11 +4178,7 @@ def test_agent_session_create_replaced_session_context_rebinds_message_senders(t
 
     def provider(message, context):
         seen_contexts.append(
-            [
-                msg.content
-                for msg in context.messages
-                if isinstance(msg, UserMessage) and isinstance(msg.content, str)
-            ]
+            [_user_text(msg) for msg in context.messages if isinstance(msg, UserMessage)]
         )
         return text_response_events(message, "replacement user handled")
 
@@ -2268,8 +4197,10 @@ def test_agent_session_create_replaced_session_context_rebinds_message_senders(t
     assert custom_messages[-1].role == "custom"
     assert custom_messages[-1].customType == "replacement-note"
     assert user_messages is not None
-    assert [message.content for message in user_messages if isinstance(message, UserMessage)] == ["replacement prompt"]
-    assert seen_contexts == [["replacement prompt"]]
+    assert [_user_text(message) for message in user_messages if isinstance(message, UserMessage)] == [
+        "replacement prompt"
+    ]
+    assert seen_contexts == [["from replacement", "replacement prompt"]]
     persisted = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
     assert any(entry.get("customType") == "replacement-note" for entry in persisted)
 
@@ -2340,7 +4271,9 @@ def test_agent_session_extension_command_context_sets_entry_label(tmp_path: Path
     user_entry = next(
         entry
         for entry in session.session_entries
-        if entry["type"] == "message" and entry["message"]["role"] == "user" and entry["message"]["content"] == "first"
+        if entry["type"] == "message"
+        and entry["message"]["role"] == "user"
+        and entry["message"]["content"] == _serialized_text_content("first")
     )
 
     runner.register_command(
@@ -3021,6 +4954,156 @@ def test_agent_session_execute_bash_records_message_and_session(tmp_path: Path) 
     assert session.session_entries[-1]["message"]["role"] == "bashExecution"
 
 
+def test_pi_execute_bash_with_operations_is_public_and_sanitizes_streamed_output(tmp_path: Path) -> None:
+    from appv22.coding_agent import executeBashWithOperations, execute_bash_with_operations
+
+    chunks: list[str] = []
+
+    def exec_command(command: str, cwd: str, options) -> dict[str, int | None]:
+        assert command == "printf hi"
+        assert cwd == str(tmp_path)
+        options.on_data(b"\x1b[31mhi\x1b[0m\x00\n")
+        return {"exit_code": 0}
+
+    result = execute_bash_with_operations(
+        "printf hi",
+        str(tmp_path),
+        BashOperations(exec=exec_command),
+        {"onChunk": chunks.append},
+    )
+
+    assert result.output == "hi\n"
+    assert chunks == ["hi\n"]
+    assert result.exit_code == 0
+    assert result.exitCode == 0
+    assert result.cancelled is False
+    assert result.truncated is False
+    assert result.full_output_path is None
+    assert result.fullOutputPath is None
+    assert executeBashWithOperations is execute_bash_with_operations
+
+
+def test_pi_experimental_feature_gate_uses_pi_experimental_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from appv22.coding_agent import areExperimentalFeaturesEnabled, are_experimental_features_enabled
+
+    monkeypatch.delenv("PI_EXPERIMENTAL", raising=False)
+    assert are_experimental_features_enabled() is False
+
+    monkeypatch.setenv("PI_EXPERIMENTAL", "0")
+    assert are_experimental_features_enabled() is False
+
+    monkeypatch.setenv("PI_EXPERIMENTAL", "1")
+    assert are_experimental_features_enabled() is True
+    assert areExperimentalFeaturesEnabled is are_experimental_features_enabled
+
+
+def test_pi_create_synthetic_source_info_accepts_options_object() -> None:
+    from appv22.coding_agent import SourceInfo, createSyntheticSourceInfo, create_synthetic_source_info
+
+    explicit = createSyntheticSourceInfo(
+        "tools/example.ts",
+        {
+            "source": "extension",
+            "scope": "project",
+            "origin": "package",
+            "baseDir": "/repo/.pi/extensions/example",
+        },
+    )
+
+    assert explicit == SourceInfo(
+        path="tools/example.ts",
+        source="extension",
+        scope="project",
+        origin="package",
+        base_dir="/repo/.pi/extensions/example",
+    )
+    assert explicit.baseDir == "/repo/.pi/extensions/example"
+
+    defaulted = createSyntheticSourceInfo("inline", {"source": "sdk"})
+    assert defaulted.scope == "temporary"
+    assert defaulted.origin == "top-level"
+    assert defaulted.baseDir is None
+    assert createSyntheticSourceInfo is not create_synthetic_source_info
+
+
+def test_pi_compaction_result_public_shape() -> None:
+    from appv22.coding_agent import CompactionResult
+
+    result = CompactionResult(
+        summary="summary",
+        first_kept_entry_id="entry-2",
+        tokens_before=1234,
+        details={"kind": "artifact-index"},
+    )
+
+    assert result.summary == "summary"
+    assert result.firstKeptEntryId == "entry-2"
+    assert result.tokensBefore == 1234
+    assert result.details == {"kind": "artifact-index"}
+
+
+def test_agent_session_execute_bash_applies_pi_command_prefix_but_records_original(tmp_path: Path) -> None:
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    seen: dict[str, str] = {}
+
+    def exec_command(command: str, cwd: str, options) -> dict[str, int | None]:
+        seen["command"] = command
+        seen["cwd"] = cwd
+        options.on_data(b"ok")
+        return {"exit_code": 0}
+
+    result = session.execute_bash(
+        "printf hi",
+        options={
+            "operations": BashOperations(exec=exec_command),
+            "commandPrefix": "source ~/.profile",
+        },
+    )
+
+    assert seen == {"command": "source ~/.profile\nprintf hi", "cwd": str(tmp_path)}
+    assert result.output == "ok"
+    assert session.messages[-1].command == "printf hi"
+
+
+def test_agent_session_uses_pi_settings_manager_for_built_in_and_user_bash(tmp_path: Path) -> None:
+    class ShellSettings:
+        def getShellCommandPrefix(self) -> str:
+            return "printf settings-prefix;"
+
+        def getShellPath(self) -> None:
+            return None
+
+    session = AgentSession(cwd=str(tmp_path), model=faux_model(), settings_manager=ShellSettings())
+    bash_definition = session.get_tool_definition("bash")
+    assert bash_definition is not None
+
+    tool_result = bash_definition.execute("c1", {"command": "printf tool"})
+    user_result = session.execute_bash("printf user")
+
+    assert tool_result.content[0].text == "settings-prefixtool"
+    assert user_result.output == "settings-prefixuser"
+    assert session.messages[-1].command == "printf user"
+
+
+def test_agent_session_execute_bash_uses_pi_shell_path_option(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str | None] = {}
+
+    def fake_create_local_bash_operations(shell_path: str | None = None) -> BashOperations:
+        captured["shell_path"] = shell_path
+        return BashOperations(exec=lambda command, cwd, options: {"exit_code": 0})
+
+    monkeypatch.setattr(
+        "appv22.coding_agent.agent_session.create_local_bash_operations",
+        fake_create_local_bash_operations,
+    )
+
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    session.execute_bash("true", options={"shellPath": "/bin/zsh"})
+
+    assert captured == {"shell_path": "/bin/zsh"}
+    assert session.messages[-1].command == "true"
+
+
 def test_coding_agent_package_exports_bash_result() -> None:
     from appv22.coding_agent import BashResult as ExportedBashResult
 
@@ -3170,6 +5253,41 @@ def test_agent_session_auto_retry_events_for_transient_provider_error(tmp_path: 
     assert retry_events[1].success is True
     assert retry_events[1].attempt == 1
     assert session.retry_attempt == 0
+
+
+def test_agent_session_does_not_retry_pi_non_retryable_provider_limit_errors(tmp_path: Path) -> None:
+    model = faux_model()
+    calls = {"n": 0}
+
+    def stream_fn(model, context, options):
+        calls["n"] += 1
+        stream = create_assistant_message_event_stream()
+        error = AssistantMessage(
+            content=[TextContent(text="")],
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=empty_usage(),
+            stop_reason="error",
+            error_message="rate limit: insufficient_quota billing",
+        )
+        stream.push(ErrorEvent(reason="error", error=error))
+        return stream
+
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=model,
+        retry_enabled=True,
+        max_retries=2,
+        retry_delay_ms=0,
+    )
+    events: list[object] = []
+    session.subscribe(events.append)
+
+    session.prompt("Test", stream_fn=stream_fn)
+
+    assert calls["n"] == 1
+    assert [event.type for event in events if event.type.startswith("auto_retry_")] == []
 
 
 def test_agent_session_auto_retry_exhaustion_emits_failure(tmp_path: Path) -> None:
@@ -3341,7 +5459,7 @@ def test_agent_session_persists_and_reloads_typed_session_entries(tmp_path: Path
     assert restored.session_name == "persisted name"
     assert restored.thinking_level == "off"
     assert [getattr(message, "role", None) for message in restored.messages] == ["user", "assistant"]
-    assert restored.messages[0].content == "hello"
+    assert restored.messages[0].content == [TextContent(text="hello")]
     assert restored.messages[1].content[0].text == "reply"
 
 
@@ -3356,18 +5474,35 @@ def test_agent_session_branch_repoints_leaf_and_persists_new_child(tmp_path: Pat
     branch_point = session.session_entries[-1]["id"]
     session.prompt("second")
 
-    assert [message.content for message in session.messages if isinstance(message, UserMessage)] == ["first", "second"]
+    assert [
+        "".join(block.text for block in message.content if isinstance(block, TextContent))
+        for message in session.messages
+        if isinstance(message, UserMessage)
+    ] == ["first", "second"]
 
     session.branch(branch_point)
     session.prompt("branch")
 
-    assert [message.content for message in session.messages if isinstance(message, UserMessage)] == ["first", "branch"]
+    assert [
+        "".join(block.text for block in message.content if isinstance(block, TextContent))
+        for message in session.messages
+        if isinstance(message, UserMessage)
+    ] == ["first", "branch"]
     persisted = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
-    branch_user = next(entry for entry in persisted if entry["type"] == "message" and entry["message"]["content"] == "branch")
+    branch_user = next(
+        entry
+        for entry in persisted
+        if entry["type"] == "message"
+        and entry["message"]["content"] == [{"type": "text", "text": "branch", "textSignature": None}]
+    )
     assert branch_user["parentId"] == branch_point
 
     restored = AgentSession(cwd=str(tmp_path), model=model, session_path=str(session_path))
-    assert [message.content for message in restored.messages if isinstance(message, UserMessage)] == ["first", "branch"]
+    assert [
+        "".join(block.text for block in message.content if isinstance(block, TextContent))
+        for message in restored.messages
+        if isinstance(message, UserMessage)
+    ] == ["first", "branch"]
 
 
 def test_agent_session_export_to_jsonl_writes_active_branch_with_linear_parent_ids(tmp_path: Path) -> None:
@@ -3394,9 +5529,13 @@ def test_agent_session_export_to_jsonl_writes_active_branch_with_linear_parent_i
     assert exported[0]["type"] == "session"
     assert exported[0]["id"] == session.session_id
     assert exported[0]["cwd"] == str(tmp_path)
-    assert [entry["message"]["content"] for entry in exported[1:] if entry["type"] == "message" and entry["message"]["role"] == "user"] == [
-        "first",
-        "branch",
+    assert [
+        entry["message"]["content"]
+        for entry in exported[1:]
+        if entry["type"] == "message" and entry["message"]["role"] == "user"
+    ] == [
+        _serialized_text_content("first"),
+        _serialized_text_content("branch"),
     ]
     assert "second" not in json.dumps(exported)
 
@@ -3430,7 +5569,7 @@ def test_agent_session_export_to_html_writes_standalone_session_view(tmp_path: P
     assert session_data["header"]["cwd"] == str(tmp_path)
     assert session_data["leafId"] == session.session_entries[-1]["id"]
     assert [entry["type"] for entry in session_data["entries"]] == ["message", "message"]
-    assert session_data["entries"][0]["message"]["content"] == "hello <world>"
+    assert session_data["entries"][0]["message"]["content"] == _serialized_text_content("hello <world>")
     assert session_data["entries"][1]["message"]["content"][0]["text"] == "reply <ok>"
     assert "Available tools:" in session_data["systemPrompt"]
     assert any(tool["name"] == "read" for tool in session_data["tools"])
@@ -4266,7 +6405,9 @@ def test_agent_session_navigate_tree_writes_extension_summary_and_label(tmp_path
     first_user_entry = next(
         entry
         for entry in session.session_entries
-        if entry["type"] == "message" and entry["message"]["role"] == "user" and entry["message"]["content"] == "first"
+        if entry["type"] == "message"
+        and entry["message"]["role"] == "user"
+        and entry["message"]["content"] == _serialized_text_content("first")
     )
     session.prompt("second")
     old_leaf_id = session.session_entries[-1]["id"]
@@ -4309,7 +6450,9 @@ def test_agent_session_navigate_tree_writes_extension_summary_and_label(tmp_path
     session.prompt("revised first")
 
     persisted = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
-    revised_user = next(entry for entry in persisted if entry.get("message", {}).get("content") == "revised first")
+    revised_user = next(
+        entry for entry in persisted if entry.get("message", {}).get("content") == _serialized_text_content("revised first")
+    )
     assert revised_user["parentId"] == label_entry["id"]
 
 
@@ -4323,7 +6466,9 @@ def test_agent_session_navigate_tree_user_message_without_summary_resets_to_pare
     first_user_entry = next(
         entry
         for entry in session.session_entries
-        if entry["type"] == "message" and entry["message"]["role"] == "user" and entry["message"]["content"] == "first"
+        if entry["type"] == "message"
+        and entry["message"]["role"] == "user"
+        and entry["message"]["content"] == _serialized_text_content("first")
     )
     session.prompt("second")
 
@@ -4335,7 +6480,11 @@ def test_agent_session_navigate_tree_user_message_without_summary_resets_to_pare
     session.prompt("rewritten first")
 
     persisted = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
-    rewritten_user = next(entry for entry in persisted if entry.get("message", {}).get("content") == "rewritten first")
+    rewritten_user = next(
+        entry
+        for entry in persisted
+        if entry.get("message", {}).get("content") == _serialized_text_content("rewritten first")
+    )
     assert rewritten_user["parentId"] is None
 
 
@@ -4359,7 +6508,9 @@ def test_agent_session_navigate_tree_generates_default_branch_summary(tmp_path: 
     first_user_entry = next(
         entry
         for entry in session.session_entries
-        if entry["type"] == "message" and entry["message"]["role"] == "user" and entry["message"]["content"] == "first"
+        if entry["type"] == "message"
+        and entry["message"]["role"] == "user"
+        and entry["message"]["content"] == _serialized_text_content("first")
     )
     session.prompt("second")
 
@@ -4434,7 +6585,7 @@ def test_agent_session_custom_message_next_turn_injects_context(tmp_path: Path) 
 
     session.prompt("start")
 
-    assert [message.content for message in seen_contexts[-1]] == ["start", [TextContent(text="carry this")]]
+    assert [_user_text(message) for message in seen_contexts[-1]] == ["start", "carry this"]
     persisted = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
     assert [entry["type"] for entry in persisted[1:]] == ["message", "custom_message", "message"]
 
@@ -4585,14 +6736,18 @@ def test_agent_session_runtime_fork_creates_branched_session_with_selected_text(
     fork_user_entry = next(
         entry
         for entry in initial.session_entries
-        if entry["type"] == "message" and entry["message"]["role"] == "user" and entry["message"]["content"] == "first"
+        if entry["type"] == "message"
+        and entry["message"]["role"] == "user"
+        and entry["message"]["content"] == _serialized_text_content("first")
     )
     first_assistant_entry = initial.session_entries[-1]
     initial.prompt("second")
     second_user_entry = next(
         entry
         for entry in initial.session_entries
-        if entry["type"] == "message" and entry["message"]["role"] == "user" and entry["message"]["content"] == "second"
+        if entry["type"] == "message"
+        and entry["message"]["role"] == "user"
+        and entry["message"]["content"] == _serialized_text_content("second")
     )
     runtime = AgentSessionRuntime(
         initial,
@@ -4609,7 +6764,7 @@ def test_agent_session_runtime_fork_creates_branched_session_with_selected_text(
 
     assert fork_result == {"cancelled": False, "selectedText": "second"}
     assert runtime.session.session_path != str(initial_path)
-    assert [message.content for message in runtime.session.messages if isinstance(message, UserMessage)] == ["first"]
+    assert [_user_text(message) for message in runtime.session.messages if isinstance(message, UserMessage)] == ["first"]
     forked_lines = [json.loads(line) for line in Path(runtime.session.session_path).read_text(encoding="utf-8").splitlines()]
     assert forked_lines[0]["parentSession"] == str(initial_path)
     assert [entry["id"] for entry in forked_lines[1:]] == [fork_user_entry["id"], first_assistant_entry["id"]]
@@ -4706,7 +6861,322 @@ def test_agent_session_runtime_import_from_jsonl_copies_and_replaces_session(tmp
     assert result == {"cancelled": False}
     assert runtime.session.session_path == str(destination)
     assert destination.exists()
-    assert [message.content for message in runtime.session.messages if isinstance(message, UserMessage)] == ["imported"]
+    assert [_user_text(message) for message in runtime.session.messages if isinstance(message, UserMessage)] == ["imported"]
     assert ("before", "resume", str(destination)) in events
     assert ("shutdown", "resume", str(destination)) in events
     assert ("start", "resume", str(initial_path)) in events
+
+
+def test_coding_agent_package_exports_pi_runtime_factory_aliases(tmp_path: Path) -> None:
+    from appv22.coding_agent import (
+        AgentSessionRuntime,
+        AgentSessionRuntimeDiagnostic,
+        CreateAgentSessionRuntimeResult,
+        MissingSessionCwdError,
+        SessionCwdIssue,
+        createAgentSessionFromServices,
+        createAgentSessionRuntime,
+        createAgentSessionServices,
+        formatMissingSessionCwdPrompt,
+        create_agent_session_from_services,
+        create_agent_session_runtime,
+        create_agent_session_services,
+    )
+
+    calls: list[dict[str, object]] = []
+
+    def create_runtime(options: dict) -> CreateAgentSessionRuntimeResult:
+        calls.append(dict(options))
+        session = AgentSession(
+            cwd=str(options["cwd"]),
+            model=faux_model(),
+            session_path=str(tmp_path / "runtime.jsonl"),
+        )
+        return CreateAgentSessionRuntimeResult(
+            session=session,
+            services={"cwd": str(options["cwd"]), "agentDir": str(options["agentDir"])},
+            diagnostics=[{"type": "info", "message": "ok"}],
+            model_fallback_message="fallback",
+        )
+
+    runtime = create_agent_session_runtime(
+        create_runtime,
+        {
+            "cwd": str(tmp_path),
+            "agentDir": str(tmp_path / ".pi"),
+            "sessionManager": object(),
+            "sessionStartEvent": {"type": "session_start", "reason": "startup"},
+        },
+    )
+
+    assert isinstance(runtime, AgentSessionRuntime)
+    assert runtime.session.cwd == str(tmp_path)
+    assert runtime.services["agentDir"] == str(tmp_path / ".pi")
+    assert runtime.diagnostics == [{"type": "info", "message": "ok"}]
+    assert runtime.modelFallbackMessage == "fallback"
+    assert calls[0]["sessionManager"] is not None
+    assert createAgentSessionRuntime is create_agent_session_runtime
+    assert createAgentSessionFromServices is create_agent_session_from_services
+    assert createAgentSessionServices is create_agent_session_services
+    diagnostic: AgentSessionRuntimeDiagnostic = {"type": "info", "message": "ok"}
+    assert diagnostic["type"] == "info"
+    issue = SessionCwdIssue(
+        session_cwd="/missing",
+        fallback_cwd=str(tmp_path),
+        session_file=str(tmp_path / "runtime.jsonl"),
+    )
+    assert MissingSessionCwdError(issue).issue is issue
+    assert "continue in current cwd" in formatMissingSessionCwdPrompt(issue)
+
+
+def test_agent_session_runtime_rejects_missing_session_cwd_before_teardown(tmp_path: Path) -> None:
+    from appv22.coding_agent import AgentSessionRuntime, CreateAgentSessionRuntimeResult, MissingSessionCwdError
+
+    model = faux_model()
+    current_path = tmp_path / "current.jsonl"
+    missing_cwd = tmp_path / "deleted"
+    target_path = tmp_path / "target.jsonl"
+    target_path.write_text(
+        json.dumps({"type": "session", "id": "target", "cwd": str(missing_cwd)}) + "\n",
+        encoding="utf-8",
+    )
+
+    def create_runtime(options: dict) -> CreateAgentSessionRuntimeResult:
+        session = AgentSession(
+            cwd=str(options["cwd"]),
+            model=model,
+            session_path=options["session_path"],
+            session_start_event=options.get("session_start_event"),
+        )
+        return CreateAgentSessionRuntimeResult(
+            session=session,
+            services={"cwd": str(options["cwd"]), "agentDir": str(tmp_path / ".pi")},
+            diagnostics=[],
+        )
+
+    initial = AgentSession(cwd=str(tmp_path), model=model, session_path=str(current_path))
+    runtime = AgentSessionRuntime(initial, {"cwd": str(tmp_path), "agentDir": str(tmp_path / ".pi")}, create_runtime)
+
+    try:
+        runtime.switch_session(str(target_path))
+        assert False, "expected missing session cwd to raise"
+    except MissingSessionCwdError as error:
+        assert error.issue.session_cwd == str(missing_cwd)
+        assert error.issue.fallback_cwd == str(tmp_path)
+        assert error.issue.session_file == str(target_path.resolve())
+        assert "Stored session working directory does not exist" in str(error)
+
+    assert runtime.session is initial
+
+    result = runtime.switch_session(str(target_path), {"cwdOverride": str(tmp_path)})
+
+    assert result == {"cancelled": False}
+    assert runtime.session.cwd == str(tmp_path)
+
+
+def test_tui_exports_pi_parse_skill_block_alias() -> None:
+    from appv22.tui import parseSkillBlock, parse_skill_block
+
+    assert parseSkillBlock is parse_skill_block
+
+
+def test_coding_agent_package_exports_pi_tool_factory_surface(tmp_path: Path) -> None:
+    from appv22.coding_agent import (
+        allToolNames,
+        createAllToolDefinitions,
+        createAllTools,
+        createBashTool,
+        createBashToolDefinition,
+        createCodingToolDefinitions,
+        createCodingTools,
+        createEditTool,
+        createEditToolDefinition,
+        createFindTool,
+        createFindToolDefinition,
+        createGrepTool,
+        createGrepToolDefinition,
+        createLsTool,
+        createLsToolDefinition,
+        createReadOnlyToolDefinitions,
+        createReadOnlyTools,
+        createReadTool,
+        createReadToolDefinition,
+        createTool,
+        createToolDefinition,
+        createWriteTool,
+        createWriteToolDefinition,
+    )
+
+    cwd = str(tmp_path)
+
+    assert allToolNames == {"read", "bash", "edit", "write", "grep", "find", "ls"}
+    assert createReadTool(cwd).name == "read"
+    assert createBashTool(cwd).name == "bash"
+    assert createEditTool(cwd).name == "edit"
+    assert createWriteTool(cwd).name == "write"
+    assert createGrepTool(cwd).name == "grep"
+    assert createFindTool(cwd).name == "find"
+    assert createLsTool(cwd).name == "ls"
+    assert createReadToolDefinition(cwd).name == "read"
+    assert createBashToolDefinition(cwd).name == "bash"
+    assert createEditToolDefinition(cwd).name == "edit"
+    assert createWriteToolDefinition(cwd).name == "write"
+    assert createGrepToolDefinition(cwd).name == "grep"
+    assert createFindToolDefinition(cwd).name == "find"
+    assert createLsToolDefinition(cwd).name == "ls"
+    assert createTool("read", cwd).name == "read"
+    assert createToolDefinition("bash", cwd).name == "bash"
+    assert [tool.name for tool in createCodingTools(cwd)] == ["read", "bash", "edit", "write"]
+    assert [definition.name for definition in createCodingToolDefinitions(cwd)] == ["read", "bash", "edit", "write"]
+    assert [tool.name for tool in createReadOnlyTools(cwd)] == ["read", "grep", "find", "ls"]
+    assert [definition.name for definition in createReadOnlyToolDefinitions(cwd)] == ["read", "grep", "find", "ls"]
+    assert set(createAllTools(cwd)) == allToolNames
+    assert set(createAllToolDefinitions(cwd)) == allToolNames
+
+
+def test_coding_agent_package_exports_pi_config_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib
+    import sys
+
+    package_dir = tmp_path / "pkg"
+    agent_dir = tmp_path / "agent-dir"
+    package_dir.mkdir()
+    (package_dir / "package.json").write_text(
+        json.dumps({"name": "@example/appv22", "version": "9.8.7", "piConfig": {"configDir": ".custom-pi"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PI_PACKAGE_DIR", str(package_dir))
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+    if "appv22.coding_agent.config" in sys.modules:
+        importlib.reload(sys.modules["appv22.coding_agent.config"])
+    import appv22.coding_agent as coding_agent
+
+    importlib.reload(coding_agent)
+
+    from appv22.coding_agent import (
+        APP_NAME,
+        CONFIG_DIR_NAME,
+        ENV_AGENT_DIR,
+        VERSION,
+        getAgentDir,
+        getDocsPath,
+        getExamplesPath,
+        getPackageDir,
+        getReadmePath,
+        get_agent_dir,
+        get_package_dir,
+    )
+
+    assert APP_NAME == "pi"
+    assert CONFIG_DIR_NAME == ".custom-pi"
+    assert ENV_AGENT_DIR == "PI_CODING_AGENT_DIR"
+    assert VERSION == "9.8.7"
+    assert getPackageDir() == str(package_dir.resolve())
+    assert get_package_dir() == str(package_dir.resolve())
+    assert getReadmePath() == str((package_dir / "README.md").resolve())
+    assert getDocsPath() == str((package_dir / "docs").resolve())
+    assert getExamplesPath() == str((package_dir / "examples").resolve())
+    assert getAgentDir() == str(agent_dir)
+    assert get_agent_dir() == str(agent_dir)
+
+
+def test_coding_agent_exports_pi_event_bus_and_resource_loader_uses_it(tmp_path: Path) -> None:
+    from appv22.coding_agent import DefaultResourceLoader, createEventBus, create_event_bus
+
+    bus = create_event_bus()
+    assert createEventBus is create_event_bus
+    seen: list[object] = []
+    unsubscribe = bus.on("resources", seen.append)
+
+    bus.emit("resources", {"kind": "skill"})
+    unsubscribe()
+    bus.emit("resources", {"kind": "prompt"})
+
+    assert seen == [{"kind": "skill"}]
+
+    bus.clear()
+    bus.emit("resources", {"kind": "theme"})
+    assert seen == [{"kind": "skill"}]
+
+    loader = DefaultResourceLoader(cwd=str(tmp_path), agent_dir=str(tmp_path / ".pi"), eventBus=bus)
+
+    assert loader.event_bus is bus
+    assert loader.eventBus is bus
+
+
+def test_coding_agent_exports_pi_package_manager_and_skills_surface(tmp_path: Path) -> None:
+    from appv22.coding_agent import (
+        DefaultPackageManager,
+        ResolvedPaths,
+        ResolvedResource,
+        ResourceDiagnostic,
+        Skill,
+        formatSkillsForPrompt,
+        format_skills_for_prompt,
+        loadSkills,
+        load_skills,
+    )
+
+    skill_dir = tmp_path / "skills"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: scan\n"
+        "description: Inspect a codebase\n"
+        "---\n"
+        "# Scan\n"
+        "Read files carefully.\n",
+        encoding="utf-8",
+    )
+    manager = DefaultPackageManager(cwd=str(tmp_path), agent_dir=str(tmp_path / ".pi"))
+    resolved = manager.resolve()
+
+    assert isinstance(resolved, ResolvedPaths)
+    assert ResolvedResource(path=str(skill_dir), enabled=True, metadata={}).path == str(skill_dir)
+    assert ResourceDiagnostic(type="warning", message="x", path=str(tmp_path)).type == "warning"
+
+    loaded = loadSkills([str(skill_dir)], cwd=str(tmp_path))
+    assert loadSkills is load_skills
+    assert len(loaded["skills"]) == 1
+    assert isinstance(loaded["skills"][0], Skill)
+    assert formatSkillsForPrompt is format_skills_for_prompt
+    assert "scan" in formatSkillsForPrompt(loaded["skills"])
+
+
+def test_coding_agent_exports_pi_low_level_tool_surface(tmp_path: Path) -> None:
+    from appv22.coding_agent import (
+        DEFAULT_MAX_BYTES,
+        DEFAULT_MAX_LINES,
+        BashOperations,
+        BashSpawnContext,
+        TruncationResult,
+        createLocalBashOperations,
+        create_local_bash_operations,
+        formatSize,
+        truncateHead,
+        truncateLine,
+        truncateTail,
+        withFileMutationQueue,
+        with_file_mutation_queue,
+    )
+    from appv22.coding_agent.tools import createLocalBashOperations as toolsCreateLocalBashOperations
+
+    assert DEFAULT_MAX_LINES == 2000
+    assert DEFAULT_MAX_BYTES == 50 * 1024
+    assert createLocalBashOperations is create_local_bash_operations
+    assert toolsCreateLocalBashOperations is createLocalBashOperations
+    assert formatSize(1536) == "1.5KB"
+    assert truncateLine("abcdef", 3) == ("abc... [truncated]", True)
+    head = truncateHead("a\nb\nc", max_lines=2)
+    tail = truncateTail("a\nb\nc", max_lines=2)
+    assert isinstance(head, TruncationResult)
+    assert head.content == "a\nb"
+    assert tail.content == "b\nc"
+    assert BashSpawnContext(command="echo ok", cwd=str(tmp_path), env={}).command == "echo ok"
+    assert isinstance(createLocalBashOperations(), BashOperations)
+
+    calls: list[str] = []
+    result = withFileMutationQueue(str(tmp_path / "file.txt"), lambda: calls.append("ran") or "ok")
+
+    assert withFileMutationQueue is with_file_mutation_queue
+    assert result == "ok"
+    assert calls == ["ran"]

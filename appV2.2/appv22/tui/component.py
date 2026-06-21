@@ -3,11 +3,25 @@
 from __future__ import annotations
 
 import inspect
+import math
+import os
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from appv22.tui.utils import truncate_to_width, visible_width, wrap_text
+from appv22.agent.types import AbortSignal
+from appv22.tui.fuzzy import fuzzy_filter
+from appv22.tui.keybindings import get_keybindings
+from appv22.tui.terminal_image import (
+    allocate_image_id,
+    get_capabilities,
+    get_cell_dimensions,
+    get_image_dimensions,
+    image_fallback,
+    render_image,
+)
+from appv22.tui.utils import slice_by_column, truncate_to_width, visible_width, wrap_text
 
 CURSOR_MARKER = "\x1b_pi:c\x07"
 
@@ -81,6 +95,235 @@ class Text(Component):
         return lines
 
 
+class TruncatedText(Component):
+    """Text component that truncates to one padded viewport line, matching Pi."""
+
+    def __init__(self, text: str, padding_x: int = 0, padding_y: int = 0) -> None:
+        self.text = text
+        self.padding_x = max(0, int(padding_x))
+        self.padding_y = max(0, int(padding_y))
+
+    def render(self, width: int) -> list[str]:
+        width = max(0, int(width))
+        result: list[str] = []
+        empty_line = " " * width
+
+        for _ in range(self.padding_y):
+            result.append(empty_line)
+
+        available_width = max(1, width - self.padding_x * 2)
+        single_line_text = self.text.split("\n", 1)[0]
+        display_text = truncate_to_width(single_line_text, available_width, "...")
+        line_with_padding = (" " * self.padding_x) + display_text + (" " * self.padding_x)
+        padding_needed = max(0, width - visible_width(line_with_padding))
+        result.append(line_with_padding + (" " * padding_needed))
+
+        for _ in range(self.padding_y):
+            result.append(empty_line)
+
+        return result
+
+
+_LOADER_DEFAULT_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+_LOADER_DEFAULT_INTERVAL_MS = 80
+
+
+class Loader(Text):
+    """Loader component with Pi-style optional spinning indicator."""
+
+    def __init__(
+        self,
+        ui: object | None,
+        spinner_color_fn: Callable[[str], str] | None = None,
+        message_color_fn: Callable[[str], str] | None = None,
+        message: str = "Loading...",
+        indicator: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__("")
+        self.ui = ui
+        self.spinner_color_fn = spinner_color_fn or (lambda value: value)
+        self.message_color_fn = message_color_fn or (lambda value: value)
+        self.message = message
+        self.frames = list(_LOADER_DEFAULT_FRAMES)
+        self.interval_ms = _LOADER_DEFAULT_INTERVAL_MS
+        self.current_frame = 0
+        self._timer: threading.Timer | None = None
+        self._stopped = True
+        self._render_indicator_verbatim = False
+        self.set_indicator(indicator)
+
+    def render(self, width: int) -> list[str]:
+        return ["", *super().render(width)]
+
+    def start(self) -> None:
+        self._stopped = False
+        self._update_display()
+        self._restart_animation()
+
+    def stop(self) -> None:
+        self._stopped = True
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def set_message(self, message: str) -> None:
+        self.message = message
+        self._update_display()
+
+    setMessage = set_message
+
+    def set_indicator(self, indicator: dict[str, Any] | None = None) -> None:
+        self._render_indicator_verbatim = indicator is not None
+        frames = indicator.get("frames") if isinstance(indicator, dict) else None
+        interval = (
+            indicator.get("intervalMs", indicator.get("interval_ms"))
+            if isinstance(indicator, dict)
+            else None
+        )
+        self.frames = list(frames) if isinstance(frames, list) else list(_LOADER_DEFAULT_FRAMES)
+        self.interval_ms = int(interval) if isinstance(interval, (int, float)) and interval > 0 else _LOADER_DEFAULT_INTERVAL_MS
+        self.current_frame = 0
+        self.start()
+
+    setIndicator = set_indicator
+
+    def _restart_animation(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        if self._stopped or len(self.frames) <= 1:
+            return
+        self._timer = threading.Timer(self.interval_ms / 1000.0, self._advance_frame)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _advance_frame(self) -> None:
+        if self._stopped or not self.frames:
+            return
+        self.current_frame = (self.current_frame + 1) % len(self.frames)
+        self._update_display()
+        self._restart_animation()
+
+    def _update_display(self) -> None:
+        frame = self.frames[self.current_frame] if self.frames else ""
+        rendered_frame = frame if self._render_indicator_verbatim else self.spinner_color_fn(frame)
+        indicator = f"{rendered_frame} " if frame else ""
+        self.set_text(f"{indicator}{self.message_color_fn(self.message)}")
+        request_render = getattr(self.ui, "request_render", None) or getattr(self.ui, "requestRender", None)
+        if callable(request_render):
+            request_render()
+
+
+class CancellableLoader(Loader):
+    """Loader that aborts when the Pi cancel keybinding is pressed."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._abort_signal = AbortSignal()
+        self.onAbort: Callable[[], object] | None = None
+        super().__init__(*args, **kwargs)
+
+    @property
+    def signal(self) -> AbortSignal:
+        return self._abort_signal
+
+    @property
+    def aborted(self) -> bool:
+        return self._abort_signal.aborted
+
+    def handle_input(self, data: str) -> None:
+        if get_keybindings().matches(data, "tui.select.cancel"):
+            self._abort_signal.abort()
+            if callable(self.onAbort):
+                self.onAbort()
+
+    handleInput = handle_input
+
+    def dispose(self) -> None:
+        self.stop()
+
+
+class Image(Component):
+    """Terminal image component ported from Pi."""
+
+    def __init__(
+        self,
+        base64_data: str,
+        mime_type: str,
+        theme: Any,
+        options: dict[str, Any] | None = None,
+        dimensions: dict[str, int] | None = None,
+    ) -> None:
+        self.base64_data = base64_data
+        self.mime_type = mime_type
+        self.theme = theme
+        self.options = dict(options or {})
+        self.dimensions = dimensions or get_image_dimensions(base64_data, mime_type) or {"widthPx": 800, "heightPx": 600}
+        self.image_id = self.options.get("imageId", self.options.get("image_id"))
+        self._cached_lines: list[str] | None = None
+        self._cached_width: int | None = None
+
+    def get_image_id(self) -> int | None:
+        return self.image_id
+
+    getImageId = get_image_id
+
+    def invalidate(self) -> None:
+        self._cached_lines = None
+        self._cached_width = None
+
+    def render(self, width: int) -> list[str]:
+        if self._cached_lines is not None and self._cached_width == width:
+            return self._cached_lines
+
+        max_width = max(1, min(width - 2, int(self.options.get("maxWidthCells", self.options.get("max_width_cells", 60)))))
+        cell_dimensions = get_cell_dimensions()
+        default_max_height = max(1, math.ceil((max_width * cell_dimensions["widthPx"]) / cell_dimensions["heightPx"]))
+        max_height = int(self.options.get("maxHeightCells", self.options.get("max_height_cells", default_max_height)))
+
+        caps = get_capabilities()
+        if caps["images"]:
+            if caps["images"] == "kitty" and self.image_id is None:
+                self.image_id = allocate_image_id()
+            result = render_image(
+                self.base64_data,
+                self.dimensions,
+                {
+                    "maxWidthCells": max_width,
+                    "maxHeightCells": max_height,
+                    "imageId": self.image_id,
+                    "moveCursor": False,
+                },
+            )
+
+            if result:
+                if result.get("imageId"):
+                    self.image_id = result["imageId"]
+                if caps["images"] == "kitty":
+                    lines = [str(result["sequence"])]
+                    lines.extend("" for _ in range(max(0, int(result["rows"]) - 1)))
+                else:
+                    lines = ["" for _ in range(max(0, int(result["rows"]) - 1))]
+                    row_offset = int(result["rows"]) - 1
+                    move_up = f"\x1b[{row_offset}A" if row_offset > 0 else ""
+                    lines.append(move_up + str(result["sequence"]))
+            else:
+                lines = [self._format_fallback()]
+        else:
+            lines = [self._format_fallback()]
+
+        self._cached_lines = lines
+        self._cached_width = width
+        return lines
+
+    def _format_fallback(self) -> str:
+        fallback = image_fallback(self.mime_type, self.dimensions, self.options.get("filename"))
+        fallback_color = None
+        if isinstance(self.theme, dict):
+            fallback_color = self.theme.get("fallbackColor") or self.theme.get("fallback_color")
+        else:
+            fallback_color = getattr(self.theme, "fallbackColor", None) or getattr(self.theme, "fallback_color", None)
+        return fallback_color(fallback) if callable(fallback_color) else fallback
+
 class Markdown(Text):
     """Small terminal markdown renderer for assistant/user content."""
 
@@ -125,22 +368,21 @@ class SimpleAutocompleteProvider:
         command_text = before_cursor[1:]
         if " " not in command_text:
             prefix = command_text
+            command_items = [command for command in self.commands if _autocomplete_command_name(command)]
             items = []
-            for command in self.commands:
-                name = str(command.get("name", ""))
-                if not name or not name.lower().startswith(prefix.lower()):
-                    continue
+            for command in fuzzy_filter(command_items, prefix, _autocomplete_command_name):
+                name = _autocomplete_command_name(command)
                 item = {"value": name, "label": name}
-                description = command.get("description")
+                description = _autocomplete_command_description(command)
                 if description:
-                    item["description"] = str(description)
+                    item["description"] = description
                 items.append(item)
             if not items:
                 return None
             return {"prefix": before_cursor, "items": items}
 
         command_name, argument_prefix = command_text.split(" ", 1)
-        command = next((item for item in self.commands if item.get("name") == command_name), None)
+        command = next((item for item in self.commands if _autocomplete_command_name(item) == command_name), None)
         if command is None:
             return None
         get_argument_completions = command.get("getArgumentCompletions") or command.get("get_argument_completions")
@@ -181,6 +423,242 @@ class SimpleAutocompleteProvider:
     shouldTriggerFileCompletion = should_trigger_file_completion
 
 
+class CombinedAutocompleteProvider:
+    """Pi-style provider for slash commands, file paths, and @ attachments."""
+
+    def __init__(
+        self,
+        commands: list[dict[str, Any]] | None = None,
+        base_path: str = ".",
+        fd_path: str | None = None,
+    ) -> None:
+        self.commands = list(commands or [])
+        self.base_path = base_path
+        self.fd_path = fd_path
+
+    def get_suggestions(
+        self,
+        lines: list[str],
+        cursor_line: int,
+        cursor_col: int,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        options = options or {}
+        current_line = lines[cursor_line] if 0 <= cursor_line < len(lines) else ""
+        text_before_cursor = current_line[:cursor_col]
+
+        at_prefix = _extract_at_prefix(text_before_cursor)
+        if at_prefix:
+            raw_prefix, _is_at_prefix, is_quoted_prefix = _parse_path_prefix(at_prefix)
+            suggestions = self._get_fuzzy_file_suggestions(raw_prefix, is_quoted_prefix)
+            if not suggestions:
+                return None
+            return {"items": suggestions, "prefix": at_prefix}
+
+        if not options.get("force") and text_before_cursor.startswith("/"):
+            space_index = text_before_cursor.find(" ")
+            if space_index == -1:
+                prefix = text_before_cursor[1:]
+                command_items = []
+                for command in self.commands:
+                    name = _autocomplete_command_name(command)
+                    if not name:
+                        continue
+                    item: dict[str, Any] = {"name": name, "label": name}
+                    description = _autocomplete_command_description(command)
+                    if description:
+                        item["description"] = description
+                    command_items.append(item)
+                filtered = []
+                for item in fuzzy_filter(command_items, prefix, lambda value: value["name"]):
+                    result = {"value": item["name"], "label": item["label"]}
+                    if item.get("description"):
+                        result["description"] = item["description"]
+                    filtered.append(result)
+                if not filtered:
+                    return None
+                return {"items": filtered, "prefix": text_before_cursor}
+
+            command_name = text_before_cursor[1:space_index]
+            argument_text = text_before_cursor[space_index + 1 :]
+            command = next((item for item in self.commands if _autocomplete_command_name(item) == command_name), None)
+            if not command:
+                return None
+            get_argument_completions = command.get("getArgumentCompletions") or command.get("get_argument_completions")
+            if not callable(get_argument_completions):
+                return None
+            argument_suggestions = _settle_autocomplete_result(get_argument_completions(argument_text))
+            if not isinstance(argument_suggestions, list) or not argument_suggestions:
+                return None
+            return {"items": argument_suggestions, "prefix": argument_text}
+
+        path_prefix = _extract_path_prefix(text_before_cursor, bool(options.get("force")))
+        if path_prefix is None:
+            return None
+        suggestions = self._get_file_suggestions(path_prefix)
+        if not suggestions:
+            return None
+        return {"items": suggestions, "prefix": path_prefix}
+
+    getSuggestions = get_suggestions
+
+    def apply_completion(
+        self,
+        lines: list[str],
+        cursor_line: int,
+        cursor_col: int,
+        item: dict[str, Any],
+        prefix: str,
+    ) -> dict[str, Any]:
+        current_line = lines[cursor_line] if 0 <= cursor_line < len(lines) else ""
+        before_prefix = current_line[: max(0, cursor_col - len(prefix))]
+        after_cursor = current_line[cursor_col:]
+        item_value = _autocomplete_item_value(item)
+        item_label = str(item.get("label", item_value)) if isinstance(item, dict) else item_value
+        is_quoted_prefix = prefix.startswith('"') or prefix.startswith('@"')
+        has_leading_quote_after_cursor = after_cursor.startswith('"')
+        has_trailing_quote_in_item = item_value.endswith('"')
+        adjusted_after_cursor = (
+            after_cursor[1:]
+            if is_quoted_prefix and has_trailing_quote_in_item and has_leading_quote_after_cursor
+            else after_cursor
+        )
+
+        is_slash_command = prefix.startswith("/") and before_prefix.strip() == "" and "/" not in prefix[1:]
+        if is_slash_command:
+            new_line = f"{before_prefix}/{item_value} {adjusted_after_cursor}"
+            new_lines = list(lines)
+            new_lines[cursor_line] = new_line
+            return {"lines": new_lines, "cursorLine": cursor_line, "cursorCol": len(before_prefix) + len(item_value) + 2}
+
+        if prefix.startswith("@"):
+            is_directory = item_label.endswith("/")
+            suffix = "" if is_directory else " "
+            new_line = f"{before_prefix}{item_value}{suffix}{adjusted_after_cursor}"
+            new_lines = list(lines)
+            new_lines[cursor_line] = new_line
+            cursor_offset = len(item_value) - 1 if is_directory and has_trailing_quote_in_item else len(item_value)
+            return {
+                "lines": new_lines,
+                "cursorLine": cursor_line,
+                "cursorCol": len(before_prefix) + cursor_offset + len(suffix),
+            }
+
+        text_before_cursor = current_line[:cursor_col]
+        if "/" in text_before_cursor and " " in text_before_cursor:
+            new_line = f"{before_prefix}{item_value}{adjusted_after_cursor}"
+            new_lines = list(lines)
+            new_lines[cursor_line] = new_line
+            is_directory = item_label.endswith("/")
+            cursor_offset = len(item_value) - 1 if is_directory and has_trailing_quote_in_item else len(item_value)
+            return {"lines": new_lines, "cursorLine": cursor_line, "cursorCol": len(before_prefix) + cursor_offset}
+
+        new_line = f"{before_prefix}{item_value}{adjusted_after_cursor}"
+        new_lines = list(lines)
+        new_lines[cursor_line] = new_line
+        is_directory = item_label.endswith("/")
+        cursor_offset = len(item_value) - 1 if is_directory and has_trailing_quote_in_item else len(item_value)
+        return {"lines": new_lines, "cursorLine": cursor_line, "cursorCol": len(before_prefix) + cursor_offset}
+
+    applyCompletion = apply_completion
+
+    def should_trigger_file_completion(self, lines: list[str], cursor_line: int, cursor_col: int) -> bool:
+        current_line = lines[cursor_line] if 0 <= cursor_line < len(lines) else ""
+        text_before_cursor = current_line[:cursor_col]
+        stripped = text_before_cursor.strip()
+        if stripped.startswith("/") and " " not in stripped:
+            return False
+        return True
+
+    shouldTriggerFileCompletion = should_trigger_file_completion
+
+    def _get_file_suggestions(self, prefix: str) -> list[dict[str, str]]:
+        try:
+            raw_prefix, is_at_prefix, is_quoted_prefix = _parse_path_prefix(prefix)
+            expanded_prefix = _expand_home_path(raw_prefix)
+            is_root_prefix = raw_prefix in {"", "./", "../", "~", "~/", "/"} or (is_at_prefix and raw_prefix == "")
+            if is_root_prefix:
+                search_dir = expanded_prefix if raw_prefix.startswith("~") or expanded_prefix.startswith("/") else os.path.join(self.base_path, expanded_prefix)
+                search_prefix = ""
+            elif raw_prefix.endswith("/"):
+                search_dir = expanded_prefix if raw_prefix.startswith("~") or expanded_prefix.startswith("/") else os.path.join(self.base_path, expanded_prefix)
+                search_prefix = ""
+            else:
+                directory = os.path.dirname(expanded_prefix)
+                search_prefix = os.path.basename(expanded_prefix)
+                search_dir = directory if raw_prefix.startswith("~") or expanded_prefix.startswith("/") else os.path.join(self.base_path, directory)
+
+            suggestions: list[dict[str, str]] = []
+            for entry in os.scandir(search_dir or "."):
+                if not entry.name.lower().startswith(search_prefix.lower()):
+                    continue
+                try:
+                    is_directory = entry.is_dir()
+                except OSError:
+                    is_directory = False
+                display_prefix = raw_prefix
+                if display_prefix.endswith("/"):
+                    relative_path = display_prefix + entry.name
+                elif "/" in display_prefix or "\\" in display_prefix:
+                    if display_prefix.startswith("~/"):
+                        home_relative_dir = display_prefix[2:]
+                        directory_name = os.path.dirname(home_relative_dir)
+                        relative_path = f"~/{entry.name}" if directory_name == "" else f"~/{directory_name}/{entry.name}"
+                    elif display_prefix.startswith("/"):
+                        directory_name = os.path.dirname(display_prefix)
+                        relative_path = f"/{entry.name}" if directory_name == "/" else f"{directory_name}/{entry.name}"
+                    else:
+                        relative_path = os.path.join(os.path.dirname(display_prefix), entry.name)
+                        if display_prefix.startswith("./") and not relative_path.startswith("./"):
+                            relative_path = f"./{relative_path}"
+                else:
+                    relative_path = f"~/{entry.name}" if display_prefix.startswith("~") else entry.name
+                relative_path = _to_display_path(relative_path)
+                path_value = f"{relative_path}/" if is_directory else relative_path
+                suggestions.append(
+                    {
+                        "value": _build_completion_value(
+                            path_value,
+                            is_directory=is_directory,
+                            is_at_prefix=is_at_prefix,
+                            is_quoted_prefix=is_quoted_prefix,
+                        ),
+                        "label": entry.name + ("/" if is_directory else ""),
+                    }
+                )
+            suggestions.sort(key=lambda item: (0 if item["label"].endswith("/") else 1, item["label"].lower()))
+            return suggestions
+        except OSError:
+            return []
+
+    def _get_fuzzy_file_suggestions(self, query: str, is_quoted_prefix: bool) -> list[dict[str, str]]:
+        suggestions = []
+        lower_query = query.lower()
+        for root, dirs, files in os.walk(self.base_path):
+            dirs[:] = [directory for directory in dirs if directory != ".git"]
+            for name, is_directory in [(directory, True) for directory in dirs] + [(file_name, False) for file_name in files]:
+                full_path = os.path.join(root, name)
+                relative_path = _to_display_path(os.path.relpath(full_path, self.base_path))
+                if lower_query and lower_query not in relative_path.lower() and lower_query not in name.lower():
+                    continue
+                completion_path = f"{relative_path}/" if is_directory else relative_path
+                suggestions.append(
+                    {
+                        "value": _build_completion_value(
+                            completion_path,
+                            is_directory=is_directory,
+                            is_at_prefix=True,
+                            is_quoted_prefix=is_quoted_prefix,
+                        ),
+                        "label": name + ("/" if is_directory else ""),
+                    }
+                )
+                if len(suggestions) >= 20:
+                    return suggestions
+        suggestions.sort(key=lambda item: (0 if item["label"].endswith("/") else 1, item["label"].lower()))
+        return suggestions
+
+
 class Input(Component):
     """Single-line input with basic editing and submit callback."""
 
@@ -189,6 +667,8 @@ class Input(Component):
         self.prompt = prompt
         self.cursor = len(value)
         self.on_submit = on_submit
+        self.on_escape: Callable[[], None] | None = None
+        self.onEscape: Callable[[], None] | None = None
         self.focused = False
         self.autocomplete_provider: object | None = None
         self._kill_ring: list[str] = []
@@ -265,20 +745,26 @@ class Input(Component):
                 self.cursor = min(len(self.value), self.cursor + 1)
                 self._last_action = None
                 index += 3
+            elif word_left_match := re.match(r"\x1b\[1;[35](?::[123])?D", data[index:]):
+                self._move_word_backward()
+                index += len(word_left_match.group(0))
+            elif word_right_match := re.match(r"\x1b\[1;[35](?::[123])?C", data[index:]):
+                self._move_word_forward()
+                index += len(word_right_match.group(0))
             elif data.startswith("\x1b[3~", index):
                 self._delete_char_forward()
                 index += 4
             elif alt_delete_match := re.match(r"\x1b\[3;3(?::[123])?~", data[index:]):
                 self._delete_word_forward()
                 index += len(alt_delete_match.group(0))
-            elif data.startswith("\x1b[H", index):
+            elif data.startswith(("\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~"), index):
                 self.cursor = 0
                 self._last_action = None
-                index += 3
-            elif data.startswith("\x1b[F", index):
+                index += _matched_sequence_length(data, index, ("\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~"))
+            elif data.startswith(("\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~"), index):
                 self.cursor = len(self.value)
                 self._last_action = None
-                index += 3
+                index += _matched_sequence_length(data, index, ("\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~"))
             elif data.startswith("\x1bb", index):
                 self._move_word_backward()
                 index += 2
@@ -301,6 +787,9 @@ class Input(Component):
                 char = data[index]
                 if char == "\t":
                     self.apply_autocomplete(force=True)
+                    self._last_action = None
+                elif char in ("\x1b", "\x03"):
+                    self._notify_escape()
                     self._last_action = None
                 elif char in ("\r", "\n"):
                     submitted = self.value
@@ -368,8 +857,8 @@ class Input(Component):
                     start_col = max(0, total_width - scroll_width)
                 else:
                     start_col = max(0, cursor_col - half_width)
-                visible_text = _slice_by_column(self.value, start_col, scroll_width)
-                before_cursor = _slice_by_column(self.value, start_col, max(0, cursor_col - start_col))
+                visible_text = slice_by_column(self.value, start_col, scroll_width, strict=True)
+                before_cursor = slice_by_column(self.value, start_col, max(0, cursor_col - start_col), strict=True)
                 cursor_display = len(before_cursor)
             else:
                 cursor_display = 0
@@ -493,12 +982,230 @@ class Input(Component):
         self.cursor += len(text)
         self._last_action = "yank"
 
+    def _notify_escape(self) -> None:
+        callbacks: list[Callable[[], None]] = []
+        seen: set[int] = set()
+        for name in ("on_escape", "onEscape"):
+            callback = getattr(self, name, None)
+            if not callable(callback):
+                continue
+            marker = id(callback)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            callbacks.append(callback)
+        for callback in callbacks:
+            callback()
+
+
+class SettingsList(Component):
+    """Settings list component ported from Pi."""
+
+    def __init__(
+        self,
+        items: list[dict[str, Any]],
+        max_visible: int,
+        theme: Any,
+        on_change: Callable[[str, str], None],
+        on_cancel: Callable[[], None],
+        options: dict[str, Any] | None = None,
+    ) -> None:
+        self.items = items
+        self.filtered_items = list(items)
+        self.max_visible = max(1, int(max_visible))
+        self.theme = theme
+        self.selected_index = 0
+        self.on_change = on_change
+        self.on_cancel = on_cancel
+        self.search_enabled = bool((options or {}).get("enableSearch", (options or {}).get("enable_search", False)))
+        self.search_input = Input() if self.search_enabled else None
+        self.submenu_component: Component | None = None
+        self.submenu_item_index: int | None = None
+
+    def update_value(self, item_id: str, new_value: str) -> None:
+        item = next((candidate for candidate in self.items if candidate.get("id") == item_id), None)
+        if item is not None:
+            item["currentValue"] = new_value
+
+    updateValue = update_value
+
+    def invalidate(self) -> None:
+        if self.submenu_component is not None:
+            self.submenu_component.invalidate()
+
+    def render(self, width: int) -> list[str]:
+        if self.submenu_component is not None:
+            return self.submenu_component.render(width)
+        return self._render_main_list(width)
+
+    def handle_input(self, data: str) -> None:
+        if self.submenu_component is not None:
+            handle_input = getattr(self.submenu_component, "handle_input", None) or getattr(
+                self.submenu_component, "handleInput", None
+            )
+            if callable(handle_input):
+                handle_input(data)
+            return
+
+        keybindings = get_keybindings()
+        display_items = self.filtered_items if self.search_enabled else self.items
+        if keybindings.matches(data, "tui.select.up"):
+            if display_items:
+                self.selected_index = len(display_items) - 1 if self.selected_index == 0 else self.selected_index - 1
+        elif keybindings.matches(data, "tui.select.down"):
+            if display_items:
+                self.selected_index = 0 if self.selected_index == len(display_items) - 1 else self.selected_index + 1
+        elif keybindings.matches(data, "tui.select.confirm") or data == " ":
+            self._activate_item()
+        elif keybindings.matches(data, "tui.select.cancel"):
+            self.on_cancel()
+        elif self.search_enabled and self.search_input is not None:
+            sanitized = data.replace(" ", "")
+            if not sanitized:
+                return
+            self.search_input.handle_input(sanitized)
+            self._apply_filter(self.search_input.get_value())
+
+    handleInput = handle_input
+
+    def _render_main_list(self, width: int) -> list[str]:
+        lines: list[str] = []
+
+        if self.search_enabled and self.search_input is not None:
+            lines.extend(self.search_input.render(width))
+            lines.append("")
+
+        if not self.items:
+            lines.append(self._theme_call("hint", "  No settings available"))
+            if self.search_enabled:
+                self._add_hint_line(lines, width)
+            return lines
+
+        display_items = self.filtered_items if self.search_enabled else self.items
+        if not display_items:
+            lines.append(truncate_to_width(self._theme_call("hint", "  No matching settings"), width))
+            self._add_hint_line(lines, width)
+            return lines
+
+        self.selected_index = max(0, min(self.selected_index, len(display_items) - 1))
+        start_index = max(
+            0,
+            min(self.selected_index - self.max_visible // 2, len(display_items) - self.max_visible),
+        )
+        end_index = min(start_index + self.max_visible, len(display_items))
+        max_label_width = min(30, max(visible_width(str(item.get("label", ""))) for item in self.items))
+
+        for index in range(start_index, end_index):
+            item = display_items[index]
+            is_selected = index == self.selected_index
+            prefix = self._theme_value("cursor", "->") if is_selected else "  "
+            prefix_width = visible_width(prefix)
+
+            label = str(item.get("label", ""))
+            label_padded = label + (" " * max(0, max_label_width - visible_width(label)))
+            label_text = self._theme_call("label", label_padded, is_selected)
+            separator = "  "
+            used_width = prefix_width + max_label_width + visible_width(separator)
+            value_max_width = width - used_width - 2
+            value = truncate_to_width(str(item.get("currentValue", "")), value_max_width)
+            value_text = self._theme_call("value", value, is_selected)
+
+            lines.append(truncate_to_width(prefix + label_text + separator + value_text, width))
+
+        if start_index > 0 or end_index < len(display_items):
+            scroll_text = f"  ({self.selected_index + 1}/{len(display_items)})"
+            lines.append(self._theme_call("hint", truncate_to_width(scroll_text, width - 2)))
+
+        selected_item = display_items[self.selected_index] if display_items else None
+        if selected_item and selected_item.get("description"):
+            lines.append("")
+            for line in wrap_text(str(selected_item["description"]), width - 4):
+                lines.append(self._theme_call("description", f"  {line}"))
+
+        self._add_hint_line(lines, width)
+        return lines
+
+    def _activate_item(self) -> None:
+        display_items = self.filtered_items if self.search_enabled else self.items
+        if not (0 <= self.selected_index < len(display_items)):
+            return
+
+        item = display_items[self.selected_index]
+        submenu = item.get("submenu")
+        if callable(submenu):
+            self.submenu_item_index = self.selected_index
+
+            def done(selected_value: str | None = None) -> None:
+                if selected_value is not None:
+                    item["currentValue"] = selected_value
+                    self.on_change(str(item.get("id", "")), selected_value)
+                self._close_submenu()
+
+            self.submenu_component = submenu(str(item.get("currentValue", "")), done)
+            return
+
+        values = item.get("values")
+        if isinstance(values, list) and values:
+            current_value = str(item.get("currentValue", ""))
+            try:
+                current_index = values.index(current_value)
+            except ValueError:
+                current_index = -1
+            new_value = str(values[(current_index + 1) % len(values)])
+            item["currentValue"] = new_value
+            self.on_change(str(item.get("id", "")), new_value)
+
+    def _close_submenu(self) -> None:
+        self.submenu_component = None
+        if self.submenu_item_index is not None:
+            self.selected_index = self.submenu_item_index
+            self.submenu_item_index = None
+
+    def _apply_filter(self, query: str) -> None:
+        self.filtered_items = fuzzy_filter(self.items, query, lambda item: str(item.get("label", "")))
+        self.selected_index = 0
+
+    def _add_hint_line(self, lines: list[str], width: int) -> None:
+        lines.append("")
+        hint = (
+            "  Type to search · Enter/Space to change · Esc to cancel"
+            if self.search_enabled
+            else "  Enter/Space to change · Esc to cancel"
+        )
+        lines.append(truncate_to_width(self._theme_call("hint", hint), width))
+
+    def _theme_value(self, name: str, default: str) -> str:
+        if isinstance(self.theme, dict):
+            return str(self.theme.get(name, default))
+        if self.theme is not None and hasattr(self.theme, name):
+            return str(getattr(self.theme, name))
+        return default
+
+    def _theme_call(self, name: str, text: str, selected: bool | None = None) -> str:
+        callback: object = None
+        if isinstance(self.theme, dict):
+            callback = self.theme.get(name)
+        elif self.theme is not None:
+            callback = getattr(self.theme, name, None)
+        if callable(callback):
+            if selected is None:
+                return str(callback(text))
+            return str(callback(text, selected))
+        return text
+
 
 def _call_autocomplete_method(provider: object, snake_name: str, camel_name: str, *args: object) -> object:
     method = getattr(provider, snake_name, None) or getattr(provider, camel_name, None)
     if not callable(method):
         raise AttributeError(f"Autocomplete provider is missing {camel_name}")
     return method(*args)
+
+
+def _matched_sequence_length(data: str, index: int, sequences: tuple[str, ...]) -> int:
+    for sequence in sequences:
+        if data.startswith(sequence, index):
+            return len(sequence)
+    return 1
 
 
 def _settle_autocomplete_result(result: object) -> object:
@@ -511,8 +1218,123 @@ def _settle_autocomplete_result(result: object) -> object:
 
 def _autocomplete_item_value(item: object) -> str:
     if isinstance(item, dict):
-        return str(item.get("value", item.get("label", "")))
+        return str(item.get("value") or item.get("label") or item.get("name") or "")
     return str(getattr(item, "value", getattr(item, "label", item)))
+
+
+def _autocomplete_command_name(command: dict[str, Any]) -> str:
+    return str(command.get("name") or command.get("value") or "")
+
+
+def _autocomplete_command_description(command: dict[str, Any]) -> str:
+    hint = command.get("argumentHint") or command.get("argument_hint")
+    description = str(command.get("description") or "")
+    if hint:
+        hint_text = str(hint)
+        return f"{hint_text} — {description}" if description else hint_text
+    return description
+
+
+_PATH_DELIMITERS = {" ", "\t", '"', "'", "="}
+
+
+def _to_display_path(value: str) -> str:
+    return value.replace("\\", "/")
+
+
+def _find_last_delimiter(text: str) -> int:
+    for index in range(len(text) - 1, -1, -1):
+        if text[index] in _PATH_DELIMITERS:
+            return index
+    return -1
+
+
+def _find_unclosed_quote_start(text: str) -> int | None:
+    in_quotes = False
+    quote_start = -1
+    for index, char in enumerate(text):
+        if char == '"':
+            in_quotes = not in_quotes
+            if in_quotes:
+                quote_start = index
+    return quote_start if in_quotes else None
+
+
+def _is_token_start(text: str, index: int) -> bool:
+    return index == 0 or text[index - 1] in _PATH_DELIMITERS
+
+
+def _extract_quoted_prefix(text: str) -> str | None:
+    quote_start = _find_unclosed_quote_start(text)
+    if quote_start is None:
+        return None
+    if quote_start > 0 and text[quote_start - 1] == "@":
+        if not _is_token_start(text, quote_start - 1):
+            return None
+        return text[quote_start - 1 :]
+    if not _is_token_start(text, quote_start):
+        return None
+    return text[quote_start:]
+
+
+def _extract_at_prefix(text: str) -> str | None:
+    quoted_prefix = _extract_quoted_prefix(text)
+    if quoted_prefix and quoted_prefix.startswith('@"'):
+        return quoted_prefix
+    last_delimiter_index = _find_last_delimiter(text)
+    token_start = 0 if last_delimiter_index == -1 else last_delimiter_index + 1
+    if token_start < len(text) and text[token_start] == "@":
+        return text[token_start:]
+    return None
+
+
+def _extract_path_prefix(text: str, force_extract: bool = False) -> str | None:
+    quoted_prefix = _extract_quoted_prefix(text)
+    if quoted_prefix:
+        return quoted_prefix
+    last_delimiter_index = _find_last_delimiter(text)
+    path_prefix = text if last_delimiter_index == -1 else text[last_delimiter_index + 1 :]
+    if force_extract:
+        return path_prefix
+    if "/" in path_prefix or path_prefix.startswith(".") or path_prefix.startswith("~/"):
+        return path_prefix
+    if path_prefix == "" and text.endswith(" "):
+        return path_prefix
+    return None
+
+
+def _parse_path_prefix(prefix: str) -> tuple[str, bool, bool]:
+    if prefix.startswith('@"'):
+        return prefix[2:], True, True
+    if prefix.startswith('"'):
+        return prefix[1:], False, True
+    if prefix.startswith("@"):
+        return prefix[1:], True, False
+    return prefix, False, False
+
+
+def _expand_home_path(path: str) -> str:
+    if path.startswith("~/"):
+        expanded = os.path.join(os.path.expanduser("~"), path[2:])
+        return f"{expanded}/" if path.endswith("/") and not expanded.endswith("/") else expanded
+    if path == "~":
+        return os.path.expanduser("~")
+    return path
+
+
+def _build_completion_value(
+    path: str,
+    *,
+    is_directory: bool,
+    is_at_prefix: bool,
+    is_quoted_prefix: bool,
+) -> str:
+    del is_directory
+    needs_quotes = is_quoted_prefix or " " in path
+    prefix = "@" if is_at_prefix else ""
+    if not needs_quotes:
+        return f"{prefix}{path}"
+    return f'{prefix}"{path}"'
 
 
 @dataclass
@@ -522,49 +1344,207 @@ class SelectItem:
     description: str | None = None
 
 
+DEFAULT_PRIMARY_COLUMN_WIDTH = 32
+PRIMARY_COLUMN_GAP = 2
+MIN_DESCRIPTION_WIDTH = 10
+
+
 class SelectList(Component):
     """Keyboard-navigable list with simple prefix filtering."""
 
-    def __init__(self, items: list[SelectItem], max_visible: int = 5) -> None:
+    def __init__(
+        self,
+        items: list[SelectItem],
+        max_visible: int = 5,
+        theme: object | None = None,
+        layout: dict[str, Any] | None = None,
+    ) -> None:
         self.items = list(items)
         self.filtered_items = list(items)
         self.max_visible = max(1, max_visible)
+        self.theme = theme
+        self.layout = dict(layout or {})
         self.selected_index = 0
         self.on_select: Callable[[SelectItem], None] | None = None
         self.on_cancel: Callable[[], None] | None = None
+        self.on_selection_change: Callable[[SelectItem], None] | None = None
+        self.onSelect: Callable[[SelectItem], None] | None = None
+        self.onCancel: Callable[[], None] | None = None
+        self.onSelectionChange: Callable[[SelectItem], None] | None = None
 
     def set_filter(self, value: str) -> None:
         needle = value.lower()
         self.filtered_items = [item for item in self.items if item.value.lower().startswith(needle)]
         self.selected_index = 0
 
+    setFilter = set_filter
+
+    def set_selected_index(self, index: int) -> None:
+        if not self.filtered_items:
+            self.selected_index = 0
+            return
+        self.selected_index = max(0, min(int(index), len(self.filtered_items) - 1))
+
+    setSelectedIndex = set_selected_index
+
+    def get_selected_item(self) -> SelectItem | None:
+        if 0 <= self.selected_index < len(self.filtered_items):
+            return self.filtered_items[self.selected_index]
+        return None
+
+    getSelectedItem = get_selected_item
+
     def handle_input(self, data: str) -> None:
-        if data == "\x1b" and self.on_cancel:
-            self.on_cancel()
+        if data in ("\x1b", "\x03"):
+            self._notify_cancel()
             return
         if not self.filtered_items:
             return
         if data in ("\x1b[A", "k"):
             self.selected_index = (self.selected_index - 1) % len(self.filtered_items)
+            self._notify_selection_change()
         elif data in ("\x1b[B", "j"):
             self.selected_index = (self.selected_index + 1) % len(self.filtered_items)
-        elif data in ("\r", "\n") and self.on_select:
-            self.on_select(self.filtered_items[self.selected_index])
+            self._notify_selection_change()
+        elif data in ("\r", "\n"):
+            self._notify_select()
 
     def render(self, width: int) -> list[str]:
         if not self.filtered_items:
-            return ["  No matching commands"]
+            return [self._theme_text("noMatch", "  No matching commands")]
+        primary_column_width = self._get_primary_column_width()
         start = max(0, min(self.selected_index - self.max_visible // 2, len(self.filtered_items) - self.max_visible))
         end = min(start + self.max_visible, len(self.filtered_items))
         lines: list[str] = []
         for index in range(start, end):
             item = self.filtered_items[index]
-            prefix = "> " if index == self.selected_index else "  "
-            description = f"  {item.description}" if item.description else ""
-            lines.append(truncate_to_width(f"{prefix}{item.label}{description}", width))
+            description = _single_line(item.description) if item.description else None
+            lines.append(self._render_item(item, index == self.selected_index, width, description, primary_column_width))
         if start > 0 or end < len(self.filtered_items):
-            lines.append(truncate_to_width(f"  ({self.selected_index + 1}/{len(self.filtered_items)})", width))
+            scroll_text = f"  ({self.selected_index + 1}/{len(self.filtered_items)})"
+            lines.append(self._theme_text("scrollInfo", truncate_to_width(scroll_text, width - 2)))
         return lines
+
+    def _render_item(
+        self,
+        item: SelectItem,
+        is_selected: bool,
+        width: int,
+        description_single_line: str | None,
+        primary_column_width: int,
+    ) -> str:
+        prefix = "→ " if is_selected else "  "
+        prefix_width = visible_width(prefix)
+
+        if description_single_line and width > 40:
+            effective_primary_width = max(1, min(primary_column_width, width - prefix_width - 4))
+            max_primary_width = max(1, effective_primary_width - PRIMARY_COLUMN_GAP)
+            truncated_value = self._truncate_primary(item, is_selected, max_primary_width, effective_primary_width)
+            truncated_value_width = visible_width(truncated_value)
+            spacing = " " * max(1, effective_primary_width - truncated_value_width)
+            description_start = prefix_width + truncated_value_width + len(spacing)
+            remaining_width = width - description_start - 2
+
+            if remaining_width > MIN_DESCRIPTION_WIDTH:
+                truncated_description = truncate_to_width(description_single_line, remaining_width)
+                if is_selected:
+                    return self._theme_text("selectedText", f"{prefix}{truncated_value}{spacing}{truncated_description}")
+                return prefix + truncated_value + self._theme_text("description", spacing + truncated_description)
+
+        max_width = max(0, width - prefix_width - 2)
+        truncated_value = self._truncate_primary(item, is_selected, max_width, max_width)
+        if is_selected:
+            return self._theme_text("selectedText", f"{prefix}{truncated_value}")
+        return prefix + truncated_value
+
+    def _get_primary_column_width(self) -> int:
+        minimum, maximum = self._get_primary_column_bounds()
+        widest_primary = 0
+        for item in self.filtered_items:
+            widest_primary = max(widest_primary, visible_width(self._display_value(item)) + PRIMARY_COLUMN_GAP)
+        return max(minimum, min(widest_primary, maximum))
+
+    def _get_primary_column_bounds(self) -> tuple[int, int]:
+        raw_min = (
+            self._layout_value("minPrimaryColumnWidth", "min_primary_column_width")
+            or self._layout_value("maxPrimaryColumnWidth", "max_primary_column_width")
+            or DEFAULT_PRIMARY_COLUMN_WIDTH
+        )
+        raw_max = (
+            self._layout_value("maxPrimaryColumnWidth", "max_primary_column_width")
+            or self._layout_value("minPrimaryColumnWidth", "min_primary_column_width")
+            or DEFAULT_PRIMARY_COLUMN_WIDTH
+        )
+        min_width = max(1, min(int(raw_min), int(raw_max)))
+        max_width = max(1, max(int(raw_min), int(raw_max)))
+        return min_width, max_width
+
+    def _truncate_primary(self, item: SelectItem, is_selected: bool, max_width: int, column_width: int) -> str:
+        display_value = self._display_value(item)
+        truncate_primary = self._layout_value("truncatePrimary", "truncate_primary")
+        if callable(truncate_primary):
+            value = truncate_primary(
+                {
+                    "text": display_value,
+                    "maxWidth": max_width,
+                    "columnWidth": column_width,
+                    "item": item,
+                    "isSelected": is_selected,
+                }
+            )
+        else:
+            value = display_value
+        return truncate_to_width(str(value), max_width)
+
+    def _display_value(self, item: SelectItem) -> str:
+        return item.label or item.value
+
+    def _layout_value(self, camel_name: str, snake_name: str) -> object:
+        if camel_name in self.layout:
+            return self.layout[camel_name]
+        return self.layout.get(snake_name)
+
+    def _theme_text(self, name: str, text: str) -> str:
+        callback: object = None
+        if isinstance(self.theme, dict):
+            callback = self.theme.get(name)
+        elif self.theme is not None:
+            callback = getattr(self.theme, name, None)
+        if callable(callback):
+            return str(callback(text))
+        return text
+
+    def _notify_selection_change(self) -> None:
+        selected_item = self.get_selected_item()
+        if selected_item is None:
+            return
+        for callback in self._callbacks("on_selection_change", "onSelectionChange"):
+            callback(selected_item)
+
+    def _notify_select(self) -> None:
+        selected_item = self.get_selected_item()
+        if selected_item is None:
+            return
+        for callback in self._callbacks("on_select", "onSelect"):
+            callback(selected_item)
+
+    def _notify_cancel(self) -> None:
+        for callback in self._callbacks("on_cancel", "onCancel"):
+            callback()
+
+    def _callbacks(self, *names: str) -> list[Callable[..., None]]:
+        callbacks: list[Callable[..., None]] = []
+        seen: set[int] = set()
+        for name in names:
+            callback = getattr(self, name, None)
+            if not callable(callback):
+                continue
+            marker = id(callback)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            callbacks.append(callback)
+        return callbacks
 
 
 class StatusLine(Text):
@@ -609,49 +1589,160 @@ class FooterComponent(Component):
         *,
         cwd: str,
         model: str,
+        provider: str | None = None,
         thinking_level: str = "off",
         pending: int = 0,
         context_tokens: int | None = None,
         context_threshold: int | None = None,
+        context_window: int | None = None,
+        context_percent: float | None = None,
+        context_percent_unknown: bool = False,
+        total_input: int = 0,
+        total_output: int = 0,
+        total_cache_read: int = 0,
+        total_cache_write: int = 0,
+        latest_cache_hit_rate: float | None = None,
+        total_cost: float = 0.0,
+        using_subscription: bool = False,
         compression_count: int = 0,
         extension_statuses: dict[str, str] | None = None,
+        git_branch: str | None = None,
+        session_name: str | None = None,
+        available_provider_count: int = 0,
+        auto_compact_enabled: bool = True,
+        model_reasoning: bool = False,
+        home: str | None = None,
     ) -> None:
         self.cwd = cwd
         self.model = model
+        self.provider = provider
         self.thinking_level = thinking_level
         self.pending = pending
         self.context_tokens = context_tokens
         self.context_threshold = context_threshold
+        self.context_window = context_window
+        self.context_percent = context_percent
+        self.context_percent_unknown = context_percent_unknown
+        self.total_input = total_input
+        self.total_output = total_output
+        self.total_cache_read = total_cache_read
+        self.total_cache_write = total_cache_write
+        self.latest_cache_hit_rate = latest_cache_hit_rate
+        self.total_cost = total_cost
+        self.using_subscription = using_subscription
         self.compression_count = compression_count
         self.extension_statuses = dict(extension_statuses or {})
+        self.git_branch = git_branch
+        self.session_name = session_name
+        self.available_provider_count = available_provider_count
+        self.auto_compact_enabled = auto_compact_enabled
+        self.model_reasoning = model_reasoning
+        self.home = home
 
     def render(self, width: int) -> list[str]:
-        if self.context_tokens is not None and self.context_threshold is not None:
-            parts = [
-                f"model: {self.model}",
-                f"think: {self.thinking_level}",
-                f"ctx: {self.context_tokens:,}/{self.context_threshold:,}",
-                f"compactions: {self.compression_count:,}",
-            ]
-            if self.pending:
-                parts.append(f"pending: {self.pending}")
-            parts.extend(
-                f"{key}: {value}"
-                for key, value in sorted(self.extension_statuses.items())
-                if value
-            )
-            parts.append(f"cwd: {self.cwd}")
-            return [truncate_to_width(" | ".join(parts), width)]
+        width = max(1, int(width))
+        formatted_cwd = format_cwd_for_footer(self.cwd, self.home or os.environ.get("HOME") or os.environ.get("USERPROFILE"))
+        cwd = f"{formatted_cwd} ({self.git_branch})" if self.git_branch else formatted_cwd
+        if self.session_name:
+            cwd = f"{cwd} • {self.session_name}"
+        context_window = self.context_window or self.context_threshold or 0
+        if self.context_percent_unknown:
+            context_percent_display = "?"
+        elif self.context_percent is not None:
+            context_percent = self.context_percent
+            context_percent_display = f"{context_percent:.1f}"
+        elif self.context_tokens is not None and context_window > 0:
+            context_percent = (self.context_tokens / context_window) * 100
+            context_percent_display = f"{context_percent:.1f}"
+        else:
+            context_percent = 0.0
+            context_percent_display = f"{context_percent:.1f}"
+        auto_indicator = " (auto)" if self.auto_compact_enabled else ""
+        stats_parts = []
+        if self.total_input:
+            stats_parts.append(f"↑{_format_footer_tokens(self.total_input)}")
+        if self.total_output:
+            stats_parts.append(f"↓{_format_footer_tokens(self.total_output)}")
+        if self.total_cache_read:
+            stats_parts.append(f"R{_format_footer_tokens(self.total_cache_read)}")
+        if self.total_cache_write:
+            stats_parts.append(f"W{_format_footer_tokens(self.total_cache_write)}")
+        if (self.total_cache_read > 0 or self.total_cache_write > 0) and self.latest_cache_hit_rate is not None:
+            stats_parts.append(f"CH{self.latest_cache_hit_rate:.1f}%")
+        if self.total_cost or self.using_subscription:
+            subscription_suffix = " (sub)" if self.using_subscription else ""
+            stats_parts.append(f"${self.total_cost:.3f}{subscription_suffix}")
+        percent_suffix = "" if context_percent_display == "?" else "%"
+        stats_parts.append(f"{context_percent_display}{percent_suffix}/{_format_footer_tokens(context_window)}{auto_indicator}")
+        stats_left = " ".join(stats_parts)
+        if visible_width(stats_left) > width:
+            stats_left = truncate_to_width(stats_left, width, "...")
 
-        parts = [f"cwd: {self.cwd}", f"model: {self.model}", f"think: {self.thinking_level}"]
-        if self.pending:
-            parts.append(f"pending: {self.pending}")
-        parts.extend(
-            f"{key}: {value}"
-            for key, value in sorted(self.extension_statuses.items())
-            if value
+        right_side_without_provider = self.model
+        if self.model_reasoning:
+            right_side_without_provider = (
+                f"{self.model} • thinking off" if self.thinking_level == "off" else f"{self.model} • {self.thinking_level}"
+            )
+        right_side = right_side_without_provider
+        if self.available_provider_count > 1 and self.provider:
+            candidate = f"({self.provider}) {right_side_without_provider}"
+            if visible_width(stats_left) + 2 + visible_width(candidate) <= width:
+                right_side = candidate
+
+        stats_left_width = visible_width(stats_left)
+        right_side_width = visible_width(right_side)
+        if stats_left_width + 2 + right_side_width <= width:
+            stats_line = stats_left + (" " * (width - stats_left_width - right_side_width)) + right_side
+        else:
+            available_for_right = width - stats_left_width - 2
+            if available_for_right > 0:
+                truncated_right = truncate_to_width(right_side, available_for_right, "")
+                stats_line = stats_left + (" " * max(0, width - stats_left_width - visible_width(truncated_right))) + truncated_right
+            else:
+                stats_line = stats_left
+
+        lines = [truncate_to_width(cwd, width, "..."), truncate_to_width(stats_line, width, "")]
+        status_line = " ".join(
+            _single_line(value)
+            for _key, value in sorted(self.extension_statuses.items())
+            if value and _single_line(value)
         )
-        return [truncate_to_width(" | ".join(parts), width)]
+        if status_line:
+            lines.append(truncate_to_width(status_line, width, "..."))
+        return lines
+
+
+def _format_footer_tokens(count: int) -> str:
+    if count < 1000:
+        return str(count)
+    if count < 10000:
+        return f"{count / 1000:.1f}k"
+    if count < 1000000:
+        return f"{round(count / 1000)}k"
+    if count < 10000000:
+        return f"{count / 1000000:.1f}M"
+    return f"{round(count / 1000000)}M"
+
+
+def format_cwd_for_footer(cwd: str, home: str | None) -> str:
+    if not home:
+        return cwd
+    resolved_cwd = os.path.abspath(os.path.expanduser(cwd))
+    resolved_home = os.path.abspath(os.path.expanduser(home))
+    try:
+        relative_to_home = os.path.relpath(resolved_cwd, resolved_home)
+    except ValueError:
+        return cwd
+    is_inside_home = (
+        relative_to_home == "."
+        or (relative_to_home != ".." and not relative_to_home.startswith(f"..{os.sep}") and not os.path.isabs(relative_to_home))
+    )
+    if not is_inside_home:
+        return cwd
+    return "~" if relative_to_home == "." else f"~{os.sep}{relative_to_home}"
+
+
+formatCwdForFooter = format_cwd_for_footer
 
 
 class Spacer(Component):
@@ -750,23 +1841,6 @@ def _find_word_forward(value: str, cursor: int) -> int:
 
 def _is_word_char(char: str) -> bool:
     return char == "_" or char.isalnum()
-
-
-def _slice_by_column(text: str, start_col: int, width: int) -> str:
-    if width <= 0:
-        return ""
-    result: list[str] = []
-    col = 0
-    end_col = start_col + width
-    for char in text:
-        char_width = visible_width(char)
-        next_col = col + char_width
-        if next_col > start_col and col < end_col:
-            result.append(char)
-        if next_col >= end_col:
-            break
-        col = next_col
-    return "".join(result)
 
 
 def _single_line(text: str) -> str:

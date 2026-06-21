@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import Optional
 
+from appv22.coding_agent.config import get_docs_path, get_examples_path, get_readme_path
 from appv22.coding_agent.resource_loader import Skill, format_skills_for_prompt
 
 
@@ -27,6 +28,18 @@ _PREAMBLE = (
 )
 
 
+def _get_readme_path() -> str:
+    return get_readme_path()
+
+
+def _get_docs_path() -> str:
+    return get_docs_path()
+
+
+def _get_examples_path() -> str:
+    return get_examples_path()
+
+
 def build_system_prompt(options: BuildSystemPromptOptions) -> str:
     prompt_cwd = options.cwd.replace("\\", "/")
     today = _date.today().strftime("%Y-%m-%d")
@@ -35,12 +48,16 @@ def build_system_prompt(options: BuildSystemPromptOptions) -> str:
     if options.custom_prompt:
         prompt = options.custom_prompt + append_section
         prompt += _context_section(options.context_files)
-        if "read" in (options.selected_tools or []) and options.skills:
+        custom_prompt_has_read = options.selected_tools is None or "read" in options.selected_tools
+        if custom_prompt_has_read and options.skills:
             prompt += format_skills_for_prompt(options.skills)
         prompt += f"\nCurrent date: {today}"
         prompt += f"\nCurrent working directory: {prompt_cwd}"
         return prompt
 
+    readme_path = _get_readme_path()
+    docs_path = _get_docs_path()
+    examples_path = _get_examples_path()
     tools = options.selected_tools if options.selected_tools is not None else ["read", "bash", "edit", "write"]
     visible_tools = [name for name in tools if options.tool_snippets.get(name)]
     if visible_tools:
@@ -61,8 +78,7 @@ def build_system_prompt(options: BuildSystemPromptOptions) -> str:
     has_grep = "grep" in tools
     has_find = "find" in tools
     has_ls = "ls" in tools
-    if not tools:
-        add("No tools are active for this turn; answer directly and do not claim to inspect files, run commands, or perform actions.")
+    has_read = "read" in tools
     if has_bash and not has_grep and not has_find and not has_ls:
         add("Use bash for file operations like ls, rg, find")
     for guideline in options.prompt_guidelines:
@@ -76,11 +92,19 @@ def build_system_prompt(options: BuildSystemPromptOptions) -> str:
         f"{_PREAMBLE}\n\n"
         f"Available tools:\n{tools_list}\n\n"
         "In addition to the tools above, you may have access to other custom tools depending on the project.\n\n"
-        f"Guidelines:\n{guidelines_text}"
+        f"Guidelines:\n{guidelines_text}\n\n"
+        "Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n"
+        f"- Main documentation: {readme_path}\n"
+        f"- Additional docs: {docs_path}\n"
+        f"- Examples: {examples_path} (extensions, custom tools, SDK)\n"
+        "- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n"
+        "- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)\n"
+        "- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n"
+        "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"
     )
     prompt += append_section
     prompt += _context_section(options.context_files)
-    if "read" in tools and options.skills:
+    if has_read and options.skills:
         prompt += format_skills_for_prompt(options.skills)
     prompt += f"\nCurrent date: {today}"
     prompt += f"\nCurrent working directory: {prompt_cwd}"

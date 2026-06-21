@@ -9,6 +9,15 @@ from appv22.agent.agent_loop import (
     run_agent_loop,
     run_agent_loop_continue,
 )
+from appv22.agent.iteration_budget import IterationBudget
+from appv22.agent.tool_guardrails import (
+    ToolCallGuardrailConfig,
+    ToolCallGuardrailController,
+    ToolCallSignature,
+    ToolGuardrailDecision,
+    append_toolguard_guidance,
+    toolguard_synthetic_result,
+)
 from appv22.agent.types import (
     AbortSignal,
     AfterToolCallContext,
@@ -42,9 +51,16 @@ __all__ = [
     "AgentToolResult",
     "BeforeToolCallContext",
     "BeforeToolCallResult",
+    "IterationBudget",
     "ShouldStopAfterTurnContext",
+    "ToolCallGuardrailConfig",
+    "ToolCallGuardrailController",
+    "ToolCallSignature",
+    "ToolGuardrailDecision",
+    "append_toolguard_guidance",
     "agent_loop",
     "agent_loop_continue",
     "run_agent_loop",
     "run_agent_loop_continue",
+    "toolguard_synthetic_result",
 ]

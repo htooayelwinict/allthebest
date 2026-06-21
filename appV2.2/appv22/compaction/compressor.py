@@ -10,6 +10,7 @@ Anti-thrash: skip after two consecutive <10%-effective passes.
 from __future__ import annotations
 
 import copy
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -29,20 +30,95 @@ from appv22.ai.types import (
 )
 
 CHARS_PER_TOKEN = 4
-SUMMARY_PREFIX = "[CONTEXT COMPACTION - REFERENCE ONLY] The following summarizes earlier conversation. "
-LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
-SUMMARY_END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
-_TOOL_RESULT_SUMMARY_MIN = 200
-_TOOL_ARGS_MAX = 500
-_IMAGE_STRIPPED_TEXT = "[Attached image - stripped after compression]"
-_MAX_TAIL_MESSAGE_FLOOR = 8
-_MESSAGE_TOKEN_OVERHEAD = 10
-_AUX_MODEL_ERROR_MAX_CHARS = 220
-_SUMMARY_FAILURE_COOLDOWN_SECONDS = 60.0
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
 HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
 HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
+SUMMARY_PREFIX = (
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
+    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
+    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:"
+)
+LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+_HISTORICAL_SUMMARY_PREFIXES = (
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "If the latest user message is consistent with the '## Active Task' "
+    "section, you may use the summary as background. If the latest user "
+    "message contradicts, supersedes, changes topic from, or in any way "
+    "diverges from '## Active Task' / '## In Progress' / '## Pending User "
+    "Asks' / '## Remaining Work', the latest message WINS — discard those "
+    "stale items entirely and do not 'wrap up the old task first'. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Your current task is identified in the '## Active Task' section of the "
+    "summary — resume exactly from there. "
+    "Respond ONLY to the latest user message "
+    "that appears AFTER this summary. The current session state (files, "
+    "config, etc.) may reflect work described here — avoid repeating it:",
+)
+SUMMARY_END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+_TOOL_RESULT_SUMMARY_MIN = 200
+_TOOL_ARGS_MAX = 500
+_IMAGE_TOKEN_ESTIMATE = 1600
+_IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN
+_IMAGE_STRIPPED_TEXT = "[Attached image - stripped after compression]"
+_MAX_TAIL_MESSAGE_FLOOR = 8
+_MESSAGE_TOKEN_OVERHEAD = 10
+_AUX_MODEL_ERROR_MAX_CHARS = 220
+_FALLBACK_SUMMARY_MAX_CHARS = 8_000
+_FALLBACK_TURN_MAX_CHARS = 700
+_MIN_SUMMARY_TOKENS = 2000
+_SUMMARY_RATIO = 0.20
+_SUMMARY_TOKENS_CEILING = 12_000
+_SUMMARY_FAILURE_COOLDOWN_SECONDS = 600.0
+_NO_SUMMARY_PROVIDER_ERROR = "no auxiliary LLM provider configured"
+_COMPRESSION_SYSTEM_NOTE = (
+    "[Note: Some earlier conversation turns have been compacted into a handoff summary "
+    "to preserve context space. The current session state may still reflect earlier work, "
+    "so build on that summary and state rather than re-doing work. Your persistent memory "
+    "(MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
+)
 _SECRET_VALUE = "[REDACTED]"
 _KNOWN_SECRET_RE = re.compile(
     r"\b(?:"
@@ -66,6 +142,7 @@ _JSON_SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 _AUTH_HEADER_RE = re.compile(r"(Authorization\s*:\s*Bearer\s+)[^\s]+", re.IGNORECASE)
+_MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
 
 _SUMMARIZER_PREAMBLE = (
     "You are a summarization agent creating a context checkpoint. "
@@ -110,6 +187,32 @@ def _block_text(block) -> str:
     return block.text if isinstance(block, TextContent) else ""
 
 
+def _content_length_for_budget(raw_content) -> int:
+    if isinstance(raw_content, str):
+        return len(raw_content)
+    if not isinstance(raw_content, list):
+        return len(str(raw_content or ""))
+
+    total = 0
+    for block in raw_content:
+        if isinstance(block, str):
+            total += len(block)
+        elif isinstance(block, ImageContent):
+            total += _IMAGE_CHAR_EQUIVALENT
+        elif isinstance(block, TextContent):
+            total += len(block.text)
+        elif isinstance(block, ToolCall):
+            total += len(block.name) + len(str(block.arguments))
+        elif isinstance(block, dict):
+            if block.get("type") in {"image_url", "input_image", "image"}:
+                total += _IMAGE_CHAR_EQUIVALENT
+            else:
+                total += len(str(block.get("text", "") or ""))
+        else:
+            total += len(str(block or ""))
+    return total
+
+
 def _redact_sensitive_text(text: str) -> str:
     if text is None:
         return text
@@ -124,6 +227,24 @@ def _redact_sensitive_text(text: str) -> str:
     return text
 
 
+def _sanitize_summary_source_text(text: str) -> str:
+    return _MEDIA_DIRECTIVE_RE.sub("[media attachment]", _redact_sensitive_text(text))
+
+
+_PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
+
+
+def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
+    value = value.strip()
+    if value and value not in items and len(items) < limit:
+        items.append(value)
+
+
+def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int = 12) -> None:
+    for match in _PATH_MENTION_RE.findall(text):
+        _dedupe_append(relevant_files, match.rstrip(".,:;"), limit=limit)
+
+
 @dataclass
 class CompressionResult:
     messages: list[Message]
@@ -132,13 +253,19 @@ class CompressionResult:
 
 
 class ContextCompressor:
+    _CONTENT_MAX = 6000
+    _CONTENT_HEAD = 4000
+    _CONTENT_TAIL = 1500
+    _SUMMARY_TOOL_ARGS_MAX = 1500
+    _SUMMARY_TOOL_ARGS_HEAD = 1200
+
     def __init__(
         self,
         *,
         context_length: int = 32000,
         threshold_percent: float = 0.5,
-        protect_first_n: int = 2,
-        protect_last_n: int = 8,
+        protect_first_n: int = 3,
+        protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
         summarizer: Optional[Summarizer] = None,
         summary_summarizer: Optional[Summarizer] = None,
@@ -153,7 +280,8 @@ class ContextCompressor:
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
-        self.summary_target_ratio = summary_target_ratio
+        self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
+        self.max_summary_tokens = min(int(context_length * 0.05), _SUMMARY_TOKENS_CEILING)
         self._summarizer = summarizer
         self._summary_summarizer = summary_summarizer
         self.abort_on_summary_failure = abort_on_summary_failure
@@ -452,6 +580,26 @@ class ContextCompressor:
             clone.content = text + str(content or "")
         return clone
 
+    @staticmethod
+    def _append_text_to_message(message: Message, text: str) -> Message:
+        clone = copy.copy(message)
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            separator = "\n\n" if content else ""
+            clone.content = content + separator + text
+        elif isinstance(content, list):
+            clone.content = [*content, TextContent(text=text)]
+        else:
+            clone.content = str(content or "") + text
+        return clone
+
+    def _copy_head_message_for_compression(self, message: Message, index: int) -> Message:
+        if index != 0 or getattr(message, "role", None) != "system":
+            return message
+        if _COMPRESSION_SYSTEM_NOTE in _message_text(message):
+            return message
+        return self._append_text_to_message(message, _COMPRESSION_SYSTEM_NOTE)
+
     def _assemble_compressed_messages(
         self,
         messages: list[Message],
@@ -459,7 +607,7 @@ class ContextCompressor:
         tail_start: int,
         summary_text: str,
     ) -> list[Message]:
-        summary = SUMMARY_PREFIX + summary_text
+        summary = SUMMARY_PREFIX + "\n" + summary_text.lstrip()
         last_head_role = self._summary_neighbor_role(messages[head_end - 1] if head_end > 0 else None)
         first_tail_role = self._summary_neighbor_role(messages[tail_start] if tail_start < len(messages) else None)
 
@@ -475,7 +623,7 @@ class ContextCompressor:
             else:
                 merge_summary_into_tail = True
 
-        result = [*messages[:head_end]]
+        result = [self._copy_head_message_for_compression(message, index) for index, message in enumerate(messages[:head_end])]
         if merge_summary_into_tail:
             prefix = summary + "\n\n" + SUMMARY_END_MARKER + "\n\n"
             for index in range(tail_start, len(messages)):
@@ -490,7 +638,7 @@ class ContextCompressor:
     @staticmethod
     def _strip_summary_prefix(summary: str) -> str:
         text = (summary or "").strip()
-        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX):
+        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
@@ -501,7 +649,11 @@ class ContextCompressor:
     @classmethod
     def _is_context_summary_message(cls, message: Message) -> bool:
         text = _message_text(message).lstrip()
-        return text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX)
+        return (
+            text.startswith(SUMMARY_PREFIX)
+            or text.startswith(LEGACY_SUMMARY_PREFIX)
+            or any(text.startswith(prefix) for prefix in _HISTORICAL_SUMMARY_PREFIXES)
+        )
 
     @classmethod
     def _find_latest_context_summary(cls, messages: list[Message], start: int, end: int) -> tuple[int | None, str]:
@@ -601,10 +753,13 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._summary_failure_cooldown_until = 0.0
             self._last_summary_error = None
             return _redact_sensitive_text(summary)
-        return _redact_sensitive_text(self._static_fallback_summary(middle))
+        self._summary_failure_cooldown_until = self._clock() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+        self._last_summary_error = _NO_SUMMARY_PROVIDER_ERROR
+        return None
 
     def _summary_budget(self, middle: list[Message]) -> int:
-        return max(2000, estimate_tokens(middle) // 5)
+        budget = int(estimate_tokens(middle) * _SUMMARY_RATIO)
+        return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
     def _current_date_string(self) -> str:
         return datetime.now().strftime("%Y-%m-%d")
@@ -669,26 +824,177 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 Write only the summary body. Do not include any preamble or prefix."""
 
     def _serialize_for_summary(self, middle: list[Message]) -> str:
-        lines = []
+        parts: list[str] = []
         for message in middle:
-            role = getattr(message, "role", "?")
-            text = _redact_sensitive_text(_message_text(message))[:6000]
-            lines.append(f"[{role}] {text}")
-        return "\n".join(lines)
+            role = getattr(message, "role", "unknown")
+            if role == "toolResult":
+                content = self._summary_content(_message_text(message))
+                parts.append(f"[TOOL RESULT {getattr(message, 'tool_call_id', '')}]: {content}")
+                continue
+
+            if role == "assistant":
+                content = self._assistant_text_for_summary(message)
+                content = self._summary_content(content)
+                tool_calls = self._tool_calls(message)
+                if tool_calls:
+                    call_lines = []
+                    for call in tool_calls:
+                        args = self._tool_args_for_summary(call.arguments)
+                        call_lines.append(f"  {call.name}({args})")
+                    content += "\n[Tool calls:\n" + "\n".join(call_lines) + "\n]"
+                parts.append(f"[ASSISTANT]: {content}")
+                continue
+
+            content = self._summary_content(_message_text(message))
+            parts.append(f"[{str(role).upper()}]: {content}")
+        return "\n\n".join(parts)
+
+    @classmethod
+    def _summary_content(cls, content: str) -> str:
+        return _sanitize_summary_source_text(cls._truncate_summary_content(content))
+
+    @classmethod
+    def _truncate_summary_content(cls, content: str) -> str:
+        if len(content) <= cls._CONTENT_MAX:
+            return content
+        return content[: cls._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-cls._CONTENT_TAIL :]
+
+    @staticmethod
+    def _assistant_text_for_summary(message: Message) -> str:
+        if getattr(message, "role", None) != "assistant":
+            return _message_text(message)
+        return "".join(block.text for block in message.content if isinstance(block, TextContent))
+
+    @classmethod
+    def _tool_args_for_summary(cls, arguments: dict | None) -> str:
+        try:
+            args = json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            args = str(arguments or {})
+        args = _redact_sensitive_text(args)
+        if len(args) > cls._SUMMARY_TOOL_ARGS_MAX:
+            args = args[: cls._SUMMARY_TOOL_ARGS_HEAD] + "..."
+        return args
 
     def _static_fallback_summary(self, middle: list[Message], *, reason: str | None = None) -> str:
-        roles = [getattr(m, "role", "?") for m in middle]
-        reason_text = f"\nReason: {reason}" if reason else ""
-        return (
-            f"{HISTORICAL_TASK_HEADING}\n"
-            "Recovered from a deterministic fallback because summary generation was unavailable. "
-            "Continue from the protected recent messages after this summary and use current file/system state "
-            "for exact details.\n\n"
-            "## Completed Actions\n"
-            f"Compacted {len(middle)} earlier messages ({', '.join(roles)}).\n\n"
-            "## Critical Context\n"
-            f"Summary generation was unavailable, so this is a best-effort deterministic fallback.{reason_text}"
-        )
+        user_asks: list[str] = []
+        assistant_actions: list[str] = []
+        tool_actions: list[str] = []
+        relevant_files: list[str] = []
+        blockers: list[str] = []
+        last_dropped_turns: list[str] = []
+        call_id_to_tool: dict[str, tuple[str, str]] = {}
+
+        def compact_turn(message: Message) -> str:
+            text = _redact_sensitive_text(_message_text(message))
+            text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > _FALLBACK_TURN_MAX_CHARS:
+                text = text[: _FALLBACK_TURN_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+            return text
+
+        def remember(label: str, text: str, *, limit: int = 8) -> None:
+            text = text.strip()
+            if not text:
+                return
+            last_dropped_turns.append(f"{label}: {text}")
+            if len(last_dropped_turns) > limit:
+                del last_dropped_turns[0]
+
+        for message in middle:
+            if getattr(message, "role", None) != "assistant":
+                continue
+            for call in self._tool_calls(message):
+                call_id_to_tool[call.id] = (call.name, str(call.arguments or ""))
+                for value in (call.arguments or {}).values():
+                    if isinstance(value, str):
+                        _collect_path_mentions(value, relevant_files)
+
+        for message in middle:
+            role = getattr(message, "role", "unknown")
+            text = compact_turn(message)
+            _collect_path_mentions(text, relevant_files)
+            turn_text = text
+            if role == "assistant":
+                tool_names = [call.name for call in self._tool_calls(message)]
+                if tool_names:
+                    assistant_actions.append("Called tool(s): " + ", ".join(tool_names[:6]))
+                    turn_text = "tool calls: " + ", ".join(tool_names[:6])
+                elif text:
+                    assistant_actions.append(text)
+            elif role == "toolResult":
+                tool_name, tool_args = call_id_to_tool.get(message.tool_call_id, (message.tool_name, ""))
+                tool_actions.append(self._summarize_tool_result(message, text or ""))
+                _collect_path_mentions(tool_args, relevant_files)
+                if re.search(r"\b(error|failed|exception|traceback|timeout|timed out|fatal)\b", text, re.I):
+                    blockers.append(text[:500])
+            elif role == "user" and text:
+                user_asks.append(text)
+            remember(str(role).upper(), turn_text)
+
+        def bullets(items: list[str], limit: int = 8) -> str:
+            unique: list[str] = []
+            for item in items:
+                item = item.strip()
+                if item and item not in unique:
+                    unique.append(item)
+                if len(unique) >= limit:
+                    break
+            return "\n".join(f"- {item}" for item in unique) if unique else "None."
+
+        completed = [
+            f"{idx}. {item}"
+            for idx, item in enumerate((assistant_actions + tool_actions)[:12], start=1)
+        ]
+        active_task = f"User asked: {user_asks[-1]!r}" if user_asks else "Unknown from deterministic fallback."
+        reason_text = f" Summary failure reason: {reason}." if reason else ""
+        body = f"""{HISTORICAL_TASK_HEADING}
+{active_task}
+
+## Goal
+Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.
+
+## Constraints & Preferences
+- This fallback was generated locally without an LLM summary call.
+- Secrets and credentials were redacted before preservation.
+- The summary may be incomplete; verify current files, git state, processes, and test results before making claims.
+
+## Completed Actions
+{chr(10).join(completed) if completed else "None recoverable from compacted turns."}
+
+## Active State
+Unknown from deterministic fallback. Inspect current repository/session state if needed.
+
+{HISTORICAL_IN_PROGRESS_HEADING}
+{active_task}
+
+## Blocked
+{bullets(blockers, limit=5)}
+
+## Key Decisions
+None recoverable from deterministic fallback.
+
+## Resolved Questions
+None recoverable from deterministic fallback.
+
+{HISTORICAL_PENDING_ASKS_HEADING}
+{active_task}
+
+## Relevant Files
+{bullets(relevant_files, limit=12)}
+
+{HISTORICAL_REMAINING_WORK_HEADING}
+Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
+
+## Last Dropped Turns
+{bullets(last_dropped_turns, limit=8)}
+
+## Critical Context
+Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(middle)} compacted message(s).{reason_text}"""
+        summary = _redact_sensitive_text(body.strip())
+        if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
+            summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
+        return summary
 
     # --- Orchestrator ---
 
@@ -717,8 +1023,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         tail_start = self._find_tail_start(pruned, head_end)
 
         if tail_start <= head_end:
-            after = estimate_tokens(pruned)
-            return CompressionResult(messages=pruned, compressed=False, savings_pct=_savings(before, after))
+            emergency_window = self._oversized_protected_head_window(pruned, head_end, before, force=force)
+            if emergency_window is None:
+                after = estimate_tokens(pruned)
+                return CompressionResult(messages=pruned, compressed=False, savings_pct=_savings(before, after))
+            head_end, tail_start = emergency_window
 
         middle = pruned[head_end:tail_start]
         summary_index, summary_body = self._find_latest_context_summary(pruned, 0, tail_start)
@@ -726,6 +1035,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
             middle = pruned[max(head_end, summary_index + 1):tail_start]
+        elif self._previous_summary:
+            self._previous_summary = None
         try:
             summary_text = self.generate_summary(middle, summarizer, focus_topic=focus_topic)
         except Exception as exc:  # noqa: BLE001 - fallback handoff mirrors Hermes default
@@ -762,6 +1073,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         return CompressionResult(messages=result, compressed=True, savings_pct=savings)
 
     def _find_tail_start(self, messages: list[Message], head_end: int) -> int:
+        if head_end >= len(messages):
+            return len(messages)
         budget = self.tail_token_budget
         total = len(messages)
         available_tail = max(0, total - head_end - 1)
@@ -800,11 +1113,36 @@ Write only the summary body. Do not include any preamble or prefix."""
         index = self._align_boundary_backward(messages, index)
         index = self._ensure_last_user_message_in_tail(messages, index, head_end)
         index = self._ensure_last_assistant_message_in_tail(messages, index, head_end)
-        return max(index, head_end + 1)
+        return min(len(messages), max(index, head_end + 1))
+
+    def _oversized_protected_head_window(
+        self,
+        messages: list[Message],
+        head_end: int,
+        before_tokens: int,
+        *,
+        force: bool,
+    ) -> tuple[int, int] | None:
+        if len(messages) < 2:
+            return None
+        if not force and before_tokens < self.threshold_tokens:
+            return None
+        emergency_head_end = self._emergency_head_end(messages)
+        if emergency_head_end >= len(messages) or emergency_head_end >= head_end:
+            return None
+        return emergency_head_end, len(messages)
+
+    @staticmethod
+    def _emergency_head_end(messages: list[Message]) -> int:
+        index = 1 if messages and getattr(messages[0], "role", None) == "system" else 0
+        for candidate in range(index, len(messages)):
+            if getattr(messages[candidate], "role", None) == "user":
+                return min(candidate + 1, len(messages))
+        return min(max(index, 1), len(messages))
 
     @staticmethod
     def _tail_message_tokens(message: Message) -> int:
-        return len(_message_text(message)) // CHARS_PER_TOKEN + _MESSAGE_TOKEN_OVERHEAD
+        return _content_length_for_budget(getattr(message, "content", "")) // CHARS_PER_TOKEN + _MESSAGE_TOKEN_OVERHEAD
 
 
 def _savings(before: int, after: int) -> float:

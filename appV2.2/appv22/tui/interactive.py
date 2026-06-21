@@ -49,6 +49,9 @@ def parse_skill_block(text: str) -> ParsedSkillBlock | None:
     )
 
 
+parseSkillBlock = parse_skill_block
+
+
 class AssistantMessageComponent(Container):
     def __init__(
         self,
@@ -482,12 +485,21 @@ def _render_result_block(block: Any) -> str:
     return str(block)
 
 
-def _collapse_result_text(text: str, max_lines: int = 10) -> str:
+def _collapse_result_text(text: str, max_lines: int = 10, max_chars: int = 6_000) -> str:
+    original_chars = len(text)
+    if original_chars > max_chars:
+        text = text[:max_chars]
     lines = text.split("\n")
+    truncated_chars = original_chars - len(text)
     if len(lines) <= max_lines:
+        if truncated_chars > 0:
+            return f"{text}\n... ({truncated_chars} more chars, to expand)"
         return text
     remaining = len(lines) - max_lines
-    return "\n".join([*lines[:max_lines], f"... ({remaining} more lines, to expand)"])
+    suffix = f"... ({remaining} more lines, to expand)"
+    if truncated_chars > 0:
+        suffix = f"... ({remaining} more lines, {truncated_chars} more chars, to expand)"
+    return "\n".join([*lines[:max_lines], suffix])
 
 
 def _custom_message_text(message: Any) -> str:
@@ -566,6 +578,7 @@ class InteractiveRenderer:
 
     def handle_event(self, event: Any) -> None:
         etype = event.type
+        needs_render = False
         if etype == "message_start" and getattr(event.message, "role", None) == "assistant":
             self._current_assistant = AssistantMessageComponent(
                 "",
@@ -573,11 +586,14 @@ class InteractiveRenderer:
                 hidden_thinking_label=self.hidden_thinking_label,
             )
             self._add(self._current_assistant)
+            needs_render = True
         elif etype == "message_update" and self._current_assistant is not None:
             self._current_assistant.update_content(event.message)
+            needs_render = True
         elif etype == "message_end" and getattr(event.message, "role", None) == "assistant":
             if self._current_assistant is not None:
                 self._current_assistant.update_content(event.message)
+                needs_render = True
             self._current_assistant = None
         elif etype == "tool_execution_start":
             component = ToolExecutionComponent(
@@ -589,8 +605,11 @@ class InteractiveRenderer:
             )
             self._tool_components[event.tool_call_id] = component
             self._add(component)
+            needs_render = True
         elif etype == "tool_execution_end":
             component = self._tool_components.get(event.tool_call_id)
             if component is not None:
                 component.update_result(event.result, event.is_error)
-        self.tui.request_render()
+                needs_render = True
+        if needs_render:
+            self.tui.request_render()

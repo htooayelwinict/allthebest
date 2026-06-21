@@ -131,14 +131,17 @@ def create_edit_tool_definition(cwd: str) -> ToolDefinition:
         label="edit",
         description=(
             "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, "
-            "non-overlapping region of the original file."
+            "non-overlapping region of the original file. If two changes affect the same block or nearby lines, "
+            "merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions "
+            "just to connect distant changes."
         ),
         parameters=EDIT_SCHEMA,
         prompt_snippet="Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
         prompt_guidelines=[
             "Use edit for precise changes (edits[].oldText must match exactly)",
-            "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[]",
-            "Each edits[].oldText is matched against the original file, not after earlier edits are applied.",
+            "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+            "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
+            "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
         ],
         execute=lambda tid, args, signal=None, on_update=None, ctx=None: _execute_edit(cwd, tid, args, signal, on_update, ctx),
         prepare_arguments=prepare_edit_arguments,
