@@ -2505,6 +2505,50 @@ def test_agent_session_injects_recovery_steering_on_bash_no_progress_warning(tmp
     assert assistants[-1].content[0].text == "I will use the first listing and read the relevant files."
 
 
+def test_agent_session_reissues_recovery_steering_for_escalating_tool_loop_warnings(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    recovery_lengths: list[int] = []
+    repeated_args = {"command": "ls -la src/metrics"}
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="Command exited with code 1")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        users = [_user_text(message) for message in c.messages if getattr(message, "role", None) == "user"]
+        recoveries = [text for text in users if "Tool loop recovery instruction" in text]
+        recovery_lengths.append(len(recoveries))
+        if len(recoveries) >= 2:
+            return text_response_events(m, "I will stop retrying bash and use the existing failure.")
+        return tool_call_response_events(m, "bash", repeated_args, call_id=f"call_{provider_calls['n']}")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("scan metrics")
+
+    assistants = [m for m in session.messages if getattr(m, "role", None) == "assistant"]
+    assert provider_calls["n"] == 4
+    assert executions == [repeated_args, repeated_args, repeated_args]
+    assert max(recovery_lengths) >= 2
+    assert assistants[-1].content[0].text == "I will stop retrying bash and use the existing failure."
+
+
 def test_agent_session_blocks_consecutive_repeated_bash_loop_and_stops(tmp_path: Path) -> None:
     model = faux_model()
     provider_calls = {"n": 0}
