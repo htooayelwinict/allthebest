@@ -81,7 +81,7 @@ from appv22.agent.types import (
     ToolExecutionStartEvent,
     TurnEndEvent,
 )
-from appv22.agent.types import AgentToolResult
+from appv22.agent.types import AgentTool, AgentToolResult
 from appv22.ai.providers.faux import create_faux_provider, faux_model, text_response_events, tool_call_response_events
 from appv22.ai.models import get_api_key_for_provider, get_provider_auth_status, reset_models
 from appv22.ai.stream import register_api_provider, reset_api_providers
@@ -1226,6 +1226,95 @@ def test_interactive_mode_editor_escape_aborts_active_turn_bash(tmp_path, monkey
 
     assert aborts == ["agent", "bash"]
     assert mode.status._message == "Aborting"
+
+
+def test_interactive_mode_escape_aborted_tool_turn_returns_to_idle(tmp_path) -> None:
+    started = threading.Event()
+    finished = threading.Event()
+    provider_calls = {"n": 0}
+
+    def script(model, context):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return tool_call_response_events(model, "aborter", {})
+        return text_response_events(model, "should not run after abort")
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+
+    def aborter_execute(tool_call_id, args, signal=None, on_update=None):
+        started.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if signal and signal.aborted:
+                finished.set()
+                raise RuntimeError("Operation aborted")
+            time.sleep(0.005)
+        raise RuntimeError("abort signal was not delivered")
+
+    app.session.agent.state.tools = [
+        AgentTool(
+            name="aborter",
+            description="aborter",
+            parameters={"type": "object", "properties": {}},
+            label="Aborter",
+            execute=aborter_execute,
+        )
+    ]
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    mode.init()
+
+    mode.status.set_message("Running")
+    mode._start_turn_thread("run aborter", 0, 0)
+    assert started.wait(timeout=2)
+
+    mode._handle_editor_escape()
+    mode._wait_for_active_turn()
+
+    assert finished.is_set()
+    assert provider_calls["n"] == 1
+    assert mode.status._message == "Idle"
+
+
+def test_interactive_mode_ctrl_c_exits_idle_tui(tmp_path) -> None:
+    calls = {"n": 0}
+
+    def script(model, context):
+        calls["n"] += 1
+        return text_response_events(model, "should not run")
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app)
+    outcome: dict[str, object] = {}
+
+    def run_mode() -> None:
+        try:
+            outcome["code"] = mode.run()
+        except BaseException as error:  # noqa: BLE001 - test thread must surface failures.
+            outcome["error"] = error
+
+    thread = threading.Thread(target=run_mode)
+    thread.start()
+    exited_after_ctrl_c = False
+    try:
+        assert _wait_until(lambda: terminal.input_handler is not None and mode.active_editor is not None)
+        terminal.input_handler("\x03")
+        exited_after_ctrl_c = _wait_until(lambda: not thread.is_alive(), timeout=0.5)
+    finally:
+        if thread.is_alive():
+            mode._shutdown_requested = True
+            if terminal.input_handler is not None:
+                terminal.input_handler("/exit\r")
+            thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert exited_after_ctrl_c is True
+    assert outcome["code"] == 0
+    assert calls["n"] == 0
 
 
 def test_tui_ports_pi_input_listener_transform_consume_and_unsubscribe() -> None:

@@ -339,6 +339,15 @@ class InteractiveMode:
         return None
 
     def _handle_tui_terminal_input(self, data: str):
+        if data == "\x03":
+            if self._is_turn_active() or self.app.session.is_streaming or self.app.session.is_bash_running:
+                self._handle_editor_escape()
+            else:
+                self._shutdown_requested = True
+                self.status.set_message("Exiting")
+                self._refresh_footer()
+                self.tui.request_render()
+            return {"consume": True}
         consumed, current = self._dispatch_terminal_input(data)
         if consumed:
             return {"consume": True}
