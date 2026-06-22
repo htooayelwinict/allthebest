@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from appv22.compaction import CompactionManager, ContextCompressor, SessionLineage, estimate_tokens
+from appv22.compaction import CompressionResult, CompactionManager, ContextCompressor, SessionLineage, estimate_tokens
 from appv22.ai.types import UserMessage, now_ms
 
 
@@ -16,6 +16,10 @@ def _big_messages(n: int = 40, size: int = 200) -> list:
 
 def _summarizer(prompt: str) -> str:
     return "## Goal\nshort"
+
+
+def _message_with_tokens(tokens: int) -> UserMessage:
+    return UserMessage(content="x" * (tokens * 4), timestamp=now_ms())
 
 
 def _manager(**kwargs) -> CompactionManager:
@@ -382,6 +386,73 @@ def test_manual_aggressive_compression_uses_tighter_tail_boundary() -> None:
     assert aggressive.first_kept_message_index > normal.first_kept_message_index
     assert len(aggressive.messages) < len(normal.messages)
     assert estimate_tokens(aggressive.messages) < estimate_tokens(normal.messages)
+
+
+def test_manual_aggressive_compression_loops_until_minimum_target() -> None:
+    class SequenceCompressor(ContextCompressor):
+        def __init__(self) -> None:
+            super().__init__(context_length=128_000)
+            self.calls: list[bool] = []
+            self.outputs = [20_000, 10_000, 3_000]
+
+        def compress(self, messages, summarizer=None, focus_topic=None, force=False, aggressive=False):
+            self.calls.append(bool(aggressive))
+            tokens = self.outputs[len(self.calls) - 1]
+            return CompressionResult(
+                messages=[_message_with_tokens(tokens)],
+                compressed=True,
+                savings_pct=50.0,
+                summary=f"pass {len(self.calls)}",
+                tokens_before=estimate_tokens(messages),
+                first_kept_message_index=0,
+            )
+
+    compressor = SequenceCompressor()
+    manager = CompactionManager(compressor, summarizer=_summarizer)
+
+    status = manager.compress_manual_with_status([_message_with_tokens(40_000)], aggressive=True)
+
+    assert compressor.calls == [True, True, True]
+    assert status.compressed is True
+    assert status.aggressive is True
+    assert status.compression_passes == 3
+    assert status.aggressive_stop_reason == "target_reached"
+    assert status.target_tokens == 6_400
+    assert estimate_tokens(status.messages) == 3_000
+    assert "Aggressive compression: 3 passes" in status.note
+    assert "target reached" in status.note
+
+
+def test_manual_aggressive_compression_stops_when_passes_stop_making_progress() -> None:
+    class SequenceCompressor(ContextCompressor):
+        def __init__(self) -> None:
+            super().__init__(context_length=32_000)
+            self.calls: list[bool] = []
+            self.outputs = [10_000, 9_700, 4_000]
+
+        def compress(self, messages, summarizer=None, focus_topic=None, force=False, aggressive=False):
+            self.calls.append(bool(aggressive))
+            tokens = self.outputs[len(self.calls) - 1]
+            return CompressionResult(
+                messages=[_message_with_tokens(tokens)],
+                compressed=True,
+                savings_pct=3.0,
+                summary=f"pass {len(self.calls)}",
+                tokens_before=estimate_tokens(messages),
+                first_kept_message_index=0,
+            )
+
+    compressor = SequenceCompressor()
+    manager = CompactionManager(compressor, summarizer=_summarizer)
+
+    status = manager.compress_manual_with_status([_message_with_tokens(16_000)], aggressive=True)
+
+    assert compressor.calls == [True, True]
+    assert status.compression_passes == 2
+    assert status.aggressive_stop_reason == "insufficient_progress"
+    assert status.target_tokens == 2_048
+    assert estimate_tokens(status.messages) == 9_700
+    assert "insufficient progress" in status.note
 
 
 def test_manual_compression_noops_when_existing_summary_has_no_new_middle_turns() -> None:
