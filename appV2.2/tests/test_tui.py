@@ -1277,6 +1277,138 @@ def test_interactive_mode_escape_aborted_tool_turn_returns_to_idle(tmp_path) -> 
     assert mode.status._message == "Idle"
 
 
+def test_interactive_mode_ctrl_c_aborts_active_turn_and_accepts_followup_prompt(tmp_path) -> None:
+    started = threading.Event()
+    aborted = threading.Event()
+    provider_calls = {"n": 0}
+
+    def script(model, context):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return tool_call_response_events(model, "aborter", {})
+        return text_response_events(model, "followup ok")
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+
+    def aborter_execute(tool_call_id, args, signal=None, on_update=None):
+        started.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if signal and signal.aborted:
+                aborted.set()
+                raise RuntimeError("Operation aborted")
+            time.sleep(0.005)
+        raise RuntimeError("abort signal was not delivered")
+
+    app.session.agent.state.tools = [
+        AgentTool(
+            name="aborter",
+            description="aborter",
+            parameters={"type": "object", "properties": {}},
+            label="Aborter",
+            execute=aborter_execute,
+        )
+    ]
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    mode.init()
+
+    mode.status.set_message("Running")
+    mode._start_turn_thread("run aborter", 0, 0)
+    assert started.wait(timeout=2)
+
+    result = mode._handle_tui_terminal_input("\x03")
+    assert result == {"consume": True}
+    assert mode.status._message == "Aborting"
+
+    mode._wait_for_active_turn()
+
+    assert aborted.is_set()
+    assert provider_calls["n"] == 1
+    assert mode.status._message == "Idle"
+    assert not mode._is_turn_active()
+
+    mode.status.set_message("Running")
+    mode._start_turn_thread("followup", app.compaction.compressor.compression_count, 0)
+    mode._wait_for_active_turn()
+
+    rendered = strip_ansi("\n".join(app.tui.render(120)))
+    assert provider_calls["n"] == 2
+    assert "followup ok" in rendered
+    assert mode.status._message == "Idle"
+    assert "status: Running" not in rendered
+    assert "status: Aborting" not in rendered
+
+
+def test_interactive_mode_escape_is_noop_when_idle_and_preserves_session_state(tmp_path) -> None:
+    register_api_provider(create_faux_provider(lambda model, context: text_response_events(model, "unused")))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.session.agent.state.messages = [
+        UserMessage(role="user", content=[TextContent(type="text", text="keep me")]),
+        AssistantMessage(
+            content=[TextContent(type="text", text="still here")],
+            api="faux",
+            provider="faux",
+            model="faux-model",
+            usage=empty_usage(),
+            stop_reason="stop",
+            timestamp=now_ms(),
+        ),
+    ]
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    mode.init()
+    before_messages = list(app.messages)
+
+    mode._handle_editor_escape()
+
+    assert app.messages == before_messages
+    assert mode.status._message == "Idle"
+    assert mode._shutdown_requested is False
+    assert not mode._is_turn_active()
+
+
+def test_interactive_mode_turn_failure_resets_status_and_accepts_followup_prompt(tmp_path) -> None:
+    register_api_provider(create_faux_provider(lambda model, context: text_response_events(model, "unused")))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    prompts: list[str] = []
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    mode.init()
+
+    def run_turn(prompt: str, **kwargs) -> None:
+        prompts.append(prompt)
+        if prompt == "boom":
+            raise RuntimeError("boom")
+        mode.history.add(Text("after failure"))
+        app.tui.request_render()
+
+    app.run_turn = run_turn
+
+    mode.status.set_message("Running")
+    mode._start_turn_thread("boom", 0, 0)
+    mode._wait_for_active_turn()
+
+    rendered_after_failure = strip_ansi("\n".join(app.tui.render(120)))
+    assert prompts == ["boom"]
+    assert "Turn failed: boom" in rendered_after_failure
+    assert mode.status._message == "Idle"
+    assert "status: Running" not in rendered_after_failure
+    assert "status: Compressing" not in rendered_after_failure
+    assert "status: Aborting" not in rendered_after_failure
+
+    mode.status.set_message("Running")
+    mode._start_turn_thread("after failure", app.compaction.compressor.compression_count, 0)
+    mode._wait_for_active_turn()
+
+    rendered_after_followup = strip_ansi("\n".join(app.tui.render(120)))
+    assert prompts == ["boom", "after failure"]
+    assert "after failure" in rendered_after_followup
+    assert mode.status._message == "Idle"
+    assert "status: Running" not in rendered_after_followup
+
+
 def test_interactive_mode_ctrl_c_exits_idle_tui(tmp_path) -> None:
     calls = {"n": 0}
 
