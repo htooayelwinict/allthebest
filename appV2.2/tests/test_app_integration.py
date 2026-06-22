@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from appv22.agent.types import AgentTool, AgentToolResult
@@ -381,6 +382,79 @@ def test_coding_app_provider_failure_resets_session_and_allows_next_turn(tmp_pat
         and any(isinstance(block, TextContent) and block.text == "second turn ok" for block in message.content)
         for message in app.messages
     )
+
+
+def test_coding_app_provider_failure_and_followup_survive_jsonl_persistence(tmp_path: Path) -> None:
+    model = faux_model()
+    session_path = tmp_path / "provider-recovery.jsonl"
+    export_path = tmp_path / "provider-recovery-export.jsonl"
+    raw_provider_body = "provider guardrail details " + ("x" * 5000)
+    bounded_error = (
+        "OpenRouter authorization failed (HTTP 403) for model qwen/qwen3-coder-next. "
+        "Check OPENROUTER_API_KEY, account credits, and model access. "
+        "Provider message: provider guardrail details ... [truncated provider error body]"
+    )
+    calls = {"n": 0}
+
+    def script(m, c):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            error = AssistantMessage(
+                content=[TextContent(text="")],
+                api=m.api,
+                provider=m.provider,
+                model=m.id,
+                usage=empty_usage(),
+                stop_reason="error",
+                error_message=bounded_error,
+            )
+            return [ErrorEvent(reason="error", error=error)]
+        return text_response_events(m, "persisted follow-up ok")
+
+    register_api_provider(create_faux_provider(script))
+    app = CodingApp(cwd=str(tmp_path), model=model, enable_tui=False, session_path=str(session_path))
+
+    app.run_turn("first turn hits provider failure")
+    app.run_turn("second turn should persist")
+
+    persisted_text = session_path.read_text(encoding="utf-8")
+    persisted_entries = [json.loads(line) for line in persisted_text.splitlines()]
+    assistant_messages = [
+        entry["message"]
+        for entry in persisted_entries
+        if entry.get("type") == "message" and entry.get("message", {}).get("role") == "assistant"
+    ]
+    assert any(message.get("errorMessage") == bounded_error for message in assistant_messages)
+    assert any(
+        block.get("type") == "text" and block.get("text") == "persisted follow-up ok"
+        for message in assistant_messages
+        for block in message.get("content", [])
+    )
+    assert len(bounded_error) < 1200
+    assert raw_provider_body not in persisted_text
+    assert "x" * 500 not in persisted_text
+    assert "ResponseNotRead" not in persisted_text
+
+    reloaded = CodingApp(cwd=str(tmp_path), model=model, enable_tui=False, session_path=str(session_path))
+    reloaded_text = "\n".join(str(message.content) for message in reloaded.messages)
+    reloaded_errors = [
+        message.error_message
+        for message in reloaded.messages
+        if isinstance(message, AssistantMessage) and message.stop_reason == "error"
+    ]
+    assert reloaded_errors == [bounded_error]
+    assert "persisted follow-up ok" in reloaded_text
+    assert raw_provider_body not in reloaded_text
+    assert "x" * 500 not in reloaded_text
+
+    returned_path = app.session.export_to_jsonl(str(export_path))
+    exported_text = Path(returned_path).read_text(encoding="utf-8")
+    assert returned_path == str(export_path)
+    assert bounded_error in exported_text
+    assert "persisted follow-up ok" in exported_text
+    assert raw_provider_body not in exported_text
+    assert "x" * 500 not in exported_text
+    assert "ResponseNotRead" not in exported_text
 
 
 def test_coding_app_recovers_output_cap_error_by_lowering_max_tokens_without_compaction(tmp_path: Path) -> None:
