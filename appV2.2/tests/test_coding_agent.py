@@ -911,6 +911,31 @@ def test_build_system_prompt_includes_tools_and_cwd(tmp_path: Path) -> None:
     assert str(tmp_path).replace("\\", "/") in prompt
 
 
+def test_build_system_prompt_accepts_scope_narrowing_recovery_guidelines(tmp_path: Path) -> None:
+    prompt = build_system_prompt(
+        BuildSystemPromptOptions(
+            cwd=str(tmp_path),
+            selected_tools=["read", "bash", "edit", "write"],
+            tool_snippets={
+                "read": "Read file contents",
+                "bash": "Run shell commands",
+                "edit": "Edit files",
+                "write": "Write files",
+            },
+            prompt_guidelines=[
+                "For broad migrations, first produce a bounded audit and NEXT_PATCH before implementation.",
+                "When patching, respect allowed_files, forbidden_files, test_command, success_criteria, and stop_condition.",
+                "Keep patches independently reviewable.",
+            ],
+        )
+    )
+
+    assert "bounded audit and NEXT_PATCH" in prompt
+    assert "allowed_files, forbidden_files, test_command, success_criteria, and stop_condition" in prompt
+    assert "Keep patches independently reviewable." in prompt
+    assert "continue until finished" not in prompt.lower()
+
+
 def test_build_system_prompt_includes_pi_docs_resolution_guidance(tmp_path: Path) -> None:
     prompt = build_system_prompt(BuildSystemPromptOptions(cwd=str(tmp_path)))
 
@@ -2328,6 +2353,60 @@ def test_tool_loop_guardrail_treats_bash_inventory_variants_as_no_progress() -> 
     assert "read with path/offset/limit" in decisions[2].message
 
 
+def test_tool_loop_guardrail_treats_broad_python_repo_scan_variants_as_no_progress() -> None:
+    from appv22.agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController()
+    commands = [
+        "find . -type f -name '*.py'",
+        "rg --files -g '*.py' .",
+        "find ./ -name '*.py' -type f",
+    ]
+
+    decisions = [
+        controller.after_call("bash", {"command": command}, "src/app.py\nsrc/tools/read.py", failed=False)
+        for command in commands
+    ]
+
+    assert decisions[0].action == "allow"
+    assert decisions[1].code == "idempotent_no_progress_warning"
+    assert decisions[2].action == "halt"
+    assert decisions[2].code == "idempotent_no_progress_block"
+    assert "For codebase scans" in decisions[2].message
+    assert "treat listings/search output as inventory" in decisions[2].message
+    assert "read with path/offset/limit" in decisions[2].message
+
+
+def test_tool_loop_guardrail_allows_useful_followup_reads_but_warns_on_repeated_same_read() -> None:
+    from appv22.agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController()
+    first = controller.after_call(
+        "read",
+        {"path": "src/a.py", "offset": 1, "limit": 40},
+        "same body",
+        failed=False,
+    )
+    useful_followup = controller.after_call(
+        "read",
+        {"path": "src/b.py", "offset": 1, "limit": 40},
+        "same body",
+        failed=False,
+    )
+    repeated = controller.after_call(
+        "read",
+        {"path": "src/a.py", "offset": 1, "limit": 40},
+        "same body",
+        failed=False,
+    )
+
+    assert first.action == "allow"
+    assert useful_followup.action == "allow"
+    assert repeated.action == "warn"
+    assert repeated.code == "idempotent_no_progress_warning"
+    assert "Use a different query/path only if the existing result is insufficient" in repeated.message
+
+
 def test_tool_loop_guardrail_normalizes_bash_inventory_paths_against_cwd(tmp_path: Path) -> None:
     from appv22.agent.tool_guardrails import ToolCallGuardrailController
 
@@ -2546,6 +2625,71 @@ def test_agent_session_injects_recovery_steering_on_bash_no_progress_warning(tmp
     assert "idempotent_no_progress_warning" in tool_results[-1].content[0].text
     assert any("Tool loop recovery instruction" in users[-1] for users in seen_user_messages if users)
     assert assistants[-1].content[0].text == "I will use the first listing and read the relevant files."
+
+
+def test_agent_session_broad_scan_recovery_steering_prefers_inventory_over_repeating_bash(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+    recovery_messages: list[str] = []
+    scan_commands = [
+        {"command": "find . -type f -name '*.py'"},
+        {"command": "rg --files -g '*.py' ."},
+    ]
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="src/app.py\nsrc/tools/read.py")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute,
+    )
+
+    def _user_text(message) -> str:
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content
+        return "".join(block.text for block in content if getattr(block, "type", None) == "text")
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        users = [_user_text(message) for message in c.messages if getattr(message, "role", None) == "user"]
+        if users and "Tool loop recovery instruction" in users[-1]:
+            recovery_messages.append(users[-1])
+            return text_response_events(m, "I will treat the listing as inventory and inspect only relevant files.")
+        return tool_call_response_events(
+            m,
+            "bash",
+            scan_commands[min(provider_calls["n"] - 1, len(scan_commands) - 1)],
+            call_id=f"call_{provider_calls['n']}",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt("analyze the codebase bot, and read all the codes in python files")
+
+    assert executions == scan_commands
+    assert provider_calls["n"] == 3
+    assert len(recovery_messages) == 1
+    recovery = recovery_messages[0]
+    assert "Tool loop recovery instruction" in recovery
+    assert "do not call bash again for the same inventory" in recovery
+    assert "For codebase scans, treat that output as inventory" in recovery
+    assert "read with path/offset/limit" in recovery
+    assert "Use edit/write only for requested changes" in recovery
+    assert session.messages[-1].role == "assistant"
+    assert session.messages[-1].content[0].text == (
+        "I will treat the listing as inventory and inspect only relevant files."
+    )
 
 
 def test_agent_session_reissues_recovery_steering_for_escalating_tool_loop_warnings(tmp_path: Path) -> None:
