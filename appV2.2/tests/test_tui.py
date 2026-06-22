@@ -1449,6 +1449,95 @@ def test_interactive_mode_ctrl_c_exits_idle_tui(tmp_path) -> None:
     assert calls["n"] == 0
 
 
+def test_interactive_mode_run_ctrl_c_aborts_active_turn_and_recovers_prompt(tmp_path) -> None:
+    started = threading.Event()
+    aborted = threading.Event()
+    provider_calls = {"n": 0}
+
+    def script(model, context):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return tool_call_response_events(model, "aborter", {})
+        return text_response_events(model, "followup ok")
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=120)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+
+    def aborter_execute(tool_call_id, args, signal=None, on_update=None):
+        started.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if signal and signal.aborted:
+                aborted.set()
+                raise RuntimeError("Operation aborted")
+            time.sleep(0.005)
+        raise RuntimeError("abort signal was not delivered")
+
+    app.session.agent.state.tools = [
+        AgentTool(
+            name="aborter",
+            description="aborter",
+            parameters={"type": "object", "properties": {}},
+            label="Aborter",
+            execute=aborter_execute,
+        )
+    ]
+    mode = InteractiveMode(app)
+    outcome: dict[str, object] = {}
+
+    def run_mode() -> None:
+        try:
+            outcome["code"] = mode.run()
+        except BaseException as error:  # noqa: BLE001 - test thread must surface failures.
+            outcome["error"] = error
+
+    thread = threading.Thread(target=run_mode)
+    thread.start()
+    try:
+        assert _wait_until(lambda: terminal.input_handler is not None and mode.active_editor is not None)
+        assert terminal.input_handler is not None
+
+        terminal.input_handler("run aborter\r")
+        assert started.wait(timeout=2)
+
+        terminal.input_handler("\x03")
+
+        assert _wait_until(
+            lambda: aborted.is_set()
+            and not mode._is_turn_active()
+            and mode.status._message == "Idle"
+            and mode.active_editor is not None,
+            timeout=2,
+        )
+        assert provider_calls["n"] == 1
+
+        terminal.input_handler("followup\r")
+
+        assert _wait_until(
+            lambda: provider_calls["n"] == 2
+            and not mode._is_turn_active()
+            and mode.status._message == "Idle"
+            and mode.active_editor is not None,
+            timeout=2,
+        )
+        assert "followup ok" in strip_ansi(terminal.output)
+
+        terminal.input_handler("/exit\r")
+        thread.join(timeout=2)
+    finally:
+        if thread.is_alive():
+            mode._shutdown_requested = True
+            app.session.agent.abort()
+            if terminal.input_handler is not None:
+                terminal.input_handler("/exit\r")
+            thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert "error" not in outcome
+    assert outcome["code"] == 0
+
+
 def test_tui_ports_pi_input_listener_transform_consume_and_unsubscribe() -> None:
     terminal = FakeTerminal(columns=40)
     tui = TUI(terminal)
