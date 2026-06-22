@@ -323,6 +323,66 @@ def test_coding_app_recovers_context_overflow_by_compacting_and_retrying(tmp_pat
     )
 
 
+def test_coding_app_provider_failure_resets_session_and_allows_next_turn(tmp_path: Path) -> None:
+    model = faux_model()
+    raw_provider_body = "provider guardrail details " + ("x" * 5000)
+    bounded_error = (
+        "OpenRouter authorization failed (HTTP 403) for model qwen/qwen3-coder-next. "
+        "Check OPENROUTER_API_KEY, account credits, and model access. "
+        "Provider message: provider guardrail details ... [truncated provider error body]"
+    )
+    calls = {"n": 0}
+
+    def script(m, c):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            error = AssistantMessage(
+                content=[TextContent(text="")],
+                api=m.api,
+                provider=m.provider,
+                model=m.id,
+                usage=empty_usage(),
+                stop_reason="error",
+                error_message=bounded_error,
+            )
+            return [ErrorEvent(reason="error", error=error)]
+        return text_response_events(m, "second turn ok")
+
+    register_api_provider(create_faux_provider(script))
+    app = CodingApp(cwd=str(tmp_path), model=model, enable_tui=False)
+
+    app.run_turn("first turn hits provider failure")
+
+    provider_errors = [
+        message
+        for message in app.messages
+        if isinstance(message, AssistantMessage) and message.stop_reason == "error"
+    ]
+    assert len(provider_errors) == 1
+    assert provider_errors[0].error_message is not None
+    assert "OpenRouter authorization failed" in provider_errors[0].error_message
+    assert len(provider_errors[0].error_message) < 1200
+    assert raw_provider_body not in provider_errors[0].error_message
+    assert "x" * 500 not in provider_errors[0].error_message
+    assert "ResponseNotRead" not in provider_errors[0].error_message
+    assert app.session.is_streaming is False
+    assert app.session.is_compacting is False
+    assert app.session.retry_attempt == 0
+
+    app.run_turn("second turn should still work")
+
+    assert calls["n"] == 2
+    assert app.session.is_streaming is False
+    assert app.session.is_compacting is False
+    assert app.session.retry_attempt == 0
+    assert any(
+        isinstance(message, AssistantMessage)
+        and message.stop_reason == "stop"
+        and any(isinstance(block, TextContent) and block.text == "second turn ok" for block in message.content)
+        for message in app.messages
+    )
+
+
 def test_coding_app_recovers_output_cap_error_by_lowering_max_tokens_without_compaction(tmp_path: Path) -> None:
     model = faux_model()
     model.max_tokens = 8192
