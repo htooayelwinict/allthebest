@@ -332,10 +332,15 @@ class Markdown(Text):
         super().__init__(text)
 
     def render(self, width: int) -> list[str]:
+        key = (self._text, width)
+        if self._cache is not None and self._cache_key == key:
+            return self._cache
         rendered = _render_markdown_text(self._text)
         lines: list[str] = []
         for raw in rendered.split("\n"):
             lines.extend(wrap_text(raw, width))
+        self._cache = lines
+        self._cache_key = key
         return lines
 
 
@@ -709,6 +714,10 @@ def _consume_grapheme_extenders(text: str, index: int) -> int:
     return index
 
 
+def _is_plain_ascii_input(value: str) -> bool:
+    return value.isascii() and all(" " <= char <= "~" for char in value)
+
+
 def _is_grapheme_extender(char: str) -> bool:
     codepoint = ord(char)
     return (
@@ -946,6 +955,8 @@ class Input(Component):
         available_width = width - prompt_width
         if available_width <= 0:
             return [truncate_to_width(self.prompt, width)]
+        if _is_plain_ascii_input(self.value):
+            return self._render_plain_ascii(width, prompt_width, available_width)
 
         visible_text = ""
         cursor_display = self.cursor
@@ -972,6 +983,39 @@ class Input(Component):
 
         before_cursor = visible_text[:cursor_display]
         at_cursor = _next_grapheme_text(visible_text, cursor_display) or " "
+        after_cursor = visible_text[cursor_display + len(at_cursor) :]
+        marker = CURSOR_MARKER if self.focused else ""
+        text_with_cursor = before_cursor + marker + f"\x1b[7m{at_cursor}\x1b[27m" + after_cursor
+        visual_length = visible_width(text_with_cursor)
+        padding = " " * max(0, available_width - visual_length)
+        return [truncate_to_width(self.prompt + text_with_cursor + padding, width)]
+
+    def _render_plain_ascii(self, width: int, prompt_width: int, available_width: int) -> list[str]:
+        value = self.value
+        cursor = max(0, min(self.cursor, len(value)))
+        total_width = len(value)
+        cursor_display = cursor
+
+        if total_width < available_width:
+            visible_text = value
+        else:
+            scroll_width = available_width - 1 if cursor == len(value) else available_width
+            if scroll_width > 0:
+                half_width = scroll_width // 2
+                if cursor < half_width:
+                    start_col = 0
+                elif cursor > total_width - half_width:
+                    start_col = max(0, total_width - scroll_width)
+                else:
+                    start_col = max(0, cursor - half_width)
+                visible_text = value[start_col : start_col + scroll_width]
+                cursor_display = max(0, min(len(visible_text), cursor - start_col))
+            else:
+                visible_text = ""
+                cursor_display = 0
+
+        before_cursor = visible_text[:cursor_display]
+        at_cursor = visible_text[cursor_display : cursor_display + 1] or " "
         after_cursor = visible_text[cursor_display + len(at_cursor) :]
         marker = CURSOR_MARKER if self.focused else ""
         text_with_cursor = before_cursor + marker + f"\x1b[7m{at_cursor}\x1b[27m" + after_cursor
@@ -1744,6 +1788,7 @@ class FooterComponent(Component):
         context_window: int | None = None,
         context_percent: float | None = None,
         context_percent_unknown: bool = False,
+        context_estimate_rough: bool = False,
         total_input: int = 0,
         total_output: int = 0,
         total_cache_read: int = 0,
@@ -1770,6 +1815,7 @@ class FooterComponent(Component):
         self.context_window = context_window
         self.context_percent = context_percent
         self.context_percent_unknown = context_percent_unknown
+        self.context_estimate_rough = context_estimate_rough
         self.total_input = total_input
         self.total_output = total_output
         self.total_cache_read = total_cache_read
@@ -1794,13 +1840,19 @@ class FooterComponent(Component):
             cwd = f"{cwd} • {self.session_name}"
         context_window = self.context_window or self.context_threshold or 0
         if self.context_percent_unknown:
-            context_percent_display = "?"
+            if self.context_estimate_rough and self.context_tokens is not None and context_window > 0:
+                context_percent = (self.context_tokens / context_window) * 100
+                context_percent_display = f"~{context_percent:.1f}"
+            else:
+                context_percent_display = "?"
         elif self.context_percent is not None:
             context_percent = self.context_percent
-            context_percent_display = f"{context_percent:.1f}"
+            prefix = "~" if self.context_estimate_rough else ""
+            context_percent_display = f"{prefix}{context_percent:.1f}"
         elif self.context_tokens is not None and context_window > 0:
             context_percent = (self.context_tokens / context_window) * 100
-            context_percent_display = f"{context_percent:.1f}"
+            prefix = "~" if self.context_estimate_rough else ""
+            context_percent_display = f"{prefix}{context_percent:.1f}"
         else:
             context_percent = 0.0
             context_percent_display = f"{context_percent:.1f}"

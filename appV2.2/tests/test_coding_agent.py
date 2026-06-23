@@ -6649,7 +6649,32 @@ def test_agent_session_stats_and_context_usage_from_messages(tmp_path: Path) -> 
     assert session.getContextUsage() == context_usage
 
 
-def test_agent_session_context_usage_unknown_after_compaction_until_post_compaction_assistant(
+def test_agent_session_context_usage_uses_rough_estimate_when_provider_usage_is_zero(tmp_path: Path) -> None:
+    session_path = tmp_path / "stats-zero-usage-session.jsonl"
+    model = faux_model()
+    model.context_window = 1000
+    session = AgentSession(cwd=str(tmp_path), model=model, session_path=str(session_path))
+    session.agent.state.messages = [
+        UserMessage(content="before " * 80),
+        AssistantMessage(
+            content=[TextContent(text="reply " * 80)],
+            api="faux",
+            provider="faux",
+            model="faux-model",
+            usage=Usage(input=0, output=0, cache_read=0, cache_write=0, total_tokens=0),
+            stop_reason="stop",
+        ),
+    ]
+
+    context_usage = session.get_context_usage()
+
+    assert context_usage is not None
+    assert context_usage["tokens"] > 0
+    assert context_usage["contextWindow"] == 1000
+    assert context_usage["percent"] == (context_usage["tokens"] / 1000) * 100
+
+
+def test_agent_session_context_usage_estimated_after_compaction_until_post_compaction_assistant(
     tmp_path: Path,
 ) -> None:
     session_path = tmp_path / "stats-compaction-session.jsonl"
@@ -6669,7 +6694,12 @@ def test_agent_session_context_usage_unknown_after_compaction_until_post_compact
     session._session_store.append_compaction("summary", first_entry, 980)
     session.agent.state.messages = session._session_store.build_context(default_thinking_level="off").messages
 
-    assert session.get_context_usage() == {"tokens": None, "contextWindow": 1000, "percent": None}
+    estimated_usage = session.get_context_usage()
+    assert estimated_usage is not None
+    assert estimated_usage["tokens"] > 0
+    assert estimated_usage["contextWindow"] == 1000
+    assert estimated_usage["percent"] == (estimated_usage["tokens"] / 1000) * 100
+    assert estimated_usage["estimated"] is True
 
     usage = Usage(input=20, output=5, cache_read=0, cache_write=0, total_tokens=25)
     post_compaction = AssistantMessage(
@@ -6689,6 +6719,7 @@ def test_agent_session_context_usage_unknown_after_compaction_until_post_compact
     assert context_usage["tokens"] >= 25
     assert context_usage["contextWindow"] == 1000
     assert context_usage["percent"] == (context_usage["tokens"] / 1000) * 100
+    assert context_usage.get("estimated") is not True
 
 
 def test_agent_session_navigate_tree_writes_extension_summary_and_label(tmp_path: Path) -> None:

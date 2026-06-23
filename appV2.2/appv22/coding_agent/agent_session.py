@@ -2426,7 +2426,13 @@ class AgentSession:
                     has_post_compaction_usage = True
                 break
             if not has_post_compaction_usage:
-                return {"tokens": None, "contextWindow": context_window, "percent": None}
+                tokens = estimate_tokens(self.messages)
+                return {
+                    "tokens": tokens,
+                    "contextWindow": context_window,
+                    "percent": (tokens / context_window) * 100,
+                    "estimated": True,
+                }
 
         tokens = _estimate_context_tokens(self.messages)
         return {
@@ -2476,6 +2482,8 @@ def _assistant_usage(message: AgentMessage) -> Usage | None:
     if not isinstance(message, AssistantMessage):
         return None
     if message.stop_reason in ("aborted", "error"):
+        return None
+    if _calculate_context_tokens(message.usage) <= 0:
         return None
     return message.usage
 

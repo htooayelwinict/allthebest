@@ -827,18 +827,26 @@ class InteractiveMode:
         self.footer.context_window = None
         self.footer.context_percent = None
         self.footer.context_percent_unknown = False
+        self.footer.context_estimate_rough = False
         if isinstance(context_usage, dict):
+            context_tokens = context_usage.get("tokens")
             context_window = context_usage.get("contextWindow", context_usage.get("context_window"))
             context_percent = context_usage.get("percent")
+            context_estimated = context_usage.get("estimated")
+            if isinstance(context_tokens, (int, float)):
+                self.footer.context_tokens = int(context_tokens)
             if isinstance(context_window, (int, float)):
                 self.footer.context_window = int(context_window)
             if isinstance(context_percent, (int, float)):
                 self.footer.context_percent = float(context_percent)
             elif context_percent is None and "percent" in context_usage:
                 self.footer.context_percent_unknown = True
+            if context_estimated is True:
+                self.footer.context_estimate_rough = True
         if self.app.compaction.awaiting_real_usage_after_compression:
             self.footer.context_percent = None
             self.footer.context_percent_unknown = True
+            self.footer.context_estimate_rough = True
         self.footer.context_threshold = self.app.compaction.compressor.threshold_tokens
         self.footer.compression_count = self.app.compaction.compressor.compression_count
         self.footer.extension_statuses = dict(self.extension_statuses)
