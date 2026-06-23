@@ -3268,6 +3268,28 @@ def test_interactive_mode_footer_ports_pi_unknown_context_usage(tmp_path) -> Non
         app.tui.stop()
 
 
+def test_interactive_mode_footer_marks_estimated_context_usage_with_tilde(tmp_path) -> None:
+    model = faux_model()
+    model.context_window = 200_000
+    app = CodingApp(cwd=str(tmp_path), model=model, terminal=FakeTerminal(columns=160), enable_tui=True)
+    app.session.get_context_usage = lambda: {
+        "tokens": 20_000,
+        "contextWindow": 200_000,
+        "percent": 10.0,
+        "estimated": True,
+    }
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+
+    try:
+        mode.init()
+        rendered = strip_ansi("\n".join(app.tui.render(160)))
+
+        assert "~10.0%/200k (auto)" in rendered
+    finally:
+        mode.footer_data_provider.dispose()
+        app.tui.stop()
+
+
 def test_interactive_mode_footer_ports_pi_session_name_updates(tmp_path) -> None:
     app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=FakeTerminal(columns=160), enable_tui=True)
     mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
@@ -3810,7 +3832,7 @@ def test_interactive_mode_auto_compaction_notice_uses_actual_compaction_boundary
     assert "Context compacted: ~8 ->" not in rendered
 
 
-def test_interactive_mode_footer_marks_context_unknown_while_awaiting_real_usage(tmp_path) -> None:
+def test_interactive_mode_footer_marks_context_rough_while_awaiting_real_usage(tmp_path) -> None:
     app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=FakeTerminal(columns=120), enable_tui=True)
     mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
     app.compaction.awaiting_real_usage_after_compression = True
@@ -3820,7 +3842,8 @@ def test_interactive_mode_footer_marks_context_unknown_while_awaiting_real_usage
     assert mode.footer.context_percent is None
     assert mode.footer.context_percent_unknown is True
     rendered = strip_ansi("\n".join(mode.footer.render(120)))
-    assert "?/" in rendered
+    assert "~0.0%/" in rendered
+    assert "?/" not in rendered
 
 
 def test_interactive_mode_renders_auto_retry_status_instead_of_stale_running(tmp_path) -> None:
@@ -4270,3 +4293,40 @@ def test_pi_standalone_editor_helpers_are_exported_and_match_core_behavior() -> 
 
 def test_strip_ansi_helper() -> None:
     assert strip_ansi("\x1b[1mbold\x1b[0m") == "bold"
+
+
+def test_markdown_render_reuses_cached_lines_until_text_changes() -> None:
+    markdown = Markdown("**bold** `code`\n- *item*")
+
+    first = markdown.render(80)
+    second = markdown.render(80)
+
+    assert second is first
+    assert first == ["bold code", "- item"]
+
+    markdown.set_text("**changed**")
+    changed = markdown.render(80)
+
+    assert changed is not first
+    assert changed == ["changed"]
+
+
+def test_input_render_avoids_full_width_scan_for_long_ascii_tail(monkeypatch) -> None:
+    import appv22.tui.component as component_module
+
+    real_visible_width = component_module.visible_width
+    checked_lengths: list[int] = []
+
+    def guarded_visible_width(text: str) -> int:
+        checked_lengths.append(len(text))
+        assert len(text) < 500
+        return real_visible_width(text)
+
+    monkeypatch.setattr(component_module, "visible_width", guarded_visible_width)
+    editor = Input("x" * 20_000, prompt="appv22> ")
+
+    rendered = editor.render(100)
+
+    assert len(rendered) == 1
+    assert "x" in strip_ansi(rendered[0])
+    assert max(checked_lengths) < 500
