@@ -737,6 +737,29 @@ def test_summary_model_failure_falls_back_to_main_summarizer_and_records_aux_fai
     assert "deterministic fallback" not in summary_text
 
 
+def test_summary_failure_fallback_redacts_secrets_from_inserted_summary() -> None:
+    raw_secret = "sk-proj-abc123def456ghi789jkl012"
+    messages = [
+        _user("start"),
+        _user(f"OPENAI_API_KEY={raw_secret}"),
+        _assistant("I used the configured key."),
+        _user("latest request"),
+    ]
+
+    compressor = ContextCompressor(context_length=600, protect_first_n=1, protect_last_n=1)
+    result = compressor.compress(
+        messages,
+        summarizer=lambda prompt: (_ for _ in ()).throw(RuntimeError("summary down")),
+        force=True,
+    )
+
+    rendered = "\n".join(_content_text(message) for message in result.messages)
+    assert result.compressed is True
+    assert compressor._last_summary_fallback_used is True
+    assert raw_secret not in rendered
+    assert "OPENAI_API_KEY=[REDACTED]" in rendered
+
+
 def test_compress_rehydrates_existing_summary_message() -> None:
     previous_summary = "## Goal\nprior goal\n## Remaining Work\nprior next"
     messages = [
