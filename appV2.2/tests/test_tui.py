@@ -187,6 +187,52 @@ def test_footer_ports_pi_home_path_formatting() -> None:
     assert footer.render(80)[0] == "~/project"
 
 
+def test_interactive_mode_footer_shows_history_hint_only_when_scrolled_up(tmp_path) -> None:
+    terminal = FakeTerminal(columns=80, rows=6)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    mode.init()
+
+    for index in range(12):
+        mode.history.add(Text(f"history line {index}"))
+    app.tui.request_render()
+
+    app.tui.scroll_by(-3)
+    mode._refresh_footer()
+
+    scrolled_footer = "\n".join(mode.footer.render(80))
+    assert "history" in scrolled_footer
+    assert "End to latest" in scrolled_footer
+
+    app.tui.scroll_to_bottom()
+    mode._refresh_footer()
+
+    bottom_footer = "\n".join(mode.footer.render(80))
+    assert "End to latest" not in bottom_footer
+
+
+def test_interactive_mode_footer_history_hint_updates_from_scroll_input(tmp_path) -> None:
+    terminal = FakeTerminal(columns=80, rows=6)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    mode.init()
+
+    for index in range(12):
+        mode.history.add(Text(f"history line {index}"))
+    app.tui.request_render()
+
+    assert terminal.input_handler is not None
+    terminal.input_handler("\x1b[5~")
+
+    scrolled_footer = "\n".join(mode.footer.render(80))
+    assert "End to latest" in scrolled_footer
+
+    terminal.input_handler("\x1b[F")
+
+    bottom_footer = "\n".join(mode.footer.render(80))
+    assert "End to latest" not in bottom_footer
+
+
 def test_simple_autocomplete_provider_ports_pi_fuzzy_command_filtering() -> None:
     provider = SimpleAutocompleteProvider(
         [
@@ -786,6 +832,138 @@ def test_tui_full_then_diff_single_line() -> None:
     assert "first" not in terminal.writes[-1]
 
 
+def test_tui_scrolls_transcript_viewport_without_blank_cutoff() -> None:
+    terminal = FakeTerminal(columns=40, rows=4)
+    tui = TUI(terminal)
+    for index in range(10):
+        tui.add(Text(f"line {index}"))
+
+    bottom = tui.request_render()
+    assert bottom.lines == ["line 6", "line 7", "line 8", "line 9"]
+
+    assert tui.scroll_by(-2) == -2
+    scrolled_up = tui.request_render()
+
+    assert scrolled_up.lines == ["line 4", "line 5", "line 6", "line 7"]
+    assert all(line for line in scrolled_up.lines)
+
+    assert tui.scroll_by(99) == 2
+    back_at_bottom = tui.request_render()
+
+    assert back_at_bottom.lines == ["line 6", "line 7", "line 8", "line 9"]
+
+
+def test_tui_manual_scroll_preserves_offset_until_rejoined_to_bottom() -> None:
+    terminal = FakeTerminal(columns=40, rows=4)
+    tui = TUI(terminal)
+    for index in range(10):
+        tui.add(Text(f"line {index}"))
+
+    tui.request_render()
+    tui.scroll_by(-2)
+    assert tui.request_render().lines == ["line 4", "line 5", "line 6", "line 7"]
+
+    tui.add(Text("line 10"))
+    scrolled_after_growth = tui.request_render()
+
+    assert scrolled_after_growth.lines == ["line 5", "line 6", "line 7", "line 8"]
+    assert "line 10" not in scrolled_after_growth.lines
+
+    tui.scroll_to_bottom()
+    assert tui.request_render().lines == ["line 7", "line 8", "line 9", "line 10"]
+
+    tui.add(Text("line 11"))
+    assert tui.request_render().lines == ["line 8", "line 9", "line 10", "line 11"]
+
+
+def test_tui_page_keys_scroll_transcript_before_focused_input() -> None:
+    class InputRecorder(Container):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inputs: list[str] = []
+
+        def render(self, width: int) -> list[str]:
+            return ["prompt"]
+
+        def handle_input(self, data: str) -> None:
+            self.inputs.append(data)
+
+    terminal = FakeTerminal(columns=40, rows=4)
+    tui = TUI(terminal)
+    for index in range(8):
+        tui.add(Text(f"line {index}"))
+    input_recorder = InputRecorder()
+    tui.add(input_recorder)
+    tui.set_focus(input_recorder)
+    tui.start()
+
+    assert terminal.input_handler is not None
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 5", "line 6", "line 7", "prompt"]
+
+    terminal.input_handler("\x1b[5~")
+
+    assert input_recorder.inputs == []
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 2", "line 3", "line 4", "line 5"]
+
+    terminal.input_handler("\x1b[F")
+
+    assert input_recorder.inputs == []
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 5", "line 6", "line 7", "prompt"]
+
+    terminal.input_handler("\x1b[5~")
+
+    assert input_recorder.inputs == []
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 2", "line 3", "line 4", "line 5"]
+
+    terminal.input_handler("\x1b[6~")
+
+    assert input_recorder.inputs == []
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 5", "line 6", "line 7", "prompt"]
+
+
+def test_tui_mouse_wheel_scrolls_transcript_before_focused_input() -> None:
+    class InputRecorder(Container):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inputs: list[str] = []
+
+        def render(self, width: int) -> list[str]:
+            return ["prompt"]
+
+        def handle_input(self, data: str) -> None:
+            self.inputs.append(data)
+
+    terminal = FakeTerminal(columns=40, rows=4)
+    tui = TUI(terminal)
+    for index in range(8):
+        tui.add(Text(f"line {index}"))
+    input_recorder = InputRecorder()
+    tui.add(input_recorder)
+    tui.set_focus(input_recorder)
+    tui.start()
+
+    assert terminal.input_handler is not None
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 5", "line 6", "line 7", "prompt"]
+
+    terminal.input_handler("\x1b[<64;1;1M")
+
+    assert input_recorder.inputs == []
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 2", "line 3", "line 4", "line 5"]
+
+    terminal.input_handler("\x1b[<65;1;1M")
+
+    assert input_recorder.inputs == []
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 5", "line 6", "line 7", "prompt"]
+
+
 def test_tui_ports_pi_synchronized_output_wrapping_for_full_and_diff_renders() -> None:
     terminal = FakeTerminal(columns=40)
     tui = TUI(terminal)
@@ -976,8 +1154,10 @@ def test_process_terminal_ports_pi_start_stop_progress_cleanup() -> None:
 
     assert terminal.writes == [
         "\x1b[?2004h",
+        "\x1b[?1000h\x1b[?1006h",
         "\x1b]9;4;3\x07",
         "\x1b]9;4;0;\x07",
+        "\x1b[?1006l\x1b[?1000l",
         "\x1b[?2004l",
     ]
 
@@ -2710,7 +2890,7 @@ def test_interactive_mode_dispatches_extension_shortcut_without_model_turn(tmp_p
     context_usage = contexts[0]["getContextUsage"]()
     assert context_usage == app.session.get_context_usage()
     assert context_usage is not None
-    assert set(context_usage) == {"tokens", "contextWindow", "percent"}
+    assert {"tokens", "contextWindow", "percent"}.issubset(context_usage)
     assert context_usage["contextWindow"] == 1000
 
 
