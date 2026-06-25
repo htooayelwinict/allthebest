@@ -35,6 +35,7 @@ _SYNC_END = "\x1b[?2026l"
 _KITTY_SEQUENCE_PREFIX = "\x1b_G"
 _CELL_SIZE_RESPONSE_RE = re.compile(r"^\x1b\[6;(\d+);(\d+)t$")
 _SGR_MOUSE_RE = re.compile(r"^\x1b\[<(\d+);(\d+);(\d+)([Mm])$")
+_X10_MOUSE_RE = re.compile(r"^\x1b\[M(.)(.)(.)$")
 _PAGE_UP = "\x1b[5~"
 _PAGE_DOWN = "\x1b[6~"
 _END_KEYS = {"\x1b[F", "\x1b[4~"}
@@ -345,16 +346,26 @@ class TUI(Container):
             self.scroll_to_bottom()
             return True
         mouse_match = _SGR_MOUSE_RE.match(data)
-        if mouse_match is None:
+        if mouse_match is not None:
+            button_code = int(mouse_match.group(1))
+            self._handle_mouse_button_code(button_code)
+            return True
+        legacy_mouse_match = _X10_MOUSE_RE.match(data)
+        if legacy_mouse_match is None:
             return False
-        button_code = int(mouse_match.group(1))
+        button_code = ord(legacy_mouse_match.group(1)) - 32
+        if button_code < 0:
+            return True
+        self._handle_mouse_button_code(button_code)
+        return True
+
+    def _handle_mouse_button_code(self, button_code: int) -> None:
         if button_code & 64:
             wheel_button = button_code & 3
             if wheel_button == 0:
                 self.scroll_by(-_MOUSE_WHEEL_STEP_LINES)
             elif wheel_button == 1:
                 self.scroll_by(_MOUSE_WHEEL_STEP_LINES)
-        return True
 
     def _query_cell_size(self) -> None:
         if not get_capabilities()["images"]:

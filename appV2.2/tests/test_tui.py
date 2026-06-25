@@ -964,6 +964,44 @@ def test_tui_mouse_wheel_scrolls_transcript_before_focused_input() -> None:
     assert tui.last_render.lines == ["line 5", "line 6", "line 7", "prompt"]
 
 
+def test_tui_legacy_x10_mouse_wheel_scrolls_transcript_before_focused_input() -> None:
+    class InputRecorder(Container):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inputs: list[str] = []
+
+        def render(self, width: int) -> list[str]:
+            return ["prompt"]
+
+        def handle_input(self, data: str) -> None:
+            self.inputs.append(data)
+
+    terminal = FakeTerminal(columns=40, rows=4)
+    tui = TUI(terminal)
+    for index in range(8):
+        tui.add(Text(f"line {index}"))
+    input_recorder = InputRecorder()
+    tui.add(input_recorder)
+    tui.set_focus(input_recorder)
+    tui.start()
+
+    assert terminal.input_handler is not None
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 5", "line 6", "line 7", "prompt"]
+
+    terminal.input_handler("\x1b[M`!!")
+
+    assert input_recorder.inputs == []
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 2", "line 3", "line 4", "line 5"]
+
+    terminal.input_handler("\x1b[Ma!!")
+
+    assert input_recorder.inputs == []
+    assert tui.last_render is not None
+    assert tui.last_render.lines == ["line 5", "line 6", "line 7", "prompt"]
+
+
 def test_tui_ports_pi_synchronized_output_wrapping_for_full_and_diff_renders() -> None:
     terminal = FakeTerminal(columns=40)
     tui = TUI(terminal)
