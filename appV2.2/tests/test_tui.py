@@ -2891,6 +2891,7 @@ def test_interactive_mode_dispatches_extension_shortcut_without_model_turn(tmp_p
     assert context_usage == app.session.get_context_usage()
     assert context_usage is not None
     assert {"tokens", "contextWindow", "percent"}.issubset(context_usage)
+    assert isinstance(context_usage.get("confidence"), str)
     assert context_usage["contextWindow"] == 1000
 
 
