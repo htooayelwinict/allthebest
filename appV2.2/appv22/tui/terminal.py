@@ -17,6 +17,8 @@ from appv22.tui.stdin_buffer import StdinBuffer
 
 _BRACKETED_PASTE_ENABLE = "\x1b[?2004h"
 _BRACKETED_PASTE_DISABLE = "\x1b[?2004l"
+_MOUSE_TRACKING_ENABLE = "\x1b[?1000h\x1b[?1006h"
+_MOUSE_TRACKING_DISABLE = "\x1b[?1006l\x1b[?1000l"
 _PROGRESS_ACTIVE = "\x1b]9;4;3\x07"
 _PROGRESS_CLEAR = "\x1b]9;4;0;\x07"
 
@@ -159,6 +161,7 @@ class ProcessTerminal:
         self.resize_handler = on_resize
         self._start_raw_stdin()
         self.write(_BRACKETED_PASTE_ENABLE)
+        self.write(_MOUSE_TRACKING_ENABLE)
 
     def stop(self) -> None:  # pragma: no cover - real IO
         self._stop_raw_stdin()
@@ -168,6 +171,7 @@ class ProcessTerminal:
             self._clear_progress_timer_locked()
         if progress_was_active:
             self.write(_PROGRESS_CLEAR)
+        self.write(_MOUSE_TRACKING_DISABLE)
         self.write(_BRACKETED_PASTE_DISABLE)
 
     def _start_raw_stdin(self) -> None:  # pragma: no cover - real IO
