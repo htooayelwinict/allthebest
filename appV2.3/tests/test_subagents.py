@@ -301,6 +301,16 @@ def test_subagent_task_rejects_unsafe_allowed_tools(tmp_path):
             raise AssertionError(f"Expected allowed tool {tool!r} to fail")
 
 
+def test_subagent_task_rejects_malformed_return_contract(tmp_path):
+    for return_contract in ("", "   ", 7):
+        try:
+            SubagentTask(role="reviewer", goal="review", cwd=str(tmp_path), return_contract=return_contract)
+        except ValueError as error:
+            assert "Subagent return_contract is required" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected return_contract {return_contract!r} to fail")
+
+
 def test_supervisor_rejects_unsafe_registered_backend_name():
     supervisor = SubagentSupervisor(max_threads=1)
 

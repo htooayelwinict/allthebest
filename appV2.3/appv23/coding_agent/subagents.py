@@ -90,6 +90,8 @@ class SubagentTask:
             if not isinstance(tool, str) or not tool.strip() or not _TASK_ID_PATTERN.fullmatch(tool):
                 raise ValueError(f"Unsupported subagent allowed tool: {tool}")
         object.__setattr__(self, "allowed_tools", allowed_tools)
+        if not isinstance(self.return_contract, str) or not self.return_contract.strip():
+            raise ValueError("Subagent return_contract is required")
 
     def prompt(self) -> str:
         parts = [
