@@ -76,11 +76,16 @@ class SubagentTask:
             raise ValueError(f"Unsupported subagent task id: {self.id}")
         if self.sandbox not in _SANDBOX_FLAGS:
             raise ValueError(f"Unsupported subagent sandbox: {self.sandbox}")
-        if self.timeout_seconds <= 0:
+        if not isinstance(self.timeout_seconds, int) or self.timeout_seconds <= 0:
             raise ValueError("Subagent timeout_seconds must be positive")
-        if self.depth < 1:
+        if not isinstance(self.depth, int) or self.depth < 1:
             raise ValueError("Subagent depth must be at least 1")
+        if self.model is not None:
+            if not isinstance(self.model, str) or not self.model.strip():
+                raise ValueError("Subagent model must be a non-empty string when set")
         if self.reasoning is not None:
+            if not isinstance(self.reasoning, str):
+                raise ValueError(f"Unsupported subagent reasoning effort: {self.reasoning}")
             reasoning = self.reasoning.strip().lower()
             if reasoning not in _REASONING_EFFORTS:
                 raise ValueError(f"Unsupported subagent reasoning effort: {self.reasoning}")

@@ -336,6 +336,32 @@ def test_subagent_task_rejects_non_string_fields(tmp_path):
             raise AssertionError(f"Expected {field}={value!r} to fail")
 
 
+def test_subagent_task_rejects_malformed_optional_fields(tmp_path):
+    cases = (
+        ("model", "", "Subagent model must be a non-empty string when set"),
+        ("model", "   ", "Subagent model must be a non-empty string when set"),
+        ("model", 7, "Subagent model must be a non-empty string when set"),
+        ("reasoning", 7, "Unsupported subagent reasoning effort"),
+        ("timeout_seconds", "slow", "Subagent timeout_seconds must be positive"),
+        ("depth", "one", "Subagent depth must be at least 1"),
+    )
+    for field, value, message in cases:
+        payload = {
+            "role": "reviewer",
+            "goal": "review",
+            "cwd": str(tmp_path),
+        }
+        payload[field] = value
+        try:
+            SubagentTask(**payload)
+        except ValueError as error:
+            assert message in str(error)
+        except Exception as error:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected ValueError for {field}={value!r}, got {type(error).__name__}") from error
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected {field}={value!r} to fail")
+
+
 def test_supervisor_rejects_unsafe_registered_backend_name():
     supervisor = SubagentSupervisor(max_threads=1)
 
