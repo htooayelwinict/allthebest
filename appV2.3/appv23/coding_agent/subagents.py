@@ -65,6 +65,8 @@ class SubagentTask:
             raise ValueError("Subagent goal is required")
         if not self.cwd.strip():
             raise ValueError("Subagent cwd is required")
+        if not self.backend.strip() or not _TASK_ID_PATTERN.fullmatch(self.backend):
+            raise ValueError(f"Unsupported subagent backend: {self.backend}")
         if not self.id.strip() or not _TASK_ID_PATTERN.fullmatch(self.id):
             raise ValueError(f"Unsupported subagent task id: {self.id}")
         if self.sandbox not in _SANDBOX_FLAGS:
