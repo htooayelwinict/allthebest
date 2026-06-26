@@ -9,6 +9,7 @@ future coding agents can implement the same ``run(task)`` contract.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import threading
 import time
@@ -28,6 +29,7 @@ _SANDBOX_FLAGS: dict[str, str] = {
     "full_access": "danger-full-access",
 }
 _REASONING_EFFORTS = {"off", "low", "medium", "high"}
+_TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _now_ms() -> int:
@@ -63,6 +65,8 @@ class SubagentTask:
             raise ValueError("Subagent goal is required")
         if not self.cwd.strip():
             raise ValueError("Subagent cwd is required")
+        if not self.id.strip() or not _TASK_ID_PATTERN.fullmatch(self.id):
+            raise ValueError(f"Unsupported subagent task id: {self.id}")
         if self.sandbox not in _SANDBOX_FLAGS:
             raise ValueError(f"Unsupported subagent sandbox: {self.sandbox}")
         if self.timeout_seconds <= 0:

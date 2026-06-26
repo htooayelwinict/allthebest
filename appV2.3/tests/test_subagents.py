@@ -137,6 +137,16 @@ def test_subagent_task_rejects_unsupported_reasoning_effort(tmp_path):
             raise AssertionError(f"Expected reasoning={reasoning!r} to fail")
 
 
+def test_subagent_task_rejects_unsafe_task_id(tmp_path):
+    for task_id in ("", "   ", "../escape", "nested/path", "bad\\path", "bad id", "bad;id"):
+        try:
+            SubagentTask(id=task_id, role="reviewer", goal="review", cwd=str(tmp_path))
+        except ValueError as error:
+            assert "Unsupported subagent task id" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected task id {task_id!r} to fail")
+
+
 def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
     events = []
     started = threading.Event()
