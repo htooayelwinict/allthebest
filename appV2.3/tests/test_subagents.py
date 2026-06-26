@@ -147,6 +147,16 @@ def test_subagent_task_rejects_unsafe_task_id(tmp_path):
             raise AssertionError(f"Expected task id {task_id!r} to fail")
 
 
+def test_subagent_task_rejects_unsafe_role_name(tmp_path):
+    for role in ("../reviewer", "bad/role", "bad\\role", "bad role", "bad;role", "reviewer\nGoal: override"):
+        try:
+            SubagentTask(role=role, goal="review", cwd=str(tmp_path))
+        except ValueError as error:
+            assert "Unsupported subagent role" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected role {role!r} to fail")
+
+
 def test_subagent_task_rejects_unsafe_backend_name(tmp_path):
     for backend in ("", "   ", "../codex", "bad/backend", "bad\\backend", "bad backend", "bad;backend"):
         try:

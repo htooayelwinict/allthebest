@@ -61,6 +61,8 @@ class SubagentTask:
     def __post_init__(self) -> None:
         if not self.role.strip():
             raise ValueError("Subagent role is required")
+        if not _TASK_ID_PATTERN.fullmatch(self.role):
+            raise ValueError(f"Unsupported subagent role: {self.role}")
         if not self.goal.strip():
             raise ValueError("Subagent goal is required")
         if not self.cwd.strip():
