@@ -27,6 +27,7 @@ _SANDBOX_FLAGS: dict[str, str] = {
     "workspace_write": "workspace-write",
     "full_access": "danger-full-access",
 }
+_REASONING_EFFORTS = {"off", "low", "medium", "high"}
 
 
 def _now_ms() -> int:
@@ -68,6 +69,11 @@ class SubagentTask:
             raise ValueError("Subagent timeout_seconds must be positive")
         if self.depth < 1:
             raise ValueError("Subagent depth must be at least 1")
+        if self.reasoning is not None:
+            reasoning = self.reasoning.strip().lower()
+            if reasoning not in _REASONING_EFFORTS:
+                raise ValueError(f"Unsupported subagent reasoning effort: {self.reasoning}")
+            object.__setattr__(self, "reasoning", reasoning)
         object.__setattr__(self, "allowed_tools", tuple(self.allowed_tools or ()))
 
     def prompt(self) -> str:

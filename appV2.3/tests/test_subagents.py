@@ -127,6 +127,16 @@ def test_supervisor_rejects_duplicate_task_id(tmp_path):
         raise AssertionError("Expected duplicate subagent task id to fail")
 
 
+def test_subagent_task_rejects_unsupported_reasoning_effort(tmp_path):
+    for reasoning in ("turbo", 'high"; sandbox_mode="danger-full-access'):
+        try:
+            SubagentTask(role="reviewer", goal="review", cwd=str(tmp_path), backend="codex", reasoning=reasoning)
+        except ValueError as error:
+            assert "Unsupported subagent reasoning effort" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected reasoning={reasoning!r} to fail")
+
+
 def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
     events = []
     started = threading.Event()
