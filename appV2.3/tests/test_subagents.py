@@ -171,6 +171,31 @@ def test_subagent_result_rejects_malformed_collection_fields():
             raise AssertionError(f"Expected collection fields {overrides!r} to fail")
 
 
+def test_subagent_result_rejects_malformed_text_fields():
+    cases = (
+        ({"summary": ""}, "Subagent summary is required"),
+        ({"summary": 7}, "Subagent summary is required"),
+        ({"final_response": 7}, "Subagent final_response must be a string"),
+        ({"child_session_id": 7}, "Subagent child_session_id must be a string when set"),
+        ({"raw_log_path": 7}, "Subagent raw_log_path must be a string when set"),
+    )
+    for overrides, message in cases:
+        payload = {
+            "task_id": "subagent-fixed",
+            "backend": "internal",
+            "role": "reviewer",
+            "status": "completed",
+            "summary": "done",
+            **overrides,
+        }
+        try:
+            SubagentResult(**payload)
+        except ValueError as error:
+            assert message in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected text fields {overrides!r} to fail")
+
+
 def test_supervisor_event_sink_failure_does_not_break_task(tmp_path):
     seen_event_types = []
 

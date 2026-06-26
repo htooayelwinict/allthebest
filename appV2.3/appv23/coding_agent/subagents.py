@@ -130,6 +130,14 @@ class SubagentResult:
             raise ValueError(f"Unsupported subagent role: {self.role}")
         if self.status not in _SUBAGENT_STATUSES:
             raise ValueError(f"Unsupported subagent status: {self.status}")
+        if not isinstance(self.summary, str) or not self.summary.strip():
+            raise ValueError("Subagent summary is required")
+        if not isinstance(self.final_response, str):
+            raise ValueError("Subagent final_response must be a string")
+        if self.child_session_id is not None and not isinstance(self.child_session_id, str):
+            raise ValueError("Subagent child_session_id must be a string when set")
+        if self.raw_log_path is not None and not isinstance(self.raw_log_path, str):
+            raise ValueError("Subagent raw_log_path must be a string when set")
         if self.started_at_ms < 0 or self.ended_at_ms < 0:
             raise ValueError("Subagent timestamps must be non-negative")
         if self.started_at_ms and self.ended_at_ms and self.ended_at_ms < self.started_at_ms:
