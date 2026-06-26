@@ -49,6 +49,11 @@ def _validate_wait_timeout(timeout: float | None) -> None:
         raise ValueError("timeout must be non-negative and finite")
 
 
+def _validate_task_id_reference(task_id: str) -> None:
+    if not isinstance(task_id, str) or not task_id.strip() or not _TASK_ID_PATTERN.fullmatch(task_id):
+        raise ValueError(f"Unsupported subagent task id: {task_id}")
+
+
 @dataclass(frozen=True)
 class SubagentTask:
     role: str
@@ -539,6 +544,7 @@ class SubagentSupervisor:
         return task.id
 
     def wait(self, task_id: str, timeout: float | None = None) -> SubagentResult:
+        _validate_task_id_reference(task_id)
         _validate_wait_timeout(timeout)
         with self._lock:
             if task_id in self._results:
@@ -574,6 +580,7 @@ class SubagentSupervisor:
         return result
 
     def cancel(self, task_id: str, reason: str = "Cancelled by user.") -> SubagentResult:
+        _validate_task_id_reference(task_id)
         if not isinstance(reason, str):
             raise ValueError("cancel reason must be a string")
         with self._lock:
@@ -650,6 +657,7 @@ class SubagentSupervisor:
             return list(self._results.values())
 
     def get_result(self, task_id: str) -> SubagentResult | None:
+        _validate_task_id_reference(task_id)
         with self._lock:
             if task_id in self._results:
                 return self._results[task_id]

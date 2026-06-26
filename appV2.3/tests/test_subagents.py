@@ -351,6 +351,24 @@ def test_supervisor_rejects_malformed_spawn_task():
         raise AssertionError("Expected malformed spawn task to fail")
 
 
+def test_supervisor_rejects_malformed_task_id_references():
+    supervisor = SubagentSupervisor(max_threads=1)
+    cases = (
+        (lambda: supervisor.wait(["subagent-fixed"]), "wait"),
+        (lambda: supervisor.cancel(["subagent-fixed"]), "cancel"),
+        (lambda: supervisor.get_result(["subagent-fixed"]), "get_result"),
+    )
+    for operation, name in cases:
+        try:
+            operation()
+        except ValueError as error:
+            assert "Unsupported subagent task id" in str(error)
+        except Exception as error:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected ValueError from {name}, got {type(error).__name__}") from error
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected malformed task id in {name} to fail")
+
+
 def test_supervisor_rejects_unregistered_backend(tmp_path):
     supervisor = SubagentSupervisor(max_threads=1)
 
