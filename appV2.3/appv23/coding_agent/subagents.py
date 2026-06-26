@@ -558,6 +558,8 @@ class SubagentSupervisor:
         return result
 
     def cancel(self, task_id: str, reason: str = "Cancelled by user.") -> SubagentResult:
+        if not isinstance(reason, str):
+            raise ValueError("cancel reason must be a string")
         with self._lock:
             task = self._tasks.get(task_id)
             if task is None:

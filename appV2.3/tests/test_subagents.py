@@ -604,6 +604,31 @@ def test_supervisor_cancel_records_terminal_result_and_event(tmp_path):
     assert events[-1]["status"] == "cancelled"
 
 
+def test_supervisor_rejects_malformed_cancel_reason(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_backend(task):
+        started.set()
+        release.wait(1)
+        return "late summary"
+
+    supervisor = SubagentSupervisor(max_threads=1)
+    supervisor.register_backend(CallableSubagentBackend("internal", slow_backend))
+    task_id = supervisor.spawn(SubagentTask(role="reviewer", goal="review", cwd=str(tmp_path)))
+    assert started.wait(1)
+
+    try:
+        try:
+            supervisor.cancel(task_id, reason=7)
+        except ValueError as error:
+            assert "cancel reason must be a string" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError("Expected non-string cancel reason to fail")
+    finally:
+        release.set()
+
+
 def test_supervisor_concurrent_cancel_emits_one_terminal_event(tmp_path):
     events = []
     started = threading.Event()
