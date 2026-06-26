@@ -1803,6 +1803,7 @@ class FooterComponent(Component):
         available_provider_count: int = 0,
         auto_compact_enabled: bool = True,
         model_reasoning: bool = False,
+        history_hint: str | None = None,
         home: str | None = None,
     ) -> None:
         self.cwd = cwd
@@ -1830,6 +1831,7 @@ class FooterComponent(Component):
         self.available_provider_count = available_provider_count
         self.auto_compact_enabled = auto_compact_enabled
         self.model_reasoning = model_reasoning
+        self.history_hint = history_hint
         self.home = home
 
     def render(self, width: int) -> list[str]:
@@ -1908,6 +1910,8 @@ class FooterComponent(Component):
         )
         if status_line:
             lines.append(truncate_to_width(status_line, width, "..."))
+        if self.history_hint:
+            lines.append(truncate_to_width(_single_line(self.history_hint), width, "..."))
         return lines
 
 

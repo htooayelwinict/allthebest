@@ -2,6 +2,8 @@
 
 Pi-style coding agent with Hermes-style compaction, branched from the sealed `appV2.2` baseline.
 
+appv23 directly ports and adapts implementation work from Pi and Hermes Agent through the `appV2.2` baseline. See `NOTICE.md` for upstream attribution and `LICENSE` for the MIT license terms preserved from those projects.
+
 ## Status
 
 `appV2.3` is the active next-version workspace. Keep `appV2.2/` sealed except for bug fixes, security fixes, test hardening, and documentation corrections. Put new advanced agent work in `appV2.3/`.
@@ -53,7 +55,7 @@ From the repository root:
 PYTHONPATH=appV2.3 .venv/bin/python -m pytest appV2.3/tests -q
 ```
 
-Expected baseline inherited from `appV2.2`: `573 passed`.
+Expected baseline inherited from `appV2.2`: `583 passed`.
 
 ## Environment
 

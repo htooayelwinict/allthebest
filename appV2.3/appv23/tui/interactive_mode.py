@@ -90,6 +90,7 @@ class InteractiveMode:
         self._unsubscribe_session_events: Callable[[], None] | None = None
         self._unsubscribe_footer_branch_change: Callable[[], None] | None = None
         self._unsubscribe_tui_terminal_input: Callable[[], None] | None = None
+        self._unsubscribe_tui_scroll_change: Callable[[], None] | None = None
         self.built_in_header = Text(self._startup_text())
         self.header_container = Container([self.built_in_header, Spacer(1)])
         self.custom_header: object | None = None
@@ -142,6 +143,8 @@ class InteractiveMode:
             )
         if self._unsubscribe_tui_terminal_input is None:
             self._unsubscribe_tui_terminal_input = self.tui.add_input_listener(self._handle_tui_terminal_input)
+        if self._unsubscribe_tui_scroll_change is None:
+            self._unsubscribe_tui_scroll_change = self.tui.add_scroll_listener(self._refresh_footer_history_hint)
         self._update_available_provider_count()
         self._refresh_footer()
         self.tui.start()
@@ -327,6 +330,9 @@ class InteractiveMode:
             if self._unsubscribe_tui_terminal_input is not None:
                 self._unsubscribe_tui_terminal_input()
                 self._unsubscribe_tui_terminal_input = None
+            if self._unsubscribe_tui_scroll_change is not None:
+                self._unsubscribe_tui_scroll_change()
+                self._unsubscribe_tui_scroll_change = None
             self.footer_data_provider.dispose()
             self.tui.stop()
 
@@ -853,6 +859,10 @@ class InteractiveMode:
         self.footer.git_branch = self.footer_data_provider.get_git_branch()
         self.footer.available_provider_count = self.footer_data_provider.get_available_provider_count()
         self.footer.model_reasoning = bool(getattr(self.app.session.model, "reasoning", False))
+        self._refresh_footer_history_hint()
+
+    def _refresh_footer_history_hint(self) -> None:
+        self.footer.history_hint = "history - PageDown/End to latest" if self.tui.is_scrolled() else None
 
     def set_extension_status(self, key: str, text: str | None) -> None:
         if text is None:

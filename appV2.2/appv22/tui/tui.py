@@ -34,6 +34,12 @@ _SYNC_BEGIN = "\x1b[?2026h"
 _SYNC_END = "\x1b[?2026l"
 _KITTY_SEQUENCE_PREFIX = "\x1b_G"
 _CELL_SIZE_RESPONSE_RE = re.compile(r"^\x1b\[6;(\d+);(\d+)t$")
+_SGR_MOUSE_RE = re.compile(r"^\x1b\[<(\d+);(\d+);(\d+)([Mm])$")
+_X10_MOUSE_RE = re.compile(r"^\x1b\[M(.)(.)(.)$")
+_PAGE_UP = "\x1b[5~"
+_PAGE_DOWN = "\x1b[6~"
+_END_KEYS = {"\x1b[F", "\x1b[4~"}
+_MOUSE_WHEEL_STEP_LINES = 3
 
 
 def _move_to_line(index: int) -> str:
@@ -145,6 +151,9 @@ class TUI(Container):
         self._previous_kitty_image_ids: set[int] = set()
         self._focus_order_counter = 0
         self._overlay_stack: list[dict[str, object]] = []
+        self._scroll_offset_from_bottom = 0
+        self._logical_line_count = 0
+        self._scroll_listeners: list[Callable[[], None]] = []
 
     @property
     def full_redraws(self) -> int:
@@ -212,6 +221,22 @@ class TUI(Container):
             self._input_listeners.remove(listener)
 
     removeInputListener = remove_input_listener
+
+    def add_scroll_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        self._scroll_listeners.append(listener)
+
+        def unsubscribe() -> None:
+            self.remove_scroll_listener(listener)
+
+        return unsubscribe
+
+    addScrollListener = add_scroll_listener
+
+    def remove_scroll_listener(self, listener: Callable[[], None]) -> None:
+        if listener in self._scroll_listeners:
+            self._scroll_listeners.remove(listener)
+
+    removeScrollListener = remove_scroll_listener
 
     def set_focus(self, component: object | None) -> None:
         if self._focused_component is component:
@@ -297,11 +322,50 @@ class TUI(Container):
         if focused_overlay is not None and not self._is_overlay_visible(focused_overlay):
             top_visible = self._get_topmost_visible_overlay()
             self.set_focus(top_visible["component"] if top_visible is not None else focused_overlay.get("pre_focus"))
+        focus_is_overlay = any(
+            entry.get("component") is self._focused_component and self._is_overlay_visible(entry)
+            for entry in self._overlay_stack
+        )
+        if not focus_is_overlay and self._handle_scroll_input(current):
+            return
         if self._focused_component is not None and hasattr(self._focused_component, "handle_input"):
             if is_key_release(current) and not _wants_key_release(self._focused_component):
                 return
             self._focused_component.handle_input(current)
             self.request_render()
+
+    def _handle_scroll_input(self, data: str) -> bool:
+        page_size = max(1, self.terminal.rows - 1)
+        if data == _PAGE_UP:
+            self.scroll_by(-page_size)
+            return True
+        if data == _PAGE_DOWN:
+            self.scroll_by(page_size)
+            return True
+        if data in _END_KEYS:
+            self.scroll_to_bottom()
+            return True
+        mouse_match = _SGR_MOUSE_RE.match(data)
+        if mouse_match is not None:
+            button_code = int(mouse_match.group(1))
+            self._handle_mouse_button_code(button_code)
+            return True
+        legacy_mouse_match = _X10_MOUSE_RE.match(data)
+        if legacy_mouse_match is None:
+            return False
+        button_code = ord(legacy_mouse_match.group(1)) - 32
+        if button_code < 0:
+            return True
+        self._handle_mouse_button_code(button_code)
+        return True
+
+    def _handle_mouse_button_code(self, button_code: int) -> None:
+        if button_code & 64:
+            wheel_button = button_code & 3
+            if wheel_button == 0:
+                self.scroll_by(-_MOUSE_WHEEL_STEP_LINES)
+            elif wheel_button == 1:
+                self.scroll_by(_MOUSE_WHEEL_STEP_LINES)
 
     def _query_cell_size(self) -> None:
         if not get_capabilities()["images"]:
@@ -371,11 +435,15 @@ class TUI(Container):
         rendered_lines = super().render(width)
         if self._overlay_stack:
             rendered_lines = self._composite_overlays(rendered_lines, width, self.terminal.rows)
-        cursor_position = self._extract_cursor_position(rendered_lines, self.terminal.rows)
-        new_lines = self._viewport_lines([
+        logical_lines = [
             line if is_image_line(line) else truncate_to_width(line, width)
             for line in rendered_lines
-        ])
+        ]
+        self._logical_line_count = len(logical_lines)
+        self._clamp_scroll_offset()
+        viewport_top = self._viewport_top(len(logical_lines), force_bottom=self.has_overlay())
+        cursor_position = self._extract_cursor_position(logical_lines, viewport_top)
+        new_lines = self._viewport_lines(logical_lines, viewport_top)
 
         size_changed = self._last_width is not None and self._last_width != width
         first_render = not self.previous_lines
@@ -397,15 +465,64 @@ class TUI(Container):
         self.last_render = info
         return info
 
-    def _viewport_lines(self, lines: list[str]) -> list[str]:
-        rows = max(1, self.terminal.rows)
-        if len(lines) <= rows:
-            return lines
-        return lines[-rows:]
+    def scroll_by(self, delta: int) -> int:
+        old_offset = self._scroll_offset_from_bottom
+        max_offset = self._max_scroll_offset()
+        if delta > 0:
+            new_offset = max(0, old_offset - int(delta))
+        elif delta < 0:
+            new_offset = min(max_offset, old_offset + abs(int(delta)))
+        else:
+            return 0
+        if new_offset == old_offset:
+            return 0
 
-    def _extract_cursor_position(self, lines: list[str], rows: int) -> tuple[int, int] | None:
-        viewport_top = max(0, len(lines) - max(1, rows))
-        for row in range(len(lines) - 1, viewport_top - 1, -1):
+        self._scroll_offset_from_bottom = new_offset
+        self._notify_scroll_listeners()
+        self.request_render()
+        return old_offset - new_offset
+
+    scrollBy = scroll_by
+
+    def scroll_to_bottom(self) -> None:
+        if self._scroll_offset_from_bottom == 0:
+            return
+        self._scroll_offset_from_bottom = 0
+        self._notify_scroll_listeners()
+        self.request_render()
+
+    scrollToBottom = scroll_to_bottom
+
+    def is_scrolled(self) -> bool:
+        return self._scroll_offset_from_bottom > 0
+
+    isScrolled = is_scrolled
+
+    def _notify_scroll_listeners(self) -> None:
+        for listener in list(self._scroll_listeners):
+            listener()
+
+    def _max_scroll_offset(self, line_count: int | None = None) -> int:
+        rows = max(1, self.terminal.rows)
+        total = self._logical_line_count if line_count is None else line_count
+        return max(0, total - rows)
+
+    def _clamp_scroll_offset(self) -> None:
+        self._scroll_offset_from_bottom = min(max(0, self._scroll_offset_from_bottom), self._max_scroll_offset())
+
+    def _viewport_top(self, line_count: int, *, force_bottom: bool = False) -> int:
+        rows = max(1, self.terminal.rows)
+        bottom_top = max(0, line_count - rows)
+        offset = 0 if force_bottom else min(self._scroll_offset_from_bottom, bottom_top)
+        return max(0, bottom_top - offset)
+
+    def _viewport_lines(self, lines: list[str], viewport_top: int) -> list[str]:
+        rows = max(1, self.terminal.rows)
+        return lines[viewport_top : viewport_top + rows]
+
+    def _extract_cursor_position(self, lines: list[str], viewport_top: int) -> tuple[int, int] | None:
+        viewport_bottom = min(len(lines), viewport_top + max(1, self.terminal.rows))
+        for row in range(viewport_bottom - 1, viewport_top - 1, -1):
             marker_index = lines[row].find(CURSOR_MARKER)
             if marker_index == -1:
                 continue

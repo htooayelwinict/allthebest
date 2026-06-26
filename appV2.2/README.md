@@ -2,6 +2,10 @@
 
 Pi-style coding agent with Hermes-style compaction.
 
+appv22 directly ports and adapts implementation work from Pi and Hermes Agent.
+See `NOTICE.md` for upstream attribution and `LICENSE` for the MIT license
+terms preserved from those projects.
+
 ## Status
 
 `appv22` is sealed as the stable `appV2.2` baseline. Keep this line limited to bug fixes, security fixes, test hardening, and documentation corrections. Put new advanced agent work in the next version line.
@@ -44,7 +48,7 @@ From the repository root:
 PYTHONPATH=appV2.2 .venv/bin/python -m pytest appV2.2/tests -q
 ```
 
-Expected result for the sealed baseline: `573 passed`.
+Expected result for the sealed baseline: `583 passed`.
 
 ## Environment
 
@@ -61,3 +65,10 @@ APPV2_WORKER_LLM_ENABLED=true
 APPV2_WORKER_LLM_API_KEY=...
 APPV2_WORKER_LLM_BASE_URL=https://openrouter.ai/api/v1
 ```
+
+## Attribution
+
+- Pi (`pi/`): coding-agent and TUI behavior, MIT licensed, copyright (c) 2025
+  Mario Zechner.
+- Hermes Agent (`hermes-agent/`): compaction/session recovery design, MIT
+  licensed, copyright (c) 2025 Nous Research.
