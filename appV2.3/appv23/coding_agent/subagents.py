@@ -154,8 +154,10 @@ class SubagentResult:
             raise ValueError("Subagent child_session_id must be a string when set")
         if self.raw_log_path is not None and not isinstance(self.raw_log_path, str):
             raise ValueError("Subagent raw_log_path must be a string when set")
-        if self.started_at_ms < 0 or self.ended_at_ms < 0:
-            raise ValueError("Subagent timestamps must be non-negative")
+        for field_name in ("started_at_ms", "ended_at_ms"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("Subagent timestamps must be non-negative integers")
         if self.started_at_ms and self.ended_at_ms and self.ended_at_ms < self.started_at_ms:
             raise ValueError("Subagent ended_at_ms cannot be before started_at_ms")
         for field_name in ("files_changed", "artifacts", "errors"):

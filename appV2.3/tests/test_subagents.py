@@ -148,6 +148,8 @@ def test_subagent_result_rejects_invalid_timestamps():
     cases = (
         ({"started_at_ms": -1, "ended_at_ms": 0}, "Subagent timestamps must be non-negative"),
         ({"started_at_ms": 0, "ended_at_ms": -1}, "Subagent timestamps must be non-negative"),
+        ({"started_at_ms": True, "ended_at_ms": 0}, "Subagent timestamps must be non-negative"),
+        ({"started_at_ms": "now", "ended_at_ms": 0}, "Subagent timestamps must be non-negative"),
         ({"started_at_ms": 200, "ended_at_ms": 100}, "Subagent ended_at_ms cannot be before started_at_ms"),
     )
     for overrides, message in cases:
