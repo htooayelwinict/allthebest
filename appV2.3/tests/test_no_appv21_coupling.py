@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parents[1]  # appV2.3/
 
 _TOKENS = ("appv21", "appV2.1")
+_FORBIDDEN_IMPORTS = (
+    re.compile(r"^\s*(?:from|import)\s+pi(?:\b|\.)", re.MULTILINE),
+    re.compile(r"^\s*(?:from|import)\s+hermes_agent(?:\b|\.)", re.MULTILINE),
+)
 _REMOVED_LEGACY_PATHS = (
     "appv23/runtime",
     "appv23/context",
@@ -28,6 +33,19 @@ def test_no_appv21_references_in_source() -> None:
         if any(token in text for token in _TOKENS):
             offenders.append(str(path.relative_to(APP_ROOT)))
     assert offenders == [], f"appv21 references remain: {offenders}"
+
+
+def test_no_legacy_pi_or_hermes_imports_in_source() -> None:
+    offenders: list[str] = []
+    for path in APP_ROOT.rglob("*.py"):
+        if "__pycache__" in path.parts:
+            continue
+        if path.name == "test_no_appv21_coupling.py":
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if any(pattern.search(text) for pattern in _FORBIDDEN_IMPORTS):
+            offenders.append(str(path.relative_to(APP_ROOT)))
+    assert offenders == [], f"legacy pi/hermes imports remain: {offenders}"
 
 
 def test_legacy_divergent_paths_removed() -> None:

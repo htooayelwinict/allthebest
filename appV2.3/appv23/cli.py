@@ -62,7 +62,11 @@ def _positive_int_arg(value: str) -> int:
 
 def _resolve_dotenv_path(dotenv_arg: str | None, *, search_start: Path | None = None) -> Path:
     if dotenv_arg is not None:
-        return Path(dotenv_arg).expanduser()
+        dotenv_path = Path(dotenv_arg).expanduser()
+        if dotenv_path.is_absolute():
+            return dotenv_path
+        base = _npm_initial_cwd() or Path.cwd()
+        return (base / dotenv_path).resolve()
     current = (search_start or Path.cwd()).resolve()
     for directory in (current, *current.parents):
         candidate = directory / ".env"

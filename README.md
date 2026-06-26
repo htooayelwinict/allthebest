@@ -184,7 +184,7 @@ uv run python appV2.3/scripts/appv23_tui.py \
   output.html
 ```
 
-### Disable tool-loop guardrails for debugging
+### Enable tool-loop hard-stop guardrails for debugging
 
 ```bash
 uv run python appV2.3/scripts/appv23_tui.py \

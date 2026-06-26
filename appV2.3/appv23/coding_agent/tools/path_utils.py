@@ -52,9 +52,19 @@ def expand_path(path: str) -> str:
 
 def resolve_to_cwd(path: str, cwd: str) -> str:
     expanded = expand_path(path)
+    base = os.path.abspath(expand_path(cwd))
     if os.path.isabs(expanded):
-        return os.path.abspath(expanded)
-    return os.path.abspath(os.path.join(expand_path(cwd), expanded))
+        resolved = os.path.abspath(expanded)
+    else:
+        resolved = os.path.abspath(os.path.join(base, expanded))
+
+    try:
+        common = os.path.commonpath([resolved, base])
+    except ValueError as error:
+        raise PermissionError(f"Path is outside working directory: {path}") from error
+    if common != base:
+        raise PermissionError(f"Path is outside working directory: {path}")
+    return resolved
 
 
 def resolve_read_path(path: str, cwd: str) -> str:

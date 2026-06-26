@@ -41,6 +41,7 @@ The sealed `appV2.2` wrapper does not use the appv23 resolver, so its example ke
 ## Install locally from a wheel
 
 ```bash
+uv build appV2.3
 uv tool install dist/appv23-*.whl
 ```
 
@@ -58,7 +59,7 @@ From the repository root:
 PYTHONPATH=appV2.3 .venv/bin/python -m pytest appV2.3/tests -q
 ```
 
-Expected current `appV2.3` suite: `646 passed`.
+Expected current `appV2.3` suite: `650 passed`.
 
 ## User-side subagent smoke
 

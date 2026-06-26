@@ -700,6 +700,39 @@ def test_path_utils_normalizes_pi_file_inputs(tmp_path: Path) -> None:
     assert resolve_to_cwd("file\u00a0name.txt", str(tmp_path)) == str(tmp_path / "file name.txt")
 
 
+def test_path_utils_rejects_paths_outside_cwd(tmp_path: Path) -> None:
+    inside = tmp_path / "inside.txt"
+    outside = tmp_path.parent / "outside.txt"
+    assert resolve_to_cwd(str(inside), str(tmp_path)) == str(inside)
+    for path in ("../outside.txt", str(outside)):
+        try:
+            resolve_to_cwd(path, str(tmp_path))
+        except PermissionError as error:
+            assert "outside working directory" in str(error)
+        else:
+            raise AssertionError(f"Expected {path!r} to be rejected")
+
+
+def test_file_tools_reject_paths_outside_cwd(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    for tool_name, args in (
+        ("read", {"path": str(outside)}),
+        ("write", {"path": "../outside.txt", "content": "x"}),
+        ("edit", {"path": str(outside), "edits": [{"oldText": "secret", "newText": "redacted"}]}),
+        ("grep", {"pattern": "secret", "path": str(outside)}),
+        ("find", {"pattern": "*.txt", "path": ".."}),
+        ("ls", {"path": ".."}),
+    ):
+        tool = create_tool(tool_name, str(tmp_path))
+        try:
+            tool.execute(f"{tool_name}-escape", args)
+        except PermissionError as error:
+            assert "outside working directory" in str(error)
+        else:
+            raise AssertionError(f"Expected {tool_name} to reject path outside cwd")
+
+
 def test_find_tool_matches_path_globs_and_limit_notice(tmp_path: Path) -> None:
     nested = tmp_path / "src" / "foo" / "bar"
     nested.mkdir(parents=True)

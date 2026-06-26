@@ -284,6 +284,42 @@ def test_cli_default_cwd_uses_npm_initial_cwd_for_prefix_wrapper(monkeypatch, tm
     assert app.cwd == str(repo.resolve())
 
 
+def test_cli_explicit_relative_dotenv_uses_npm_initial_cwd(monkeypatch, tmp_path) -> None:
+    repo = tmp_path / "repo"
+    app_dir = repo / "appV2.3"
+    app_dir.mkdir(parents=True)
+    env_path = repo / ".env"
+    env_path.write_text("APPV2_WORKER_LLM_ENABLED=true\n", encoding="utf-8")
+    (app_dir / ".env").write_text("APPV2_WORKER_LLM_ENABLED=false\n", encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, *, cwd, model, enable_tui, thinking_level, scoped_models, **kwargs):
+            self.messages = []
+
+        def run_turn(self, prompt):
+            observed["prompt"] = prompt
+
+    monkeypatch.chdir(app_dir)
+    monkeypatch.setenv("INIT_CWD", str(repo))
+    monkeypatch.setenv("npm_lifecycle_event", "tui")
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path: observed.setdefault("dotenv", dotenv_path))
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda dotenv_path, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url="")
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(["--dotenv", ".env", "--plain", "inspect"])
+
+    assert exit_code == 0
+    assert observed["prompt"] == "inspect"
+    assert observed["dotenv"] == env_path
+
+
 def test_cli_model_thinking_suffix_sets_initial_thinking_level(monkeypatch, tmp_path) -> None:
     created: dict[str, object] = {}
     selected_model = Model(

@@ -27,7 +27,7 @@ Prompt-level operating contract for appv23. This guides behavior, identity, path
 
 ## Path Safety: Primary Rule
 
-- Work only inside the current working directory shown by `pwd`, unless Lewis explicitly names an absolute path for the specific task.
+- Runtime context may load `AGENTS.md` from cwd ancestors, but tool reads, writes, searches, and edits must stay inside the current working directory shown by `pwd` unless Lewis explicitly names an absolute path for the specific task.
 - Do not traverse parent directories with `..` or broad absolute paths for exploratory work.
 - For broad requests such as scan, inspect, analyze, audit, inventory, review, find files, list files, repo root, project root, or understand the project, restrict all reads and tool use to `pwd` and below.
 - Do not use broad recursive commands over parent directories.
@@ -69,7 +69,7 @@ Prompt-level operating contract for appv23. This guides behavior, identity, path
 
 ## Skills
 
-- Load skill files only when relevant to the user's task.
+- Apply loaded skill instructions only when relevant to the user's task.
 - Keep skill behavior scoped to this file's path and shell safety rules.
 - Personal skills live under `.agents/skills` in the project or `~/.agents/skills` for user-level skills.
 - Use `subagent-delegation` when Lewis asks for a subagent, child agent, reviewer, explorer, researcher, handoff, web-search agent, or agent-to-agent workflow.
