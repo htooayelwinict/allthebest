@@ -41,6 +41,13 @@ def _new_id() -> str:
     return f"subagent-{uuid.uuid4().hex[:12]}"
 
 
+def _validate_wait_timeout(timeout: float | None) -> None:
+    if timeout is None:
+        return
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
+        raise ValueError("timeout must be non-negative")
+
+
 @dataclass(frozen=True)
 class SubagentTask:
     role: str
@@ -516,6 +523,7 @@ class SubagentSupervisor:
         return task.id
 
     def wait(self, task_id: str, timeout: float | None = None) -> SubagentResult:
+        _validate_wait_timeout(timeout)
         with self._lock:
             if task_id in self._results:
                 return self._results[task_id]
@@ -590,6 +598,7 @@ class SubagentSupervisor:
         return results
 
     def wait_all(self, task_ids: Sequence[str] | None = None, timeout: float | None = None) -> list[SubagentResult]:
+        _validate_wait_timeout(timeout)
         ids = list(task_ids or self._tasks.keys())
         return [self.wait(task_id, timeout=timeout) for task_id in ids]
 

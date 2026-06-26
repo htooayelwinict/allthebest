@@ -542,6 +542,34 @@ def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
     assert events[-1]["status"] == "timeout"
 
 
+def test_supervisor_rejects_invalid_wait_timeouts(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_backend(task):
+        started.set()
+        release.wait(1)
+        return "late summary"
+
+    supervisor = SubagentSupervisor(max_threads=1)
+    supervisor.register_backend(CallableSubagentBackend("internal", slow_backend))
+    task_id = supervisor.spawn(SubagentTask(role="reviewer", goal="review slowly", cwd=str(tmp_path)))
+    assert started.wait(1)
+
+    try:
+        for timeout in (-1, "soon"):
+            try:
+                supervisor.wait(task_id, timeout=timeout)
+            except ValueError as error:
+                assert "timeout must be non-negative" in str(error)
+            except Exception as error:  # pragma: no cover - assertion path
+                raise AssertionError(f"Expected ValueError, got {type(error).__name__}") from error
+            else:  # pragma: no cover - assertion path
+                raise AssertionError(f"Expected timeout {timeout!r} to fail")
+    finally:
+        release.set()
+
+
 def test_supervisor_cancel_records_terminal_result_and_event(tmp_path):
     events = []
     started = threading.Event()
