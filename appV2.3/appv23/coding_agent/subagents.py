@@ -513,6 +513,8 @@ class SubagentSupervisor:
             self._backends[backend_name] = backend
 
     def spawn(self, task: SubagentTask) -> str:
+        if not isinstance(task, SubagentTask):
+            raise ValueError("Subagent task must be a SubagentTask")
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("Subagent supervisor has been shut down")

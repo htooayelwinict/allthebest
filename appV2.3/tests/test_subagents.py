@@ -338,6 +338,19 @@ def test_subagent_task_rejects_malformed_parent_metadata(tmp_path):
             raise AssertionError(f"Expected parent metadata {kwargs!r} to fail")
 
 
+def test_supervisor_rejects_malformed_spawn_task():
+    supervisor = SubagentSupervisor(max_threads=1)
+
+    try:
+        supervisor.spawn(None)
+    except ValueError as error:
+        assert "Subagent task must be a SubagentTask" in str(error)
+    except Exception as error:  # pragma: no cover - assertion path
+        raise AssertionError(f"Expected ValueError, got {type(error).__name__}") from error
+    else:  # pragma: no cover - assertion path
+        raise AssertionError("Expected malformed spawn task to fail")
+
+
 def test_supervisor_rejects_unregistered_backend(tmp_path):
     supervisor = SubagentSupervisor(max_threads=1)
 
