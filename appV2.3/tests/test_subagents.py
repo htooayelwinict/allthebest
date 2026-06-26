@@ -100,6 +100,29 @@ def test_subagent_result_rejects_unsupported_status():
         raise AssertionError("Expected unsupported status to fail")
 
 
+def test_subagent_result_rejects_unsafe_identity_fields():
+    cases = (
+        ("task_id", "../escape", "Unsupported subagent task id"),
+        ("backend", "bad/backend", "Unsupported subagent backend"),
+        ("role", "bad role", "Unsupported subagent role"),
+    )
+    for field, value, message in cases:
+        payload = {
+            "task_id": "subagent-fixed",
+            "backend": "internal",
+            "role": "reviewer",
+            "status": "completed",
+            "summary": "done",
+        }
+        payload[field] = value
+        try:
+            SubagentResult(**payload)
+        except ValueError as error:
+            assert message in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected {field}={value!r} to fail")
+
+
 def test_supervisor_event_sink_failure_does_not_break_task(tmp_path):
     seen_event_types = []
 

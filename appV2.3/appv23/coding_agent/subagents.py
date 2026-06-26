@@ -122,6 +122,12 @@ class SubagentResult:
     ended_at_ms: int = 0
 
     def __post_init__(self) -> None:
+        if not isinstance(self.task_id, str) or not self.task_id.strip() or not _TASK_ID_PATTERN.fullmatch(self.task_id):
+            raise ValueError(f"Unsupported subagent task id: {self.task_id}")
+        if not isinstance(self.backend, str) or not self.backend.strip() or not _TASK_ID_PATTERN.fullmatch(self.backend):
+            raise ValueError(f"Unsupported subagent backend: {self.backend}")
+        if not isinstance(self.role, str) or not self.role.strip() or not _TASK_ID_PATTERN.fullmatch(self.role):
+            raise ValueError(f"Unsupported subagent role: {self.role}")
         if self.status not in _SUBAGENT_STATUSES:
             raise ValueError(f"Unsupported subagent status: {self.status}")
 
