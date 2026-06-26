@@ -1361,7 +1361,9 @@ def test_agent_session_binds_pi_extension_runner_action_surface(tmp_path: Path) 
     runner.setActiveTools(["read", "bash"])
     assert runner.getActiveTools() == ["read", "bash"]
     runner.refreshTools()
-    assert runner.getCommands() == [{"name": "hello", "description": "Say hello"}]
+    commands = runner.getCommands()
+    assert {"name": "hello", "description": "Say hello"} in commands
+    assert {"agents", "delegate"}.issubset({command["name"] for command in commands})
 
     assert runner.setModel(second_model) is True
     assert session.model.id == "second-model"
@@ -4513,7 +4515,8 @@ def test_agent_session_extension_command_context_exposes_session_and_tool_metada
     assert seen["active_before"] == ["read", "bash", "edit", "write"]
     assert seen["active_after"] == ["read", "bash"]
     assert {"read", "bash", "edit", "write"}.issubset(set(seen["all_tool_names"]))
-    assert seen["commands"] == ["metadata", "other"]
+    assert seen["commands"][:2] == ["metadata", "other"]
+    assert {"agents", "delegate"}.issubset(set(seen["commands"]))
 
 
 def test_agent_session_extension_command_context_exposes_thinking_level(tmp_path: Path) -> None:

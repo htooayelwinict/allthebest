@@ -36,6 +36,16 @@ from appv23.coding_agent.agent_session_services import (
     create_agent_session_services,
 )
 from appv23.coding_agent.auth_storage import AuthStorage, FileAuthStorageBackend, InMemoryAuthStorageBackend
+from appv23.coding_agent.subagents import (
+    CallableSubagentBackend,
+    CodexExecBackend,
+    SubagentBackend,
+    SubagentResult,
+    SubagentStatus,
+    SubagentSupervisor,
+    SubagentTask,
+    parse_codex_jsonl,
+)
 from appv23.coding_agent.bash_executor import (
     BashExecutorOptions,
     executeBashWithOperations,
@@ -242,6 +252,13 @@ __all__ = [
     "SessionImportFileNotFoundError",
     "Skill",
     "SourceInfo",
+    "SubagentBackend",
+    "CallableSubagentBackend",
+    "CodexExecBackend",
+    "SubagentResult",
+    "SubagentStatus",
+    "SubagentSupervisor",
+    "SubagentTask",
     "TruncationResult",
     "FileAuthStorageBackend",
     "FileSettingsStorage",
@@ -386,6 +403,7 @@ __all__ = [
     "loadSkillsFromDir",
     "load_skills",
     "load_skills_from_dir",
+    "parse_codex_jsonl",
     "truncateHead",
     "truncateLine",
     "truncateTail",

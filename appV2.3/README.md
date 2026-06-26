@@ -72,3 +72,13 @@ APPV2_WORKER_LLM_ENABLED=true
 APPV2_WORKER_LLM_API_KEY=...
 APPV2_WORKER_LLM_BASE_URL=https://openrouter.ai/api/v1
 ```
+
+## Subagent workforce
+
+AppV2.3 includes a backend-agnostic subagent supervisor for delegating focused work from an active `AgentSession`.
+
+- `/agents` lists delegated workers and their current status.
+- `/delegate <role> <task>` runs an internal read-only AppV2.3 worker and returns its summary to the parent session.
+- `/delegate --backend codex <role> <task>` runs `codex exec --json` in a read-only sandbox when the Codex CLI is installed and authenticated.
+
+The default safety model is intentionally conservative: subagents run at depth `1`, use read-only tools by default, cap concurrent workers at `3`, and return a structured summary instead of silently mutating parent state.

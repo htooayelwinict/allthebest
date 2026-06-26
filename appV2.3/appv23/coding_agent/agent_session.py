@@ -55,6 +55,13 @@ from appv23.coding_agent.session_store import (
 from appv23.coding_agent.settings_manager import SettingsManager
 from appv23.coding_agent.source_info import SourceInfo, create_synthetic_source_info
 from appv23.coding_agent.system_prompt import BuildSystemPromptOptions, build_system_prompt
+from appv23.coding_agent.subagents import (
+    CallableSubagentBackend,
+    CodexExecBackend,
+    SubagentResult,
+    SubagentSupervisor,
+    SubagentTask,
+)
 from appv23.coding_agent.tools import create_all_tool_definitions
 from appv23.coding_agent.tools.bash import BashExecOptions, BashOperations, create_local_bash_operations
 from appv23.coding_agent.tools.output_accumulator import OutputAccumulator
@@ -263,6 +270,9 @@ class ExtensionCommandContext:
     _exec: Callable[[str, list[str], dict | None], dict]
     _wait_for_idle: Callable[[], None]
     _compact: Callable[[dict | None], ExtensionCompactionResult | None]
+    _spawn_subagent: Callable[[str, str, dict | None], dict]
+    _list_subagents: Callable[[], list[dict]]
+    _get_subagent_result: Callable[[str], dict | None]
 
     def get_system_prompt(self) -> str:
         return self._get_system_prompt()
@@ -353,6 +363,21 @@ class ExtensionCommandContext:
 
     def compact(self, options: dict | None = None) -> ExtensionCompactionResult | None:
         return self._compact(options)
+
+    def spawn_subagent(self, role: str, goal: str, options: dict | None = None) -> dict:
+        return self._spawn_subagent(role, goal, options)
+
+    spawnSubagent = spawn_subagent
+
+    def list_subagents(self) -> list[dict]:
+        return self._list_subagents()
+
+    listSubagents = list_subagents
+
+    def get_subagent_result(self, task_id: str) -> dict | None:
+        return self._get_subagent_result(task_id)
+
+    getSubagentResult = get_subagent_result
 
 
 def default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
@@ -540,6 +565,9 @@ class AgentSession:
         self._extension_provider_original_models: dict[str, Model] = {}
         self._extension_provider_original_registry: dict[str, list[Model]] = {}
         self._event_listeners: list[Callable[[object], None]] = []
+        self.subagents = SubagentSupervisor(max_threads=3, max_depth=1, event_sink=self._handle_subagent_event)
+        self.subagents.register_backend(CallableSubagentBackend("internal", self._run_internal_subagent))
+        self.subagents.register_backend(CodexExecBackend())
         self._steering_messages: list[str] = []
         self._follow_up_messages: list[str] = []
         self._pending_next_turn_messages: list[AgentMessage] = []
@@ -659,6 +687,7 @@ class AgentSession:
             self._unregister_extension_provider,
         )
         self._bind_extension_core()
+        self._register_builtin_subagent_commands()
         self._unsubscribe_agent = self.agent.subscribe(self._handle_agent_event)
         self.set_active_tools_by_name(initial_active_tool_names)
         if restored_context:
@@ -988,6 +1017,9 @@ class AgentSession:
             _exec=self._extension_exec,
             _wait_for_idle=self._extension_wait_for_idle,
             _compact=self._extension_compact,
+            _spawn_subagent=self._extension_spawn_subagent,
+            _list_subagents=lambda: self.subagents.list_tasks(),
+            _get_subagent_result=self._extension_get_subagent_result,
         )
 
     def create_replaced_session_context(self) -> ExtensionCommandContext:
@@ -1000,6 +1032,62 @@ class AgentSession:
             {"name": command.name, "description": command.description}
             for command in self._extension_runner.get_all_registered_commands()
         ]
+
+    def _register_builtin_subagent_commands(self) -> None:
+        self._extension_runner.register_command(
+            "agents",
+            {
+                "description": "List delegated subagents and their status",
+                "handler": self._agents_command,
+            },
+        )
+        self._extension_runner.register_command(
+            "delegate",
+            {
+                "description": "Delegate a bounded task: /delegate <role> <task>",
+                "handler": self._delegate_command,
+            },
+        )
+
+    def _agents_command(self, args: str = "", _ctx: object | None = None) -> list[AgentMessage]:
+        tasks = self.subagents.list_tasks()
+        if not tasks:
+            content = "No subagents have been spawned in this session."
+        else:
+            lines = ["Subagents:"]
+            for task in tasks:
+                lines.append(
+                    f"- {task['taskId']} [{task['backend']}] {task['role']}: {task['status']} - {task['goal']}"
+                )
+            content = "\n".join(lines)
+        return self.send_custom_message({"customType": "subagent", "content": content, "display": True})
+
+    def _delegate_command(self, args: str = "", _ctx: object | None = None) -> list[AgentMessage]:
+        backend = "internal"
+        remaining = args.strip()
+        if remaining.startswith("--backend "):
+            _, _, rest = remaining.partition(" ")
+            backend, _, remaining = rest.partition(" ")
+            backend = backend.strip() or "internal"
+            remaining = remaining.strip()
+        role, separator, goal = remaining.partition(" ")
+        if not separator or not role.strip() or not goal.strip():
+            return self.send_custom_message(
+                {
+                    "customType": "subagent",
+                    "content": "Usage: /delegate [--backend codex|internal] <role> <task>",
+                    "display": True,
+                }
+            )
+        result = self._spawn_and_wait_for_subagent(role.strip(), goal.strip(), {"backend": backend})
+        return self.send_custom_message(
+            {
+                "customType": "subagent",
+                "content": self._format_subagent_result(result),
+                "display": True,
+                "details": result.as_dict(),
+            }
+        )
 
     def _bind_extension_core(self) -> None:
         self._extension_runner._cwd = self.cwd
@@ -1019,6 +1107,9 @@ class AgentSession:
                 "setModel": self._extension_set_model,
                 "getThinkingLevel": lambda: self.thinking_level,
                 "setThinkingLevel": self.set_thinking_level,
+                "spawnSubagent": self._extension_spawn_subagent,
+                "listSubagents": lambda: self.subagents.list_tasks(),
+                "getSubagentResult": self._extension_get_subagent_result,
             },
             {
                 "getModel": lambda: self.model,
@@ -1034,6 +1125,87 @@ class AgentSession:
                 "getSystemPromptOptions": self._system_prompt_options_snapshot,
             },
         )
+
+    def _extension_spawn_subagent(self, role: str, goal: str, options: dict | None = None) -> dict:
+        return self._spawn_and_wait_for_subagent(role, goal, options).as_dict()
+
+    def _extension_get_subagent_result(self, task_id: str) -> dict | None:
+        result = self.subagents.get_result(task_id)
+        return result.as_dict() if result is not None else None
+
+    def _spawn_and_wait_for_subagent(self, role: str, goal: str, options: dict | None = None) -> SubagentResult:
+        options = options or {}
+        task = SubagentTask(
+            role=role,
+            goal=goal,
+            cwd=str(options.get("cwd") or self.cwd),
+            backend=str(options.get("backend") or "internal"),
+            sandbox=str(options.get("sandbox") or "read_only"),
+            model=options.get("model"),
+            reasoning=options.get("reasoning", self.thinking_level),
+            context_pack=str(options.get("contextPack", options.get("context_pack", "")) or ""),
+            timeout_seconds=int(options.get("timeoutSeconds", options.get("timeout_seconds", 1800)) or 1800),
+            parent_session_id=self.session_id,
+            parent_turn_id=options.get("parentTurnId", options.get("parent_turn_id")),
+        )
+        task_id = self.subagents.spawn(task)
+        return self.subagents.wait(task_id, timeout=task.timeout_seconds + 1)
+
+    def _run_internal_subagent(self, task: SubagentTask) -> SubagentResult:
+        started = int(time.time() * 1000)
+        child = AgentSession(
+            cwd=task.cwd,
+            model=self.model,
+            active_tool_names=list(task.allowed_tools),
+            allowed_tool_names=list(task.allowed_tools),
+            thinking_level=self.thinking_level,
+            stream_fn=self._stream_fn,
+            max_iterations=12,
+        )
+        try:
+            messages = child.prompt(task.prompt())
+            summary = self._messages_to_summary(messages)
+            ended = int(time.time() * 1000)
+            return SubagentResult(
+                task_id=task.id,
+                backend=task.backend,
+                role=task.role,
+                status="completed",
+                summary=summary or "Internal subagent completed without a final message.",
+                final_response=summary,
+                child_session_id=child.session_id,
+                started_at_ms=started,
+                ended_at_ms=ended,
+            )
+        finally:
+            child.shutdown()
+
+    def _messages_to_summary(self, messages: list[AgentMessage]) -> str:
+        parts: list[str] = []
+        for message in messages:
+            role = getattr(message, "role", "")
+            if role not in {"assistant", "custom"}:
+                continue
+            content = getattr(message, "content", "")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    text = getattr(block, "text", None)
+                    if text:
+                        parts.append(str(text))
+        return "\n".join(part for part in parts if part).strip()
+
+    def _format_subagent_result(self, result: SubagentResult) -> str:
+        heading = f"Subagent {result.role} [{result.backend}] {result.status}"
+        return f"{heading}\n{result.summary}".strip()
+
+    def _handle_subagent_event(self, event: dict[str, object]) -> None:
+        self._emit(event)
+        try:
+            self._extension_runner.emit(event)
+        except Exception:
+            pass
 
     def _extension_abort(self) -> None:
         if self._extension_abort_handler is not None:

@@ -255,6 +255,24 @@ class ExtensionContextView:
 
     getSystemPrompt = get_system_prompt
 
+    def spawn_subagent(self, role: str, goal: str, options: object | None = None) -> object:
+        self._assert_active()
+        return self._runner._spawn_subagent(role, goal, options)
+
+    spawnSubagent = spawn_subagent
+
+    def list_subagents(self) -> object:
+        self._assert_active()
+        return self._runner._list_subagents()
+
+    listSubagents = list_subagents
+
+    def get_subagent_result(self, task_id: str) -> object | None:
+        self._assert_active()
+        return self._runner._get_subagent_result(task_id)
+
+    getSubagentResult = get_subagent_result
+
 
 class ExtensionCommandContextView(ExtensionContextView):
     """Pi-style command context with session-control actions."""
@@ -362,6 +380,9 @@ class ExtensionRunner:
         self._compact: Callable[[object | None], object] = lambda options=None: None
         self._get_system_prompt: Callable[[], str] = lambda: ""
         self._get_system_prompt_options: Callable[[], object] = lambda: {"cwd": self._cwd}
+        self._spawn_subagent: Callable[[str, str, object | None], object] = lambda role, goal, options=None: None
+        self._list_subagents: Callable[[], object] = lambda: []
+        self._get_subagent_result: Callable[[str], object | None] = lambda task_id: None
         self._context_generation = 0
         self._stale_context_message = _STALE_CONTEXT_MESSAGE
 
@@ -524,6 +545,21 @@ class ExtensionRunner:
             "getSystemPromptOptions",
             "get_system_prompt_options",
         ) or (lambda: {"cwd": self._cwd})
+        self._spawn_subagent = _callable_action(
+            actions,
+            "spawnSubagent",
+            "spawn_subagent",
+        ) or (lambda role, goal, options=None: None)
+        self._list_subagents = _callable_action(
+            actions,
+            "listSubagents",
+            "list_subagents",
+        ) or (lambda: [])
+        self._get_subagent_result = _callable_action(
+            actions,
+            "getSubagentResult",
+            "get_subagent_result",
+        ) or (lambda task_id: None)
 
         register_provider = _callable_action(provider_actions or {}, "registerProvider", "register_provider")
         unregister_provider = _callable_action(provider_actions or {}, "unregisterProvider", "unregister_provider")
@@ -604,6 +640,21 @@ class ExtensionRunner:
         return self._set_thinking_level(level)
 
     setThinkingLevel = set_thinking_level
+
+    def spawn_subagent(self, role: str, goal: str, options: object | None = None) -> object:
+        return self._spawn_subagent(role, goal, options)
+
+    spawnSubagent = spawn_subagent
+
+    def list_subagents(self) -> object:
+        return self._list_subagents()
+
+    listSubagents = list_subagents
+
+    def get_subagent_result(self, task_id: str) -> object | None:
+        return self._get_subagent_result(task_id)
+
+    getSubagentResult = get_subagent_result
 
     def create_context(self) -> ExtensionContextView:
         return ExtensionContextView(self, self._context_generation)
