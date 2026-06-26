@@ -85,6 +85,21 @@ def test_supervisor_stop_event_includes_result_observability_fields(tmp_path):
     assert stop_event["ended_at_ms"] == 160
 
 
+def test_subagent_result_rejects_unsupported_status():
+    try:
+        SubagentResult(
+            task_id="subagent-fixed",
+            backend="internal",
+            role="reviewer",
+            status="unknown",
+            summary="done",
+        )
+    except ValueError as error:
+        assert "Unsupported subagent status" in str(error)
+    else:  # pragma: no cover - assertion path
+        raise AssertionError("Expected unsupported status to fail")
+
+
 def test_supervisor_event_sink_failure_does_not_break_task(tmp_path):
     seen_event_types = []
 

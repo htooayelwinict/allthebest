@@ -23,6 +23,7 @@ SubagentStatus = Literal["queued", "running", "completed", "failed", "cancelled"
 SubagentSandbox = Literal["read_only", "workspace_write", "full_access"]
 
 _READ_ONLY_TOOLS = ("read", "grep", "find", "ls")
+_SUBAGENT_STATUSES = {"queued", "running", "completed", "failed", "cancelled", "timeout"}
 _SANDBOX_FLAGS: dict[str, str] = {
     "read_only": "read-only",
     "workspace_write": "workspace-write",
@@ -119,6 +120,10 @@ class SubagentResult:
     raw_log_path: str | None = None
     started_at_ms: int = 0
     ended_at_ms: int = 0
+
+    def __post_init__(self) -> None:
+        if self.status not in _SUBAGENT_STATUSES:
+            raise ValueError(f"Unsupported subagent status: {self.status}")
 
     @property
     def duration_ms(self) -> int:
