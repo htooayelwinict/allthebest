@@ -224,8 +224,8 @@ class CallableSubagentBackend:
         output = self._handler(task)
         if isinstance(output, SubagentResult):
             return output
-        if not isinstance(output, str):
-            raise ValueError("Subagent backend handler must return a string or SubagentResult")
+        if not isinstance(output, str) or not output.strip():
+            raise ValueError("Subagent backend handler must return a non-empty string or SubagentResult")
         ended = _now_ms()
         return SubagentResult(
             task_id=task.id,

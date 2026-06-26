@@ -284,15 +284,15 @@ def test_callable_backend_rejects_malformed_name():
 
 
 def test_callable_backend_rejects_malformed_handler_result(tmp_path):
-    backend = CallableSubagentBackend("internal", lambda task: None)
     task = SubagentTask(role="reviewer", goal="review", cwd=str(tmp_path))
-
-    try:
-        backend.run(task)
-    except ValueError as error:
-        assert "Subagent backend handler must return a string or SubagentResult" in str(error)
-    else:  # pragma: no cover - assertion path
-        raise AssertionError("Expected malformed handler result to fail")
+    for output in (None, ""):
+        backend = CallableSubagentBackend("internal", lambda task, output=output: output)
+        try:
+            backend.run(task)
+        except ValueError as error:
+            assert "Subagent backend handler must return a non-empty string or SubagentResult" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected malformed handler result {output!r} to fail")
 
 
 def test_subagent_task_rejects_boolean_runtime_options(tmp_path):
