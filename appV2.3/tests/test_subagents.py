@@ -362,6 +362,16 @@ def test_subagent_task_rejects_malformed_optional_fields(tmp_path):
             raise AssertionError(f"Expected {field}={value!r} to fail")
 
 
+def test_subagent_task_rejects_malformed_context_pack(tmp_path):
+    for context_pack in (None, 7):
+        try:
+            SubagentTask(role="reviewer", goal="review", cwd=str(tmp_path), context_pack=context_pack)
+        except ValueError as error:
+            assert "Subagent context_pack must be a string" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected context_pack {context_pack!r} to fail")
+
+
 def test_supervisor_rejects_unsafe_registered_backend_name():
     supervisor = SubagentSupervisor(max_threads=1)
 
