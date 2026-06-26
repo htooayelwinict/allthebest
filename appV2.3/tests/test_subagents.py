@@ -157,6 +157,19 @@ def test_subagent_task_rejects_unsafe_role_name(tmp_path):
             raise AssertionError(f"Expected role {role!r} to fail")
 
 
+def test_subagent_task_rejects_invalid_cwd(tmp_path):
+    file_path = tmp_path / "not-a-directory"
+    file_path.write_text("not a directory")
+
+    for cwd in (str(tmp_path / "missing"), str(file_path)):
+        try:
+            SubagentTask(role="reviewer", goal="review", cwd=cwd)
+        except ValueError as error:
+            assert "Subagent cwd must be an existing directory" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected cwd {cwd!r} to fail")
+
+
 def test_subagent_task_rejects_unsafe_backend_name(tmp_path):
     for backend in ("", "   ", "../codex", "bad/backend", "bad\\backend", "bad backend", "bad;backend"):
         try:
