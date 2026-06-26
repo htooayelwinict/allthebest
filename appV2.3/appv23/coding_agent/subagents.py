@@ -425,6 +425,31 @@ class SubagentSupervisor:
         self._results[task_id] = result
         return result
 
+    def cancel(self, task_id: str, reason: str = "Cancelled by user.") -> SubagentResult:
+        task = self._tasks.get(task_id)
+        if task is None:
+            raise KeyError(f"Unknown subagent task: {task_id}")
+        existing = self._results.get(task_id)
+        if existing is not None:
+            return existing
+        future = self._futures.get(task_id)
+        if future is not None:
+            future.cancel()
+        ended = _now_ms()
+        result = SubagentResult(
+            task_id=task.id,
+            backend=task.backend,
+            role=task.role,
+            status="cancelled",
+            summary="Subagent cancelled.",
+            errors=[reason] if reason else [],
+            ended_at_ms=ended,
+        )
+        self._statuses[task_id] = "cancelled"
+        self._results[task_id] = result
+        self._emit_stop(task, result)
+        return result
+
     def wait_all(self, task_ids: Sequence[str] | None = None, timeout: float | None = None) -> list[SubagentResult]:
         ids = list(task_ids or self._tasks.keys())
         return [self.wait(task_id, timeout=timeout) for task_id in ids]

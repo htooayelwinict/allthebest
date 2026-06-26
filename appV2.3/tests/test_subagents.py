@@ -81,6 +81,38 @@ def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
     assert events[-1]["status"] == "timeout"
 
 
+def test_supervisor_cancel_records_terminal_result_and_event(tmp_path):
+    events = []
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def slow_backend(task):
+        started.set()
+        release.wait(1)
+        finished.set()
+        return "late summary"
+
+    supervisor = SubagentSupervisor(max_threads=1, event_sink=events.append)
+    supervisor.register_backend(CallableSubagentBackend("internal", slow_backend))
+
+    task_id = supervisor.spawn(SubagentTask(role="reviewer", goal="review slowly", cwd=str(tmp_path)))
+    assert started.wait(1)
+
+    result = supervisor.cancel(task_id, reason="user requested")
+
+    assert result.status == "cancelled"
+    assert result.summary == "Subagent cancelled."
+    assert result.errors == ["user requested"]
+    assert supervisor.get_result(task_id).status == "cancelled"
+
+    release.set()
+    assert finished.wait(1)
+    assert supervisor.get_result(task_id).status == "cancelled"
+    assert [event["type"] for event in events] == ["subagent_start", "subagent_stop"]
+    assert events[-1]["status"] == "cancelled"
+
+
 def test_codex_exec_backend_parses_jsonl_final_agent_message(tmp_path):
     calls = []
 
@@ -181,3 +213,46 @@ def test_agent_session_agents_command_lists_completed_subagents(tmp_path):
     rendered = "\n".join(str(getattr(message, "content", "")) for message in messages)
     assert "reviewer" in rendered
     assert "completed" in rendered
+
+
+def test_agent_session_cancel_agent_command_cancels_subagent(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_backend(task):
+        started.set()
+        release.wait(1)
+        return "late summary"
+
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    session.subagents.register_backend(CallableSubagentBackend("internal", slow_backend))
+    task_id = session.subagents.spawn(SubagentTask(role="reviewer", goal="review", cwd=str(tmp_path)))
+    assert started.wait(1)
+
+    messages = session.prompt(f"/cancel-agent {task_id}")
+    release.set()
+
+    rendered = "\n".join(str(getattr(message, "content", "")) for message in messages)
+    assert "cancelled" in rendered
+    assert session.subagents.get_result(task_id).status == "cancelled"
+
+
+def test_agent_session_extension_context_can_cancel_subagent(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_backend(task):
+        started.set()
+        release.wait(1)
+        return "late summary"
+
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    session.subagents.register_backend(CallableSubagentBackend("internal", slow_backend))
+    task_id = session.subagents.spawn(SubagentTask(role="reviewer", goal="review", cwd=str(tmp_path)))
+    assert started.wait(1)
+
+    result = session.create_replaced_session_context().cancelSubagent(task_id, "not needed")
+    release.set()
+
+    assert result["status"] == "cancelled"
+    assert result["errors"] == ["not needed"]

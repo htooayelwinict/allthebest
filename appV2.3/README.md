@@ -80,5 +80,6 @@ AppV2.3 includes a backend-agnostic subagent supervisor for delegating focused w
 - `/agents` lists delegated workers and their current status.
 - `/delegate <role> <task>` runs an internal read-only AppV2.3 worker and returns its summary to the parent session.
 - `/delegate --backend codex <role> <task>` runs `codex exec --json` in a read-only sandbox when the Codex CLI is installed and authenticated.
+- `/cancel-agent <task-id> [reason]` records a terminal cancellation result for a delegated worker and prevents late child output from overwriting the parent-observed state.
 
 The default safety model is intentionally conservative: subagents run at depth `1`, use read-only tools by default, cap concurrent workers at `3`, return structured summaries instead of silently mutating parent state, and record parent-observed timeouts as terminal `timeout` results.

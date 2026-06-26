@@ -273,6 +273,7 @@ class ExtensionCommandContext:
     _spawn_subagent: Callable[[str, str, dict | None], dict]
     _list_subagents: Callable[[], list[dict]]
     _get_subagent_result: Callable[[str], dict | None]
+    _cancel_subagent: Callable[[str, str | None], dict]
 
     def get_system_prompt(self) -> str:
         return self._get_system_prompt()
@@ -378,6 +379,11 @@ class ExtensionCommandContext:
         return self._get_subagent_result(task_id)
 
     getSubagentResult = get_subagent_result
+
+    def cancel_subagent(self, task_id: str, reason: str | None = None) -> dict:
+        return self._cancel_subagent(task_id, reason)
+
+    cancelSubagent = cancel_subagent
 
 
 def default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
@@ -1020,6 +1026,7 @@ class AgentSession:
             _spawn_subagent=self._extension_spawn_subagent,
             _list_subagents=lambda: self.subagents.list_tasks(),
             _get_subagent_result=self._extension_get_subagent_result,
+            _cancel_subagent=self._extension_cancel_subagent,
         )
 
     def create_replaced_session_context(self) -> ExtensionCommandContext:
@@ -1046,6 +1053,13 @@ class AgentSession:
             {
                 "description": "Delegate a bounded task: /delegate <role> <task>",
                 "handler": self._delegate_command,
+            },
+        )
+        self._extension_runner.register_command(
+            "cancel-agent",
+            {
+                "description": "Cancel a delegated subagent: /cancel-agent <task-id> [reason]",
+                "handler": self._cancel_agent_command,
             },
         )
 
@@ -1089,6 +1103,35 @@ class AgentSession:
             }
         )
 
+    def _cancel_agent_command(self, args: str = "", _ctx: object | None = None) -> list[AgentMessage]:
+        task_id, _separator, reason = args.strip().partition(" ")
+        if not task_id:
+            return self.send_custom_message(
+                {
+                    "customType": "subagent",
+                    "content": "Usage: /cancel-agent <task-id> [reason]",
+                    "display": True,
+                }
+            )
+        try:
+            result = self.subagents.cancel(task_id, reason.strip() or "Cancelled by user.")
+        except KeyError as error:
+            return self.send_custom_message(
+                {
+                    "customType": "subagent",
+                    "content": str(error),
+                    "display": True,
+                }
+            )
+        return self.send_custom_message(
+            {
+                "customType": "subagent",
+                "content": self._format_subagent_result(result),
+                "display": True,
+                "details": result.as_dict(),
+            }
+        )
+
     def _bind_extension_core(self) -> None:
         self._extension_runner._cwd = self.cwd
         self._extension_runner.bind_core(
@@ -1110,6 +1153,7 @@ class AgentSession:
                 "spawnSubagent": self._extension_spawn_subagent,
                 "listSubagents": lambda: self.subagents.list_tasks(),
                 "getSubagentResult": self._extension_get_subagent_result,
+                "cancelSubagent": self._extension_cancel_subagent,
             },
             {
                 "getModel": lambda: self.model,
@@ -1132,6 +1176,9 @@ class AgentSession:
     def _extension_get_subagent_result(self, task_id: str) -> dict | None:
         result = self.subagents.get_result(task_id)
         return result.as_dict() if result is not None else None
+
+    def _extension_cancel_subagent(self, task_id: str, reason: str | None = None) -> dict:
+        return self.subagents.cancel(task_id, reason or "Cancelled by user.").as_dict()
 
     def _spawn_and_wait_for_subagent(self, role: str, goal: str, options: dict | None = None) -> SubagentResult:
         options = options or {}

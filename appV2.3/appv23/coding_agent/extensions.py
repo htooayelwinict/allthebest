@@ -273,6 +273,12 @@ class ExtensionContextView:
 
     getSubagentResult = get_subagent_result
 
+    def cancel_subagent(self, task_id: str, reason: str | None = None) -> object:
+        self._assert_active()
+        return self._runner._cancel_subagent(task_id, reason)
+
+    cancelSubagent = cancel_subagent
+
 
 class ExtensionCommandContextView(ExtensionContextView):
     """Pi-style command context with session-control actions."""
@@ -383,6 +389,9 @@ class ExtensionRunner:
         self._spawn_subagent: Callable[[str, str, object | None], object] = lambda role, goal, options=None: None
         self._list_subagents: Callable[[], object] = lambda: []
         self._get_subagent_result: Callable[[str], object | None] = lambda task_id: None
+        self._cancel_subagent: Callable[[str, str | None], object] = (
+            lambda task_id, reason=None: {"status": "failed", "errors": ["No subagent supervisor bound"]}
+        )
         self._context_generation = 0
         self._stale_context_message = _STALE_CONTEXT_MESSAGE
 
@@ -560,6 +569,11 @@ class ExtensionRunner:
             "getSubagentResult",
             "get_subagent_result",
         ) or (lambda task_id: None)
+        self._cancel_subagent = _callable_action(
+            actions,
+            "cancelSubagent",
+            "cancel_subagent",
+        ) or (lambda task_id, reason=None: {"status": "failed", "errors": ["No subagent supervisor bound"]})
 
         register_provider = _callable_action(provider_actions or {}, "registerProvider", "register_provider")
         unregister_provider = _callable_action(provider_actions or {}, "unregisterProvider", "unregister_provider")
@@ -655,6 +669,11 @@ class ExtensionRunner:
         return self._get_subagent_result(task_id)
 
     getSubagentResult = get_subagent_result
+
+    def cancel_subagent(self, task_id: str, reason: str | None = None) -> object:
+        return self._cancel_subagent(task_id, reason)
+
+    cancelSubagent = cancel_subagent
 
     def create_context(self) -> ExtensionContextView:
         return ExtensionContextView(self, self._context_generation)
