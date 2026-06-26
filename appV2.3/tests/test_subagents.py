@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from appv23.ai.types import Model
@@ -46,6 +47,38 @@ def test_supervisor_rejects_unregistered_backend(tmp_path):
         assert "No subagent backend registered" in str(error)
     else:  # pragma: no cover - assertion path
         raise AssertionError("Expected missing backend to fail")
+
+
+def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
+    events = []
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def slow_backend(task):
+        started.set()
+        release.wait(1)
+        finished.set()
+        return "late summary"
+
+    supervisor = SubagentSupervisor(max_threads=1, event_sink=events.append)
+    supervisor.register_backend(CallableSubagentBackend("internal", slow_backend))
+
+    task_id = supervisor.spawn(SubagentTask(role="researcher", goal="slow work", cwd=str(tmp_path)))
+    assert started.wait(1)
+
+    result = supervisor.wait(task_id, timeout=0.01)
+
+    assert result.status == "timeout"
+    assert result.summary == "Subagent timed out."
+    assert result.task_id == task_id
+    assert supervisor.get_result(task_id).status == "timeout"
+
+    release.set()
+    assert finished.wait(1)
+    assert supervisor.get_result(task_id).status == "timeout"
+    assert [event["type"] for event in events] == ["subagent_start", "subagent_stop"]
+    assert events[-1]["status"] == "timeout"
 
 
 def test_codex_exec_backend_parses_jsonl_final_agent_message(tmp_path):

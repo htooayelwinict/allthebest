@@ -403,7 +403,25 @@ class SubagentSupervisor:
         future = self._futures.get(task_id)
         if future is None:
             raise KeyError(f"Unknown subagent task: {task_id}")
-        result = future.result(timeout=timeout)
+        try:
+            result = future.result(timeout=timeout)
+        except TimeoutError:
+            task = self._tasks[task_id]
+            ended = _now_ms()
+            timeout_text = f"Timed out after {timeout}s" if timeout is not None else "Timed out"
+            result = SubagentResult(
+                task_id=task.id,
+                backend=task.backend,
+                role=task.role,
+                status="timeout",
+                summary="Subagent timed out.",
+                errors=[timeout_text],
+                ended_at_ms=ended,
+            )
+            self._statuses[task_id] = "timeout"
+            self._results[task_id] = result
+            self._emit_stop(task, result)
+            return result
         self._results[task_id] = result
         return result
 
@@ -456,6 +474,8 @@ class SubagentSupervisor:
                 started_at_ms=started,
                 ended_at_ms=ended,
             )
+        if task.id in self._results and self._statuses.get(task.id) in {"cancelled", "timeout"}:
+            return self._results[task.id]
         self._statuses[task.id] = result.status
         self._results[task.id] = result
         self._emit_stop(task, result)
