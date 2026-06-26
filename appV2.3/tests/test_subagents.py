@@ -253,6 +253,10 @@ def test_supervisor_event_sink_failure_does_not_break_task(tmp_path):
     assert result.status == "completed"
     assert result.summary == "done"
     assert seen_event_types == ["subagent_start", "subagent_stop"]
+    assert supervisor.observer_errors() == [
+        "event sink failed for subagent_start: observer failed",
+        "event sink failed for subagent_stop: observer failed",
+    ]
 
 
 def test_supervisor_rejects_malformed_constructor_options():
@@ -980,6 +984,39 @@ def test_codex_exec_backend_forwards_model_and_reasoning_effort(tmp_path):
     assert "gpt-5-codex" in calls[0]
     assert "-c" in calls[0]
     assert 'model_reasoning_effort="high"' in calls[0]
+
+
+def test_codex_exec_backend_rejects_custom_allowed_tools_before_running(tmp_path):
+    called = False
+
+    def fake_runner(args, cwd, timeout, text, capture_output):
+        nonlocal called
+        called = True
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": '{"type":"item.completed","item":{"type":"agent_message","text":"final summary"}}\n',
+                "stderr": "",
+            },
+        )()
+
+    backend = CodexExecBackend(runner=fake_runner)
+    result = backend.run(
+        SubagentTask(
+            role="codex",
+            goal="review",
+            cwd=str(tmp_path),
+            backend="codex",
+            allowed_tools=("read", "bash"),
+        )
+    )
+
+    assert called is False
+    assert result.status == "failed"
+    assert result.summary == "Codex backend does not enforce custom allowed tools."
+    assert result.errors == ["Codex backend does not enforce custom allowed tools."]
 
 
 def test_codex_exec_backend_persists_raw_log_when_configured(tmp_path):

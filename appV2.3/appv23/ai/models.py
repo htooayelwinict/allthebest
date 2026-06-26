@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import os
 import re
+import shlex
 import subprocess
 import time
 
@@ -517,7 +518,7 @@ def _resolve_config_value_or_throw(value: str, description: str) -> str:
         return resolved
 
     if value.startswith("!"):
-        raise RuntimeError(f"Failed to resolve {description} from shell command: {value[1:]}")
+        raise RuntimeError(f"Failed to resolve {description} from command: {value[1:]}")
 
     missing_env_vars = _missing_config_value_env_var_names(value)
     if len(missing_env_vars) == 1:
@@ -549,9 +550,15 @@ def _execute_command_config_value(value: str, *, uncached: bool = False) -> str 
 
 def _execute_command_config_value_uncached(value: str) -> str | None:
     try:
+        args = shlex.split(value[1:])
+    except ValueError:
+        return None
+    if not args:
+        return None
+    try:
         completed = subprocess.run(
-            value[1:],
-            shell=True,
+            args,
+            shell=False,
             check=False,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,

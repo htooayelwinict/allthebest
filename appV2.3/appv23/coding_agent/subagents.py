@@ -328,6 +328,19 @@ class CodexExecBackend:
 
     def run(self, task: SubagentTask) -> SubagentResult:
         started = _now_ms()
+        if task.allowed_tools != _READ_ONLY_TOOLS:
+            ended = _now_ms()
+            error_text = "Codex backend does not enforce custom allowed tools."
+            return SubagentResult(
+                task_id=task.id,
+                backend=self.name,
+                role=task.role,
+                status="failed",
+                summary=error_text,
+                errors=[error_text],
+                started_at_ms=started,
+                ended_at_ms=ended,
+            )
         args = [
             self.codex_bin,
             "exec",
@@ -498,6 +511,7 @@ class SubagentSupervisor:
         self.max_threads = max_threads
         self.max_depth = max_depth
         self._event_sink = event_sink
+        self._observer_errors: list[str] = []
         self._executor = ThreadPoolExecutor(max_workers=max_threads, thread_name_prefix="appv23-subagent")
         self._backends: dict[str, SubagentBackend] = {}
         self._tasks: dict[str, SubagentTask] = {}
@@ -762,5 +776,8 @@ class SubagentSupervisor:
         if self._event_sink is not None:
             try:
                 self._event_sink(event)
-            except Exception:
-                pass
+            except Exception as error:
+                self._observer_errors.append(f"event sink failed for {event.get('type', 'unknown')}: {error}")
+
+    def observer_errors(self) -> list[str]:
+        return list(self._observer_errors)

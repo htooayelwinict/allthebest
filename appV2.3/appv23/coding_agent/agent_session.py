@@ -614,6 +614,7 @@ class AgentSession:
         self._extension_provider_original_models: dict[str, Model] = {}
         self._extension_provider_original_registry: dict[str, list[Model]] = {}
         self._event_listeners: list[Callable[[object], None]] = []
+        self._subagent_observer_errors: list[str] = []
         self.subagents = SubagentSupervisor(max_threads=3, max_depth=1, event_sink=self._handle_subagent_event)
         self.subagents.register_backend(CallableSubagentBackend("internal", self._run_internal_subagent))
         self.subagents.register_backend(
@@ -1236,6 +1237,14 @@ class AgentSession:
 
     def _build_subagent_task(self, role: str, goal: str, options: dict | None = None) -> SubagentTask:
         options = options or {}
+        if "cwd" in options:
+            raise ValueError("Subagent safety overrides are not supported: cwd")
+        sandbox = options.get("sandbox")
+        if sandbox is not None and sandbox != "read_only":
+            raise ValueError("Subagent safety overrides are not supported: sandbox")
+        allowed_tools = options.get("allowedTools", options.get("allowed_tools"))
+        if allowed_tools is not None and tuple(allowed_tools) != ("read", "grep", "find", "ls"):
+            raise ValueError("Subagent safety overrides are not supported: allowedTools")
         timeout_value = options.get("timeoutSeconds", options.get("timeout_seconds"))
         task_options = {
             "role": role,
@@ -1250,7 +1259,6 @@ class AgentSession:
             "parent_session_id": self.session_id,
             "parent_turn_id": options.get("parentTurnId", options.get("parent_turn_id")),
         }
-        allowed_tools = options.get("allowedTools", options.get("allowed_tools"))
         if allowed_tools is not None:
             task_options["allowed_tools"] = tuple(allowed_tools)
         return SubagentTask(**task_options)
@@ -1329,6 +1337,8 @@ class AgentSession:
         )
         role = _required_text_arg(args, "role")
         goal = _required_text_arg(args, "goal")
+        context_pack = args.get("contextPack", "")
+        self._reject_subagent_safety_override_text(role, goal, context_pack)
         wait_for_result = args.get("wait", True)
         if not isinstance(wait_for_result, bool):
             raise ValueError("wait must be a boolean")
@@ -1338,7 +1348,7 @@ class AgentSession:
         if "backend" in args:
             options["backend"] = args["backend"]
         if "contextPack" in args:
-            options["contextPack"] = args["contextPack"]
+            options["contextPack"] = context_pack
         task_id, task = self._spawn_subagent_task(role, goal, options)
         if wait_for_result:
             result = self.subagents.wait(task_id, timeout=task.timeout_seconds + 1)
@@ -1354,6 +1364,28 @@ class AgentSession:
             f"Spawned subagent {task_id}\nrole: {task.role}\nstatus: queued\nsummary: waiting for result",
             details,
         )
+
+    def _reject_subagent_safety_override_text(self, *values: object) -> None:
+        text = "\n".join(str(value) for value in values if value is not None).lower()
+        markers = (
+            "cwd=",
+            "cwd:",
+            "sandbox=",
+            "sandbox:",
+            "allowedtools=",
+            "allowedtools:",
+            "allowedtools[",
+            "allowed_tools=",
+            "allowed_tools:",
+            "allowed_tools[",
+            "full_access",
+            "danger-full-access",
+            "workspace_write",
+            "full access mode",
+        )
+        for marker in markers:
+            if marker in text:
+                raise ValueError("Subagent safety overrides are not supported: prompt text")
 
     def _execute_wait_subagent_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
         task_id = _task_id_arg(args)
@@ -1441,8 +1473,13 @@ class AgentSession:
         self._emit(event)
         try:
             self._extension_runner.emit(event)
-        except Exception:
-            pass
+        except Exception as error:
+            self._subagent_observer_errors.append(
+                f"extension observer failed for {event.get('type', 'unknown')}: {error}"
+            )
+
+    def subagent_observer_errors(self) -> list[str]:
+        return list(self._subagent_observer_errors)
 
     def _extension_abort(self) -> None:
         if self._extension_abort_handler is not None:

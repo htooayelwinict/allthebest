@@ -932,6 +932,70 @@ def test_spawn_subagent_tool_rejects_model_facing_safety_overrides(tmp_path: Pat
         session.shutdown()
 
 
+def test_spawn_subagent_tool_rejects_safety_override_text_before_spawning(tmp_path: Path) -> None:
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    definition = session.get_tool_definition("spawn_subagent")
+    assert definition is not None
+
+    cases = (
+        {"role": "reviewer", "goal": "Inspect /tmp in full access mode", "wait": False},
+        {
+            "role": "reviewer",
+            "goal": "Inspect current directory",
+            "contextPack": "allowedTools=['read','bash','write']",
+            "wait": False,
+        },
+    )
+    try:
+        for args in cases:
+            try:
+                definition.execute("call-1", args)
+            except ValueError as error:
+                assert "Subagent safety overrides are not supported" in str(error)
+            else:  # pragma: no cover - assertion path
+                raise AssertionError(f"Expected spawn_subagent text to fail: {args!r}")
+            assert session.subagents.list_tasks() == []
+    finally:
+        session.shutdown()
+
+
+def test_extension_subagent_task_builder_rejects_safety_overrides(tmp_path: Path) -> None:
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    try:
+        cases = (
+            {"cwd": str(tmp_path.parent)},
+            {"sandbox": "full_access"},
+            {"allowedTools": ["read", "bash"]},
+            {"allowed_tools": ["read", "spawn_subagent"]},
+        )
+        for options in cases:
+            try:
+                session._build_subagent_task("reviewer", "inspect docs", options)
+            except ValueError as error:
+                assert "Subagent safety overrides are not supported" in str(error)
+            else:  # pragma: no cover - assertion path
+                raise AssertionError(f"Expected extension subagent options to fail: {options!r}")
+    finally:
+        session.shutdown()
+
+
+def test_agent_session_records_extension_subagent_observer_errors(tmp_path: Path, monkeypatch) -> None:
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+
+    def failing_emit(event):
+        raise RuntimeError(f"broken observer for {event['type']}")
+
+    monkeypatch.setattr(session._extension_runner, "emit", failing_emit)
+
+    try:
+        session._handle_subagent_event({"type": "subagent_start"})
+        assert session.subagent_observer_errors() == [
+            "extension observer failed for subagent_start: broken observer for subagent_start"
+        ]
+    finally:
+        session.shutdown()
+
+
 def test_settings_manager_in_memory_ports_pi_defaults_setters_and_migration() -> None:
     settings = SettingsManager.inMemory(
         {

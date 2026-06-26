@@ -167,7 +167,7 @@ def test_get_api_key_and_headers_resolves_env_templates_and_uppercase_literals(m
 
 
 def test_get_api_key_and_headers_resolves_command_api_key_on_each_request(monkeypatch) -> None:
-    register_provider_auth_config("proxy", {"apiKey": '!printf "$PROXY_TOKEN"', "authHeader": True})
+    register_provider_auth_config("proxy", {"apiKey": "!printenv PROXY_TOKEN", "authHeader": True})
     model = Model(id="m", name="M", api="faux", provider="proxy", base_url="")
 
     monkeypatch.setenv("PROXY_TOKEN", "token-1")
@@ -177,6 +177,16 @@ def test_get_api_key_and_headers_resolves_command_api_key_on_each_request(monkey
 
     assert first["headers"] == {"Authorization": "Bearer token-1"}
     assert second["headers"] == {"Authorization": "Bearer token-2"}
+
+
+def test_get_api_key_and_headers_does_not_execute_shell_metacharacters() -> None:
+    register_provider_auth_config("proxy", {"apiKey": "!printf safe; printf hacked", "authHeader": True})
+    model = Model(id="m", name="M", api="faux", provider="proxy", base_url="")
+
+    result = get_api_key_and_headers(model)
+
+    assert result["ok"] is False
+    assert "headers" not in result
 
 
 def test_get_provider_display_name_resolves_registered_oauth_built_in_and_fallback() -> None:
