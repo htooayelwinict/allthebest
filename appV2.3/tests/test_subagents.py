@@ -122,18 +122,21 @@ def test_supervisor_backend_exception_reports_backend_failure(tmp_path):
 
 
 def test_subagent_result_rejects_unsupported_status():
-    try:
-        SubagentResult(
-            task_id="subagent-fixed",
-            backend="internal",
-            role="reviewer",
-            status="unknown",
-            summary="done",
-        )
-    except ValueError as error:
-        assert "Unsupported subagent status" in str(error)
-    else:  # pragma: no cover - assertion path
-        raise AssertionError("Expected unsupported status to fail")
+    for status in ("unknown", ["completed"]):
+        try:
+            SubagentResult(
+                task_id="subagent-fixed",
+                backend="internal",
+                role="reviewer",
+                status=status,
+                summary="done",
+            )
+        except ValueError as error:
+            assert "Unsupported subagent status" in str(error)
+        except Exception as error:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected ValueError, got {type(error).__name__}") from error
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected status {status!r} to fail")
 
 
 def test_subagent_result_rejects_unsafe_identity_fields():

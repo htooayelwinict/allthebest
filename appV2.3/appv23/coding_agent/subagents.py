@@ -154,7 +154,7 @@ class SubagentResult:
             raise ValueError(f"Unsupported subagent backend: {self.backend}")
         if not isinstance(self.role, str) or not self.role.strip() or not _TASK_ID_PATTERN.fullmatch(self.role):
             raise ValueError(f"Unsupported subagent role: {self.role}")
-        if self.status not in _SUBAGENT_STATUSES:
+        if not isinstance(self.status, str) or self.status not in _SUBAGENT_STATUSES:
             raise ValueError(f"Unsupported subagent status: {self.status}")
         if not isinstance(self.summary, str) or not self.summary.strip():
             raise ValueError("Subagent summary is required")
