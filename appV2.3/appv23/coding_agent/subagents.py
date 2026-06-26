@@ -479,9 +479,9 @@ class SubagentSupervisor:
         max_depth: int = 1,
         event_sink: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
-        if not isinstance(max_threads, int) or max_threads < 1:
+        if isinstance(max_threads, bool) or not isinstance(max_threads, int) or max_threads < 1:
             raise ValueError("max_threads must be at least 1")
-        if not isinstance(max_depth, int) or max_depth < 1:
+        if isinstance(max_depth, bool) or not isinstance(max_depth, int) or max_depth < 1:
             raise ValueError("max_depth must be at least 1")
         if event_sink is not None and not callable(event_sink):
             raise ValueError("event_sink must be callable")

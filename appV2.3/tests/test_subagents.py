@@ -255,7 +255,9 @@ def test_supervisor_event_sink_failure_does_not_break_task(tmp_path):
 def test_supervisor_rejects_malformed_constructor_options():
     cases = (
         ({"max_threads": "many"}, "max_threads must be at least 1"),
+        ({"max_threads": True}, "max_threads must be at least 1"),
         ({"max_depth": "deep"}, "max_depth must be at least 1"),
+        ({"max_depth": True}, "max_depth must be at least 1"),
         ({"event_sink": "not callable"}, "event_sink must be callable"),
     )
     for kwargs, message in cases:
