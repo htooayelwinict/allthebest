@@ -640,6 +640,12 @@ class SubagentSupervisor:
             started = self._started_at_ms.get(task.id, _now_ms())
         try:
             result = backend.run(task)
+            if result.task_id != task.id:
+                raise ValueError(f"Subagent backend returned mismatched task_id: {result.task_id}")
+            if result.backend != task.backend:
+                raise ValueError(f"Subagent backend returned mismatched backend: {result.backend}")
+            if result.role != task.role:
+                raise ValueError(f"Subagent backend returned mismatched role: {result.role}")
         except Exception as error:  # noqa: BLE001 - child failures must be data, not parent crashes.
             ended = _now_ms()
             result = SubagentResult(

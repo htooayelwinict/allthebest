@@ -85,6 +85,27 @@ def test_supervisor_stop_event_includes_result_observability_fields(tmp_path):
     assert stop_event["ended_at_ms"] == 160
 
 
+def test_supervisor_rejects_mismatched_backend_result_identity(tmp_path):
+    def backend(task):
+        return SubagentResult(
+            task_id="subagent-other",
+            backend=task.backend,
+            role=task.role,
+            status="completed",
+            summary="wrong task",
+        )
+
+    supervisor = SubagentSupervisor(max_threads=1)
+    supervisor.register_backend(CallableSubagentBackend("internal", backend))
+
+    task_id = supervisor.spawn(SubagentTask(id="subagent-fixed", role="reviewer", goal="inspect", cwd=str(tmp_path)))
+    result = supervisor.wait(task_id, timeout=2)
+
+    assert result.task_id == task_id
+    assert result.status == "failed"
+    assert any("mismatched task_id" in error for error in result.errors)
+
+
 def test_subagent_result_rejects_unsupported_status():
     try:
         SubagentResult(
