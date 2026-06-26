@@ -468,6 +468,25 @@ def test_callable_backend_rejects_non_callable_handler():
         raise AssertionError("Expected non-callable handler to fail")
 
 
+def test_codex_exec_backend_rejects_malformed_constructor_options():
+    cases = (
+        ({"codex_bin": ""}, "codex_bin must be a non-empty string"),
+        ({"codex_bin": "   "}, "codex_bin must be a non-empty string"),
+        ({"codex_bin": 7}, "codex_bin must be a non-empty string"),
+        ({"runner": "not callable"}, "runner must be callable"),
+        ({"log_dir": 7}, "log_dir must be a path string or Path"),
+    )
+    for kwargs, message in cases:
+        try:
+            CodexExecBackend(**kwargs)
+        except ValueError as error:
+            assert message in str(error)
+        except Exception as error:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected ValueError, got {type(error).__name__}") from error
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected constructor options {kwargs!r} to fail")
+
+
 def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
     events = []
     started = threading.Event()

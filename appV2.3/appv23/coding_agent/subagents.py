@@ -228,6 +228,12 @@ class CodexExecBackend:
         runner: Callable[..., object] | None = None,
         log_dir: str | Path | None = None,
     ) -> None:
+        if not isinstance(codex_bin, str) or not codex_bin.strip():
+            raise ValueError("codex_bin must be a non-empty string")
+        if runner is not None and not callable(runner):
+            raise ValueError("runner must be callable")
+        if log_dir is not None and not isinstance(log_dir, (str, Path)):
+            raise ValueError("log_dir must be a path string or Path")
         self.codex_bin = codex_bin
         self._runner = runner or subprocess.run
         self._log_dir = Path(log_dir) if log_dir is not None else None
