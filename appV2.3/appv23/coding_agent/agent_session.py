@@ -15,6 +15,7 @@ from appv23.agent.agent import Agent
 from appv23.agent.types import AbortSignal
 from appv23.agent.types import AfterToolCallResult
 from appv23.agent.types import AgentTool
+from appv23.agent.types import AgentToolResult
 from appv23.agent.types import AgentMessage
 from appv23.agent.types import BeforeToolCallResult
 from appv23.agent.types import MessageEndEvent, MessageStartEvent
@@ -73,7 +74,48 @@ from appv23.coding_agent.tools.types import (
     wrap_tool_definition,
 )
 
-_DEFAULT_ACTIVE_TOOL_NAMES = ["read", "bash", "edit", "write"]
+_SUBAGENT_TOOL_NAMES = [
+    "spawn_subagent",
+    "wait_subagent",
+    "list_subagents",
+    "get_subagent_result",
+    "cancel_subagent",
+]
+_MODEL_SUBAGENT_TIMEOUT_SECONDS_DEFAULT = 300
+_MODEL_SUBAGENT_TIMEOUT_SECONDS_MAX = 300
+_DEFAULT_ACTIVE_TOOL_NAMES = ["read", "bash", "edit", "write", *_SUBAGENT_TOOL_NAMES]
+_SPAWN_SUBAGENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "role": {"type": "string", "description": "Short child-agent role name, e.g. reviewer or researcher."},
+        "goal": {"type": "string", "description": "Bounded task for the child agent to complete."},
+        "backend": {"type": "string", "description": "Subagent backend to use. Defaults to internal."},
+        "wait": {"type": "boolean", "description": "Wait for the child result before returning. Defaults to true."},
+        "timeoutSeconds": {"type": "integer", "description": "Maximum seconds to wait for the child result."},
+        "contextPack": {"type": "string", "description": "Optional context to include in the child prompt."},
+    },
+    "required": ["role", "goal"],
+    "additionalProperties": False,
+}
+_TASK_ID_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "taskId": {"type": "string", "description": "Subagent task id."},
+        "timeoutSeconds": {"type": "number", "description": "Optional wait timeout in seconds."},
+    },
+    "required": ["taskId"],
+    "additionalProperties": False,
+}
+_LIST_SUBAGENTS_SCHEMA = {"type": "object", "properties": {}, "additionalProperties": False}
+_CANCEL_SUBAGENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "taskId": {"type": "string", "description": "Subagent task id."},
+        "reason": {"type": "string", "description": "Optional cancellation reason."},
+    },
+    "required": ["taskId"],
+    "additionalProperties": False,
+}
 _BRANCH_SUMMARY_PREFIX = "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n"
 _BRANCH_SUMMARY_SUFFIX = "</summary>"
 _COMPACTION_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n"
@@ -645,7 +687,10 @@ class AgentSession:
                 for definition in base_definitions
             }
         else:
-            base_definitions = create_all_tool_definitions(cwd, self._builtin_tool_options())
+            base_definitions = [
+                *create_all_tool_definitions(cwd, self._builtin_tool_options()),
+                *self._create_subagent_tool_definitions(),
+            ]
             base_tools = [
                 wrap_tool_definition(definition, lambda: ToolContext(cwd=self.cwd, model=self.model))
                 for definition in base_definitions
@@ -1189,23 +1234,159 @@ class AgentSession:
     def _extension_cancel_subagent(self, task_id: str, reason: str | None = None) -> dict:
         return self.subagents.cancel(task_id, reason or "Cancelled by user.").as_dict()
 
-    def _spawn_and_wait_for_subagent(self, role: str, goal: str, options: dict | None = None) -> SubagentResult:
+    def _build_subagent_task(self, role: str, goal: str, options: dict | None = None) -> SubagentTask:
         options = options or {}
-        task = SubagentTask(
-            role=role,
-            goal=goal,
-            cwd=str(options.get("cwd") or self.cwd),
-            backend=str(options.get("backend") or "internal"),
-            sandbox=str(options.get("sandbox") or "read_only"),
-            model=options.get("model"),
-            reasoning=options.get("reasoning", self.thinking_level),
-            context_pack=str(options.get("contextPack", options.get("context_pack", "")) or ""),
-            timeout_seconds=int(options.get("timeoutSeconds", options.get("timeout_seconds", 1800)) or 1800),
-            parent_session_id=self.session_id,
-            parent_turn_id=options.get("parentTurnId", options.get("parent_turn_id")),
-        )
+        timeout_value = options.get("timeoutSeconds", options.get("timeout_seconds"))
+        task_options = {
+            "role": role,
+            "goal": goal,
+            "cwd": str(options.get("cwd") or self.cwd),
+            "backend": str(options.get("backend") or "internal"),
+            "sandbox": str(options.get("sandbox") or "read_only"),
+            "model": options.get("model"),
+            "reasoning": options.get("reasoning", self.thinking_level),
+            "context_pack": str(options.get("contextPack", options.get("context_pack", "")) or ""),
+            "timeout_seconds": _coerce_subagent_timeout_seconds(timeout_value, default=1800),
+            "parent_session_id": self.session_id,
+            "parent_turn_id": options.get("parentTurnId", options.get("parent_turn_id")),
+        }
+        allowed_tools = options.get("allowedTools", options.get("allowed_tools"))
+        if allowed_tools is not None:
+            task_options["allowed_tools"] = tuple(allowed_tools)
+        return SubagentTask(**task_options)
+
+    def _spawn_subagent_task(self, role: str, goal: str, options: dict | None = None) -> tuple[str, SubagentTask]:
+        task = self._build_subagent_task(role, goal, options)
         task_id = self.subagents.spawn(task)
+        return task_id, task
+
+    def _spawn_and_wait_for_subagent(self, role: str, goal: str, options: dict | None = None) -> SubagentResult:
+        task_id, task = self._spawn_subagent_task(role, goal, options)
         return self.subagents.wait(task_id, timeout=task.timeout_seconds + 1)
+
+    def _create_subagent_tool_definitions(self) -> list[ToolDefinition]:
+        return [
+            ToolDefinition(
+                name="spawn_subagent",
+                label="spawn_subagent",
+                description=(
+                    "Spawn a delegated child coding agent for a bounded task. Returns child task id, role, "
+                    "status, summary, and lifecycle-visible result details."
+                ),
+                parameters=_SPAWN_SUBAGENT_SCHEMA,
+                prompt_snippet="Delegate bounded review, research, or implementation tasks to child subagents.",
+                prompt_guidelines=[
+                    "Use spawn_subagent when the user asks for a subagent, child agent, reviewer, researcher, or parallel delegation.",
+                    "Report the returned taskId, role, status, and summary to the user.",
+                ],
+                execute=self._execute_spawn_subagent_tool,
+            ),
+            ToolDefinition(
+                name="wait_subagent",
+                label="wait_subagent",
+                description="Wait for an existing subagent task to reach a terminal result.",
+                parameters=_TASK_ID_SCHEMA,
+                prompt_snippet="Wait for a delegated child task by task id.",
+                execute=self._execute_wait_subagent_tool,
+            ),
+            ToolDefinition(
+                name="list_subagents",
+                label="list_subagents",
+                description="List delegated subagents and their current statuses.",
+                parameters=_LIST_SUBAGENTS_SCHEMA,
+                prompt_snippet="Inspect active and completed child subagents.",
+                execute=self._execute_list_subagents_tool,
+            ),
+            ToolDefinition(
+                name="get_subagent_result",
+                label="get_subagent_result",
+                description="Return a completed subagent result if one is available.",
+                parameters=_TASK_ID_SCHEMA,
+                prompt_snippet="Fetch a child subagent result by task id without blocking indefinitely.",
+                execute=self._execute_get_subagent_result_tool,
+            ),
+            ToolDefinition(
+                name="cancel_subagent",
+                label="cancel_subagent",
+                description="Cancel a delegated subagent task by task id.",
+                parameters=_CANCEL_SUBAGENT_SCHEMA,
+                prompt_snippet="Cancel a child subagent that is no longer needed.",
+                execute=self._execute_cancel_subagent_tool,
+            ),
+        ]
+
+    def _execute_spawn_subagent_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
+        _reject_unexpected_args(
+            args,
+            {
+                "role",
+                "goal",
+                "backend",
+                "wait",
+                "timeoutSeconds",
+                "contextPack",
+            },
+        )
+        role = _required_text_arg(args, "role")
+        goal = _required_text_arg(args, "goal")
+        wait_for_result = args.get("wait", True)
+        if not isinstance(wait_for_result, bool):
+            raise ValueError("wait must be a boolean")
+        options: dict[str, object] = {
+            "timeoutSeconds": _model_subagent_timeout_seconds_arg(args),
+        }
+        if "backend" in args:
+            options["backend"] = args["backend"]
+        if "contextPack" in args:
+            options["contextPack"] = args["contextPack"]
+        task_id, task = self._spawn_subagent_task(role, goal, options)
+        if wait_for_result:
+            result = self.subagents.wait(task_id, timeout=task.timeout_seconds + 1)
+            return self._subagent_tool_result(self._format_subagent_result(result), result.as_dict())
+        details = {
+            "taskId": task_id,
+            "role": role,
+            "backend": task.backend,
+            "status": "queued",
+            "goal": task.goal,
+        }
+        return self._subagent_tool_result(
+            f"Spawned subagent {task_id}\nrole: {task.role}\nstatus: queued\nsummary: waiting for result",
+            details,
+        )
+
+    def _execute_wait_subagent_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
+        task_id = _task_id_arg(args)
+        timeout = _optional_timeout_arg(args)
+        result = self.subagents.wait(task_id, timeout=timeout)
+        return self._subagent_tool_result(self._format_subagent_result(result), result.as_dict())
+
+    def _execute_list_subagents_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
+        tasks = self.subagents.list_tasks()
+        if not tasks:
+            return self._subagent_tool_result("No subagents have been spawned in this session.", {"tasks": []})
+        lines = ["Subagents:"]
+        for task in tasks:
+            lines.append(f"- {task['taskId']} [{task['backend']}] {task['role']}: {task['status']} - {task['goal']}")
+        return self._subagent_tool_result("\n".join(lines), {"tasks": tasks})
+
+    def _execute_get_subagent_result_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
+        task_id = _task_id_arg(args)
+        result = self.subagents.get_result(task_id)
+        if result is None:
+            return self._subagent_tool_result(f"No result is available for subagent {task_id}.", {"taskId": task_id})
+        return self._subagent_tool_result(self._format_subagent_result(result), result.as_dict())
+
+    def _execute_cancel_subagent_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
+        task_id = _task_id_arg(args)
+        reason = args.get("reason", "Cancelled by user.")
+        if not isinstance(reason, str):
+            raise ValueError("reason must be a string")
+        result = self.subagents.cancel(task_id, reason or "Cancelled by user.")
+        return self._subagent_tool_result(self._format_subagent_result(result), result.as_dict())
+
+    def _subagent_tool_result(self, content: str, details: dict[str, object]) -> AgentToolResult:
+        return AgentToolResult(content=[TextContent(text=content)], details=details)
 
     def _run_internal_subagent(self, task: SubagentTask) -> SubagentResult:
         started = int(time.time() * 1000)
@@ -1253,7 +1434,7 @@ class AgentSession:
         return "\n".join(part for part in parts if part).strip()
 
     def _format_subagent_result(self, result: SubagentResult) -> str:
-        heading = f"Subagent {result.role} [{result.backend}] {result.status}"
+        heading = f"Subagent {result.task_id} {result.role} [{result.backend}] {result.status}"
         return f"{heading}\n{result.summary}".strip()
 
     def _handle_subagent_event(self, event: dict[str, object]) -> None:
@@ -2930,6 +3111,70 @@ def _replace_message_in_place(target: AgentMessage, replacement: AgentMessage) -
     if hasattr(target, "__dict__") and hasattr(replacement, "__dict__"):
         target.__dict__.clear()
         target.__dict__.update(replacement.__dict__)
+
+
+def _reject_unexpected_args(args, allowed: set[str]) -> None:
+    if not isinstance(args, Mapping):
+        raise ValueError("tool arguments must be an object")
+    unexpected = sorted(str(key) for key in args.keys() if key not in allowed)
+    if unexpected:
+        raise ValueError(f"Unsupported argument(s): {', '.join(unexpected)}")
+
+
+def _coerce_subagent_timeout_seconds(
+    value: object,
+    *,
+    default: int,
+    max_seconds: int | None = None,
+) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("timeoutSeconds must be a positive integer")
+    if value <= 0:
+        raise ValueError("timeoutSeconds must be positive")
+    if max_seconds is not None and value > max_seconds:
+        raise ValueError(f"timeoutSeconds must be <= {max_seconds}")
+    return value
+
+
+def _model_subagent_timeout_seconds_arg(args) -> int:
+    if not isinstance(args, Mapping):
+        raise ValueError("tool arguments must be an object")
+    return _coerce_subagent_timeout_seconds(
+        args.get("timeoutSeconds"),
+        default=_MODEL_SUBAGENT_TIMEOUT_SECONDS_DEFAULT,
+        max_seconds=_MODEL_SUBAGENT_TIMEOUT_SECONDS_MAX,
+    )
+
+
+def _required_text_arg(args, name: str) -> str:
+    if not isinstance(args, Mapping):
+        raise ValueError("tool arguments must be an object")
+    value = args.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} is required")
+    return value.strip()
+
+
+def _task_id_arg(args) -> str:
+    if not isinstance(args, Mapping):
+        raise ValueError("tool arguments must be an object")
+    value = args.get("taskId", args.get("task_id"))
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("taskId is required")
+    return value.strip()
+
+
+def _optional_timeout_arg(args) -> float | None:
+    if not isinstance(args, Mapping):
+        raise ValueError("tool arguments must be an object")
+    value = args.get("timeoutSeconds", args.get("timeout_seconds"))
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("timeoutSeconds must be a number")
+    return float(value)
 
 
 def _tool_info(definition: ToolDefinition, source_info: SourceInfo) -> dict:

@@ -53,6 +53,52 @@ def test_end_to_end_coding_app_read_tool_and_render(tmp_path: Path) -> None:
     assert calls["n"] == 2
 
 
+def test_coding_app_model_can_spawn_visible_subagent(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    child_tool_names: list[str] = []
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return tool_call_response_events(
+                m,
+                "spawn_subagent",
+                {
+                    "role": "reviewer",
+                    "goal": "inspect docs/report/appv22_qa_scan_2026-06-26.md",
+                    "wait": True,
+                    "timeoutSeconds": 2,
+                },
+            )
+        if provider_calls["n"] == 2:
+            child_tool_names[:] = [tool.name for tool in (c.tools or [])]
+            return text_response_events(m, "child reviewed the report")
+        return text_response_events(m, "parent saw child status completed")
+
+    register_api_provider(create_faux_provider(script))
+    app = CodingApp(cwd=str(tmp_path), model=model, terminal=FakeTerminal(), enable_tui=False)
+    events: list[object] = []
+    app.session.subscribe(events.append)
+
+    app.run_turn("spawn a reviewer subagent and show its status")
+
+    tool_results = [
+        message
+        for message in app.messages
+        if isinstance(message, ToolResultMessage) and message.tool_name == "spawn_subagent"
+    ]
+    assert tool_results
+    assert tool_results[0].details["status"] == "completed"
+    assert tool_results[0].details["role"] == "reviewer"
+    assert tool_results[0].details["summary"] == "child reviewed the report"
+    event_types = [event["type"] if isinstance(event, dict) else event.type for event in events]
+    assert "subagent_start" in event_types
+    assert "subagent_stop" in event_types
+    assert set(child_tool_names) == {"read", "grep", "find", "ls"}
+    assert provider_calls["n"] == 3
+
+
 def test_coding_app_wires_compaction_transform(tmp_path: Path) -> None:
     model = faux_model()
     register_api_provider(create_faux_provider(lambda m, c: text_response_events(m, "ok")))

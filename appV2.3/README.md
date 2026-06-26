@@ -55,7 +55,34 @@ From the repository root:
 PYTHONPATH=appV2.3 .venv/bin/python -m pytest appV2.3/tests -q
 ```
 
-Expected current `appV2.3` suite: `641 passed`.
+Expected current `appV2.3` suite: `644 passed`.
+
+## User-side subagent smoke
+
+Start the app:
+
+```bash
+npm run tui:v23
+```
+
+Then ask:
+
+```text
+Spawn a reviewer subagent to inspect docs/report/appv22_qa_scan_2026-06-26.md. Show me the child task id, child role, child status, and child summary.
+```
+
+Working output should include a `spawn_subagent` tool call plus child lifecycle evidence:
+
+```text
+subagent_start
+child_subagent_id: subagent-...
+child_role: reviewer
+subagent_stop
+status: completed
+summary: ...
+```
+
+The `spawn_subagent` tool result should also include `taskId`, `role`, `status`, and `summary`.
 
 ## Environment
 

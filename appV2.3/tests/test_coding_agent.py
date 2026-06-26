@@ -858,6 +858,47 @@ def test_tool_factory_bundles(tmp_path: Path) -> None:
     assert len(create_all_tools(str(tmp_path))) == 7
 
 
+def test_agent_session_exposes_subagent_tools_by_default(tmp_path: Path) -> None:
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+
+    expected = {
+        "spawn_subagent",
+        "wait_subagent",
+        "list_subagents",
+        "get_subagent_result",
+        "cancel_subagent",
+    }
+
+    assert expected <= set(session.get_active_tool_names())
+    assert expected <= {tool["name"] for tool in session.get_all_tools()}
+    assert "spawn_subagent" in session.system_prompt
+
+
+def test_spawn_subagent_tool_rejects_model_facing_safety_overrides(tmp_path: Path) -> None:
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    definition = session.get_tool_definition("spawn_subagent")
+    assert definition is not None
+
+    cases = (
+        {"allowedTools": ["read", "bash", "spawn_subagent"], "wait": False},
+        {"sandbox": "full_access", "wait": False},
+        {"cwd": "/", "wait": False},
+        {"timeoutSeconds": 0, "wait": False},
+        {"timeoutSeconds": 301, "wait": False},
+    )
+    try:
+        for overrides in cases:
+            args = {"role": "reviewer", "goal": "inspect docs", **overrides}
+            try:
+                definition.execute("call-1", args)
+            except ValueError:
+                pass
+            else:  # pragma: no cover - assertion path
+                raise AssertionError(f"Expected spawn_subagent args to fail: {overrides!r}")
+    finally:
+        session.shutdown()
+
+
 def test_settings_manager_in_memory_ports_pi_defaults_setters_and_migration() -> None:
     settings = SettingsManager.inMemory(
         {
@@ -3409,7 +3450,17 @@ def test_agent_session_exposes_default_coding_tools_for_greeting(tmp_path: Path)
     register_api_provider(create_faux_provider(script))
     session = AgentSession(cwd=str(tmp_path), model=model)
     session.prompt("hi")
-    assert set(seen["tools"]) == {"read", "bash", "edit", "write"}
+    assert set(seen["tools"]) == {
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "spawn_subagent",
+        "wait_subagent",
+        "list_subagents",
+        "get_subagent_result",
+        "cancel_subagent",
+    }
     assert "No tools are active for this turn" not in seen["system_prompt"]
 
 
@@ -3424,7 +3475,17 @@ def test_agent_session_keeps_default_coding_tools_for_repo_inspection_prompt(tmp
     register_api_provider(create_faux_provider(script))
     session = AgentSession(cwd=str(tmp_path), model=model)
     session.prompt("list files under src")
-    assert set(seen["tools"]) == {"read", "bash", "edit", "write"}
+    assert set(seen["tools"]) == {
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "spawn_subagent",
+        "wait_subagent",
+        "list_subagents",
+        "get_subagent_result",
+        "cancel_subagent",
+    }
 
 
 def test_agent_session_default_prompt_matches_pi_without_codebase_scan_drift(tmp_path: Path) -> None:
@@ -4392,8 +4453,30 @@ def test_agent_session_extension_command_context_exposes_system_prompt_options(t
     session.prompt("/inspect-options")
 
     assert [options.selected_tools for options in seen_options] == [
-        ["read", "bash", "edit", "write", "mutated_tool"],
-        ["read", "bash", "edit", "write", "mutated_tool"],
+        [
+            "read",
+            "bash",
+            "edit",
+            "write",
+            "spawn_subagent",
+            "wait_subagent",
+            "list_subagents",
+            "get_subagent_result",
+            "cancel_subagent",
+            "mutated_tool",
+        ],
+        [
+            "read",
+            "bash",
+            "edit",
+            "write",
+            "spawn_subagent",
+            "wait_subagent",
+            "list_subagents",
+            "get_subagent_result",
+            "cancel_subagent",
+            "mutated_tool",
+        ],
     ]
 
 
@@ -4512,7 +4595,17 @@ def test_agent_session_extension_command_context_exposes_session_and_tool_metada
     assert result == []
     assert session.session_name == "Command Session"
     assert seen["name"] == "Command Session"
-    assert seen["active_before"] == ["read", "bash", "edit", "write"]
+    assert seen["active_before"] == [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "spawn_subagent",
+        "wait_subagent",
+        "list_subagents",
+        "get_subagent_result",
+        "cancel_subagent",
+    ]
     assert seen["active_after"] == ["read", "bash"]
     assert {"read", "bash", "edit", "write"}.issubset(set(seen["all_tool_names"]))
     assert seen["commands"][:2] == ["metadata", "other"]
