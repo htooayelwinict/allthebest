@@ -1,0 +1,72 @@
+# appv23
+
+Pi-style coding agent with Hermes-style compaction, branched from the sealed `appV2.2` baseline.
+
+## Status
+
+`appV2.3` is the active next-version workspace. Keep `appV2.2/` sealed except for bug fixes, security fixes, test hardening, and documentation corrections. Put new advanced agent work in `appV2.3/`.
+
+This initial scaffold intentionally preserves the `APPV2_*` environment variable prefix for compatibility with the sealed baseline. Rename environment prefixes later only if the migration is planned and tested.
+
+## Requirements
+
+- Python 3.13
+- `uv` for local development from the repository root
+- Optional provider credentials in `.env` for live LLM runs
+
+## Run from the repository
+
+```bash
+uv run python appV2.3/scripts/appv23_tui.py --dotenv .env --cwd .
+```
+
+Or use the root npm wrapper:
+
+```bash
+npm run tui -- --dotenv .env --cwd .
+```
+
+Version-specific wrappers are also available:
+
+```bash
+npm run tui:v22 -- --dotenv .env --cwd .
+npm run tui:v23 -- --dotenv .env --cwd .
+```
+
+## Install locally from a wheel
+
+```bash
+uv tool install dist/appv23-*.whl
+```
+
+Then run:
+
+```bash
+appv23 --cwd . --dotenv .env
+```
+
+## Test
+
+From the repository root:
+
+```bash
+PYTHONPATH=appV2.3 .venv/bin/python -m pytest appV2.3/tests -q
+```
+
+Expected baseline inherited from `appV2.2`: `573 passed`.
+
+## Environment
+
+Copy the root template and set the worker provider values needed for live model calls:
+
+```bash
+cp .env.example .env
+```
+
+Minimum live-run settings:
+
+```text
+APPV2_WORKER_LLM_ENABLED=true
+APPV2_WORKER_LLM_API_KEY=...
+APPV2_WORKER_LLM_BASE_URL=https://openrouter.ai/api/v1
+```

@@ -1,0 +1,10 @@
+{
+  "name": "appv23-pi-tui",
+  "version": "2.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tui": "python3 scripts/appv23_tui.py"
+  },
+  "dependencies": {}
+}
