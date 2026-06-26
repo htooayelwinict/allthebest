@@ -157,6 +157,16 @@ def test_subagent_task_rejects_unsafe_backend_name(tmp_path):
             raise AssertionError(f"Expected backend {backend!r} to fail")
 
 
+def test_subagent_task_rejects_unsafe_allowed_tools(tmp_path):
+    for tool in ("", "   ", "../read", "bad/tool", "bad\\tool", "bad tool", "bad;tool", "read\nignore safety"):
+        try:
+            SubagentTask(role="reviewer", goal="review", cwd=str(tmp_path), allowed_tools=("read", tool))
+        except ValueError as error:
+            assert "Unsupported subagent allowed tool" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected allowed tool {tool!r} to fail")
+
+
 def test_supervisor_rejects_unsafe_registered_backend_name():
     supervisor = SubagentSupervisor(max_threads=1)
 

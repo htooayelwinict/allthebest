@@ -80,7 +80,11 @@ class SubagentTask:
             if reasoning not in _REASONING_EFFORTS:
                 raise ValueError(f"Unsupported subagent reasoning effort: {self.reasoning}")
             object.__setattr__(self, "reasoning", reasoning)
-        object.__setattr__(self, "allowed_tools", tuple(self.allowed_tools or ()))
+        allowed_tools = tuple(self.allowed_tools or ())
+        for tool in allowed_tools:
+            if not isinstance(tool, str) or not tool.strip() or not _TASK_ID_PATTERN.fullmatch(tool):
+                raise ValueError(f"Unsupported subagent allowed tool: {tool}")
+        object.__setattr__(self, "allowed_tools", allowed_tools)
 
     def prompt(self) -> str:
         parts = [
