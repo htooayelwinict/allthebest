@@ -8,7 +8,7 @@
 [![uv](https://img.shields.io/badge/uv-0.6+-1f2937?style=for-the-badge&logo=astral&logoColor=a855f7)](https://docs.astral.sh/uv/)
 [![Pydantic](https://img.shields.io/badge/Pydantic-2.x-1f2937?style=for-the-badge&logo=pydantic&logoColor=0ea5e9)](https://docs.pydantic.dev/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.6+-1f2937?style=for-the-badge&logo=langchain&logoColor=22c55e)](https://langchain-ai.github.io/langgraph/)
-[![Tests](https://img.shields.io/badge/Tests-583%20passing-1f2937?style=for-the-badge&logo=pytest&logoColor=f59e0b)](https://docs.pytest.org/)
+[![Tests](https://img.shields.io/badge/Tests-638%20passing-1f2937?style=for-the-badge&logo=pytest&logoColor=f59e0b)](https://docs.pytest.org/)
 [![License](https://img.shields.io/badge/License-MIT-1f2937?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](LICENSE)
 
 **A self-contained Python port of the Pi coding agent, fused with Hermes-style context compaction and runtime guardrails.**
@@ -55,7 +55,7 @@ Most agent runtimes either couple tightly to a single framework or hide their bo
 | **Multi-Provider LLM Registry** | OpenRouter, OpenAI-compatible, and faux/offline providers with model pattern matching. |
 | **Thinking Levels** | Per-request reasoning control via `--thinking` and scoped model cycling. |
 | **Session Persistence** | JSONL session store with resume/fork/branch support. |
-| **Offline Test Suite** | 583 pytest cases run against the faux provider without network calls. |
+| **Offline Test Suite** | 638 pytest cases run against the faux provider without network calls. |
 
 ---
 
@@ -147,7 +147,7 @@ npm run tui -- --dotenv .env --cwd ./your-project
 PYTHONPATH=appV2.3 .venv/bin/python -m pytest appV2.3/tests -q
 ```
 
-Expected: **583 passing**.
+Expected: **638 passing**.
 
 ---
 
@@ -224,7 +224,7 @@ app.run_turn("List the 5 largest Python files")
 ## Testing & Quality
 
 - **Framework:** pytest
-- **Total tests:** 583 passing
+- **Total tests:** 638 passing
 - **Offline coverage:** faux provider enables full test runs without API keys
 - **Coupling guard:** `appV2.3/tests/test_no_appv21_coupling.py` ensures `appv23` never imports from `pi/` or `hermes-agent/`
 
@@ -249,7 +249,7 @@ allthebest/
 ├── appV2.2/                    # Sealed Python baseline (appv22), tag v2.2
 │   ├── appv22/                 # Source package
 │   ├── scripts/appv22_tui.py   # Main runtime launcher
-│   └── tests/                  # 583 pytest cases
+│   └── tests/                  # 638 pytest cases
 ├── appV2.3/                    # Active next-version app (appv23)
 │   ├── appv23/                 # Source package
 │   ├── scripts/appv23_tui.py   # Main runtime launcher
@@ -309,7 +309,7 @@ Start those in `appV2.3` so `appV2.2` remains a known-good baseline.
 - [x] Differential TUI with live event rendering
 - [x] Overflow and output-cap recovery
 - [x] Tool-loop guardrails
-- [x] 583 offline pytest tests
+- [x] 638 offline pytest tests
 - [x] Seal `appV2.2` as the stable baseline
 - [x] Create `appV2.3/appv23` as the next version line
 - [ ] Move advanced features into `appV2.3`
