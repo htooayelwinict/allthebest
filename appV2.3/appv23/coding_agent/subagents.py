@@ -474,9 +474,12 @@ class SubagentSupervisor:
 
     def register_backend(self, backend: SubagentBackend) -> None:
         with self._lock:
-            if not backend.name.strip() or not _TASK_ID_PATTERN.fullmatch(backend.name):
-                raise ValueError(f"Unsupported subagent backend: {backend.name}")
-            self._backends[backend.name] = backend
+            backend_name = getattr(backend, "name", None)
+            if not isinstance(backend_name, str) or not backend_name.strip() or not _TASK_ID_PATTERN.fullmatch(backend_name):
+                raise ValueError(f"Unsupported subagent backend: {backend_name}")
+            if not callable(getattr(backend, "run", None)):
+                raise ValueError("Subagent backend must define a callable run method")
+            self._backends[backend_name] = backend
 
     def spawn(self, task: SubagentTask) -> str:
         with self._lock:

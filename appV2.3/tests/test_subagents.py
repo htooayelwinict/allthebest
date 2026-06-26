@@ -395,6 +395,43 @@ def test_supervisor_rejects_unsafe_registered_backend_name():
         raise AssertionError("Expected unsafe backend name to fail")
 
 
+def test_supervisor_rejects_malformed_registered_backend_interface():
+    supervisor = SubagentSupervisor(max_threads=1)
+
+    class MissingNameBackend:
+        def run(self, task):
+            return "done"
+
+    class NonStringNameBackend:
+        name = 7
+
+        def run(self, task):
+            return "done"
+
+    class MissingRunBackend:
+        name = "missing-run"
+
+    class NonCallableRunBackend:
+        name = "bad-run"
+        run = "not callable"
+
+    cases = (
+        (MissingNameBackend(), "Unsupported subagent backend"),
+        (NonStringNameBackend(), "Unsupported subagent backend"),
+        (MissingRunBackend(), "Subagent backend must define a callable run method"),
+        (NonCallableRunBackend(), "Subagent backend must define a callable run method"),
+    )
+    for backend, message in cases:
+        try:
+            supervisor.register_backend(backend)
+        except ValueError as error:
+            assert message in str(error)
+        except Exception as error:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected ValueError, got {type(error).__name__}") from error
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected malformed backend {backend!r} to fail")
+
+
 def test_callable_backend_rejects_unsafe_name():
     for name in ("../internal", "bad/backend", "bad\\backend", "bad backend", "bad;backend"):
         try:
