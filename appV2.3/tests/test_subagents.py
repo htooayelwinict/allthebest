@@ -442,6 +442,15 @@ def test_callable_backend_rejects_unsafe_name():
             raise AssertionError(f"Expected backend name {name!r} to fail")
 
 
+def test_callable_backend_rejects_non_callable_handler():
+    try:
+        CallableSubagentBackend("internal", "not callable")
+    except ValueError as error:
+        assert "Subagent backend handler must be callable" in str(error)
+    else:  # pragma: no cover - assertion path
+        raise AssertionError("Expected non-callable handler to fail")
+
+
 def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
     events = []
     started = threading.Event()

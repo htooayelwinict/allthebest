@@ -195,6 +195,8 @@ class CallableSubagentBackend:
     def __init__(self, name: str, handler: Callable[[SubagentTask], str | SubagentResult]) -> None:
         if not name.strip() or not _TASK_ID_PATTERN.fullmatch(name):
             raise ValueError(f"Unsupported subagent backend: {name}")
+        if not callable(handler):
+            raise ValueError("Subagent backend handler must be callable")
         self.name = name
         self._handler = handler
 
