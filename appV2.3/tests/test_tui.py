@@ -101,6 +101,7 @@ from appv23.app import CodingApp
 from appv23.compaction.timing import ManualCompressionStatus
 from appv23.coding_agent import BashResult
 from appv23.coding_agent.session_store import BashExecutionMessage, BranchSummaryMessage, CustomMessage
+from appv23.coding_agent.subagents import CallableSubagentBackend
 from appv23.coding_agent.tools.bash import BashOperations
 from appv23.coding_agent.tools.read import create_read_tool_definition
 from appv23.ai.event_stream import create_assistant_message_event_stream
@@ -2446,6 +2447,19 @@ def test_input_ignores_mouse_reports_that_reach_prompt_editor() -> None:
     assert input_component.cursor == len("draft")
 
 
+def test_input_ignores_leaked_mouse_report_fragments_that_reach_prompt_editor() -> None:
+    input_component = Input(value="draft")
+    input_component.cursor = len("draft")
+
+    input_component.handle_input("[<64;1;1M")
+    input_component.handle_input("<65;1;1M")
+    input_component.handle_input("^[[<64;1;1m")
+    input_component.handle_input("[M`!!")
+
+    assert input_component.get_value() == "draft"
+    assert input_component.cursor == len("draft")
+
+
 def test_input_ports_pi_alt_d_delete_word_forward_keybinding() -> None:
     input_component = Input()
     input_component.set_value("hello world")
@@ -3011,6 +3025,55 @@ def test_interactive_mode_runs_agents_command_during_active_turn_without_queuein
     finally:
         stop.set()
         active_turn.join(timeout=1)
+
+
+def test_interactive_mode_runs_agents_command_while_subagent_tool_waits(tmp_path) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    provider_calls = {"n": 0}
+
+    def script(model, context):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return tool_call_response_events(
+                model,
+                "spawn_subagent",
+                {"role": "reviewer", "goal": "slow review", "wait": True, "timeoutSeconds": 30},
+            )
+        return text_response_events(model, "parent done")
+
+    def slow_backend(task):
+        started.set()
+        release.wait(2)
+        return "child done"
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=140, rows=40)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.session.subagents.register_backend(CallableSubagentBackend("internal", slow_backend))
+    prompt_count = {"n": 0}
+
+    def input_fn(_prompt: str) -> str:
+        prompt_count["n"] += 1
+        if prompt_count["n"] == 1:
+            return "spawn a slow reviewer subagent"
+        if prompt_count["n"] == 2:
+            assert started.wait(timeout=2)
+            return "/agents"
+        release.set()
+        return "/exit"
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+
+    mode.run()
+
+    rendered = strip_ansi("\n".join(app.tui.render(140)))
+    assert provider_calls["n"] == 2
+    assert "Subagents:" in rendered
+    assert "reviewer" in rendered
+    assert "running - slow review" in rendered
+    assert "Queued message for after current turn" not in rendered
+    assert "parent done" in rendered
 
 
 def test_interactive_mode_dispatches_extension_shortcut_without_model_turn(tmp_path) -> None:

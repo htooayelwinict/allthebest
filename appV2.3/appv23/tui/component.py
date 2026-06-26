@@ -718,6 +718,14 @@ def _is_plain_ascii_input(value: str) -> bool:
     return value.isascii() and all(" " <= char <= "~" for char in value)
 
 
+_LEAKED_SGR_MOUSE_FRAGMENT_RE = re.compile(r"(?:\^\[\[|\[)?<\d+;\d+;\d+[Mm]")
+_LEAKED_X10_MOUSE_FRAGMENT_RE = re.compile(r"\[M[\x60-\x7f][\x20-\uffff]{2}", re.S)
+
+
+def _match_leaked_mouse_report_fragment(text: str, index: int) -> re.Match[str] | None:
+    return _LEAKED_SGR_MOUSE_FRAGMENT_RE.match(text, index) or _LEAKED_X10_MOUSE_FRAGMENT_RE.match(text, index)
+
+
 def _is_grapheme_extender(char: str) -> bool:
     codepoint = ord(char)
     return (
@@ -841,6 +849,8 @@ class Input(Component):
                 data[index:],
             ):
                 index += len(mouse_match.group(0))
+            elif leaked_mouse_match := _match_leaked_mouse_report_fragment(data, index):
+                index = leaked_mouse_match.end()
             elif data.startswith("\x1b[A", index):
                 if self._history:
                     self._navigate_history(-1)
