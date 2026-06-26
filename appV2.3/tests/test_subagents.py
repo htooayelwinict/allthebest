@@ -264,6 +264,20 @@ def test_callable_backend_rejects_malformed_name():
             raise AssertionError(f"Expected backend name {name!r} to fail")
 
 
+def test_subagent_task_rejects_boolean_runtime_options(tmp_path):
+    cases = (
+        ({"timeout_seconds": True}, "Subagent timeout_seconds must be positive"),
+        ({"depth": True}, "Subagent depth must be at least 1"),
+    )
+    for kwargs, message in cases:
+        try:
+            SubagentTask(role="reviewer", goal="review", cwd=str(tmp_path), **kwargs)
+        except ValueError as error:
+            assert message in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected runtime options {kwargs!r} to fail")
+
+
 def test_supervisor_rejects_unregistered_backend(tmp_path):
     supervisor = SubagentSupervisor(max_threads=1)
 
