@@ -180,6 +180,16 @@ def test_supervisor_rejects_unsafe_registered_backend_name():
         raise AssertionError("Expected unsafe backend name to fail")
 
 
+def test_callable_backend_rejects_unsafe_name():
+    for name in ("../internal", "bad/backend", "bad\\backend", "bad backend", "bad;backend"):
+        try:
+            CallableSubagentBackend(name, lambda task: "done")
+        except ValueError as error:
+            assert "Unsupported subagent backend" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError(f"Expected backend name {name!r} to fail")
+
+
 def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
     events = []
     started = threading.Event()

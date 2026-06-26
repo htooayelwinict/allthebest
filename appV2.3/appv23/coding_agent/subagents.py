@@ -147,8 +147,8 @@ class SubagentBackend(Protocol):
 
 class CallableSubagentBackend:
     def __init__(self, name: str, handler: Callable[[SubagentTask], str | SubagentResult]) -> None:
-        if not name.strip():
-            raise ValueError("Backend name is required")
+        if not name.strip() or not _TASK_ID_PATTERN.fullmatch(name):
+            raise ValueError(f"Unsupported subagent backend: {name}")
         self.name = name
         self._handler = handler
 
