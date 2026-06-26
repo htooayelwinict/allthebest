@@ -157,6 +157,29 @@ def test_subagent_task_rejects_unsafe_backend_name(tmp_path):
             raise AssertionError(f"Expected backend {backend!r} to fail")
 
 
+def test_supervisor_rejects_unsafe_registered_backend_name():
+    supervisor = SubagentSupervisor(max_threads=1)
+
+    class UnsafeBackend:
+        name = "bad/backend"
+
+        def run(self, task):
+            return SubagentResult(
+                task_id=task.id,
+                backend=self.name,
+                role=task.role,
+                status="completed",
+                summary="done",
+            )
+
+    try:
+        supervisor.register_backend(UnsafeBackend())
+    except ValueError as error:
+        assert "Unsupported subagent backend" in str(error)
+    else:  # pragma: no cover - assertion path
+        raise AssertionError("Expected unsafe backend name to fail")
+
+
 def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
     events = []
     started = threading.Event()

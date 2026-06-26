@@ -428,6 +428,8 @@ class SubagentSupervisor:
 
     def register_backend(self, backend: SubagentBackend) -> None:
         with self._lock:
+            if not backend.name.strip() or not _TASK_ID_PATTERN.fullmatch(backend.name):
+                raise ValueError(f"Unsupported subagent backend: {backend.name}")
             self._backends[backend.name] = backend
 
     def spawn(self, task: SubagentTask) -> str:
