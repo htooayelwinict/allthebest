@@ -143,6 +143,40 @@ def test_codex_exec_backend_parses_jsonl_final_agent_message(tmp_path):
     assert calls[0][1] == str(tmp_path)
 
 
+def test_codex_exec_backend_forwards_model_and_reasoning_effort(tmp_path):
+    calls = []
+
+    def fake_runner(args, cwd, timeout, text, capture_output):
+        calls.append(args)
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": '{"type":"item.completed","item":{"type":"agent_message","text":"final summary"}}\n',
+                "stderr": "",
+            },
+        )()
+
+    backend = CodexExecBackend(runner=fake_runner)
+    result = backend.run(
+        SubagentTask(
+            role="codex",
+            goal="review",
+            cwd=str(tmp_path),
+            backend="codex",
+            model="gpt-5-codex",
+            reasoning="high",
+        )
+    )
+
+    assert result.status == "completed"
+    assert "--model" in calls[0]
+    assert "gpt-5-codex" in calls[0]
+    assert "-c" in calls[0]
+    assert 'model_reasoning_effort="high"' in calls[0]
+
+
 def test_codex_exec_backend_persists_raw_log_when_configured(tmp_path):
     def fake_runner(args, cwd, timeout, text, capture_output):
         return type(

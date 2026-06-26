@@ -45,7 +45,7 @@ class SubagentTask:
     id: str = field(default_factory=_new_id)
     sandbox: SubagentSandbox = "read_only"
     model: str | None = None
-    reasoning: str | None = "medium"
+    reasoning: str | None = None
     allowed_tools: tuple[str, ...] = _READ_ONLY_TOOLS
     context_pack: str = ""
     timeout_seconds: int = 1800
@@ -221,6 +221,8 @@ class CodexExecBackend:
         ]
         if task.model:
             args[2:2] = ["--model", task.model]
+        if task.reasoning and task.reasoning != "off":
+            args[2:2] = ["-c", f'model_reasoning_effort="{task.reasoning}"']
         try:
             completed = self._runner(
                 args,
