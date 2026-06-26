@@ -393,6 +393,8 @@ class SubagentSupervisor:
             raise ValueError(f"No subagent backend registered for '{task.backend}'")
         if task.depth > self.max_depth:
             raise ValueError(f"Subagent depth {task.depth} exceeds max_depth {self.max_depth}")
+        if task.id in self._tasks:
+            raise ValueError(f"Duplicate subagent task id: {task.id}")
         running = sum(1 for status in self._statuses.values() if status in {"queued", "running"})
         if running >= self.max_threads:
             raise RuntimeError(f"Subagent thread limit reached ({self.max_threads})")

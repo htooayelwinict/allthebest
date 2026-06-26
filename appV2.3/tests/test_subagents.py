@@ -50,6 +50,19 @@ def test_supervisor_rejects_unregistered_backend(tmp_path):
         raise AssertionError("Expected missing backend to fail")
 
 
+def test_supervisor_rejects_duplicate_task_id(tmp_path):
+    supervisor = SubagentSupervisor(max_threads=2)
+    supervisor.register_backend(CallableSubagentBackend("internal", lambda task: "done"))
+    supervisor.spawn(SubagentTask(id="subagent-fixed", role="reviewer", goal="first", cwd=str(tmp_path)))
+
+    try:
+        supervisor.spawn(SubagentTask(id="subagent-fixed", role="reviewer", goal="second", cwd=str(tmp_path)))
+    except ValueError as error:
+        assert "Duplicate subagent task id" in str(error)
+    else:  # pragma: no cover - assertion path
+        raise AssertionError("Expected duplicate subagent task id to fail")
+
+
 def test_supervisor_wait_timeout_records_terminal_result(tmp_path):
     events = []
     started = threading.Event()
