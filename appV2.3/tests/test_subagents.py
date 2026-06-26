@@ -288,6 +288,32 @@ def test_codex_exec_backend_persists_raw_log_when_configured(tmp_path):
     assert "final summary" in payload["stdout"]
 
 
+def test_codex_exec_backend_keeps_success_when_raw_log_write_fails(tmp_path):
+    def fake_runner(args, cwd, timeout, text, capture_output):
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": '{"type":"item.completed","item":{"type":"agent_message","text":"final summary"}}\n',
+                "stderr": "",
+            },
+        )()
+
+    blocked_log_dir = tmp_path / "not-a-directory"
+    blocked_log_dir.write_text("file blocks mkdir")
+    backend = CodexExecBackend(runner=fake_runner, log_dir=blocked_log_dir)
+
+    result = backend.run(
+        SubagentTask(id="subagent-log-fail", role="codex", goal="review", cwd=str(tmp_path), backend="codex")
+    )
+
+    assert result.status == "completed"
+    assert result.summary == "final summary"
+    assert result.raw_log_path is None
+    assert any("Failed to write raw subagent log" in error for error in result.errors)
+
+
 def test_codex_exec_backend_reports_nonzero_exit(tmp_path):
     def fake_runner(args, cwd, timeout, text, capture_output):
         return type("Completed", (), {"returncode": 2, "stdout": "", "stderr": "bad auth"})()

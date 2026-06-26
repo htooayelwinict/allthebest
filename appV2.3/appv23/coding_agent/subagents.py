@@ -208,6 +208,31 @@ class CodexExecBackend:
         )
         return str(path)
 
+    def _safe_write_raw_log(
+        self,
+        task: SubagentTask,
+        *,
+        stdout: str,
+        stderr: str,
+        returncode: int | None,
+        started_at_ms: int,
+        ended_at_ms: int,
+    ) -> tuple[str | None, list[str]]:
+        try:
+            return (
+                self._write_raw_log(
+                    task,
+                    stdout=stdout,
+                    stderr=stderr,
+                    returncode=returncode,
+                    started_at_ms=started_at_ms,
+                    ended_at_ms=ended_at_ms,
+                ),
+                [],
+            )
+        except (OSError, TypeError, ValueError) as error:
+            return None, [f"Failed to write raw subagent log: {error}"]
+
     def run(self, task: SubagentTask) -> SubagentResult:
         started = _now_ms()
         args = [
@@ -233,21 +258,22 @@ class CodexExecBackend:
             )
         except TimeoutError:
             ended = _now_ms()
+            raw_log_path, log_errors = self._safe_write_raw_log(
+                task,
+                stdout="",
+                stderr=f"Timed out after {task.timeout_seconds}s",
+                returncode=None,
+                started_at_ms=started,
+                ended_at_ms=ended,
+            )
             return SubagentResult(
                 task_id=task.id,
                 backend=self.name,
                 role=task.role,
                 status="timeout",
                 summary="Codex subagent timed out.",
-                errors=[f"Timed out after {task.timeout_seconds}s"],
-                raw_log_path=self._write_raw_log(
-                    task,
-                    stdout="",
-                    stderr=f"Timed out after {task.timeout_seconds}s",
-                    returncode=None,
-                    started_at_ms=started,
-                    ended_at_ms=ended,
-                ),
+                errors=[f"Timed out after {task.timeout_seconds}s", *log_errors],
+                raw_log_path=raw_log_path,
                 started_at_ms=started,
                 ended_at_ms=ended,
             )
@@ -255,41 +281,43 @@ class CodexExecBackend:
             ended = _now_ms()
             stdout = str(error.output or "")
             stderr = str(error.stderr or str(error))
+            raw_log_path, log_errors = self._safe_write_raw_log(
+                task,
+                stdout=stdout,
+                stderr=stderr,
+                returncode=None,
+                started_at_ms=started,
+                ended_at_ms=ended,
+            )
             return SubagentResult(
                 task_id=task.id,
                 backend=self.name,
                 role=task.role,
                 status="timeout",
                 summary="Codex subagent timed out.",
-                errors=[str(error)],
-                raw_log_path=self._write_raw_log(
-                    task,
-                    stdout=stdout,
-                    stderr=stderr,
-                    returncode=None,
-                    started_at_ms=started,
-                    ended_at_ms=ended,
-                ),
+                errors=[str(error), *log_errors],
+                raw_log_path=raw_log_path,
                 started_at_ms=started,
                 ended_at_ms=ended,
             )
         except FileNotFoundError as error:
             ended = _now_ms()
+            raw_log_path, log_errors = self._safe_write_raw_log(
+                task,
+                stdout="",
+                stderr=str(error),
+                returncode=None,
+                started_at_ms=started,
+                ended_at_ms=ended,
+            )
             return SubagentResult(
                 task_id=task.id,
                 backend=self.name,
                 role=task.role,
                 status="failed",
                 summary="Codex executable was not found.",
-                errors=[str(error)],
-                raw_log_path=self._write_raw_log(
-                    task,
-                    stdout="",
-                    stderr=str(error),
-                    returncode=None,
-                    started_at_ms=started,
-                    ended_at_ms=ended,
-                ),
+                errors=[str(error), *log_errors],
+                raw_log_path=raw_log_path,
                 started_at_ms=started,
                 ended_at_ms=ended,
             )
@@ -299,7 +327,7 @@ class CodexExecBackend:
         returncode = int(getattr(completed, "returncode", 1))
         final_text, usage = parse_codex_jsonl(stdout)
         ended = _now_ms()
-        raw_log_path = self._write_raw_log(
+        raw_log_path, log_errors = self._safe_write_raw_log(
             task,
             stdout=stdout,
             stderr=stderr,
@@ -316,7 +344,7 @@ class CodexExecBackend:
                 status="failed",
                 summary=error_text,
                 final_response=final_text,
-                errors=[error_text],
+                errors=[error_text, *log_errors],
                 usage=usage,
                 raw_log_path=raw_log_path,
                 started_at_ms=started,
@@ -330,6 +358,7 @@ class CodexExecBackend:
             status="completed",
             summary=summary,
             final_response=final_text,
+            errors=log_errors,
             usage=usage,
             raw_log_path=raw_log_path,
             started_at_ms=started,
