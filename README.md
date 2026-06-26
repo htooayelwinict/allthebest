@@ -249,11 +249,11 @@ allthebest/
 ├── appV2.2/                    # Sealed Python baseline (appv22), tag v2.2
 │   ├── appv22/                 # Source package
 │   ├── scripts/appv22_tui.py   # Main runtime launcher
-│   └── tests/                  # 638 pytest cases
+│   └── tests/                  # 583 pytest cases
 ├── appV2.3/                    # Active next-version app (appv23)
 │   ├── appv23/                 # Source package
 │   ├── scripts/appv23_tui.py   # Main runtime launcher
-│   └── tests/                  # Baseline tests inherited from appV2.2
+│   └── tests/                  # Current appV2.3 suite (641 pytest cases)
 ├── docs/                       # Local/reference documentation and reports
 ├── hermes-agent/               # Reference: upstream Hermes Agent (untracked)
 ├── pi/                         # Reference: upstream Pi monorepo (untracked)

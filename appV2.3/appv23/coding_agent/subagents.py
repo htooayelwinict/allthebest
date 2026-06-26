@@ -517,6 +517,9 @@ class SubagentSupervisor:
                 raise ValueError("Subagent backend must define a callable run method")
             self._backends[backend_name] = backend
 
+    def _unfinished_future_count_locked(self) -> int:
+        return sum(1 for future in self._futures.values() if not future.done())
+
     def spawn(self, task: SubagentTask) -> str:
         if not isinstance(task, SubagentTask):
             raise ValueError("Subagent task must be a SubagentTask")
@@ -529,8 +532,7 @@ class SubagentSupervisor:
                 raise ValueError(f"Subagent depth {task.depth} exceeds max_depth {self.max_depth}")
             if task.id in self._tasks:
                 raise ValueError(f"Duplicate subagent task id: {task.id}")
-            running = sum(1 for status in self._statuses.values() if status in {"queued", "running"})
-            if running >= self.max_threads:
+            if self._unfinished_future_count_locked() >= self.max_threads:
                 raise RuntimeError(f"Subagent thread limit reached ({self.max_threads})")
             self._tasks[task.id] = task
             self._statuses[task.id] = "queued"
@@ -628,7 +630,14 @@ class SubagentSupervisor:
 
     def wait_all(self, task_ids: Sequence[str] | None = None, timeout: float | None = None) -> list[SubagentResult]:
         _validate_wait_timeout(timeout)
-        ids = list(task_ids or self._tasks.keys())
+        if task_ids is None:
+            ids = list(self._tasks.keys())
+        else:
+            if isinstance(task_ids, (str, bytes)) or not isinstance(task_ids, Sequence):
+                raise ValueError("task_ids must be a sequence of subagent task ids")
+            ids = list(task_ids)
+            for task_id in ids:
+                _validate_task_id_reference(task_id)
         return [self.wait(task_id, timeout=timeout) for task_id in ids]
 
     def list_tasks(self) -> list[dict[str, object]]:

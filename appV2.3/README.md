@@ -55,7 +55,7 @@ From the repository root:
 PYTHONPATH=appV2.3 .venv/bin/python -m pytest appV2.3/tests -q
 ```
 
-Expected baseline inherited from `appV2.2`: `638 passed`.
+Expected current `appV2.3` suite: `641 passed`.
 
 ## Environment
 

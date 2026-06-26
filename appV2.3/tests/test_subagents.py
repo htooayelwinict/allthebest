@@ -369,6 +369,93 @@ def test_supervisor_rejects_malformed_task_id_references():
             raise AssertionError(f"Expected malformed task id in {name} to fail")
 
 
+def test_supervisor_timeout_keeps_capacity_until_backend_finishes(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def backend(task):
+        started.set()
+        release.wait(2)
+        finished.set()
+        return "done"
+
+    supervisor = SubagentSupervisor(max_threads=1)
+    supervisor.register_backend(CallableSubagentBackend("internal", backend))
+
+    task_id = supervisor.spawn(SubagentTask(role="reviewer", goal="slow", cwd=str(tmp_path)))
+    assert started.wait(1)
+    try:
+        result = supervisor.wait(task_id, timeout=0.01)
+        assert result.status == "timeout"
+
+        try:
+            supervisor.spawn(SubagentTask(role="reviewer", goal="second", cwd=str(tmp_path)))
+        except RuntimeError as error:
+            assert "Subagent thread limit reached" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError("Expected unfinished timed-out backend to keep thread capacity")
+
+        release.set()
+        assert finished.wait(1)
+        second_id = supervisor.spawn(SubagentTask(role="reviewer", goal="second", cwd=str(tmp_path)))
+        second_result = supervisor.wait(second_id, timeout=2)
+        assert second_result.status == "completed"
+    finally:
+        release.set()
+        supervisor.shutdown(wait=True)
+
+
+def test_supervisor_cancel_keeps_capacity_until_backend_finishes(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def backend(task):
+        started.set()
+        release.wait(2)
+        finished.set()
+        return "done"
+
+    supervisor = SubagentSupervisor(max_threads=1)
+    supervisor.register_backend(CallableSubagentBackend("internal", backend))
+
+    task_id = supervisor.spawn(SubagentTask(role="reviewer", goal="slow", cwd=str(tmp_path)))
+    assert started.wait(1)
+    try:
+        result = supervisor.cancel(task_id)
+        assert result.status == "cancelled"
+
+        try:
+            supervisor.spawn(SubagentTask(role="reviewer", goal="second", cwd=str(tmp_path)))
+        except RuntimeError as error:
+            assert "Subagent thread limit reached" in str(error)
+        else:  # pragma: no cover - assertion path
+            raise AssertionError("Expected unfinished cancelled backend to keep thread capacity")
+
+        release.set()
+        assert finished.wait(1)
+        second_id = supervisor.spawn(SubagentTask(role="reviewer", goal="second", cwd=str(tmp_path)))
+        second_result = supervisor.wait(second_id, timeout=2)
+        assert second_result.status == "completed"
+    finally:
+        release.set()
+        supervisor.shutdown(wait=True)
+
+
+def test_supervisor_rejects_string_wait_all_task_ids():
+    supervisor = SubagentSupervisor(max_threads=1)
+
+    try:
+        supervisor.wait_all("subagent-fixed")
+    except ValueError as error:
+        assert "task_ids must be a sequence" in str(error)
+    except Exception as error:  # pragma: no cover - assertion path
+        raise AssertionError(f"Expected ValueError, got {type(error).__name__}") from error
+    else:  # pragma: no cover - assertion path
+        raise AssertionError("Expected string task_ids to fail")
+
+
 def test_supervisor_rejects_unregistered_backend(tmp_path):
     supervisor = SubagentSupervisor(max_threads=1)
 
