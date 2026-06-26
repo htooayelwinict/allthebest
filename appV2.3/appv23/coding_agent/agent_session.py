@@ -8,6 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from dataclasses import replace
+from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 from appv23.agent.agent import Agent
@@ -573,7 +574,9 @@ class AgentSession:
         self._event_listeners: list[Callable[[object], None]] = []
         self.subagents = SubagentSupervisor(max_threads=3, max_depth=1, event_sink=self._handle_subagent_event)
         self.subagents.register_backend(CallableSubagentBackend("internal", self._run_internal_subagent))
-        self.subagents.register_backend(CodexExecBackend())
+        self.subagents.register_backend(
+            CodexExecBackend(log_dir=self._default_subagent_log_dir(session_path=session_path, session_id=session_id))
+        )
         self._steering_messages: list[str] = []
         self._follow_up_messages: list[str] = []
         self._pending_next_turn_messages: list[AgentMessage] = []
@@ -702,6 +705,12 @@ class AgentSession:
         reason = "reload" if self._session_start_event.get("reason") == "reload" else "startup"
         if self._extend_resources_from_extensions(reason):
             self.set_active_tools_by_name(self.get_active_tool_names())
+
+    def _default_subagent_log_dir(self, *, session_path: str | None, session_id: str | None) -> str:
+        namespace = session_id or (Path(session_path).stem if session_path else "ephemeral")
+        safe_namespace = "".join(character if character.isalnum() or character in {"-", "_"} else "_" for character in namespace)
+        base_dir = Path(session_path).parent if session_path else Path(self.cwd) / ".appv23"
+        return str(base_dir / "subagents" / (safe_namespace or "ephemeral"))
 
     def _is_allowed_tool(self, name: str) -> bool:
         return (

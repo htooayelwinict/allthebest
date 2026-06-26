@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 from appv23.ai.types import Model
+from appv23.coding_agent.config import ENV_AGENT_DIR
 from appv23.coding_agent.agent_session import AgentSession
 from appv23.coding_agent.subagents import CallableSubagentBackend, CodexExecBackend, SubagentSupervisor, SubagentTask
 
@@ -205,6 +206,41 @@ def test_agent_session_delegate_command_spawns_subagent_and_returns_summary(tmp_
 
     assert any("summary for inspect tests" in getattr(message, "content", "") for message in messages)
     assert session.subagents.list_results()[0].role == "researcher"
+
+
+def test_agent_session_default_codex_backend_persists_raw_log(tmp_path, monkeypatch):
+    monkeypatch.setenv(ENV_AGENT_DIR, str(tmp_path / "agent-home"))
+
+    def fake_runner(args, cwd, timeout, text, capture_output):
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": '{"type":"item.completed","item":{"type":"agent_message","text":"codex summary"}}\n',
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr("appv23.coding_agent.subagents.subprocess.run", fake_runner)
+    session_path = tmp_path / "sessions" / "parent.jsonl"
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=faux_model(),
+        session_path=str(session_path),
+        session_id="session-fixed",
+    )
+
+    session.prompt("/delegate --backend codex reviewer inspect logs")
+
+    result = session.subagents.list_results()[0]
+    assert result.status == "completed"
+    assert result.raw_log_path is not None
+    raw_log_path = Path(result.raw_log_path)
+    assert raw_log_path.parent == session_path.parent / "subagents" / "session-fixed"
+    payload = json.loads(raw_log_path.read_text())
+    assert payload["taskId"] == result.task_id
+    assert "codex summary" in payload["stdout"]
 
 
 def test_agent_session_agents_command_lists_completed_subagents(tmp_path):
