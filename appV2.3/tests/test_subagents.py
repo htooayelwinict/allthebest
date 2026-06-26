@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from appv23.ai.types import Model
 from appv23.coding_agent.agent_session import AgentSession
 from appv23.coding_agent.subagents import CallableSubagentBackend, CodexExecBackend, SubagentSupervisor, SubagentTask
@@ -70,6 +73,33 @@ def test_codex_exec_backend_parses_jsonl_final_agent_message(tmp_path):
     assert calls[0][1] == str(tmp_path)
 
 
+def test_codex_exec_backend_persists_raw_log_when_configured(tmp_path):
+    def fake_runner(args, cwd, timeout, text, capture_output):
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": '{"type":"item.completed","item":{"type":"agent_message","text":"final summary"}}\n',
+                "stderr": "",
+            },
+        )()
+
+    backend = CodexExecBackend(runner=fake_runner, log_dir=str(tmp_path / "logs"))
+    result = backend.run(
+        SubagentTask(id="subagent-fixed", role="codex", goal="review", cwd=str(tmp_path), backend="codex")
+    )
+
+    assert result.status == "completed"
+    assert result.raw_log_path is not None
+    raw_log_path = Path(result.raw_log_path)
+    assert raw_log_path.parent == tmp_path / "logs"
+    payload = json.loads(raw_log_path.read_text())
+    assert payload["taskId"] == "subagent-fixed"
+    assert payload["returncode"] == 0
+    assert "final summary" in payload["stdout"]
+
+
 def test_codex_exec_backend_reports_nonzero_exit(tmp_path):
     def fake_runner(args, cwd, timeout, text, capture_output):
         return type("Completed", (), {"returncode": 2, "stdout": "", "stderr": "bad auth"})()
@@ -79,6 +109,23 @@ def test_codex_exec_backend_reports_nonzero_exit(tmp_path):
 
     assert result.status == "failed"
     assert result.errors == ["bad auth"]
+
+
+def test_codex_exec_backend_persists_raw_log_for_failed_runs(tmp_path):
+    def fake_runner(args, cwd, timeout, text, capture_output):
+        return type("Completed", (), {"returncode": 2, "stdout": "partial output", "stderr": "bad auth"})()
+
+    backend = CodexExecBackend(runner=fake_runner, log_dir=str(tmp_path / "logs"))
+    result = backend.run(
+        SubagentTask(id="subagent-failed", role="codex", goal="review", cwd=str(tmp_path), backend="codex")
+    )
+
+    assert result.status == "failed"
+    assert result.raw_log_path is not None
+    payload = json.loads(Path(result.raw_log_path).read_text())
+    assert payload["returncode"] == 2
+    assert payload["stdout"] == "partial output"
+    assert payload["stderr"] == "bad auth"
 
 
 def test_agent_session_delegate_command_spawns_subagent_and_returns_summary(tmp_path):
