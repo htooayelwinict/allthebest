@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
@@ -411,93 +412,107 @@ class SubagentSupervisor:
         self._statuses: dict[str, SubagentStatus] = {}
         self._started_at_ms: dict[str, int] = {}
         self._shutdown = False
+        self._lock = threading.RLock()
 
     def register_backend(self, backend: SubagentBackend) -> None:
-        self._backends[backend.name] = backend
+        with self._lock:
+            self._backends[backend.name] = backend
 
     def spawn(self, task: SubagentTask) -> str:
-        if self._shutdown:
-            raise RuntimeError("Subagent supervisor has been shut down")
-        if task.backend not in self._backends:
-            raise ValueError(f"No subagent backend registered for '{task.backend}'")
-        if task.depth > self.max_depth:
-            raise ValueError(f"Subagent depth {task.depth} exceeds max_depth {self.max_depth}")
-        if task.id in self._tasks:
-            raise ValueError(f"Duplicate subagent task id: {task.id}")
-        running = sum(1 for status in self._statuses.values() if status in {"queued", "running"})
-        if running >= self.max_threads:
-            raise RuntimeError(f"Subagent thread limit reached ({self.max_threads})")
-        self._tasks[task.id] = task
-        self._statuses[task.id] = "queued"
-        self._started_at_ms[task.id] = _now_ms()
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("Subagent supervisor has been shut down")
+            if task.backend not in self._backends:
+                raise ValueError(f"No subagent backend registered for '{task.backend}'")
+            if task.depth > self.max_depth:
+                raise ValueError(f"Subagent depth {task.depth} exceeds max_depth {self.max_depth}")
+            if task.id in self._tasks:
+                raise ValueError(f"Duplicate subagent task id: {task.id}")
+            running = sum(1 for status in self._statuses.values() if status in {"queued", "running"})
+            if running >= self.max_threads:
+                raise RuntimeError(f"Subagent thread limit reached ({self.max_threads})")
+            self._tasks[task.id] = task
+            self._statuses[task.id] = "queued"
+            self._started_at_ms[task.id] = _now_ms()
         self._emit_start(task)
-        future = self._executor.submit(self._run_backend, task)
-        self._futures[task.id] = future
+        with self._lock:
+            if task.id in self._results:
+                return task.id
+            future = self._executor.submit(self._run_backend, task)
+            self._futures[task.id] = future
         return task.id
 
     def wait(self, task_id: str, timeout: float | None = None) -> SubagentResult:
-        if task_id in self._results:
-            return self._results[task_id]
-        future = self._futures.get(task_id)
-        if future is None:
-            raise KeyError(f"Unknown subagent task: {task_id}")
+        with self._lock:
+            if task_id in self._results:
+                return self._results[task_id]
+            future = self._futures.get(task_id)
+            if future is None:
+                raise KeyError(f"Unknown subagent task: {task_id}")
         try:
             result = future.result(timeout=timeout)
         except TimeoutError:
-            task = self._tasks[task_id]
             ended = _now_ms()
             timeout_text = f"Timed out after {timeout}s" if timeout is not None else "Timed out"
+            with self._lock:
+                if task_id in self._results:
+                    return self._results[task_id]
+                task = self._tasks[task_id]
+                result = SubagentResult(
+                    task_id=task.id,
+                    backend=task.backend,
+                    role=task.role,
+                    status="timeout",
+                    summary="Subagent timed out.",
+                    errors=[timeout_text],
+                    started_at_ms=self._started_at_ms.get(task_id, ended),
+                    ended_at_ms=ended,
+                )
+                self._statuses[task_id] = "timeout"
+                self._results[task_id] = result
+            self._emit_stop(task, result)
+            return result
+        with self._lock:
+            self._results[task_id] = result
+        return result
+
+    def cancel(self, task_id: str, reason: str = "Cancelled by user.") -> SubagentResult:
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise KeyError(f"Unknown subagent task: {task_id}")
+            existing = self._results.get(task_id)
+            if existing is not None:
+                return existing
+            future = self._futures.get(task_id)
+            if future is not None:
+                future.cancel()
+            ended = _now_ms()
             result = SubagentResult(
                 task_id=task.id,
                 backend=task.backend,
                 role=task.role,
-                status="timeout",
-                summary="Subagent timed out.",
-                errors=[timeout_text],
+                status="cancelled",
+                summary="Subagent cancelled.",
+                errors=[reason] if reason else [],
                 started_at_ms=self._started_at_ms.get(task_id, ended),
                 ended_at_ms=ended,
             )
-            self._statuses[task_id] = "timeout"
+            self._statuses[task_id] = "cancelled"
             self._results[task_id] = result
-            self._emit_stop(task, result)
-            return result
-        self._results[task_id] = result
-        return result
-
-    def cancel(self, task_id: str, reason: str = "Cancelled by user.") -> SubagentResult:
-        task = self._tasks.get(task_id)
-        if task is None:
-            raise KeyError(f"Unknown subagent task: {task_id}")
-        existing = self._results.get(task_id)
-        if existing is not None:
-            return existing
-        future = self._futures.get(task_id)
-        if future is not None:
-            future.cancel()
-        ended = _now_ms()
-        result = SubagentResult(
-            task_id=task.id,
-            backend=task.backend,
-            role=task.role,
-            status="cancelled",
-            summary="Subagent cancelled.",
-            errors=[reason] if reason else [],
-            started_at_ms=self._started_at_ms.get(task_id, ended),
-            ended_at_ms=ended,
-        )
-        self._statuses[task_id] = "cancelled"
-        self._results[task_id] = result
         self._emit_stop(task, result)
         return result
 
     def shutdown(self, *, wait: bool = True, reason: str = "Supervisor shutdown.") -> list[SubagentResult]:
-        if self._shutdown:
-            return []
+        with self._lock:
+            if self._shutdown:
+                return []
+            task_statuses = list(self._statuses.items())
+            self._shutdown = True
         results: list[SubagentResult] = []
-        for task_id, status in list(self._statuses.items()):
+        for task_id, status in task_statuses:
             if status in {"queued", "running"} and task_id not in self._results:
                 results.append(self.cancel(task_id, reason=reason))
-        self._shutdown = True
         self._executor.shutdown(wait=wait, cancel_futures=True)
         return results
 
@@ -506,6 +521,8 @@ class SubagentSupervisor:
         return [self.wait(task_id, timeout=timeout) for task_id in ids]
 
     def list_tasks(self) -> list[dict[str, object]]:
+        with self._lock:
+            items = list(self._tasks.items())
         return [
             {
                 "taskId": task_id,
@@ -514,28 +531,40 @@ class SubagentSupervisor:
                 "backend": task.backend,
                 "status": self._status_for(task_id),
             }
-            for task_id, task in self._tasks.items()
+            for task_id, task in items
         ]
 
     def list_results(self) -> list[SubagentResult]:
-        for task_id, future in list(self._futures.items()):
+        with self._lock:
+            futures = list(self._futures.items())
+        for task_id, future in futures:
             if future.done() and task_id not in self._results:
-                self._results[task_id] = future.result()
-        return list(self._results.values())
+                with self._lock:
+                    if task_id not in self._results:
+                        self._results[task_id] = future.result()
+        with self._lock:
+            return list(self._results.values())
 
     def get_result(self, task_id: str) -> SubagentResult | None:
-        if task_id in self._results:
-            return self._results[task_id]
-        future = self._futures.get(task_id)
+        with self._lock:
+            if task_id in self._results:
+                return self._results[task_id]
+            future = self._futures.get(task_id)
         if future and future.done():
-            self._results[task_id] = future.result()
-            return self._results[task_id]
+            with self._lock:
+                if task_id not in self._results:
+                    self._results[task_id] = future.result()
+                return self._results[task_id]
         return None
 
     def _run_backend(self, task: SubagentTask) -> SubagentResult:
-        self._statuses[task.id] = "running"
-        backend = self._backends[task.backend]
-        started = self._started_at_ms.get(task.id, _now_ms())
+        with self._lock:
+            existing = self._results.get(task.id)
+            if existing is not None and self._statuses.get(task.id) in {"cancelled", "timeout"}:
+                return existing
+            self._statuses[task.id] = "running"
+            backend = self._backends[task.backend]
+            started = self._started_at_ms.get(task.id, _now_ms())
         try:
             result = backend.run(task)
         except Exception as error:  # noqa: BLE001 - child failures must be data, not parent crashes.
@@ -550,10 +579,11 @@ class SubagentSupervisor:
                 started_at_ms=started,
                 ended_at_ms=ended,
             )
-        if task.id in self._results and self._statuses.get(task.id) in {"cancelled", "timeout"}:
-            return self._results[task.id]
-        self._statuses[task.id] = result.status
-        self._results[task.id] = result
+        with self._lock:
+            if task.id in self._results and self._statuses.get(task.id) in {"cancelled", "timeout"}:
+                return self._results[task.id]
+            self._statuses[task.id] = result.status
+            self._results[task.id] = result
         self._emit_stop(task, result)
         return result
 

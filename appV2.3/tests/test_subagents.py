@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from appv23.ai.types import Model
@@ -173,6 +175,40 @@ def test_supervisor_cancel_records_terminal_result_and_event(tmp_path):
     assert supervisor.get_result(task_id).status == "cancelled"
     assert [event["type"] for event in events] == ["subagent_start", "subagent_stop"]
     assert events[-1]["status"] == "cancelled"
+
+
+def test_supervisor_concurrent_cancel_emits_one_terminal_event(tmp_path):
+    events = []
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowEmptyResults(dict):
+        def get(self, key, default=None):
+            value = super().get(key, default)
+            if key == "subagent-fixed" and value is None:
+                time.sleep(0.02)
+            return value
+
+    def slow_backend(task):
+        started.set()
+        release.wait(1)
+        return "late summary"
+
+    supervisor = SubagentSupervisor(max_threads=1, event_sink=events.append)
+    supervisor.register_backend(CallableSubagentBackend("internal", slow_backend))
+    task_id = supervisor.spawn(
+        SubagentTask(id="subagent-fixed", role="reviewer", goal="review slowly", cwd=str(tmp_path))
+    )
+    supervisor._results = SlowEmptyResults(supervisor._results)
+    assert started.wait(1)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: supervisor.cancel(task_id, reason="not needed"), range(8)))
+    release.set()
+
+    assert {result.status for result in results} == {"cancelled"}
+    stop_events = [event for event in events if event["type"] == "subagent_stop"]
+    assert len(stop_events) == 1
 
 
 def test_supervisor_shutdown_cancels_running_tasks_and_rejects_new_spawns(tmp_path):
