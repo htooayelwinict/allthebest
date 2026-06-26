@@ -640,7 +640,7 @@ def test_supervisor_rejects_invalid_wait_timeouts(tmp_path):
     assert started.wait(1)
 
     try:
-        for timeout in (-1, "soon"):
+        for timeout in (-1, "soon", float("nan"), float("inf")):
             try:
                 supervisor.wait(task_id, timeout=timeout)
             except ValueError as error:

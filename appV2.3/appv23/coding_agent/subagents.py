@@ -9,6 +9,7 @@ future coding agents can implement the same ``run(task)`` contract.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 import threading
@@ -44,8 +45,8 @@ def _new_id() -> str:
 def _validate_wait_timeout(timeout: float | None) -> None:
     if timeout is None:
         return
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
-        raise ValueError("timeout must be non-negative")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0 or not math.isfinite(timeout):
+        raise ValueError("timeout must be non-negative and finite")
 
 
 @dataclass(frozen=True)
