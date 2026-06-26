@@ -8,10 +8,12 @@
 [![uv](https://img.shields.io/badge/uv-0.6+-1f2937?style=for-the-badge&logo=astral&logoColor=a855f7)](https://docs.astral.sh/uv/)
 [![Pydantic](https://img.shields.io/badge/Pydantic-2.x-1f2937?style=for-the-badge&logo=pydantic&logoColor=0ea5e9)](https://docs.pydantic.dev/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.6+-1f2937?style=for-the-badge&logo=langchain&logoColor=22c55e)](https://langchain-ai.github.io/langgraph/)
-[![Tests](https://img.shields.io/badge/Tests-536%20passing-1f2937?style=for-the-badge&logo=pytest&logoColor=f59e0b)](https://docs.pytest.org/)
+[![Tests](https://img.shields.io/badge/Tests-583%20passing-1f2937?style=for-the-badge&logo=pytest&logoColor=f59e0b)](https://docs.pytest.org/)
 [![License](https://img.shields.io/badge/License-MIT-1f2937?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](LICENSE)
 
 **A self-contained Python port of the Pi coding agent, fused with Hermes-style context compaction and runtime guardrails.**
+
+**Status:** `appV2.2` is sealed. Future work should happen in a new version line unless it is a bug fix, security fix, or documentation correction.
 
 </div>
 
@@ -53,7 +55,7 @@ Most agent runtimes either couple tightly to a single framework or hide their bo
 | **Multi-Provider LLM Registry** | OpenRouter, OpenAI-compatible, and faux/offline providers with model pattern matching. |
 | **Thinking Levels** | Per-request reasoning control via `--thinking` and scoped model cycling. |
 | **Session Persistence** | JSONL session store with resume/fork/branch support. |
-| **Offline Test Suite** | 536 pytest cases run against the faux provider without network calls. |
+| **Offline Test Suite** | 583 pytest cases run against the faux provider without network calls. |
 
 ---
 
@@ -145,7 +147,7 @@ npm run tui -- --dotenv .env --cwd ./your-project
 PYTHONPATH=appV2.2 .venv/bin/python -m pytest appV2.2/tests -q
 ```
 
-Expected: **536 passing**.
+Expected: **583 passing**.
 
 ---
 
@@ -222,7 +224,7 @@ app.run_turn("List the 5 largest Python files")
 ## Testing & Quality
 
 - **Framework:** pytest
-- **Total tests:** 536 passing
+- **Total tests:** 583 passing
 - **Offline coverage:** faux provider enables full test runs without API keys
 - **Coupling guard:** `appV2.2/tests/test_no_appv21_coupling.py` ensures `appv22` never imports from `pi/` or `hermes-agent/`
 
@@ -247,9 +249,8 @@ allthebest/
 ├── appV2.2/                    # Active Python app (appv22)
 │   ├── appv22/                 # Source package
 │   ├── scripts/appv22_tui.py   # Main runtime launcher
-│   └── tests/                  # 536 pytest cases
-├── docs/                       # Project documentation
-│   └── appv22-recovery-audit.md
+│   └── tests/                  # 583 pytest cases
+├── docs/                       # Local/reference documentation and reports
 ├── hermes-agent/               # Reference: upstream Hermes Agent (untracked)
 ├── pi/                         # Reference: upstream Pi monorepo (untracked)
 ├── .env.example                # Environment template
@@ -271,10 +272,27 @@ allthebest/
 
 ---
 
+## Release Boundary
+
+`appV2.2` is the sealed stable line for the Python Pi/Hermes runtime in this repository.
+
+Allowed changes in this line:
+
+- Bug fixes
+- Security fixes
+- Test hardening
+- Documentation corrections
+
+Not allowed in this line:
+
+- New advanced agent features
+- Runtime architecture rewrites
+- New version experiments
+
+Start those in the next app version so `appV2.2` remains a known-good baseline.
+
 ## Documentation
 
-- [`docs/appv22-recovery-audit.md`](docs/appv22-recovery-audit.md) — Current state, gap map, kill list, and recovery plan.
-- [`AGENTS.md`](AGENTS.md) — Vibe-coding assistant rules and conventions.
 - [`hermes-agent/README.md`](hermes-agent/README.md) — Hermes Agent user guide.
 - [`pi/README.md`](pi/README.md) — Pi agent harness docs.
 
@@ -287,9 +305,9 @@ allthebest/
 - [x] Differential TUI with live event rendering
 - [x] Overflow and output-cap recovery
 - [x] Tool-loop guardrails
-- [x] 536 offline pytest tests
-- [ ] Finalize CLI polish and session export UX
-- [ ] Expand provider adapters beyond OpenRouter-compatible endpoints
+- [x] 583 offline pytest tests
+- [x] Seal `appV2.2` as the stable baseline
+- [ ] Move advanced features to the next version line
 
 ---
 

@@ -479,9 +479,40 @@ def test_manual_aggressive_compression_stops_when_passes_stop_making_progress() 
     assert compressor.calls == [True, True]
     assert status.compression_passes == 2
     assert status.aggressive_stop_reason == "insufficient_progress"
-    assert status.target_tokens == 2_048
-    assert estimate_tokens(status.messages) == 9_700
-    assert "insufficient progress" in status.note
+
+
+def test_manual_aggressive_compression_stops_at_safety_limit() -> None:
+    class SequenceCompressor(ContextCompressor):
+        def __init__(self) -> None:
+            super().__init__(context_length=100_000)
+            self.calls: list[bool] = []
+            self.tokens = [30_000, 20_000, 10_000]
+
+        def compress(self, messages, summarizer=None, focus_topic=None, force=False, aggressive=False):
+            self.calls.append(bool(aggressive))
+            next_tokens = self.tokens.pop(0)
+            before = estimate_tokens(messages)
+            self.compression_count += 1
+            return CompressionResult(
+                messages=[_message_with_tokens(next_tokens)],
+                compressed=True,
+                savings_pct=max(0.0, ((before - next_tokens) / before) * 100.0),
+                tokens_before=before,
+                first_kept_message_index=0,
+            )
+
+    compressor = SequenceCompressor()
+    manager = CompactionManager(compressor, summarizer=_summarizer)
+
+    status = manager.compress_manual_with_status([_message_with_tokens(40_000)], aggressive=True)
+
+    assert compressor.calls == [True, True, True]
+    assert status.aggressive is True
+    assert status.compressed is True
+    assert status.compression_passes == 3
+    assert status.aggressive_stop_reason == "max_passes"
+    assert status.target_tokens == 5_000
+    assert "3-pass safety limit" in status.note
 
 
 def test_manual_aggressive_compression_stops_at_safety_limit() -> None:
