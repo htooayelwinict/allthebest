@@ -22,6 +22,17 @@ test("package exposes appv23 and appv23-sandbox binaries", () => {
   assert.equal(fs.existsSync(path.join(packageRoot, packageJson.bin.appv23)), true);
 });
 
+test("package prompts prevent parent rereads after bounded subagent summaries", () => {
+  const agentsPrompt = fs.readFileSync(path.join(packageRoot, "agents", "AGENTS.md"), "utf8");
+  const subagentSkill = fs.readFileSync(path.join(packageRoot, "skills", "subagent-delegation", "SKILL.md"), "utf8");
+
+  assert.match(agentsPrompt, /truncated child result is not a failed child result/i);
+  assert.match(agentsPrompt, /do not re-read child-scoped files/i);
+  assert.match(subagentSkill, /truncated child result is not a failed child result/i);
+  assert.match(subagentSkill, /do not re-read files in the parent/i);
+  assert.match(subagentSkill, /spawn a narrower follow-up child task/i);
+});
+
 test("package defaults to production GHCR image and auto pull", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
   const config = parseArgs(["--agent-home", path.join(root, "agent-home")]);

@@ -61,4 +61,12 @@ If a child hits a guardrail or cancellation, report it and stop. Do not retry au
 
 Do not compensate for child failure by directly scanning the remaining parent scope. Report the child status and ask the user for the next step.
 
+## Bounded child results
+
+- A truncated child result is not a failed child result.
+- Do not re-read files in the parent to compensate for bounded or summarized child output.
+- Treat a completed child summary as authoritative unless the user explicitly asks the parent to inspect the files directly.
+- If the summary is insufficient, report the bounded summary and ask whether to spawn a narrower follow-up child task for expansion.
+- If expanding, spawn a narrower follow-up child task with exact paths and a smaller output request instead of taking over the child scope in the parent.
+
 Do not carry this workflow into the next user message. A completed child result is not permission to call more subagent tools later.

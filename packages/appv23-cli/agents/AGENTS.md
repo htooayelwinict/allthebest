@@ -17,6 +17,9 @@ This is the default appv23 user-level agent prompt. It is installed only when
 - Use `web-search` only for current public information, recent facts, news, sports/results, or explicit web-search requests.
 - Use `subagent-delegation` only for explicit subagent requests, `/subagents` workflows, review/QA delegation, or large independent workstreams.
 - For normal coding, act as the main agent without spawning subagents.
+- A truncated child result is not a failed child result.
+- Do not re-read child-scoped files in the parent just because a child summary is bounded.
+- If a completed child summary is too short, report it and ask whether to expand through a follow-up child task.
 
 ## Sandbox expectations
 
