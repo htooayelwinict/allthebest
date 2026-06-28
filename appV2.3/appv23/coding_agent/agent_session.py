@@ -90,6 +90,7 @@ _DEFAULT_SUBAGENT_ALLOWED_TOOLS = ("read", "grep", "find", "ls")
 _SKILL_SUBAGENT_ALLOWED_TOOL_NAMES = {"read", "grep", "find", "ls", "bash"}
 _MODEL_SUBAGENT_TIMEOUT_SECONDS_DEFAULT = 300
 _MODEL_SUBAGENT_TIMEOUT_SECONDS_MAX = 300
+_MODEL_SUBAGENT_SPAWN_LIMIT_PER_TURN = 3
 _SUBAGENT_RESULT_SUMMARY_LIMIT = 1000
 _SUBAGENT_TOOL_TRACE_DISPLAY_LIMIT = 3
 _DEFAULT_ACTIVE_TOOL_NAMES = ["read", "bash", "edit", "write", *_SUBAGENT_TOOL_NAMES]
@@ -725,6 +726,7 @@ class AgentSession:
         self._extension_provider_original_registry: dict[str, list[Model]] = {}
         self._event_listeners: list[Callable[[object], None]] = []
         self._subagent_observer_errors: list[str] = []
+        self._model_subagents_spawned_this_turn = 0
         self.subagents = SubagentSupervisor(max_threads=3, max_depth=1, event_sink=self._handle_subagent_event)
         self.subagents.register_backend(CallableSubagentBackend("internal", self._run_internal_subagent))
         self.subagents.register_backend(
@@ -1145,6 +1147,7 @@ class AgentSession:
         if preflight_result:
             preflight_result(True)
         self.agent.state.system_prompt = self.system_prompt
+        self._reset_model_subagent_turn_budget()
         if self._pending_next_turn_messages:
             prompt_message = _user_message(current_text, current_images)
             pending_next_turn = list(self._pending_next_turn_messages)
@@ -1156,6 +1159,9 @@ class AgentSession:
         prompt_message = _user_message(current_text, current_images)
         prompt_message = self._apply_before_agent_start(current_text, current_images, prompt_message)
         return self._run_agent_prompt(prompt_message, stream_fn=stream_fn)
+
+    def _reset_model_subagent_turn_budget(self) -> None:
+        self._model_subagents_spawned_this_turn = 0
 
     def _try_execute_extension_command(self, text: str) -> list[AgentMessage] | None:
         parsed = self._parse_extension_command(text)
@@ -1545,7 +1551,21 @@ class AgentSession:
             options["backend"] = args["backend"]
         if "contextPack" in args:
             options["contextPack"] = context_pack
+        if self._model_subagents_spawned_this_turn >= _MODEL_SUBAGENT_SPAWN_LIMIT_PER_TURN:
+            details = {
+                "status": "blocked",
+                "reason": "subagent_spawn_limit_per_turn",
+                "limit": _MODEL_SUBAGENT_SPAWN_LIMIT_PER_TURN,
+                "spawnedThisTurn": self._model_subagents_spawned_this_turn,
+            }
+            return self._subagent_tool_result(
+                "Subagent spawn blocked: already spawned "
+                f"{_MODEL_SUBAGENT_SPAWN_LIMIT_PER_TURN} subagents in this turn. "
+                "Summarize the existing child results and ask the user before launching another wave.",
+                details,
+            )
         task_id, task = self._spawn_subagent_task(role, goal, options)
+        self._model_subagents_spawned_this_turn += 1
         if wait_for_result:
             result = self.subagents.wait(
                 task_id,

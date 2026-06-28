@@ -12,6 +12,8 @@ Use this skill only when the user explicitly asks for subagents, delegation, han
 - Keep the parent agent normal unless this skill is explicitly triggered.
 - Use one delegation wave by default, with at most 3 child agents.
 - Do not launch a second wave unless the user explicitly asks for it after seeing the first child summaries.
+- Do not describe or plan "Wave 2", "Wave 3", or future waves in the same answer.
+- If the task is larger than 3 children can cover, process only the first bounded slice and ask the user whether to continue.
 - Do not let children spawn more subagents.
 - Do not write files unless the user explicitly asks for written artifacts.
 
@@ -21,6 +23,7 @@ Use this skill only when the user explicitly asks for subagents, delegation, han
 - For phrases like "those files" or "those md files", use only exact files already named in the current conversation or visible parent output.
 - If no exact file list is available, ask which files or directory to use.
 - Never convert a vague request into a whole-repo or whole-workspace sweep.
+- Never run whole-workspace file-count or whole-workspace discovery commands such as `find /workspace -type f`.
 - Avoid unbounded discovery commands. Prefer a named directory and a capped listing, for example `find docs -maxdepth 1 -name '*.md' | head -20`.
 - If there are more than 12 candidate files, ask the user to narrow scope before spawning children.
 
@@ -52,3 +55,5 @@ After children finish, report only:
 - Any blocker or guardrail status.
 
 If a child hits a guardrail or cancellation, report it and stop. Do not retry automatically.
+
+Do not compensate for child failure by directly scanning the remaining parent scope. Report the child status and ask the user for the next step.

@@ -1168,6 +1168,37 @@ def test_agent_session_spawn_subagent_tool_returns_bounded_parent_payload(tmp_pa
     assert result.details["toolTraceCount"] == 12
 
 
+def test_agent_session_spawn_subagent_tool_blocks_extra_model_wave_in_same_turn(tmp_path):
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    session.subagents.register_backend(CallableSubagentBackend("internal", lambda task: f"summary {task.goal}"))
+
+    for index in range(3):
+        result = session._execute_spawn_subagent_tool(
+            f"tool-call-{index}",
+            {"role": "explorer", "goal": f"scan area {index}", "wait": True},
+        )
+        assert result.details["status"] == "completed"
+
+    blocked = session._execute_spawn_subagent_tool(
+        "tool-call-blocked",
+        {"role": "explorer", "goal": "scan extra wave", "wait": True},
+    )
+
+    rendered = "\n".join(block.text for block in blocked.content)
+    assert blocked.details["status"] == "blocked"
+    assert blocked.details["reason"] == "subagent_spawn_limit_per_turn"
+    assert "already spawned 3 subagents in this turn" in rendered
+    assert len(session.subagents.list_tasks()) == 3
+
+    session._reset_model_subagent_turn_budget()
+    allowed = session._execute_spawn_subagent_tool(
+        "tool-call-next-turn",
+        {"role": "explorer", "goal": "scan next turn", "wait": True},
+    )
+    assert allowed.details["status"] == "completed"
+    assert len(session.subagents.list_tasks()) == 4
+
+
 def test_agent_session_default_codex_backend_persists_raw_log(tmp_path, monkeypatch):
     monkeypatch.setenv(ENV_AGENT_DIR, str(tmp_path / "agent-home"))
 
