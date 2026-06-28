@@ -24,6 +24,7 @@ Use this skill only when the user explicitly asks for subagents, delegation, han
 - If the requested scope is vague, ask one concise clarification instead of broadening it.
 - For phrases like "those files" or "those md files", use only exact files already named in the current conversation or visible parent output.
 - If no exact file list is available, ask which files or directory to use.
+- Do not pre-read, find, list, grep, or resolve delegated target files in the parent before spawning the child. The parent may read this skill, but the child must inspect and validate the assigned file, directory, report, or repo area.
 - Never convert a vague request into a whole-repo or whole-workspace sweep.
 - Never run whole-workspace file-count or whole-workspace discovery commands such as `find /workspace -type f`.
 - Avoid unbounded discovery commands. Prefer a named directory and a capped listing, for example `find docs -maxdepth 1 -name '*.md' | head -20`.
@@ -47,6 +48,12 @@ Child instructions must say:
 - Do not scan parent directories outside the assigned scope.
 - Do not include full tool traces in the final answer.
 
+Parent instructions:
+
+- Spawn first when the user explicitly delegates inspection.
+- Pass exact user-provided paths or names to the child. Do not use parent `read`, `bash`, `find`, `ls`, `grep`, or equivalent tools to inspect, validate, locate, or resolve delegated targets before or after spawning.
+- Use `expand_subagent_result` if the child summary is bounded and more child output is needed.
+
 ## Parent reporting
 
 After children finish, report only:
@@ -66,11 +73,12 @@ Do not compensate for child failure by directly scanning the remaining parent sc
 - A truncated child result is not a failed child result.
 - Do not re-read files in the parent to compensate for bounded or summarized child output.
 - Treat a completed child summary as authoritative unless the user explicitly asks the parent to inspect the files directly.
-- If the summary is insufficient, report the bounded summary and ask whether to spawn a narrower follow-up child task for expansion.
-- If expanding, spawn a narrower follow-up child task with exact paths and a smaller output request instead of taking over the child scope in the parent.
+- If the summary is insufficient, call `expand_subagent_result` with the smallest useful `section` and `budget`.
+- If `expand_subagent_result` is still truncated, page it with `offset` instead of rereading child-scoped files in the parent.
+- Spawn a narrower follow-up child task only when the expansion still cannot answer the user or the user explicitly asks for another child.
 - Forbidden fallback: after seeing `... [truncated]`, do not say "Let me read the key files directly" or any equivalent.
 - Do not call `read`, `bash`, `grep`, `find`, or other parent tools to reconstruct files that were assigned to the child.
-- The only allowed recovery paths are: answer from the bounded child summary, ask the user whether to expand, or spawn a narrower follow-up child task after explicit user authorization.
+- The only allowed recovery paths are: answer from the bounded child summary, call `expand_subagent_result`, ask the user whether to expand further, or spawn a narrower follow-up child task after explicit user authorization.
 - Treat truncation as the delegation boundary doing its job, not as a failure that the parent should repair by taking over.
 
 Do not carry this workflow into the next user message. A completed child result is not permission to call more subagent tools later.

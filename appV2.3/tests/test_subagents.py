@@ -1170,6 +1170,91 @@ def test_agent_session_spawn_subagent_tool_returns_bounded_parent_payload(tmp_pa
     assert result.details["toolTraceCount"] == 12
 
 
+def test_agent_session_expand_subagent_result_returns_bounded_full_child_output(tmp_path):
+    noisy_summary = "summary-start " + ("NOISE " * 280) + "summary-end"
+
+    def backend(task):
+        return SubagentResult(
+            task_id=task.id,
+            backend=task.backend,
+            role=task.role,
+            status="completed",
+            summary=noisy_summary,
+            final_response=noisy_summary,
+        )
+
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    session.subagents.register_backend(CallableSubagentBackend("internal", backend))
+
+    spawn_result = session._execute_spawn_subagent_tool(
+        "tool-call",
+        {"role": "explorer", "goal": "scan broad docs", "wait": True},
+    )
+    task_id = spawn_result.details["taskId"]
+
+    assert "summary-end" not in "\n".join(block.text for block in spawn_result.content)
+    assert "finalResponse" not in spawn_result.details
+
+    expanded = session._execute_expand_subagent_result_tool(
+        "expand-call",
+        {"taskId": task_id, "section": "final_response", "budget": "medium"},
+    )
+
+    rendered = "\n".join(block.text for block in expanded.content)
+    assert "summary-end" in rendered
+    assert "Let me read the key files directly" not in rendered
+    assert expanded.details["taskId"] == task_id
+    assert expanded.details["section"] == "final_response"
+    assert expanded.details["truncated"] is False
+    assert expanded.details["nextOffset"] is None
+    assert "final_response" in expanded.details["availableSections"]
+
+
+def test_agent_session_expand_subagent_result_pages_long_output(tmp_path):
+    final_response = "A" * 1800 + "TAIL"
+
+    def backend(task):
+        return SubagentResult(
+            task_id=task.id,
+            backend=task.backend,
+            role=task.role,
+            status="completed",
+            summary="short summary",
+            final_response=final_response,
+        )
+
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    session.subagents.register_backend(CallableSubagentBackend("internal", backend))
+    spawn_result = session._execute_spawn_subagent_tool(
+        "tool-call",
+        {"role": "explorer", "goal": "scan broad docs", "wait": True},
+    )
+    task_id = spawn_result.details["taskId"]
+
+    first_page = session._execute_expand_subagent_result_tool(
+        "expand-call-1",
+        {"taskId": task_id, "section": "final_response", "budget": "short", "offset": 0},
+    )
+
+    assert first_page.details["truncated"] is True
+    assert first_page.details["nextOffset"] > 0
+    assert "TAIL" not in first_page.details["text"]
+
+    second_page = session._execute_expand_subagent_result_tool(
+        "expand-call-2",
+        {
+            "taskId": task_id,
+            "section": "final_response",
+            "budget": "short",
+            "offset": first_page.details["nextOffset"],
+        },
+    )
+
+    assert second_page.details["truncated"] is False
+    assert second_page.details["nextOffset"] is None
+    assert "TAIL" in second_page.details["text"]
+
+
 def test_agent_session_spawn_subagent_tool_blocks_extra_model_wave_in_same_turn(tmp_path):
     session = AgentSession(cwd=str(tmp_path), model=faux_model())
     session.subagents.register_backend(CallableSubagentBackend("internal", lambda task: f"summary {task.goal}"))

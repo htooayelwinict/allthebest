@@ -148,6 +148,54 @@ def test_coding_app_internal_subagent_result_includes_child_tool_trace(tmp_path:
     assert provider_calls["n"] == 4
 
 
+def test_coding_app_internal_subagent_persists_expandable_result_pack(tmp_path: Path) -> None:
+    (tmp_path / "child.md").write_text("child trace body", encoding="utf-8")
+    model = faux_model()
+    provider_calls = {"n": 0}
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return tool_call_response_events(
+                m,
+                "spawn_subagent",
+                {
+                    "role": "reviewer",
+                    "goal": "read child.md and report",
+                    "wait": True,
+                    "timeoutSeconds": 5,
+                },
+            )
+        if provider_calls["n"] == 2:
+            return tool_call_response_events(m, "read", {"path": "child.md"})
+        if provider_calls["n"] == 3:
+            return text_response_events(m, "child final response with enough detail")
+        return text_response_events(m, "parent saw child result")
+
+    register_api_provider(create_faux_provider(script))
+    session_path = tmp_path / "sessions" / "parent.jsonl"
+    app = CodingApp(
+        cwd=str(tmp_path),
+        model=model,
+        terminal=FakeTerminal(),
+        enable_tui=False,
+        session_path=str(session_path),
+        session_id="session-fixed",
+    )
+
+    app.run_turn("spawn a reviewer subagent and show its status")
+
+    result = app.session.subagents.list_results()[0]
+    assert result.raw_log_path is not None
+    raw_log_path = Path(result.raw_log_path)
+    assert raw_log_path.parent == session_path.parent / "subagents" / "session-fixed"
+    payload = json.loads(raw_log_path.read_text())
+    assert payload["taskId"] == result.task_id
+    assert payload["backend"] == "internal"
+    assert payload["finalResponse"] == "child final response with enough detail"
+    assert payload["toolTrace"][0]["toolName"] == "read"
+
+
 def test_coding_app_tui_renderer_does_not_break_internal_subagent_tool_trace(tmp_path: Path) -> None:
     (tmp_path / "child.md").write_text("child trace body", encoding="utf-8")
     model = faux_model()

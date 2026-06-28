@@ -414,6 +414,29 @@ class ContextCompressor:
 
     def _summarize_tool_result(self, message: ToolResultMessage, text: str) -> str:
         line_count = text.count("\n") + 1
+        if message.tool_name == "expand_subagent_result":
+            metadata: dict[str, str] = {}
+            wanted = {"taskId", "section", "offset", "budget", "truncated", "nextOffset", "totalChars"}
+            for line in text.splitlines():
+                if not line.strip() and metadata:
+                    break
+                key, sep, value = line.partition(":")
+                if sep and key in wanted:
+                    metadata[key] = value.strip()
+            task_id = metadata.get("taskId", "unknown")
+            section = metadata.get("section", "unknown")
+            offset = metadata.get("offset", "0")
+            next_offset = metadata.get("nextOffset")
+            truncated = metadata.get("truncated")
+            page = f", nextOffset={next_offset}" if next_offset else ""
+            trunc = f", truncated={truncated}" if truncated else ""
+            total = f", totalChars={metadata['totalChars']}" if "totalChars" in metadata else ""
+            return (
+                "[expand_subagent_result] child result expansion elided "
+                f"({len(text)} chars, {line_count} lines; taskId={task_id}, section={section}, "
+                f"offset={offset}{page}{trunc}{total}). "
+                "Use expand_subagent_result with the same taskId/section/offset if the child detail is needed again."
+            )
         return f"[{message.tool_name}] result elided ({len(text)} chars, {line_count} lines)"
 
     # --- Tool-call/result boundary safety ---

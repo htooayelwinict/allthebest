@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -84,6 +85,7 @@ _SUBAGENT_TOOL_NAMES = [
     "wait_subagent",
     "list_subagents",
     "get_subagent_result",
+    "expand_subagent_result",
     "cancel_subagent",
 ]
 _DEFAULT_SUBAGENT_ALLOWED_TOOLS = ("read", "grep", "find", "ls")
@@ -94,6 +96,7 @@ _MODEL_SUBAGENT_SPAWN_LIMIT_PER_TURN = 3
 _SUBAGENT_RESULT_SUMMARY_LIMIT = 1000
 _SUBAGENT_VISIBLE_SUMMARY_LIMIT = 320
 _SUBAGENT_TOOL_TRACE_DISPLAY_LIMIT = 3
+_SUBAGENT_EXPANSION_BUDGETS = {"short": 1200, "medium": 6000, "long": 12000}
 _DEFAULT_ACTIVE_TOOL_NAMES = ["read", "bash", "edit", "write", *_SUBAGENT_TOOL_NAMES]
 _SPAWN_SUBAGENT_SCHEMA = {
     "type": "object",
@@ -106,6 +109,20 @@ _SPAWN_SUBAGENT_SCHEMA = {
         "contextPack": {"type": "string", "description": "Optional context to include in the child prompt."},
     },
     "required": ["role", "goal"],
+    "additionalProperties": False,
+}
+_EXPAND_SUBAGENT_RESULT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "taskId": {"type": "string", "description": "Completed child subagent task id."},
+        "section": {
+            "type": "string",
+            "description": "Child-owned section to expand: summary, final_response, tool_trace, files, errors, findings, or all.",
+        },
+        "budget": {"type": "string", "description": "Expansion budget: short, medium, or long. Defaults to medium."},
+        "offset": {"type": "integer", "description": "Character offset for paging long child output. Defaults to 0."},
+    },
+    "required": ["taskId"],
     "additionalProperties": False,
 }
 _TASK_ID_SCHEMA = {
@@ -729,11 +746,10 @@ class AgentSession:
         self._subagent_observer_errors: list[str] = []
         self._model_subagents_spawned_this_turn = 0
         self._model_subagent_spawn_signatures_this_turn: set[tuple[str, str, str]] = set()
+        self._subagent_log_dir = Path(self._default_subagent_log_dir(session_path=session_path, session_id=session_id))
         self.subagents = SubagentSupervisor(max_threads=3, max_depth=1, event_sink=self._handle_subagent_event)
         self.subagents.register_backend(CallableSubagentBackend("internal", self._run_internal_subagent))
-        self.subagents.register_backend(
-            CodexExecBackend(log_dir=self._default_subagent_log_dir(session_path=session_path, session_id=session_id))
-        )
+        self.subagents.register_backend(CodexExecBackend(log_dir=self._subagent_log_dir))
         self._steering_messages: list[str] = []
         self._follow_up_messages: list[str] = []
         self._pending_next_turn_messages: list[AgentMessage] = []
@@ -1484,12 +1500,16 @@ class AgentSession:
                 label="spawn_subagent",
                 description=(
                     "Spawn a delegated child coding agent for a bounded task. Returns child task id, role, "
-                    "status, summary, and lifecycle-visible result details."
+                    "status, summary, and lifecycle-visible result details. When the user delegates a file, "
+                    "directory, report, or repo area, pass the user-provided target to the child without "
+                    "using parent tools to read, find, list, grep, or resolve that target first."
                 ),
                 parameters=_SPAWN_SUBAGENT_SCHEMA,
                 prompt_snippet="Delegate bounded review, research, or implementation tasks to child subagents.",
                 prompt_guidelines=[
                     "Use spawn_subagent when the user asks for a subagent, child agent, reviewer, researcher, or parallel delegation.",
+                    "Do not call parent read, bash, find, grep, or ls to inspect or resolve delegated targets before spawning.",
+                    "Pass exact user-provided paths or names to the child; let the child gather and validate delegated evidence.",
                     "Report the returned taskId, role, status, and summary to the user.",
                 ],
                 execute=self._execute_spawn_subagent_tool,
@@ -1517,6 +1537,22 @@ class AgentSession:
                 parameters=_TASK_ID_SCHEMA,
                 prompt_snippet="Fetch a child subagent result by task id without blocking indefinitely.",
                 execute=self._execute_get_subagent_result_tool,
+            ),
+            ToolDefinition(
+                name="expand_subagent_result",
+                label="expand_subagent_result",
+                description=(
+                    "Return a bounded, paged expansion from a completed child result pack without rereading "
+                    "the child-scoped files in the parent."
+                ),
+                parameters=_EXPAND_SUBAGENT_RESULT_SCHEMA,
+                prompt_snippet="Expand a completed child result through the subagent boundary when its public summary is truncated.",
+                prompt_guidelines=[
+                    "Use expand_subagent_result when a child summary is truncated or too short and more child-owned detail is needed.",
+                    "Prefer expand_subagent_result over parent read/bash/grep/find calls for files that were assigned to the child.",
+                    "Use the smallest useful section and budget; page with offset when the expansion is still truncated.",
+                ],
+                execute=self._execute_expand_subagent_result_tool,
             ),
             ToolDefinition(
                 name="cancel_subagent",
@@ -1655,6 +1691,21 @@ class AgentSession:
         if result is None:
             return self._subagent_tool_result(f"No result is available for subagent {task_id}.", {"taskId": task_id})
         return self._subagent_tool_result(self._format_subagent_result(result), _public_subagent_result_details(result))
+
+    def _execute_expand_subagent_result_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
+        _reject_unexpected_args(args, {"taskId", "section", "budget", "offset"})
+        task_id = _task_id_arg(args)
+        result = self.subagents.get_result(task_id)
+        if result is None:
+            return self._subagent_tool_result(
+                f"No result is available for subagent {task_id}.",
+                {"taskId": task_id, "status": "unavailable"},
+            )
+        section = _subagent_expansion_section_arg(args)
+        budget = _subagent_expansion_budget_arg(args)
+        offset = _subagent_expansion_offset_arg(args)
+        details = _expanded_subagent_result_details(result, section=section, budget=budget, offset=offset)
+        return self._subagent_tool_result(_format_subagent_expansion(details), details)
 
     def _execute_cancel_subagent_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
         task_id = _task_id_arg(args)
@@ -1815,7 +1866,7 @@ class AgentSession:
                 errors.append(f"Subagent stopped by tool guardrail: {code} ({tool})")
                 self._mark_subagent_trace_guardrail(task, tool_trace, guardrail)
             ended = int(time.time() * 1000)
-            return SubagentResult(
+            result = SubagentResult(
                 task_id=task.id,
                 backend=task.backend,
                 role=task.role,
@@ -1829,8 +1880,36 @@ class AgentSession:
                 started_at_ms=started,
                 ended_at_ms=ended,
             )
+            raw_log_path, log_errors = self._safe_write_internal_subagent_result_pack(task, result)
+            if raw_log_path or log_errors:
+                result = replace(result, raw_log_path=raw_log_path, errors=[*result.errors, *log_errors])
+            return result
         finally:
             child.shutdown()
+
+    def _safe_write_internal_subagent_result_pack(
+        self,
+        task: SubagentTask,
+        result: SubagentResult,
+    ) -> tuple[str | None, list[str]]:
+        try:
+            self._subagent_log_dir.mkdir(parents=True, exist_ok=True)
+            path = self._subagent_log_dir / f"{task.id}.json"
+            payload = result.as_dict()
+            payload.update(
+                {
+                    "goal": task.goal,
+                    "cwd": task.cwd,
+                    "sandbox": task.sandbox,
+                    "allowedTools": list(task.allowed_tools),
+                    "returnContract": task.return_contract,
+                    "rawLogPath": str(path),
+                }
+            )
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return str(path), []
+        except (OSError, TypeError, ValueError) as error:
+            return None, [f"Failed to write internal subagent result pack: {error}"]
 
     def _subagent_tool_trace_listener(
         self,
@@ -3764,6 +3843,147 @@ def _public_subagent_result_details(result: SubagentResult) -> dict[str, object]
         "guardrail": dict(result.guardrail) if result.guardrail is not None else None,
     }
     return details
+
+
+def _subagent_expansion_section_arg(args: Mapping[str, object]) -> str:
+    section = str(args.get("section", "summary") or "summary").strip().lower().replace("-", "_")
+    valid = {"summary", "final_response", "tool_trace", "files", "errors", "findings", "all"}
+    if section not in valid:
+        raise ValueError(f"Unsupported subagent expansion section: {section}")
+    return section
+
+
+def _subagent_expansion_budget_arg(args: Mapping[str, object]) -> str:
+    budget = str(args.get("budget", "medium") or "medium").strip().lower()
+    if budget not in _SUBAGENT_EXPANSION_BUDGETS:
+        raise ValueError(f"Unsupported subagent expansion budget: {budget}")
+    return budget
+
+
+def _subagent_expansion_offset_arg(args: Mapping[str, object]) -> int:
+    value = args.get("offset", 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("offset must be a non-negative integer")
+    return value
+
+
+def _available_subagent_expansion_sections(result: SubagentResult) -> list[str]:
+    sections = ["summary"]
+    if result.summary.strip():
+        sections.append("findings")
+    if result.final_response.strip():
+        sections.append("final_response")
+    if result.tool_trace:
+        sections.append("tool_trace")
+    if result.files_changed or result.artifacts:
+        sections.append("files")
+    if result.errors or result.guardrail:
+        sections.append("errors")
+    sections.append("all")
+    return list(dict.fromkeys(sections))
+
+
+def _subagent_expansion_source_text(result: SubagentResult, section: str) -> str:
+    if section in {"summary", "findings"}:
+        return result.summary.strip()
+    if section == "final_response":
+        return (result.final_response or result.summary).strip()
+    if section == "tool_trace":
+        if not result.tool_trace:
+            return "No child tool trace is available."
+        return "\n".join(_format_subagent_tool_trace_entry(entry) for entry in result.tool_trace).strip()
+    if section == "files":
+        lines: list[str] = []
+        if result.files_changed:
+            lines.append("filesChanged:")
+            lines.extend(f"- {path}" for path in result.files_changed)
+        if result.artifacts:
+            lines.append("artifacts:")
+            lines.extend(f"- {path}" for path in result.artifacts)
+        return "\n".join(lines).strip() or "No child file or artifact metadata is available."
+    if section == "errors":
+        lines = list(result.errors)
+        if result.guardrail:
+            lines.append(f"guardrail: {result.guardrail}")
+        return "\n".join(lines).strip() or "No child errors are available."
+    if section == "all":
+        parts = [
+            f"taskId: {result.task_id}",
+            f"role: {result.role}",
+            f"backend: {result.backend}",
+            f"status: {result.status}",
+            "",
+            "summary:",
+            result.summary.strip() or "(none)",
+        ]
+        final_response = result.final_response.strip()
+        if final_response and final_response != result.summary.strip():
+            parts.extend(["", "finalResponse:", final_response])
+        if result.files_changed or result.artifacts:
+            parts.extend(["", "files:", _subagent_expansion_source_text(result, "files")])
+        if result.errors or result.guardrail:
+            parts.extend(["", "errors:", _subagent_expansion_source_text(result, "errors")])
+        if result.tool_trace:
+            parts.extend(["", "toolTrace:", _subagent_expansion_source_text(result, "tool_trace")])
+        return "\n".join(parts).strip()
+    raise ValueError(f"Unsupported subagent expansion section: {section}")
+
+
+def _expanded_subagent_result_details(
+    result: SubagentResult,
+    *,
+    section: str,
+    budget: str,
+    offset: int,
+) -> dict[str, object]:
+    source = _subagent_expansion_source_text(result, section)
+    limit = _SUBAGENT_EXPANSION_BUDGETS[budget]
+    if offset >= len(source):
+        text = ""
+        next_offset = None
+        truncated = False
+    else:
+        end = min(len(source), offset + limit)
+        text = source[offset:end]
+        truncated = end < len(source)
+        next_offset = end if truncated else None
+    return {
+        "taskId": result.task_id,
+        "backend": result.backend,
+        "role": result.role,
+        "status": result.status,
+        "section": section,
+        "budget": budget,
+        "offset": offset,
+        "text": text,
+        "truncated": truncated,
+        "nextOffset": next_offset,
+        "totalChars": len(source),
+        "availableSections": _available_subagent_expansion_sections(result),
+        "rawLogPath": result.raw_log_path,
+    }
+
+
+def _format_subagent_expansion(details: Mapping[str, object]) -> str:
+    text = str(details.get("text", "") or "")
+    lines = [
+        f"Subagent {details.get('taskId')} expansion",
+        f"role: {details.get('role')}",
+        f"backend: {details.get('backend')}",
+        f"status: {details.get('status')}",
+        f"section: {details.get('section')}",
+        f"offset: {details.get('offset')}",
+        "",
+        text or "(empty)",
+    ]
+    if details.get("truncated"):
+        lines.extend(
+            [
+                "",
+                f"... [truncated; call expand_subagent_result with offset={details.get('nextOffset')}]",
+            ]
+        )
+    return "\n".join(lines).strip()
 
 
 def _format_subagent_tool_trace_entry(entry: Mapping[str, object]) -> str:

@@ -921,6 +921,7 @@ def test_agent_session_exposes_subagent_tools_by_default(tmp_path: Path) -> None
         "wait_subagent",
         "list_subagents",
         "get_subagent_result",
+        "expand_subagent_result",
         "cancel_subagent",
     }
 
@@ -3874,6 +3875,7 @@ def test_agent_session_exposes_default_coding_tools_for_greeting(tmp_path: Path)
         "wait_subagent",
         "list_subagents",
         "get_subagent_result",
+        "expand_subagent_result",
         "cancel_subagent",
     }
     assert "No tools are active for this turn" not in seen["system_prompt"]
@@ -3899,6 +3901,7 @@ def test_agent_session_keeps_default_coding_tools_for_repo_inspection_prompt(tmp
         "wait_subagent",
         "list_subagents",
         "get_subagent_result",
+        "expand_subagent_result",
         "cancel_subagent",
     }
 
@@ -4877,6 +4880,7 @@ def test_agent_session_extension_command_context_exposes_system_prompt_options(t
             "wait_subagent",
             "list_subagents",
             "get_subagent_result",
+            "expand_subagent_result",
             "cancel_subagent",
             "mutated_tool",
         ],
@@ -4889,6 +4893,7 @@ def test_agent_session_extension_command_context_exposes_system_prompt_options(t
             "wait_subagent",
             "list_subagents",
             "get_subagent_result",
+            "expand_subagent_result",
             "cancel_subagent",
             "mutated_tool",
         ],
@@ -5019,6 +5024,7 @@ def test_agent_session_extension_command_context_exposes_session_and_tool_metada
         "wait_subagent",
         "list_subagents",
         "get_subagent_result",
+        "expand_subagent_result",
         "cancel_subagent",
     ]
     assert seen["active_after"] == ["read", "bash"]

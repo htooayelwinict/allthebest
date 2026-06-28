@@ -111,6 +111,53 @@ def test_prune_summarizes_old_tool_result_and_truncates_args() -> None:
     assert pruned[1].content[1].arguments == {"_truncated": "612 chars of arguments elided"}
 
 
+def test_prune_summarizes_old_subagent_expansion_to_metadata_only() -> None:
+    child_body = "sensitive child analysis body " * 80
+    expanded = "\n".join(
+        [
+            "Subagent result expansion",
+            "taskId: subagent-123",
+            "role: code-reviewer",
+            "status: completed",
+            "section: final_response",
+            "offset: 1200",
+            "budget: medium",
+            "truncated: true",
+            "nextOffset: 7200",
+            "totalChars: 9000",
+            "",
+            child_body,
+        ]
+    )
+    messages = [
+        _user("q"),
+        _assistant(
+            "call",
+            tool_calls=[
+                ToolCall(
+                    id="expand-1",
+                    name="expand_subagent_result",
+                    arguments={"taskId": "subagent-123", "section": "final_response", "offset": 1200},
+                )
+            ],
+        ),
+        _tool_result(expanded, name="expand_subagent_result", tool_call_id="expand-1"),
+        _user("u1"), _user("u2"), _user("u3"), _user("u4"), _user("u5"), _user("u6"), _user("u7"), _user("u8"),
+    ]
+    compressor = ContextCompressor(protect_last_n=2)
+
+    pruned = compressor.prune_old_tool_results(messages)
+
+    summary = pruned[2].content[0].text
+    assert "[expand_subagent_result]" in summary
+    assert "taskId=subagent-123" in summary
+    assert "section=final_response" in summary
+    assert "offset=1200" in summary
+    assert "nextOffset=7200" in summary
+    assert "sensitive child analysis body" not in summary
+    assert "Use expand_subagent_result" in summary
+
+
 def test_should_compress_threshold_and_antithrash() -> None:
     compressor = ContextCompressor(context_length=1000, threshold_percent=0.5)
     assert compressor.should_compress(400) is False
