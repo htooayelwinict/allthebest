@@ -5,6 +5,7 @@ ARG APPV23_REF=next/appv23
 
 ENV PYTHONUNBUFFERED=1 \
     APPV23_NO_VENV_REEXEC=1 \
+    DEBIAN_FRONTEND=noninteractive \
     HOME=/agent-home \
     PI_CODING_AGENT_DIR=/agent-home/agent
 
@@ -15,7 +16,13 @@ RUN apt-get update \
         curl \
         git \
         ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+        sudo \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --home-dir /agent-home --shell /bin/bash appv23 \
+    && mkdir -p /workspace /agent-home/agent \
+    && chown -R appv23:appv23 /workspace /agent-home \
+    && printf 'Defaults:appv23 env_keep += "DEBIAN_FRONTEND"\nappv23 ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg\n' > /etc/sudoers.d/appv23-apt \
+    && chmod 0440 /etc/sudoers.d/appv23-apt
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && git clone --depth 1 --filter=blob:none --sparse --branch "${APPV23_REF}" "${APPV23_REPO}" /tmp/allthebest \
@@ -24,6 +31,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && rm -rf /tmp/allthebest
 
 WORKDIR /workspace
+
+USER appv23
 
 ENTRYPOINT ["appv23"]
 CMD ["--cwd", "/workspace"]

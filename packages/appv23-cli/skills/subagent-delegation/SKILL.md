@@ -18,6 +18,8 @@ Use this skill only when the user explicitly asks for subagents, delegation, han
 - If the task is larger than 3 children can cover, process only the first bounded slice and ask the user whether to continue.
 - Do not let children spawn more subagents.
 - Do not write files unless the user explicitly asks for written artifacts.
+- Subagents must remain read-only.
+- Subagents must not write files, edit files, create files, delete files, or receive `write`/`edit` tools.
 
 ## Scope control
 
@@ -52,6 +54,7 @@ Parent instructions:
 
 - Spawn first when the user explicitly delegates inspection.
 - Pass exact user-provided paths or names to the child. Do not use parent `read`, `bash`, `find`, `ls`, `grep`, or equivalent tools to inspect, validate, locate, or resolve delegated targets before or after spawning.
+- Keep child tools read-only. Do not grant write/edit tools to a child task.
 - Use `expand_subagent_result` if the child summary is bounded and more child output is needed.
 
 ## Parent reporting

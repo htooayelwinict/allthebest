@@ -26,6 +26,10 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
   const agentsPrompt = fs.readFileSync(path.join(packageRoot, "agents", "AGENTS.md"), "utf8");
   const subagentSkill = fs.readFileSync(path.join(packageRoot, "skills", "subagent-delegation", "SKILL.md"), "utf8");
 
+  assert.match(agentsPrompt, /name is Travis/i);
+  assert.match(agentsPrompt, /appv23|v23/i);
+  assert.match(agentsPrompt, /subagents? (are|must remain) read-only/i);
+  assert.match(agentsPrompt, /subagents? must not write files/i);
   assert.match(agentsPrompt, /truncated child result is not a failed child result/i);
   assert.match(agentsPrompt, /pre-read, find, list, grep, or resolve delegated target files/i);
   assert.match(agentsPrompt, /do not re-read child-scoped files/i);
@@ -34,6 +38,8 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
   assert.match(agentsPrompt, /only allowed recovery paths/i);
   assert.match(agentsPrompt, /expand_subagent_result/i);
   assert.match(subagentSkill, /truncated child result is not a failed child result/i);
+  assert.match(subagentSkill, /subagents? (are|must remain) read-only/i);
+  assert.match(subagentSkill, /must not write files/i);
   assert.match(subagentSkill, /pre-read, find, list, grep, or resolve delegated target files/i);
   assert.match(subagentSkill, /do not re-read files in the parent/i);
   assert.match(subagentSkill, /forbidden fallback/i);
@@ -41,6 +47,17 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
   assert.match(subagentSkill, /only allowed recovery paths/i);
   assert.match(subagentSkill, /expand_subagent_result/i);
   assert.match(subagentSkill, /spawn a narrower follow-up child task/i);
+});
+
+test("release image starts from python 3.13 slim and supports runtime apt installs", () => {
+  const dockerfile = fs.readFileSync(path.resolve(packageRoot, "..", "..", "Dockerfile.appv23.release"), "utf8");
+
+  assert.match(dockerfile, /^FROM python:3\.13-slim/m);
+  assert.match(dockerfile, /\bsudo\b/);
+  assert.match(dockerfile, /useradd .*appv23/);
+  assert.match(dockerfile, /env_keep \+= "DEBIAN_FRONTEND"/);
+  assert.match(dockerfile, /appv23 ALL=.*NOPASSWD:.*apt-get/);
+  assert.match(dockerfile, /USER appv23/);
 });
 
 test("package defaults to production GHCR image and auto pull", () => {
@@ -90,20 +107,19 @@ test("package pull flags override auto pull cache", () => {
   assert.deepEqual(buildPullCommand(skipConfig, { nowMs: 1000 + 6 * 60 * 60 * 1000 + 1 }), []);
 });
 
-test("package builds hardened docker command for npx-style use", () => {
+test("package builds install-capable docker command for npx-style use", () => {
   const workspace = path.join(packageRoot, "fixtures", "workspace");
   const config = parseArgs(["--cwd", workspace, "--", "hello"]);
   const command = buildDockerCommand(config, { uid: 501, gid: 20, pid: 24680 });
 
   assert.deepEqual(command.slice(0, 5), ["docker", "run", "--rm", "-it", "--name"]);
-  assert.ok(command.includes("--cap-drop"));
-  assert.ok(command.includes("ALL"));
-  assert.ok(command.includes("--security-opt"));
-  assert.ok(command.includes("no-new-privileges"));
+  assert.equal(command.includes("--cap-drop"), false);
+  assert.equal(command.includes("--security-opt"), false);
+  assert.equal(command.includes("no-new-privileges"), false);
   assert.ok(command.includes("--pids-limit"));
   assert.ok(command.includes("512"));
-  assert.ok(command.includes("--user"));
-  assert.ok(command.includes("501:20"));
+  assert.equal(command.includes("--user"), false);
+  assert.ok(command.includes("DEBIAN_FRONTEND=noninteractive"));
   assert.ok(command.includes(`${workspace}:/workspace:rw`));
   assert.ok(command.includes("ghcr.io/htooayelwinict/appv23:production"));
   assert.deepEqual(command.slice(-4), ["ghcr.io/htooayelwinict/appv23:production", "--cwd", "/workspace", "hello"]);
