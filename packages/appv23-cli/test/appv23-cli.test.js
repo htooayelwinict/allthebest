@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -9,6 +10,7 @@ const {
   buildDockerCommand,
   buildPullCommand,
   parseArgs,
+  prepareSandboxImports,
   shouldUseIsolatedDockerConfig,
 } = require("../bin/appv23.js");
 
@@ -45,4 +47,48 @@ test("package builds hardened docker command for npx-style use", () => {
   assert.ok(command.includes(`${workspace}:/workspace:rw`));
   assert.ok(command.includes("ghcr.io/htooayelwinict/appv23:production"));
   assert.deepEqual(command.slice(-4), ["ghcr.io/htooayelwinict/appv23:production", "--cwd", "/workspace", "hello"]);
+});
+
+test("package copies bundled skills into sandbox home", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledSkill = path.join(syntheticPackageRoot, "skills", "subagent-delegation");
+  const hostHome = path.join(root, "host-home");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledSkill, { recursive: true });
+  fs.mkdirSync(hostHome, { recursive: true });
+  fs.writeFileSync(path.join(bundledSkill, "SKILL.md"), "---\nname: subagent-delegation\n---\nBundled policy\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "subagent-delegation", "SKILL.md"), "utf8"),
+    "---\nname: subagent-delegation\n---\nBundled policy\n",
+  );
+});
+
+test("package user skills override bundled skills", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledSkill = path.join(syntheticPackageRoot, "skills", "subagent-delegation");
+  const hostHome = path.join(root, "host-home");
+  const userSkill = path.join(hostHome, ".agents", "skills", "subagent-delegation");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledSkill, { recursive: true });
+  fs.mkdirSync(userSkill, { recursive: true });
+  fs.writeFileSync(path.join(bundledSkill, "SKILL.md"), "---\nname: subagent-delegation\n---\nBundled policy\n");
+  fs.writeFileSync(path.join(userSkill, "SKILL.md"), "---\nname: subagent-delegation\n---\nUser policy\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "subagent-delegation", "SKILL.md"), "utf8"),
+    "---\nname: subagent-delegation\n---\nUser policy\n",
+  );
 });

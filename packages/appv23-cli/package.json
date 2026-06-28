@@ -9,6 +9,7 @@
   },
   "files": [
     "bin/appv23.js",
+    "skills/**/*.md",
     "README.md",
     "package.json"
   ],

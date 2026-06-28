@@ -9,6 +9,7 @@
   },
   "files": [
     "bin/appv23-sandbox.js",
+    "skills/**/*.md",
     "README.md",
     "package.json"
   ],

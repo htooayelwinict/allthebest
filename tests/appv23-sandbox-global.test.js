@@ -108,3 +108,47 @@ test("global wrapper copies user agents skills into sandbox home", () => {
   );
   assert.equal(fs.existsSync(path.join(agentHome, ".agents", "skills", ".env")), false);
 });
+
+test("global wrapper copies bundled skills before user skill overrides", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-sandbox-global-"));
+  const packageRoot = path.join(root, "package");
+  const bundledSkill = path.join(packageRoot, "skills", "subagent-delegation");
+  const hostHome = path.join(root, "host-home");
+  const userSkill = path.join(hostHome, ".agents", "skills", "subagent-delegation");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledSkill, { recursive: true });
+  fs.mkdirSync(userSkill, { recursive: true });
+  fs.writeFileSync(path.join(bundledSkill, "SKILL.md"), "---\nname: subagent-delegation\n---\nBundled policy\n");
+  fs.writeFileSync(path.join(userSkill, "SKILL.md"), "---\nname: subagent-delegation\n---\nUser policy\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "subagent-delegation", "SKILL.md"), "utf8"),
+    "---\nname: subagent-delegation\n---\nUser policy\n",
+  );
+});
+
+test("global wrapper copies bundled skills without host user skills", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-sandbox-global-"));
+  const packageRoot = path.join(root, "package");
+  const bundledSkill = path.join(packageRoot, "skills", "subagent-delegation");
+  const hostHome = path.join(root, "host-home");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledSkill, { recursive: true });
+  fs.mkdirSync(hostHome, { recursive: true });
+  fs.writeFileSync(path.join(bundledSkill, "SKILL.md"), "---\nname: subagent-delegation\n---\nBundled policy\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "subagent-delegation", "SKILL.md"), "utf8"),
+    "---\nname: subagent-delegation\n---\nBundled policy\n",
+  );
+});

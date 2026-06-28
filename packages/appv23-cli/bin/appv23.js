@@ -222,9 +222,10 @@ function buildPullEnv(config, dockerConfig, env = process.env) {
 
 function prepareSandboxImports(config, runtime = {}) {
   const homeDir = runtime.homeDir || os.homedir();
+  const packageRoot = runtime.packageRoot || path.resolve(__dirname, "..");
   fs.mkdirSync(config.agentHome, { recursive: true, mode: 0o700 });
   prepareAgentsFiles(config);
-  prepareSkills(config, homeDir);
+  prepareSkills(config, homeDir, packageRoot);
 }
 
 function prepareAgentsFiles(config) {
@@ -250,8 +251,12 @@ function prepareAgentsFiles(config) {
   fs.writeFileSync(target, parts.join("\n"), { mode: 0o600 });
 }
 
-function prepareSkills(config, homeDir) {
+function prepareSkills(config, homeDir, packageRoot) {
   const sources = [];
+  const bundledSkills = path.join(packageRoot, "skills");
+  if (fs.existsSync(bundledSkills)) {
+    sources.push(bundledSkills);
+  }
   const userSkills = path.join(homeDir, ".agents", "skills");
   if (config.importUserSkills && fs.existsSync(userSkills)) {
     sources.push(userSkills);

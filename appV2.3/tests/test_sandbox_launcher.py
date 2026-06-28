@@ -109,6 +109,51 @@ def test_prepare_sandbox_imports_copies_user_agents_skills(tmp_path: Path, monke
     assert not (config.agent_home / ".agents" / "skills" / ".env").exists()
 
 
+def test_prepare_sandbox_imports_copies_bundled_skills_before_user_overrides(tmp_path: Path, monkeypatch) -> None:
+    app_root = tmp_path / "appV2.3"
+    bundled_skill = app_root / "skills" / "subagent-delegation"
+    bundled_skill.mkdir(parents=True)
+    (bundled_skill / "SKILL.md").write_text("---\nname: subagent-delegation\n---\nBundled policy\n", encoding="utf-8")
+
+    host_home = tmp_path / "host-home"
+    user_skill = host_home / ".agents" / "skills" / "subagent-delegation"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text("---\nname: subagent-delegation\n---\nUser policy\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(host_home))
+
+    config = resolve_sandbox_config(
+        workspace=tmp_path / "workspace",
+        app_root=app_root,
+        agent_home=tmp_path / "sandbox-home",
+    )
+
+    prepare_sandbox_imports(config)
+
+    imported = config.agent_home / ".agents" / "skills" / "subagent-delegation" / "SKILL.md"
+    assert imported.read_text(encoding="utf-8") == "---\nname: subagent-delegation\n---\nUser policy\n"
+
+
+def test_prepare_sandbox_imports_copies_bundled_skills_without_user_skills(tmp_path: Path, monkeypatch) -> None:
+    app_root = tmp_path / "appV2.3"
+    bundled_skill = app_root / "skills" / "subagent-delegation"
+    bundled_skill.mkdir(parents=True)
+    (bundled_skill / "SKILL.md").write_text("---\nname: subagent-delegation\n---\nBundled policy\n", encoding="utf-8")
+    host_home = tmp_path / "host-home"
+    host_home.mkdir()
+    monkeypatch.setenv("HOME", str(host_home))
+
+    config = resolve_sandbox_config(
+        workspace=tmp_path / "workspace",
+        app_root=app_root,
+        agent_home=tmp_path / "sandbox-home",
+    )
+
+    prepare_sandbox_imports(config)
+
+    imported = config.agent_home / ".agents" / "skills" / "subagent-delegation" / "SKILL.md"
+    assert imported.read_text(encoding="utf-8") == "---\nname: subagent-delegation\n---\nBundled policy\n"
+
+
 def test_prepare_sandbox_imports_writes_explicit_agents_file(tmp_path: Path) -> None:
     agents_file = tmp_path / "AGENTS.md"
     agents_file.write_text("Stay inside cwd.\n", encoding="utf-8")

@@ -282,6 +282,9 @@ def _prepare_skills(config: SandboxConfig) -> None:
 
 def _sandbox_skill_sources(config: SandboxConfig) -> list[Path]:
     sources: list[Path] = []
+    for bundled_skills in (config.app_root / "skills", config.app_root.parent / "skills"):
+        if bundled_skills.exists():
+            sources.append(bundled_skills.resolve())
     if config.import_user_skills:
         user_skills = Path.home() / ".agents" / "skills"
         if user_skills.exists():
