@@ -102,6 +102,23 @@ User Input → Agent Loop → LLM Worker → Tool Calls → Tool Results → ...
 
 This is the recommended user-side install path for `appv23`.
 
+Run directly with npm once the package is published:
+
+```bash
+npx @htooayelwinict/appv23 --cwd .
+```
+
+Or install the npm launcher globally:
+
+```bash
+npm install -g @htooayelwinict/appv23
+appv23 --cwd .
+```
+
+The npm launcher pulls and runs `ghcr.io/htooayelwinict/appv23:production`.
+
+Repo-local installer:
+
 ```bash
 npm run install:appv23
 ```

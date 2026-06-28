@@ -47,6 +47,21 @@ The sandbox launcher builds an appv23-only image from `appV2.3/Dockerfile.appv23
 npm run tui:v23:sandbox -- --cwd docs
 ```
 
+Run directly with npm once the package is published:
+
+```bash
+npx @htooayelwinict/appv23 --cwd docs
+```
+
+Or install globally:
+
+```bash
+npm install -g @htooayelwinict/appv23
+appv23 --cwd docs
+```
+
+The npm launcher pulls and runs `ghcr.io/htooayelwinict/appv23:production`.
+
 For installed-anywhere use, run the installer once from the repo:
 
 ```bash

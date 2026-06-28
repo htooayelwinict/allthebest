@@ -1,0 +1,25 @@
+{
+  "name": "@htooayelwinict/appv23",
+  "version": "2.3.0",
+  "description": "npx-friendly Docker launcher for the appv23 coding-agent sandbox.",
+  "license": "MIT",
+  "bin": {
+    "appv23": "bin/appv23.js",
+    "appv23-sandbox": "bin/appv23.js"
+  },
+  "files": [
+    "bin/appv23.js",
+    "README.md",
+    "package.json"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test test/appv23-cli.test.js",
+    "pack:dry-run": "npm pack --dry-run"
+  }
+}
