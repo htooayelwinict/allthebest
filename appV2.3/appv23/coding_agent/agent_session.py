@@ -1660,6 +1660,23 @@ class AgentSession:
         reason = args.get("reason", "Cancelled by user.")
         if not isinstance(reason, str):
             raise ValueError("reason must be a string")
+        existing = self.subagents.get_result(task_id)
+        if existing is not None:
+            details = {
+                "taskId": existing.task_id,
+                "role": existing.role,
+                "backend": existing.backend,
+                "status": "blocked",
+                "reason": "subagent_already_terminal",
+                "terminalStatus": existing.status,
+                "summary": existing.summary[:_SUBAGENT_RESULT_SUMMARY_LIMIT],
+            }
+            return self._subagent_tool_result(
+                "Cancel skipped: subagent "
+                f"{existing.task_id} is already {existing.status}. No cancellation is needed. "
+                "Use the existing subagent result and do not retry cancel_subagent for this task.",
+                details,
+            )
         result = self.subagents.cancel(task_id, reason or "Cancelled by user.")
         return self._subagent_tool_result(self._format_subagent_result(result), _public_subagent_result_details(result))
 

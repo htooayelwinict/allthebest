@@ -57,7 +57,7 @@ from appv23.ai.stream import register_api_provider, reset_api_providers
 from appv23.coding_agent.resource_loader import Skill
 from appv23.coding_agent.session_store import BashExecutionMessage, SessionStore
 from appv23.coding_agent.source_info import create_synthetic_source_info
-from appv23.coding_agent.subagents import SubagentResult
+from appv23.coding_agent.subagents import CallableSubagentBackend, SubagentResult
 
 
 def setup_function() -> None:
@@ -1008,6 +1008,39 @@ def test_spawn_subagent_tool_blocks_duplicate_model_spawns_in_same_turn(tmp_path
 
         assert after_reset.details["status"] == "queued"
         assert len(spawned) == 2
+    finally:
+        session.shutdown()
+ 
+ 
+def test_cancel_subagent_tool_blocks_cancel_after_terminal_result(tmp_path: Path) -> None:
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    definition = session.get_tool_definition("cancel_subagent")
+    assert definition is not None
+
+    def complete(task):
+        return SubagentResult(
+            task_id=task.id,
+            backend=task.backend,
+            role=task.role,
+            status="completed",
+            summary="Reviewer already completed.",
+        )
+
+    session.subagents.register_backend(CallableSubagentBackend("instant", complete))
+
+    try:
+        task_id, task = session._spawn_subagent_task("reviewer", "inspect package", {"backend": "instant"})
+        result = session.subagents.wait(task_id, timeout=1)
+        assert result.status == "completed"
+
+        cancelled = definition.execute("call-1", {"taskId": task.id, "reason": "Task already completed"})
+
+        assert cancelled.details["status"] == "blocked"
+        assert cancelled.details["reason"] == "subagent_already_terminal"
+        assert cancelled.details["terminalStatus"] == "completed"
+        assert cancelled.details["taskId"] == task.id
+        assert "Cancel skipped" in cancelled.content[0].text
+        assert "do not retry cancel_subagent" in cancelled.content[0].text
     finally:
         session.shutdown()
 
