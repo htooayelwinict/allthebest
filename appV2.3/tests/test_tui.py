@@ -242,6 +242,65 @@ def test_interactive_mode_footer_history_hint_updates_from_scroll_input(tmp_path
     assert "End to latest" not in bottom_footer
 
 
+def test_interactive_mode_collapses_subagent_tool_noise_but_keeps_lifecycle(tmp_path) -> None:
+    terminal = FakeTerminal(columns=100, rows=12)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+
+    mode._handle_session_event(
+        {
+            "type": "subagent_start",
+            "child_role": "explorer",
+            "child_subagent_id": "subagent-fixed",
+            "child_goal": "scan docs",
+        }
+    )
+    mode._handle_session_event(
+        {
+            "type": "subagent_tool_start",
+            "role": "explorer",
+            "toolName": "read",
+            "status": "started",
+            "argsPreview": "huge.md",
+        }
+    )
+    mode._handle_session_event(
+        {
+            "type": "subagent_tool_end",
+            "role": "explorer",
+            "toolName": "read",
+            "status": "ok",
+            "argsPreview": "huge.md",
+            "resultPreview": "NOISY RESULT " * 20,
+        }
+    )
+    mode._handle_session_event(
+        {
+            "type": "subagent_tool_guardrail",
+            "role": "explorer",
+            "toolName": "ls",
+            "status": "guardrail_halt",
+            "guardrailCode": "idempotent_no_progress_block",
+        }
+    )
+    mode._handle_session_event(
+        {
+            "type": "subagent_stop",
+            "child_role": "explorer",
+            "child_subagent_id": "subagent-fixed",
+            "status": "failed",
+            "child_summary": "guardrail summary",
+        }
+    )
+
+    rendered = "\n".join(mode.history.render(100))
+    assert "subagent explorer started subagent-fixed" in rendered
+    assert "subagent explorer failed subagent-fixed" in rendered
+    assert "guardrail idempotent_no_progress_block" in rendered
+    assert "NOISY RESULT" not in rendered
+    assert "huge.md" not in rendered
+
+
 def test_simple_autocomplete_provider_ports_pi_fuzzy_command_filtering() -> None:
     provider = SimpleAutocompleteProvider(
         [
@@ -3547,7 +3606,7 @@ def test_interactive_mode_live_terminal_ctrl_c_cancels_waiting_subagent_tool(tmp
     assert provider_calls["n"] == 1
 
 
-def test_interactive_mode_renders_subagent_tool_trace_event(tmp_path) -> None:
+def test_interactive_mode_hides_successful_subagent_tool_trace_event(tmp_path) -> None:
     register_api_provider(create_faux_provider(lambda m, c: text_response_events(m, "unused")))
     terminal = FakeTerminal(columns=140, rows=40)
     app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
@@ -3567,8 +3626,8 @@ def test_interactive_mode_renders_subagent_tool_trace_event(tmp_path) -> None:
     )
 
     rendered = strip_ansi("\n".join(app.tui.render(140)))
-    assert "subagent reviewer read ok path=child.md" in rendered
-    assert "child trace body" in rendered
+    assert "subagent reviewer read ok path=child.md" not in rendered
+    assert "child trace body" not in rendered
 
 
 def test_interactive_mode_dispatches_extension_shortcut_without_model_turn(tmp_path) -> None:

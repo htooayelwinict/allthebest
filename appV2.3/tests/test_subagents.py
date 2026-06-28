@@ -1120,6 +1120,54 @@ def test_agent_session_delegate_command_spawns_subagent_and_returns_summary(tmp_
     assert session.subagents.list_results()[0].role == "researcher"
 
 
+def test_agent_session_spawn_subagent_tool_returns_bounded_parent_payload(tmp_path):
+    noisy_summary = "summary-start " + ("NOISE " * 600) + "summary-end"
+    tool_trace = [
+        {
+            "toolCallId": f"call-{index}",
+            "toolName": "read",
+            "status": "ok",
+            "argsPreview": f"file-{index}.md",
+            "resultPreview": "RESULT " * 100,
+            "startedAtMs": index,
+            "endedAtMs": index + 1,
+            "elapsedMs": 1,
+        }
+        for index in range(12)
+    ]
+
+    def backend(task):
+        return SubagentResult(
+            task_id=task.id,
+            backend=task.backend,
+            role=task.role,
+            status="failed",
+            summary=noisy_summary,
+            final_response=noisy_summary,
+            errors=["Subagent stopped by tool guardrail: idempotent_no_progress_block (ls)"],
+            tool_trace=tool_trace,
+            guardrail={"code": "idempotent_no_progress_block", "tool_name": "ls", "count": 3},
+        )
+
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    session.subagents.register_backend(CallableSubagentBackend("internal", backend))
+
+    result = session._execute_spawn_subagent_tool(
+        "tool-call",
+        {"role": "explorer", "goal": "scan broad docs", "wait": True},
+    )
+
+    rendered = "\n".join(block.text for block in result.content)
+    assert len(rendered) < 2500
+    assert "summary-end" not in rendered
+    assert result.details["status"] == "failed"
+    assert "finalResponse" not in result.details
+    assert len(result.details["summary"]) < 1200
+    assert "summary-end" not in result.details["summary"]
+    assert len(result.details["toolTrace"]) <= 3
+    assert result.details["toolTraceCount"] == 12
+
+
 def test_agent_session_default_codex_backend_persists_raw_log(tmp_path, monkeypatch):
     monkeypatch.setenv(ENV_AGENT_DIR, str(tmp_path / "agent-home"))
 

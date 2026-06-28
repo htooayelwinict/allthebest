@@ -90,6 +90,8 @@ _DEFAULT_SUBAGENT_ALLOWED_TOOLS = ("read", "grep", "find", "ls")
 _SKILL_SUBAGENT_ALLOWED_TOOL_NAMES = {"read", "grep", "find", "ls", "bash"}
 _MODEL_SUBAGENT_TIMEOUT_SECONDS_DEFAULT = 300
 _MODEL_SUBAGENT_TIMEOUT_SECONDS_MAX = 300
+_SUBAGENT_RESULT_SUMMARY_LIMIT = 1000
+_SUBAGENT_TOOL_TRACE_DISPLAY_LIMIT = 3
 _DEFAULT_ACTIVE_TOOL_NAMES = ["read", "bash", "edit", "write", *_SUBAGENT_TOOL_NAMES]
 _SPAWN_SUBAGENT_SCHEMA = {
     "type": "object",
@@ -1295,7 +1297,7 @@ class AgentSession:
                 "customType": "subagent",
                 "content": self._format_subagent_result(result),
                 "display": True,
-                "details": result.as_dict(),
+                "details": _public_subagent_result_details(result),
             }
         )
 
@@ -1327,7 +1329,7 @@ class AgentSession:
                 "customType": "subagent",
                 "content": self._format_subagent_result(result),
                 "display": True,
-                "details": result.as_dict(),
+                "details": _public_subagent_result_details(result),
             },
             {"transient": True},
         )
@@ -1372,7 +1374,9 @@ class AgentSession:
 
     def _extension_spawn_subagent(self, role: str, goal: str, options: dict | None = None) -> dict:
         return self._with_command_abort_signal(
-            lambda signal: self._spawn_and_wait_for_subagent(role, goal, options, signal=signal).as_dict()
+            lambda signal: _public_subagent_result_details(
+                self._spawn_and_wait_for_subagent(role, goal, options, signal=signal)
+            )
         )
 
     def _current_abort_signal(self) -> AbortSignal:
@@ -1393,10 +1397,10 @@ class AgentSession:
 
     def _extension_get_subagent_result(self, task_id: str) -> dict | None:
         result = self.subagents.get_result(task_id)
-        return result.as_dict() if result is not None else None
+        return _public_subagent_result_details(result) if result is not None else None
 
     def _extension_cancel_subagent(self, task_id: str, reason: str | None = None) -> dict:
-        return self.subagents.cancel(task_id, reason or "Cancelled by user.").as_dict()
+        return _public_subagent_result_details(self.subagents.cancel(task_id, reason or "Cancelled by user."))
 
     def _subagent_allowed_tools_for_role(self, role: str) -> tuple[str, ...]:
         if self._resource_loader is None:
@@ -1549,7 +1553,7 @@ class AgentSession:
                 signal=signal,
                 cancel_reason="Cancelled by parent abort.",
             )
-            return self._subagent_tool_result(self._format_subagent_result(result), result.as_dict())
+            return self._subagent_tool_result(self._format_subagent_result(result), _public_subagent_result_details(result))
         details = {
             "taskId": task_id,
             "role": role,
@@ -1593,7 +1597,7 @@ class AgentSession:
             signal=signal,
             cancel_reason="Cancelled by parent abort.",
         )
-        return self._subagent_tool_result(self._format_subagent_result(result), result.as_dict())
+        return self._subagent_tool_result(self._format_subagent_result(result), _public_subagent_result_details(result))
 
     def _execute_list_subagents_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
         tasks = self.subagents.list_tasks()
@@ -1609,7 +1613,7 @@ class AgentSession:
         result = self.subagents.get_result(task_id)
         if result is None:
             return self._subagent_tool_result(f"No result is available for subagent {task_id}.", {"taskId": task_id})
-        return self._subagent_tool_result(self._format_subagent_result(result), result.as_dict())
+        return self._subagent_tool_result(self._format_subagent_result(result), _public_subagent_result_details(result))
 
     def _execute_cancel_subagent_tool(self, _tool_call_id, args, signal=None, on_update=None, ctx=None) -> AgentToolResult:
         task_id = _task_id_arg(args)
@@ -1617,7 +1621,7 @@ class AgentSession:
         if not isinstance(reason, str):
             raise ValueError("reason must be a string")
         result = self.subagents.cancel(task_id, reason or "Cancelled by user.")
-        return self._subagent_tool_result(self._format_subagent_result(result), result.as_dict())
+        return self._subagent_tool_result(self._format_subagent_result(result), _public_subagent_result_details(result))
 
     def _subagent_tool_result(self, content: str, details: dict[str, object]) -> AgentToolResult:
         return AgentToolResult(content=[TextContent(text=content)], details=details)
@@ -1931,7 +1935,12 @@ class AgentSession:
         heading = f"Subagent {result.task_id} {result.role} [{result.backend}] {result.status}"
         files_changed = ", ".join(result.files_changed) if result.files_changed else "none"
         errors = "; ".join(result.errors) if result.errors else "none"
-        lines = [heading, result.summary, f"filesChanged: {files_changed}", f"errors: {errors}"]
+        lines = [
+            heading,
+            _truncate_subagent_text(result.summary, limit=_SUBAGENT_RESULT_SUMMARY_LIMIT),
+            f"filesChanged: {files_changed}",
+            f"errors: {errors}",
+        ]
         if result.guardrail:
             code = result.guardrail.get("code", "unknown")
             tool = result.guardrail.get("tool_name", result.guardrail.get("toolName", "tool"))
@@ -1939,7 +1948,7 @@ class AgentSession:
             lines.append(f"guardrail: {code} ({tool}, count={count})")
         if result.tool_trace:
             lines.append("toolTrace:")
-            for entry in result.tool_trace[-5:]:
+            for entry in result.tool_trace[-_SUBAGENT_TOOL_TRACE_DISPLAY_LIMIT:]:
                 lines.append(f"- {_format_subagent_tool_trace_entry(entry)}")
         return "\n".join(lines).strip()
 
@@ -3566,11 +3575,58 @@ def _subagent_tool_event(task: SubagentTask, event_type: str, entry: Mapping[str
     return payload
 
 
+def _truncate_subagent_text(text: str, *, limit: int) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 18)].rstrip() + "\n... [truncated]"
+
+
+def _public_subagent_tool_trace(tool_trace: list[dict[str, object]]) -> list[dict[str, object]]:
+    public: list[dict[str, object]] = []
+    for entry in tool_trace[-_SUBAGENT_TOOL_TRACE_DISPLAY_LIMIT:]:
+        public_entry = {
+            "toolCallId": str(entry.get("toolCallId", "")),
+            "toolName": str(entry.get("toolName", "")),
+            "status": str(entry.get("status", "")),
+            "argsPreview": _truncate_preview(str(entry.get("argsPreview", "")), limit=80),
+            "resultPreview": _truncate_preview(str(entry.get("resultPreview", "")), limit=120),
+            "elapsedMs": entry.get("elapsedMs", 0),
+        }
+        if entry.get("guardrailCode"):
+            public_entry["guardrailCode"] = str(entry["guardrailCode"])
+        public.append(public_entry)
+    return public
+
+
+def _public_subagent_result_details(result: SubagentResult) -> dict[str, object]:
+    details = {
+        "taskId": result.task_id,
+        "backend": result.backend,
+        "role": result.role,
+        "status": result.status,
+        "summary": _truncate_subagent_text(result.summary, limit=_SUBAGENT_RESULT_SUMMARY_LIMIT),
+        "filesChanged": list(result.files_changed),
+        "artifacts": list(result.artifacts),
+        "errors": list(result.errors),
+        "usage": dict(result.usage),
+        "childSessionId": result.child_session_id,
+        "rawLogPath": result.raw_log_path,
+        "startedAtMs": result.started_at_ms,
+        "endedAtMs": result.ended_at_ms,
+        "durationMs": result.duration_ms,
+        "toolTrace": _public_subagent_tool_trace(result.tool_trace),
+        "toolTraceCount": len(result.tool_trace),
+        "guardrail": dict(result.guardrail) if result.guardrail is not None else None,
+    }
+    return details
+
+
 def _format_subagent_tool_trace_entry(entry: Mapping[str, object]) -> str:
     tool = str(entry.get("toolName") or "tool")
     status = str(entry.get("status") or "unknown")
-    args = str(entry.get("argsPreview") or "").strip()
-    result = str(entry.get("resultPreview") or "").strip()
+    args = _truncate_preview(str(entry.get("argsPreview") or "").strip(), limit=80)
+    result = _truncate_preview(str(entry.get("resultPreview") or "").strip(), limit=120)
     guardrail = str(entry.get("guardrailCode") or "").strip()
     parts = [tool, status]
     if guardrail:

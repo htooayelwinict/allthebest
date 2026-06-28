@@ -66,6 +66,13 @@ IDLE_CTRL_C_EXIT_WINDOW_SECONDS = 1.5
 _SIGINT_HANDLER_UNCHANGED = object()
 
 
+def _short_status_text(text: str, *, limit: int) -> str:
+    value = str(text or "").replace("\n", " ").strip()
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 3)].rstrip() + "..."
+
+
 def _auth_json_path() -> Path:
     return Path(get_agent_dir()).expanduser().resolve() / "auth.json"
 
@@ -478,6 +485,9 @@ class InteractiveMode:
 
     def _handle_session_event(self, event) -> None:
         event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
+        if event_type in {"subagent_start", "subagent_stop"}:
+            self._render_subagent_lifecycle_event(event)
+            return
         if event_type in {"subagent_tool_start", "subagent_tool_end", "subagent_tool_guardrail"}:
             self._render_subagent_tool_event(event)
             return
@@ -515,16 +525,47 @@ class InteractiveMode:
             self._refresh_footer()
             self.tui.request_render()
 
+    def _render_subagent_lifecycle_event(self, event) -> None:
+        get = event.get if isinstance(event, dict) else lambda key, default=None: getattr(event, key, default)
+        role = str(get("child_role", get("role", "subagent")) or "subagent")
+        task_id = str(get("child_subagent_id", get("taskId", get("task_id", ""))) or "").strip()
+        event_type = str(get("type", "") or "")
+        if event_type == "subagent_start":
+            line = f"subagent {role} started"
+            if task_id:
+                line = f"{line} {task_id}"
+            kind = "info"
+        else:
+            status = str(get("status", "") or "completed")
+            line = f"subagent {role} {status}"
+            if task_id:
+                line = f"{line} {task_id}"
+            summary = _short_status_text(str(get("child_summary", "") or ""), limit=120)
+            if summary:
+                line = f"{line}: {summary}"
+            kind = "warning" if status in {"failed", "timeout", "cancelled"} else "info"
+        self.history.add(StatusLine(line, kind=kind))
+        self._refresh_footer()
+        self.tui.request_render()
+
     def _render_subagent_tool_event(self, event) -> None:
         get = event.get if isinstance(event, dict) else lambda key, default=None: getattr(event, key, default)
+        event_type = str(get("type", "") or "")
         role = str(get("role", "subagent") or "subagent")
         tool = str(get("toolName", get("tool_name", "tool")) or "tool")
         status = str(get("status", "") or "").strip() or (
-            "started" if get("type") == "subagent_tool_start" else "ok"
+            "started" if event_type == "subagent_tool_start" else "ok"
         )
-        args_preview = str(get("argsPreview", get("args_preview", "")) or "").strip()
-        result_preview = str(get("resultPreview", get("result_preview", "")) or "").strip()
         guardrail_code = str(get("guardrailCode", get("guardrail_code", "")) or "").strip()
+        if event_type != "subagent_tool_guardrail" and not guardrail_code and status not in {"error", "guardrail_halt"}:
+            return
+        if event_type == "subagent_tool_guardrail":
+            status = "guardrail"
+        args_preview = _short_status_text(str(get("argsPreview", get("args_preview", "")) or "").strip(), limit=80)
+        result_preview = _short_status_text(
+            str(get("resultPreview", get("result_preview", "")) or "").strip(),
+            limit=120,
+        )
         line = f"subagent {role} {tool} {status}"
         if guardrail_code:
             line = f"{line} {guardrail_code}"
