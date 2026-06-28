@@ -70,6 +70,78 @@ test("package copies bundled skills into sandbox home", () => {
   );
 });
 
+test("package seeds bundled AGENTS.md into host home when missing", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledAgentsDir = path.join(syntheticPackageRoot, "agents");
+  const hostHome = path.join(root, "host-home");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledAgentsDir, { recursive: true });
+  fs.mkdirSync(hostHome, { recursive: true });
+  fs.writeFileSync(path.join(bundledAgentsDir, "AGENTS.md"), "Bundled appv23 kernel\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(fs.readFileSync(path.join(hostHome, ".agents", "AGENTS.md"), "utf8"), "Bundled appv23 kernel\n");
+  const imported = fs.readFileSync(path.join(agentHome, "agent", "AGENTS.md"), "utf8");
+  assert.match(imported, /Bundled appv23 kernel/);
+});
+
+test("package seeds bundled skills into host home without overwriting user skills", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledWebSearch = path.join(syntheticPackageRoot, "skills", "web-search");
+  const hostHome = path.join(root, "host-home");
+  const userWebSearch = path.join(hostHome, ".agents", "skills", "web-search");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledWebSearch, { recursive: true });
+  fs.mkdirSync(userWebSearch, { recursive: true });
+  fs.writeFileSync(path.join(bundledWebSearch, "SKILL.md"), "---\nname: web-search\n---\nBundled search\n");
+  fs.writeFileSync(path.join(userWebSearch, "SKILL.md"), "---\nname: web-search\n---\nUser search\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(hostHome, ".agents", "skills", "web-search", "SKILL.md"), "utf8"),
+    "---\nname: web-search\n---\nUser search\n",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "web-search", "SKILL.md"), "utf8"),
+    "---\nname: web-search\n---\nUser search\n",
+  );
+});
+
+test("package seeds bundled skills into host home when missing", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledWebSearch = path.join(syntheticPackageRoot, "skills", "web-search");
+  const hostHome = path.join(root, "host-home");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledWebSearch, { recursive: true });
+  fs.mkdirSync(hostHome, { recursive: true });
+  fs.writeFileSync(path.join(bundledWebSearch, "SKILL.md"), "---\nname: web-search\n---\nBundled search\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(hostHome, ".agents", "skills", "web-search", "SKILL.md"), "utf8"),
+    "---\nname: web-search\n---\nBundled search\n",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "web-search", "SKILL.md"), "utf8"),
+    "---\nname: web-search\n---\nBundled search\n",
+  );
+});
+
 test("package user skills override bundled skills", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
   const syntheticPackageRoot = path.join(root, "package");

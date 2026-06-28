@@ -225,8 +225,49 @@ function prepareSandboxImports(config, runtime = {}) {
   const homeDir = runtime.homeDir || os.homedir();
   const packageRoot = runtime.packageRoot || path.resolve(__dirname, "..");
   fs.mkdirSync(config.agentHome, { recursive: true, mode: 0o700 });
+  seedHostDefaults(homeDir, packageRoot);
   prepareAgentsFiles(config, homeDir);
   prepareSkills(config, homeDir, packageRoot);
+}
+
+function seedHostDefaults(homeDir, packageRoot) {
+  seedHostAgentsFile(homeDir, packageRoot);
+  seedHostSkills(homeDir, packageRoot);
+}
+
+function seedHostAgentsFile(homeDir, packageRoot) {
+  const source = path.join(packageRoot, "agents", "AGENTS.md");
+  const target = path.join(homeDir, ".agents", "AGENTS.md");
+  if (!fs.existsSync(source) || fs.existsSync(target)) {
+    return;
+  }
+  copyFileSafe(source, target);
+}
+
+function seedHostSkills(homeDir, packageRoot) {
+  const sourceRoot = path.join(packageRoot, "skills");
+  const targetRoot = path.join(homeDir, ".agents", "skills");
+  if (!fs.existsSync(sourceRoot)) {
+    return;
+  }
+  for (const child of fs.readdirSync(sourceRoot).sort()) {
+    const source = path.join(sourceRoot, child);
+    if (shouldSkipImport(source)) {
+      continue;
+    }
+    const stat = fs.statSync(source);
+    if (stat.isDirectory()) {
+      const target = path.join(targetRoot, child);
+      if (!fs.existsSync(target)) {
+        copyTreeSafe(source, target);
+      }
+    } else if (stat.isFile() && path.extname(source) === ".md") {
+      const target = path.join(targetRoot, child);
+      if (!fs.existsSync(target)) {
+        copyFileSafe(source, target);
+      }
+    }
+  }
 }
 
 function prepareAgentsFiles(config, homeDir = os.homedir()) {
