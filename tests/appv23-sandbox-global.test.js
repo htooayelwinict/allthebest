@@ -6,9 +6,11 @@ const test = require("node:test");
 
 const {
   buildDockerCommand,
+  buildPullEnv,
   buildPullCommand,
   parseArgs,
   prepareSandboxImports,
+  shouldUseIsolatedDockerConfig,
 } = require("../bin/appv23-sandbox.js");
 
 test("global wrapper defaults to production GHCR image and pull", () => {
@@ -69,6 +71,21 @@ test("global wrapper supports local image without pulling", () => {
   assert.equal(config.image, "appv23:local");
   assert.equal(config.pull, false);
   assert.deepEqual(buildPullCommand(config), []);
+});
+
+test("global wrapper bypasses stale docker credentials only for public appv23 pulls", () => {
+  const config = parseArgs([]);
+  const customImage = parseArgs(["--image", "example.com/private/appv23:latest"]);
+
+  assert.equal(shouldUseIsolatedDockerConfig(config, {}), true);
+  assert.equal(shouldUseIsolatedDockerConfig(config, { DOCKER_CONFIG: "/tmp/docker" }), false);
+  assert.equal(shouldUseIsolatedDockerConfig(config, { APPV23_DOCKER_CONFIG: "/tmp/docker" }), false);
+  assert.equal(shouldUseIsolatedDockerConfig(customImage, {}), false);
+  assert.equal(buildPullEnv(config, "/tmp/docker", {}).DOCKER_CONFIG, "/tmp/docker");
+  assert.equal(
+    buildPullEnv(config, "/tmp/ignored", { APPV23_DOCKER_CONFIG: "/tmp/explicit" }).DOCKER_CONFIG,
+    "/tmp/explicit",
+  );
 });
 
 test("global wrapper copies user agents skills into sandbox home", () => {

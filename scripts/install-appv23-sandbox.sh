@@ -26,7 +26,23 @@ if [[ "${APPV23_BUILD_LOCAL:-0}" == "1" || "${APPV23_REBUILD_IMAGE:-0}" == "1" ]
   docker build --pull=false -f "${ROOT_DIR}/appV2.3/Dockerfile.appv23" -t "${IMAGE}" "${ROOT_DIR}/appV2.3"
 else
   echo "Pulling Docker image: ${IMAGE}"
-  docker pull "${IMAGE}"
+  pull_image() {
+    if [[ -n "${APPV23_DOCKER_CONFIG:-}" ]]; then
+      DOCKER_CONFIG="${APPV23_DOCKER_CONFIG}" docker pull "${IMAGE}"
+      return
+    fi
+    if [[ -z "${DOCKER_CONFIG:-}" && "${IMAGE}" == ghcr.io/htooayelwinict/appv23:* ]]; then
+      local tmp_docker_config
+      local pull_rc
+      tmp_docker_config="$(mktemp -d)"
+      DOCKER_CONFIG="${tmp_docker_config}" docker pull "${IMAGE}"
+      pull_rc=$?
+      rm -rf "${tmp_docker_config}"
+      return "${pull_rc}"
+    fi
+    docker pull "${IMAGE}"
+  }
+  pull_image
 fi
 
 echo "Installing global appv23-sandbox command"

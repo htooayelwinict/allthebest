@@ -8,6 +8,7 @@ const { spawnSync } = require("node:child_process");
 
 const DEFAULT_IMAGE =
   process.env.APPV23_IMAGE || process.env.APPV23_SANDBOX_IMAGE || "ghcr.io/htooayelwinict/appv23:production";
+const PUBLIC_APPV23_IMAGE_PREFIX = "ghcr.io/htooayelwinict/appv23:";
 const CONTAINER_WORKSPACE = "/workspace";
 const CONTAINER_AGENT_HOME = "/agent-home";
 const SKIP_IMPORT_NAMES = new Set([
@@ -201,6 +202,24 @@ function buildPullCommand(config) {
   return config.pull ? ["docker", "pull", config.image] : [];
 }
 
+function isPublicAppv23Image(image) {
+  return image.startsWith(PUBLIC_APPV23_IMAGE_PREFIX);
+}
+
+function shouldUseIsolatedDockerConfig(config, env = process.env) {
+  return config.pull && isPublicAppv23Image(config.image) && !env.DOCKER_CONFIG && !env.APPV23_DOCKER_CONFIG;
+}
+
+function buildPullEnv(config, dockerConfig, env = process.env) {
+  if (env.APPV23_DOCKER_CONFIG) {
+    return { ...env, DOCKER_CONFIG: env.APPV23_DOCKER_CONFIG };
+  }
+  if (dockerConfig) {
+    return { ...env, DOCKER_CONFIG: dockerConfig };
+  }
+  return env;
+}
+
 function prepareSandboxImports(config, runtime = {}) {
   const homeDir = runtime.homeDir || os.homedir();
   fs.mkdirSync(config.agentHome, { recursive: true, mode: 0o700 });
@@ -362,9 +381,22 @@ function main(argv = process.argv.slice(2)) {
       return 0;
     }
     if (pullCommand.length) {
-      const pull = spawnSync(pullCommand[0], pullCommand.slice(1), { stdio: "inherit" });
-      if ((pull.status ?? 1) !== 0) {
-        return pull.status ?? 1;
+      let dockerConfig;
+      try {
+        if (shouldUseIsolatedDockerConfig(config)) {
+          dockerConfig = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-docker-config-"));
+        }
+        const pull = spawnSync(pullCommand[0], pullCommand.slice(1), {
+          stdio: "inherit",
+          env: buildPullEnv(config, dockerConfig),
+        });
+        if ((pull.status ?? 1) !== 0) {
+          return pull.status ?? 1;
+        }
+      } finally {
+        if (dockerConfig) {
+          fs.rmSync(dockerConfig, { recursive: true, force: true });
+        }
       }
     }
     const result = spawnSync(command[0], command.slice(1), { stdio: "inherit" });
@@ -384,10 +416,12 @@ function shellQuote(value) {
 
 module.exports = {
   buildDockerCommand,
+  buildPullEnv,
   buildPullCommand,
   parseArgs,
   prepareSandboxImports,
   sanitizeAppArgs,
+  shouldUseIsolatedDockerConfig,
 };
 
 if (require.main === module) {
