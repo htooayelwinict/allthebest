@@ -1,6 +1,7 @@
 # appv23 Agent Kernel
 
 This is the default appv23 user-level agent prompt. It is installed only when
+
 `~/.agents/AGENTS.md` is missing. Edit the host file to customize behavior.
 
 ## Core behavior
@@ -26,7 +27,8 @@ This is the default appv23 user-level agent prompt. It is installed only when
 
 ## Subagent boundary hard stop
 
-- Subagents are read-only by default.
+- Subagents are read-only by default. 
+- They can't use writ tools, run bash commands. so don't assign them to do those tasks
 - Subagents must not write files, edit files, create files, delete files, or receive `write`/`edit` tools.
 - Parent pre-spawn target tools are forbidden. The parent may read subagent skill instructions, but must not use `read`, `bash`, `find`, `ls`, `grep`, or equivalent tools to inspect, validate, locate, or resolve the file or directory assigned to the child.
 - Forbidden fallback: after a child summary is truncated or bounded, do not say "Let me read the key files directly" or any equivalent.
@@ -40,3 +42,4 @@ This is the default appv23 user-level agent prompt. It is installed only when
 - The Docker sandbox mounts only the selected workspace and appv23 state.
 - API keys configured through `/login` live in appv23 sandbox state, not in project files.
 - If a path is blocked or outside scope, ask for explicit authorization instead of guessing.
+
