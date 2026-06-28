@@ -28,6 +28,7 @@ from appv23.ai.types import (
     empty_usage,
     now_ms,
 )
+from appv23.coding_agent.tools.trust import sanitize_tool_call_arguments
 
 CHARS_PER_TOKEN = 4
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
@@ -409,7 +410,7 @@ class ContextCompressor:
                 if isinstance(block, ToolCall):
                     encoded = str(block.arguments)
                     if len(encoded) > _TOOL_ARGS_MAX:
-                        block.arguments = {"_truncated": f"{len(encoded)} chars of arguments elided"}
+                        block.arguments = sanitize_tool_call_arguments(block.name, block.arguments)
         return pruned
 
     def _summarize_tool_result(self, message: ToolResultMessage, text: str) -> str:

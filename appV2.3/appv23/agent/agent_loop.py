@@ -199,6 +199,8 @@ def _run_loop(
                 batch = _execute_tool_calls(current_context, message, config, signal, emit)
                 tool_results.extend(batch.messages)
                 has_more_tool_calls = not batch.terminate
+                if config.sanitize_tool_call_history:
+                    config.sanitize_tool_call_history(message)
                 for result in tool_results:
                     current_context.messages.append(result)
                     new_messages.append(result)

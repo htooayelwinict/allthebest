@@ -38,6 +38,7 @@ from appv23.ai.types import (
     empty_usage,
     now_ms,
 )
+from appv23.coding_agent.tools.trust import sanitize_assistant_tool_calls_for_history
 
 
 def _convert(messages):
@@ -139,6 +140,55 @@ def test_tool_call_turn_executes_and_continues() -> None:
     assert "tool_execution_end" in events
     assert any(getattr(m, "role", None) == "toolResult" for m in msgs)
     assert calls["n"] == 2
+
+
+def test_tool_call_history_is_sanitized_after_execution_before_next_model_call() -> None:
+    model = faux_model()
+    large_content = "SMOKING-GUN-WRITE-CONTENT\n" + ("generated report body " * 500)
+    calls = {"n": 0}
+    second_context = {}
+    tool_saw_raw_content = {"value": False}
+
+    def script(m, c):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return tool_call_response_events(m, "write", {"path": "docs/report.md", "content": large_content})
+        second_context["messages"] = list(c.messages)
+        return text_response_events(m, "done")
+
+    register_api_provider(create_faux_provider(script))
+
+    def write_execute(tool_call_id, args, signal=None, on_update=None):
+        tool_saw_raw_content["value"] = args["content"] == large_content
+        return AgentToolResult(content=[TextContent(text="wrote")], details={})
+
+    write = AgentTool(
+        name="write",
+        description="write",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+        label="Write",
+        execute=write_execute,
+    )
+    config = _config(model)
+    config.sanitize_tool_call_history = sanitize_assistant_tool_calls_for_history
+
+    run_agent_loop(
+        [UserMessage(content="go", timestamp=now_ms())],
+        _ctx(tools=[write]),
+        config,
+        lambda e: None,
+    )
+
+    assert tool_saw_raw_content["value"] is True
+    assistant = next(m for m in second_context["messages"] if getattr(m, "role", None) == "assistant")
+    tool_call = next(block for block in assistant.content if isinstance(block, ToolCall))
+    assert tool_call.arguments["path"] == "docs/report.md"
+    assert tool_call.arguments["content"] != large_content
+    assert "SMOKING-GUN-WRITE-CONTENT" not in tool_call.arguments["content"]
 
 
 def test_agent_loop_stops_after_signal_aborted_during_tool_execution() -> None:

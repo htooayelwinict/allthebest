@@ -40,12 +40,17 @@ from appv23.ai.types import (
     empty_usage,
     now_ms,
 )
-from appv23.coding_agent.tools.trust import text_content_with_provider_trust
+from appv23.coding_agent.tools.trust import sanitize_tool_call_arguments, text_content_with_provider_trust
 
 PROVIDER_API = "openai-completions"
 
 _VALID_JSON_ESCAPES = {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}
 _REASONING_FIELDS = ("reasoning_content", "reasoning", "reasoning_text")
+_TEXT_STREAM_GUARD_NOTICE = "\n\n[appv23 stopped display: repeated output/tool-protocol leak detected.]"
+_TEXT_STREAM_PROTOCOL_RE = re.compile(
+    r"</?(?:tool_call|function_call|tool_response|function|parameter|system|developer|assistant|user)\b|<parameter=",
+    re.IGNORECASE,
+)
 _BILLING_PATTERNS = (
     "key limit exceeded",
     "spending limit",
@@ -262,7 +267,11 @@ def _convert_message(message: Message, model: Model | None = None) -> dict:
     text_parts = [_sanitize_surrogates(b.text) for b in message.content if isinstance(b, TextContent)]
     thinking_parts = [b for b in message.content if isinstance(b, ThinkingContent) and b.thinking.strip()]
     tool_calls = [
-        {"id": b.id, "type": "function", "function": {"name": b.name, "arguments": json.dumps(b.arguments)}}
+        {
+            "id": b.id,
+            "type": "function",
+            "function": {"name": b.name, "arguments": json.dumps(sanitize_tool_call_arguments(b.name, b.arguments))},
+        }
         for b in message.content
         if isinstance(b, ToolCall)
     ]
@@ -881,6 +890,24 @@ def parse_sse_chunks(
     yield from final_events()
 
 
+def _should_stop_text_stream(text: str) -> bool:
+    tail = text[-2000:]
+    tokens = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{3,}\b", tail)
+    if len(tokens) >= 16:
+        last = [token.lower() for token in tokens[-16:]]
+        if len(set(last)) == 1:
+            return True
+
+    lines = [line.strip() for line in tail.splitlines() if line.strip()]
+    if len(lines) >= 6 and len(lines[-1]) >= 12 and len(set(lines[-6:])) == 1:
+        return True
+
+    if len(_TEXT_STREAM_PROTOCOL_RE.findall(tail)) >= 3:
+        return True
+
+    return False
+
+
 def _parse_sse_payload(
     payload: str,
     model: Model,
@@ -952,6 +979,8 @@ def _parse_sse_payload(
 
     content_piece = delta.get("content")
     if content_piece:
+        if state.get("text_guard_triggered") or text_buf.endswith(_TEXT_STREAM_GUARD_NOTICE):
+            return
         start = ensure_start()
         if start:
             state["started"] = True
@@ -961,6 +990,10 @@ def _parse_sse_payload(
             state["text_index"] = text_index
             message.content.append(TextContent(text=""))
             yield TextStartEvent(content_index=text_index, partial=message)
+        candidate_text = text_buf + content_piece
+        if _should_stop_text_stream(candidate_text):
+            state["text_guard_triggered"] = True
+            content_piece = _TEXT_STREAM_GUARD_NOTICE
         text_buf += content_piece
         state["text_buf"] = text_buf
         message.content[text_index].text = text_buf

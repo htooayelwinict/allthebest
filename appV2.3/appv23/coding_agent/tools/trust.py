@@ -10,12 +10,17 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 import threading
 from typing import Any
 
-from appv23.ai.types import TextContent
+from appv23.ai.types import AssistantMessage, TextContent, ToolCall
 
 TRUST_DETAILS_KEY = "appv23_trust"
+TOOL_ARGUMENT_REDACTION_MARKER = "[appv23 redacted tool argument"
+
+_TOOL_ARGUMENT_STRING_MAX = 500
+_WRITE_CONTENT_STRING_MAX = 256
 
 _WRITTEN_FILES: dict[str, dict[str, Any]] = {}
 _WRITTEN_FILES_LOCK = threading.Lock()
@@ -49,6 +54,24 @@ _PROMPT_OR_PROTOCOL_RE = re.compile(
 
 def create_trust_state() -> dict[str, Any]:
     return {"written_files": {}}
+
+
+def sanitize_tool_call_arguments(tool_name: str, arguments: Any) -> Any:
+    """Return JSON-valid tool arguments safe to replay in model history.
+
+    Tool execution receives the original arguments. This sanitizer is for
+    conversation history and provider payload replay, where large generated
+    content should be represented by provenance metadata instead of raw text.
+    """
+    return _sanitize_tool_argument_value(tool_name, arguments, ())
+
+
+def sanitize_assistant_tool_calls_for_history(message: AssistantMessage) -> AssistantMessage:
+    """Minimize replay-sensitive tool-call arguments in-place after execution."""
+    for block in getattr(message, "content", []):
+        if isinstance(block, ToolCall):
+            block.arguments = sanitize_tool_call_arguments(block.name, block.arguments)
+    return message
 
 
 def mark_agent_written_file(path: str, content: str, trust_state: dict[str, Any] | None = None) -> None:
@@ -176,6 +199,35 @@ def _is_untrusted_tool_name(tool_name: str) -> bool:
 
 def _looks_like_prompt_or_tool_protocol(text: str) -> bool:
     return bool(_PROMPT_OR_PROTOCOL_RE.search(text or ""))
+
+
+def _sanitize_tool_argument_value(tool_name: str, value: Any, path: tuple[str, ...]) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _sanitize_tool_argument_value(tool_name, child, path + (str(key),)) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_tool_argument_value(tool_name, child, path + (str(index),)) for index, child in enumerate(value)]
+    if isinstance(value, str) and _should_redact_tool_argument(tool_name, value, path):
+        return _redacted_tool_argument_marker(value, path)
+    return value
+
+
+def _should_redact_tool_argument(tool_name: str, value: str, path: tuple[str, ...]) -> bool:
+    leaf = path[-1].lower() if path else ""
+    normalized_tool_name = (tool_name or "").lower().replace("-", "_")
+    if normalized_tool_name == "write" and leaf == "content":
+        return len(value) > _WRITE_CONTENT_STRING_MAX
+    if leaf in {"content", "new_content", "replacement", "patch"} and len(value) > _TOOL_ARGUMENT_STRING_MAX:
+        return True
+    return len(value) > _TOOL_ARGUMENT_STRING_MAX
+
+
+def _redacted_tool_argument_marker(value: str, path: tuple[str, ...]) -> str:
+    label = ".".join(path) if path else "<root>"
+    return f"{TOOL_ARGUMENT_REDACTION_MARKER} {label}: {len(value)} chars, sha256={_sha256_text(value)}]"
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:16]
 
 
 def _wrap_untrusted_tool_result(content: str, tool_name: str, metadata: dict[str, Any]) -> str:

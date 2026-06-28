@@ -73,6 +73,7 @@ from appv23.coding_agent.subagents import (
 from appv23.coding_agent.tools import create_all_tool_definitions
 from appv23.coding_agent.tools.bash import BASH_SCHEMA, BashExecOptions, BashOperations, create_local_bash_operations
 from appv23.coding_agent.tools.output_accumulator import OutputAccumulator
+from appv23.coding_agent.tools.trust import sanitize_assistant_tool_calls_for_history
 from appv23.coding_agent.tools.types import (
     ToolContext,
     ToolDefinition,
@@ -867,6 +868,7 @@ class AgentSession:
             max_retry_delay_ms=max_retry_delay_ms,
             on_payload=self._on_provider_payload,
             on_response=self._on_provider_response,
+            sanitize_tool_call_history=sanitize_assistant_tool_calls_for_history,
             session_id=self.session_id or None,
             max_iterations=max_iterations,
         )

@@ -108,7 +108,28 @@ def test_prune_summarizes_old_tool_result_and_truncates_args() -> None:
     compressor = ContextCompressor(protect_last_n=2)
     pruned = compressor.prune_old_tool_results(messages)
     assert "elided" in pruned[2].content[0].text
-    assert pruned[1].content[1].arguments == {"_truncated": "612 chars of arguments elided"}
+    assert pruned[1].content[1].arguments.keys() == {"data"}
+    assert pruned[1].content[1].arguments["data"].startswith("[appv23 redacted tool argument data:")
+
+
+def test_prune_preserves_write_path_while_redacting_large_content_arg() -> None:
+    big = "Y" * 500
+    big_args = {"path": "docs/report.md", "content": "SMOKING-GUN-WRITE-CONTENT\n" + ("Z" * 2000)}
+    messages = [
+        _user("q"),
+        _assistant("call", tool_calls=[ToolCall(id="c1", name="write", arguments=big_args)]),
+        _tool_result(big),
+        _user("u1"), _user("u2"), _user("u3"), _user("u4"), _user("u5"), _user("u6"), _user("u7"), _user("u8"),
+    ]
+    compressor = ContextCompressor(protect_last_n=2)
+
+    pruned = compressor.prune_old_tool_results(messages)
+
+    arguments = pruned[1].content[1].arguments
+    assert arguments["path"] == "docs/report.md"
+    assert arguments["content"] != big_args["content"]
+    assert "SMOKING-GUN-WRITE-CONTENT" not in arguments["content"]
+    assert "_truncated" not in arguments
 
 
 def test_prune_summarizes_old_subagent_expansion_to_metadata_only() -> None:
