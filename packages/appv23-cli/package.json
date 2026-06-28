@@ -1,6 +1,6 @@
 {
   "name": "@htooayelwinict/appv23",
-  "version": "2.3.4",
+  "version": "2.3.5",
   "description": "npx-friendly Docker launcher for the appv23 coding-agent sandbox.",
   "license": "MIT",
   "bin": {

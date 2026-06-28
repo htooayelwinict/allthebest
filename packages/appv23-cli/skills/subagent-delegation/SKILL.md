@@ -68,5 +68,9 @@ Do not compensate for child failure by directly scanning the remaining parent sc
 - Treat a completed child summary as authoritative unless the user explicitly asks the parent to inspect the files directly.
 - If the summary is insufficient, report the bounded summary and ask whether to spawn a narrower follow-up child task for expansion.
 - If expanding, spawn a narrower follow-up child task with exact paths and a smaller output request instead of taking over the child scope in the parent.
+- Forbidden fallback: after seeing `... [truncated]`, do not say "Let me read the key files directly" or any equivalent.
+- Do not call `read`, `bash`, `grep`, `find`, or other parent tools to reconstruct files that were assigned to the child.
+- The only allowed recovery paths are: answer from the bounded child summary, ask the user whether to expand, or spawn a narrower follow-up child task after explicit user authorization.
+- Treat truncation as the delegation boundary doing its job, not as a failure that the parent should repair by taking over.
 
 Do not carry this workflow into the next user message. A completed child result is not permission to call more subagent tools later.

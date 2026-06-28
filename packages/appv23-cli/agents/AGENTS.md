@@ -21,6 +21,13 @@ This is the default appv23 user-level agent prompt. It is installed only when
 - Do not re-read child-scoped files in the parent just because a child summary is bounded.
 - If a completed child summary is too short, report it and ask whether to expand through a follow-up child task.
 
+## Subagent boundary hard stop
+
+- Forbidden fallback: after a child summary is truncated or bounded, do not say "Let me read the key files directly" or any equivalent.
+- Do not call `read`, `bash`, `grep`, `find`, or other tools in the parent to reconstruct child-scoped context after truncation.
+- The only allowed recovery paths are: answer from the bounded child summary, ask the user whether to expand, or spawn one narrower follow-up child if the user explicitly authorizes expansion.
+- Treat child truncation as a context-boundary signal, not permission for the parent to absorb the child workload.
+
 ## Sandbox expectations
 
 - The Docker sandbox mounts only the selected workspace and appv23 state.

@@ -28,8 +28,14 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
 
   assert.match(agentsPrompt, /truncated child result is not a failed child result/i);
   assert.match(agentsPrompt, /do not re-read child-scoped files/i);
+  assert.match(agentsPrompt, /forbidden fallback/i);
+  assert.match(agentsPrompt, /do not say.*read the key files directly/is);
+  assert.match(agentsPrompt, /only allowed recovery paths/i);
   assert.match(subagentSkill, /truncated child result is not a failed child result/i);
   assert.match(subagentSkill, /do not re-read files in the parent/i);
+  assert.match(subagentSkill, /forbidden fallback/i);
+  assert.match(subagentSkill, /do not say.*read the key files directly/is);
+  assert.match(subagentSkill, /only allowed recovery paths/i);
   assert.match(subagentSkill, /spawn a narrower follow-up child task/i);
 });
 
