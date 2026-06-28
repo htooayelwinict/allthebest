@@ -27,8 +27,16 @@ def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_flag_disabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"0", "false", "no", "off"}
+
+
 def _mouse_tracking_enabled() -> bool:
-    return _env_flag_enabled("APPV23_TUI_MOUSE") or _env_flag_enabled("PI_TUI_MOUSE")
+    if "APPV23_TUI_MOUSE" in os.environ:
+        return _env_flag_enabled("APPV23_TUI_MOUSE") and not _env_flag_disabled("APPV23_TUI_MOUSE")
+    if "PI_TUI_MOUSE" in os.environ:
+        return _env_flag_enabled("PI_TUI_MOUSE") and not _env_flag_disabled("PI_TUI_MOUSE")
+    return _env_flag_enabled("APPV23_SANDBOX")
 
 
 class Terminal(Protocol):

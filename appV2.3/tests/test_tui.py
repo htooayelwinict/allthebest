@@ -1334,6 +1334,48 @@ def test_process_terminal_disables_mouse_tracking_by_default_to_keep_touchpad_sc
 
     monkeypatch.delenv("PI_TUI_MOUSE", raising=False)
     monkeypatch.delenv("APPV23_TUI_MOUSE", raising=False)
+    monkeypatch.delenv("APPV23_SANDBOX", raising=False)
+    terminal = RecordingProcessTerminal()
+
+    terminal.start(lambda data: None, lambda: None)
+    terminal.stop()
+
+    assert "\x1b[?1000h\x1b[?1006h" not in terminal.writes
+    assert "\x1b[?1006l\x1b[?1000l" not in terminal.writes
+
+
+def test_process_terminal_enables_mouse_tracking_by_default_in_sandbox(monkeypatch) -> None:
+    class RecordingProcessTerminal(ProcessTerminal):
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            super().__init__(progress_keepalive_seconds=10)
+
+        def write(self, data: str) -> None:
+            self.writes.append(data)
+
+    monkeypatch.delenv("PI_TUI_MOUSE", raising=False)
+    monkeypatch.delenv("APPV23_TUI_MOUSE", raising=False)
+    monkeypatch.setenv("APPV23_SANDBOX", "1")
+    terminal = RecordingProcessTerminal()
+
+    terminal.start(lambda data: None, lambda: None)
+    terminal.stop()
+
+    assert "\x1b[?1000h\x1b[?1006h" in terminal.writes
+    assert "\x1b[?1006l\x1b[?1000l" in terminal.writes
+
+
+def test_process_terminal_can_disable_sandbox_mouse_tracking(monkeypatch) -> None:
+    class RecordingProcessTerminal(ProcessTerminal):
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            super().__init__(progress_keepalive_seconds=10)
+
+        def write(self, data: str) -> None:
+            self.writes.append(data)
+
+    monkeypatch.setenv("APPV23_SANDBOX", "1")
+    monkeypatch.setenv("APPV23_TUI_MOUSE", "0")
     terminal = RecordingProcessTerminal()
 
     terminal.start(lambda data: None, lambda: None)

@@ -95,7 +95,7 @@ def test_coding_app_model_can_spawn_visible_subagent(tmp_path: Path) -> None:
     event_types = [event["type"] if isinstance(event, dict) else event.type for event in events]
     assert "subagent_start" in event_types
     assert "subagent_stop" in event_types
-    assert set(child_tool_names) == {"read", "grep", "find", "ls"}
+    assert set(child_tool_names) == {"read", "grep", "find", "ls", "run"}
     assert provider_calls["n"] == 3
 
 
@@ -139,8 +139,9 @@ def test_coding_app_internal_subagent_result_includes_child_tool_trace(tmp_path:
     assert "child.md" in tool_trace[0]["argsPreview"]
     assert "child trace body" in tool_trace[0]["resultPreview"]
     formatted = app.session._format_subagent_result(result)
-    assert "toolTrace:" in formatted
-    assert "read ok" in formatted
+    assert "summary: child read child.md" in formatted
+    assert "toolTrace:" not in formatted
+    assert "read ok" not in formatted
     event_types = [event["type"] if isinstance(event, dict) else event.type for event in events]
     assert "subagent_tool_start" in event_types
     assert "subagent_tool_end" in event_types
@@ -221,7 +222,10 @@ def test_coding_app_internal_subagent_tool_trace_records_guardrail_halt(tmp_path
     assert any("repeated_exact_failure_block" in error for error in result.errors)
     formatted = app.session._format_subagent_result(result)
     assert "guardrail: repeated_exact_failure_block" in formatted
-    assert "read guardrail_halt" in formatted
+    assert "guardrail: repeated_exact_failure_block" in formatted
+    assert "error: Subagent stopped by tool guardrail" in formatted
+    assert "read guardrail_halt" not in formatted
+    assert "toolTrace:" not in formatted
 
 
 def test_coding_app_wires_compaction_transform(tmp_path: Path) -> None:
