@@ -4,6 +4,29 @@ Pi-style coding agent with Hermes-style compaction, branched from the sealed `ap
 
 appv23 directly ports and adapts implementation work from Pi and Hermes Agent through the `appV2.2` baseline. See `NOTICE.md` for upstream attribution and `LICENSE` for the MIT license terms preserved from those projects.
 
+## Distribution model
+
+appv23 is shipped in three layers:
+
+1. `appV2.3/` is the Python application source used for local development, tests, and release-image builds.
+2. `ghcr.io/htooayelwinict/appv23:production` is the public Docker sandbox image. The production image is built from the `next/appv23` branch with `Dockerfile.appv23.release`.
+3. `@htooayelwinict/appv23@latest` is the public npm launcher package. It is a thin wrapper that pulls/runs the GHCR image from any directory.
+
+Recommended user entrypoint:
+
+```bash
+npx --yes @htooayelwinict/appv23@latest --cwd .
+```
+
+Persistent global command:
+
+```bash
+npm install -g @htooayelwinict/appv23@latest
+appv23 --cwd .
+```
+
+The npm package does not contain the full Python runtime. It contains the launcher, compact default agent files, and bundled default skills. The runtime comes from the GHCR image.
+
 ## Status
 
 `appV2.3` is the active next-version workspace. Keep `appV2.2/` sealed except for bug fixes, security fixes, test hardening, and documentation corrections. Put new advanced agent work in `appV2.3/`.
@@ -47,20 +70,33 @@ The sandbox launcher builds an appv23-only image from `appV2.3/Dockerfile.appv23
 npm run tui:v23:sandbox -- --cwd docs
 ```
 
-Run directly with npm once the package is published:
+Run directly with the public npm package:
 
 ```bash
-npx @htooayelwinict/appv23 --cwd docs
+npx --yes @htooayelwinict/appv23@latest --cwd docs
 ```
 
 Or install globally:
 
 ```bash
-npm install -g @htooayelwinict/appv23
+npm install -g @htooayelwinict/appv23@latest
 appv23 --cwd docs
 ```
 
-The npm launcher pulls and runs `ghcr.io/htooayelwinict/appv23:production`.
+The npm launcher pulls and runs `ghcr.io/htooayelwinict/appv23:production`. The default pull mode is `auto`: the first successful pull records a cache under `$HOME/.appv23/sandbox-home/.appv23-pull-cache.json`, and normal repeat launches skip `docker pull` until that cache expires. Use `--pull` to force a fresh image pull or `--no-pull` to skip image pulling.
+
+Common npm/global usage:
+
+```bash
+appv23 --cwd /path/to/project
+appv23 --cwd . --dry-run
+appv23 --cwd . --pull
+appv23 --cwd . --no-pull
+appv23 --cwd . --no-network
+appv23 --cwd . --image ghcr.io/htooayelwinict/appv23:production
+appv23 --cwd . --agents-file ./AGENTS.md
+appv23 --cwd . --with-skills ~/.agents/skills
+```
 
 For installed-anywhere use, run the installer once from the repo:
 
@@ -102,6 +138,14 @@ python -m pip install ".[browser]"
 
 The global wrapper does not need the repo as the current directory. It mounts the selected `--cwd`, stores sandbox state in `$HOME/.appv23/sandbox-home`, copies host `$HOME/.agents/AGENTS.md` into sandbox `$HOME/agent/AGENTS.md`, and copies host `$HOME/.agents/skills` into sandbox `$HOME/.agents/skills` before launch.
 
+The npm package also bundles compact defaults for first run and recovery:
+
+- `agents/AGENTS.md`
+- `skills/web-search/SKILL.md`
+- `skills/subagent-delegation/SKILL.md`
+
+On startup, the wrapper restores those files into host `~/.agents` only when the matching host file or skill directory is missing. Existing user files are never overwritten. This keeps normal sessions lightweight while making `npx @htooayelwinict/appv23@latest` usable after a fresh install or accidental `~/.agents` deletion.
+
 The image entrypoint is `appv23`. Direct Docker usage is:
 
 ```bash
@@ -114,7 +158,9 @@ docker run --rm -it \
   -v "$HOME/.appv23/sandbox-home:/agent-home:rw" \
   -e HOME=/agent-home \
   -e PI_CODING_AGENT_DIR=/agent-home/agent \
-  appv23:local \
+  -e APPV23_SANDBOX=1 \
+  -e APPV23_NO_VENV_REEXEC=1 \
+  ghcr.io/htooayelwinict/appv23:production \
   --cwd /workspace
 ```
 
@@ -141,6 +187,34 @@ npm run tui:v23:sandbox -- --cwd docs --agents-file ./AGENTS.md --with-skills ~/
 
 Use `/login` and `/model` inside the sandbox. API keys entered through `/login` are stored in the isolated sandbox agent dir at `/agent-home/agent/auth.json`, backed by `$HOME/.appv23/sandbox-home/agent/auth.json` on the host.
 
+The npm and Docker sandbox paths intentionally do not mount or forward the project `.env` file. Use `/login` for user-side API keys and `/model` to select a provider/model. Direct local development can still use `--dotenv`:
+
+```bash
+PYTHONPATH=appV2.3 .venv/bin/python appV2.3/scripts/appv23_tui.py --dotenv .env --cwd docs
+```
+
+## Repository structure
+
+```text
+appV2.3/
+  appv23/                  Python runtime package: TUI, agent loop, tools, auth, models, compaction, subagents.
+  scripts/                 Local entrypoints such as appv23_tui.py and appv23_sandbox.py.
+  tests/                   appv23 unit and integration tests.
+  Dockerfile.appv23        Local development sandbox image.
+  README.md                This appv23 guide.
+
+packages/appv23-cli/
+  bin/appv23.js            Public npm launcher used by npx/global install.
+  agents/AGENTS.md         Compact default agent kernel restored only when host ~/.agents/AGENTS.md is missing.
+  skills/                  Bundled default skills restored only when missing and copied into the sandbox.
+  test/                    npm launcher tests.
+
+Dockerfile.appv23.release  Production image builder for ghcr.io/htooayelwinict/appv23:production.
+package.json               Repo-level helper scripts, including image release and sandbox wrappers.
+```
+
+The production image is intentionally appv23-only. Pi and Hermes sources remain in the repo for attribution/reference work, but the public npm path runs the appv23 runtime from the GHCR image.
+
 ## Install locally from a wheel
 
 ```bash
@@ -163,7 +237,7 @@ cd appV2.3
 uv run --with pytest python -m pytest tests -q
 ```
 
-Expected current `appV2.3` suite: `723 passed`.
+Expected current `appV2.3` suite: `745 passed`.
 
 ## Production verification gates
 
