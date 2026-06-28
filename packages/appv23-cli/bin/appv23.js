@@ -9,6 +9,7 @@ const { spawnSync } = require("node:child_process");
 const DEFAULT_IMAGE =
   process.env.APPV23_IMAGE || process.env.APPV23_SANDBOX_IMAGE || "ghcr.io/htooayelwinict/appv23:production";
 const PUBLIC_APPV23_IMAGE_PREFIX = "ghcr.io/htooayelwinict/appv23:";
+const DEFAULT_PULL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const CONTAINER_WORKSPACE = "/workspace";
 const CONTAINER_AGENT_HOME = "/agent-home";
 const IMPORTED_AGENTS_MARKER = "<!-- appv23-sandbox-imported-agents -->";
@@ -33,7 +34,7 @@ function parseArgs(argv) {
     agentHome: process.env.APPV23_SANDBOX_HOME || path.join(os.homedir(), ".appv23", "sandbox-home"),
     network: true,
     dryRun: false,
-    pull: true,
+    pull: "auto",
     agentsFiles: [],
     skillsPaths: [],
     importUserSkills: true,
@@ -95,11 +96,11 @@ function parseArgs(argv) {
       continue;
     }
     if (arg === "--pull") {
-      config.pull = true;
+      config.pull = "always";
       continue;
     }
     if (arg === "--no-pull") {
-      config.pull = false;
+      config.pull = "never";
       continue;
     }
     if (arg === "--dry-run") {
@@ -199,8 +200,14 @@ function buildDockerCommand(config, runtime = {}) {
   return command;
 }
 
-function buildPullCommand(config) {
-  return config.pull ? ["docker", "pull", config.image] : [];
+function buildPullCommand(config, runtime = {}) {
+  if (config.pull === "never" || config.pull === false) {
+    return [];
+  }
+  if (config.pull === "always" || config.pull === true) {
+    return ["docker", "pull", config.image];
+  }
+  return shouldAutoPull(config, runtime) ? ["docker", "pull", config.image] : [];
 }
 
 function isPublicAppv23Image(image) {
@@ -208,7 +215,7 @@ function isPublicAppv23Image(image) {
 }
 
 function shouldUseIsolatedDockerConfig(config, env = process.env) {
-  return config.pull && isPublicAppv23Image(config.image) && !env.DOCKER_CONFIG && !env.APPV23_DOCKER_CONFIG;
+  return config.pull !== "never" && config.pull !== false && isPublicAppv23Image(config.image) && !env.DOCKER_CONFIG && !env.APPV23_DOCKER_CONFIG;
 }
 
 function buildPullEnv(config, dockerConfig, env = process.env) {
@@ -219,6 +226,35 @@ function buildPullEnv(config, dockerConfig, env = process.env) {
     return { ...env, DOCKER_CONFIG: dockerConfig };
   }
   return env;
+}
+
+function shouldAutoPull(config, runtime = {}) {
+  const pulledAtMs = readPullCache(config)[config.image];
+  if (typeof pulledAtMs !== "number") {
+    return true;
+  }
+  const nowMs = runtime.nowMs ?? Date.now();
+  return nowMs < pulledAtMs || nowMs - pulledAtMs > DEFAULT_PULL_CACHE_TTL_MS;
+}
+
+function recordPullSuccess(config, runtime = {}) {
+  const cache = readPullCache(config);
+  cache[config.image] = runtime.nowMs ?? Date.now();
+  fs.mkdirSync(config.agentHome, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(pullCachePath(config), `${JSON.stringify(cache, null, 2)}\n`, { mode: 0o600 });
+}
+
+function readPullCache(config) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(pullCachePath(config), "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function pullCachePath(config) {
+  return path.join(config.agentHome, ".appv23-pull-cache.json");
 }
 
 function prepareSandboxImports(config, runtime = {}) {
@@ -472,6 +508,7 @@ function main(argv = process.argv.slice(2)) {
         if ((pull.status ?? 1) !== 0) {
           return pull.status ?? 1;
         }
+        recordPullSuccess(config);
       } finally {
         if (dockerConfig) {
           fs.rmSync(dockerConfig, { recursive: true, force: true });
@@ -499,6 +536,7 @@ module.exports = {
   buildPullCommand,
   parseArgs,
   prepareSandboxImports,
+  recordPullSuccess,
   sanitizeAppArgs,
   shouldUseIsolatedDockerConfig,
 };

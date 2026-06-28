@@ -11,6 +11,7 @@ const {
   buildPullCommand,
   parseArgs,
   prepareSandboxImports,
+  recordPullSuccess,
   shouldUseIsolatedDockerConfig,
 } = require("../bin/appv23.js");
 
@@ -21,13 +22,51 @@ test("package exposes appv23 and appv23-sandbox binaries", () => {
   assert.equal(fs.existsSync(path.join(packageRoot, packageJson.bin.appv23)), true);
 });
 
-test("package defaults to production GHCR image and pull", () => {
-  const config = parseArgs([]);
+test("package defaults to production GHCR image and auto pull", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const config = parseArgs(["--agent-home", path.join(root, "agent-home")]);
 
   assert.equal(config.image, "ghcr.io/htooayelwinict/appv23:production");
-  assert.equal(config.pull, true);
+  assert.equal(config.pull, "auto");
   assert.deepEqual(buildPullCommand(config), ["docker", "pull", "ghcr.io/htooayelwinict/appv23:production"]);
   assert.equal(shouldUseIsolatedDockerConfig(config, {}), true);
+});
+
+test("package auto pull skips when pull cache is fresh", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const config = parseArgs(["--agent-home", path.join(root, "agent-home")]);
+
+  recordPullSuccess(config, { nowMs: 1000 });
+
+  assert.deepEqual(buildPullCommand(config, { nowMs: 2000 }), []);
+});
+
+test("package auto pull runs when pull cache is stale", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const config = parseArgs(["--agent-home", path.join(root, "agent-home")]);
+
+  recordPullSuccess(config, { nowMs: 1000 });
+
+  assert.deepEqual(
+    buildPullCommand(config, { nowMs: 1000 + 6 * 60 * 60 * 1000 + 1 }),
+    ["docker", "pull", "ghcr.io/htooayelwinict/appv23:production"],
+  );
+});
+
+test("package pull flags override auto pull cache", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const agentHome = path.join(root, "agent-home");
+  const forceConfig = parseArgs(["--agent-home", agentHome, "--pull"]);
+  const skipConfig = parseArgs(["--agent-home", agentHome, "--no-pull"]);
+
+  recordPullSuccess(forceConfig, { nowMs: 1000 });
+
+  assert.deepEqual(buildPullCommand(forceConfig, { nowMs: 2000 }), [
+    "docker",
+    "pull",
+    "ghcr.io/htooayelwinict/appv23:production",
+  ]);
+  assert.deepEqual(buildPullCommand(skipConfig, { nowMs: 1000 + 6 * 60 * 60 * 1000 + 1 }), []);
 });
 
 test("package builds hardened docker command for npx-style use", () => {
