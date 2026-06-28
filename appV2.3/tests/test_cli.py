@@ -4,7 +4,7 @@ from pathlib import Path
 
 import appv23.cli as cli
 from appv23.app import CodingApp
-from appv23.ai.models import register_model, reset_models
+from appv23.ai.models import get_api_key_for_provider, register_model, reset_models
 from appv23.ai.types import Model
 from appv23.ai.providers.faux import create_faux_provider, faux_model, text_response_events
 from appv23.ai.stream import register_api_provider, reset_api_providers
@@ -130,6 +130,61 @@ def test_cli_provider_and_model_flags_resolve_registered_model(monkeypatch, tmp_
     assert app.enable_tui is False
     assert app.thinking_level == "off"
     assert app.scoped_models == []
+
+
+def test_cli_loads_persisted_auth_before_model_selection(monkeypatch, tmp_path) -> None:
+    observed: dict[str, object] = {}
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "auth.json").write_text(
+        '{"openrouter": {"type": "api_key", "key": "persisted-key"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+
+    class FakeApp:
+        def __init__(
+            self,
+            *,
+            cwd,
+            model,
+            enable_tui,
+            thinking_level,
+            scoped_models,
+            **kwargs,
+        ):
+            self.cwd = cwd
+            self.model = model
+            self.enable_tui = enable_tui
+            self.thinking_level = thinking_level
+            self.scoped_models = scoped_models
+            self.messages = []
+            observed["app"] = self
+
+        def run_turn(self, prompt):
+            observed["prompt"] = prompt
+
+    def record_startup(dotenv_path, **kwargs):
+        observed["api_key"] = get_api_key_for_provider("openrouter")
+        return cli._StartupModelSelection(
+            model=Model(
+                id="qwen/qwen3.6-flash",
+                name="qwen/qwen3.6-flash",
+                api="faux",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+            )
+        )
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path: None)
+    monkeypatch.setattr(cli, "_startup_model_from_env", record_startup)
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--plain", "hi"])
+
+    assert exit_code == 0
+    assert observed["prompt"] == "hi"
+    assert observed["api_key"] == "persisted-key"
 
 
 def test_cli_passes_hermes_loop_runtime_options(monkeypatch, tmp_path) -> None:

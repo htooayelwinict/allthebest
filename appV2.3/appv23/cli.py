@@ -5,17 +5,18 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from dataclasses import field
+import json
 import os
 from pathlib import Path
 import sys
 
 from appv23.ai.env_config import get_default_model_for_provider, load_model_config
 from appv23.ai.model_resolver import ScopedModel, resolve_cli_model, resolve_model_scope
-from appv23.ai.models import get_model, get_models, get_providers, has_configured_auth
+from appv23.ai.models import get_model, get_models, get_providers, has_configured_auth, set_auth_credential
 from appv23.ai.register_builtins import register_builtin_providers
 from appv23.ai.types import Model
 from appv23.app import CodingApp
-from appv23.coding_agent.config import get_agent_dir
+from appv23.coding_agent.config import get_agent_dir, get_auth_path
 from appv23.coding_agent.agent_session_services import _new_session_path
 from appv23.coding_agent.export_html import export_from_file
 from appv23.tui.interactive_mode import InteractiveMode
@@ -90,6 +91,21 @@ def _npm_initial_cwd() -> Path | None:
     if not initial_cwd or not os.environ.get("npm_lifecycle_event"):
         return None
     return Path(initial_cwd).expanduser().resolve()
+
+
+def _load_persisted_auth_credentials() -> None:
+    auth_path = Path(get_auth_path()).expanduser()
+    try:
+        parsed = json.loads(auth_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(parsed, dict):
+        return
+    for provider, credential in parsed.items():
+        if isinstance(provider, str) and isinstance(credential, dict):
+            set_auth_credential(provider, dict(credential))
 
 
 @dataclass(frozen=True)
@@ -230,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
 
     dotenv_path = _resolve_dotenv_path(args.dotenv, search_start=cwd_path)
     register_builtin_providers(dotenv_path=dotenv_path)
+    _load_persisted_auth_credentials()
     try:
         startup = _startup_model_from_env(
             dotenv_path,
