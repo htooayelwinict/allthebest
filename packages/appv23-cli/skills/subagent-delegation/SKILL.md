@@ -10,6 +10,8 @@ Use this skill only when the user explicitly asks for subagents, delegation, han
 ## Default behavior
 
 - Keep the parent agent normal unless this skill is explicitly triggered.
+- This skill is active for the current user request only. After the parent reports child results, return to normal main-agent behavior.
+- Do not use this skill on a later user request unless that later request explicitly asks for subagents, delegation, handoff, reviewer/explorer/research child agents, `/delegate`, or `/subagents`.
 - Use one delegation wave by default, with at most 3 child agents.
 - Do not launch a second wave unless the user explicitly asks for it after seeing the first child summaries.
 - Do not describe or plan "Wave 2", "Wave 3", or future waves in the same answer.
@@ -41,6 +43,7 @@ Child instructions must say:
 
 - Make one diagnostic attempt after a missing path or failed tool call, then stop and report the blocker.
 - Do not retry the same tool call with the same arguments.
+- Do not call a `glob` tool. This runtime does not provide one; use `ls`, `find`, `read`, or a bounded `bash` command when needed.
 - Do not scan parent directories outside the assigned scope.
 - Do not include full tool traces in the final answer.
 
@@ -57,3 +60,5 @@ After children finish, report only:
 If a child hits a guardrail or cancellation, report it and stop. Do not retry automatically.
 
 Do not compensate for child failure by directly scanning the remaining parent scope. Report the child status and ask the user for the next step.
+
+Do not carry this workflow into the next user message. A completed child result is not permission to call more subagent tools later.

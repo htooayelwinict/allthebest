@@ -92,3 +92,23 @@ test("package user skills override bundled skills", () => {
     "---\nname: subagent-delegation\n---\nUser policy\n",
   );
 });
+
+test("package copies user AGENTS.md into sandbox agent context by default", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv23-cli-"));
+  const hostHome = path.join(root, "host-home");
+  const userAgentsDir = path.join(hostHome, ".agents");
+  const agentHome = path.join(root, "agent-home");
+  const syntheticPackageRoot = path.join(root, "package");
+  fs.mkdirSync(userAgentsDir, { recursive: true });
+  fs.mkdirSync(syntheticPackageRoot, { recursive: true });
+  fs.writeFileSync(path.join(userAgentsDir, "AGENTS.md"), "Global appv23 kernel\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  const imported = fs.readFileSync(path.join(agentHome, "agent", "AGENTS.md"), "utf8");
+  assert.match(imported, /appv23-sandbox-imported-agents/);
+  assert.match(imported, /Global appv23 kernel/);
+});

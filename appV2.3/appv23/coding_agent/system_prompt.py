@@ -114,7 +114,12 @@ def build_system_prompt(options: BuildSystemPromptOptions) -> str:
 def _context_section(context_files: list[tuple[str, str]]) -> str:
     if not context_files:
         return ""
-    section = "\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n"
+    section = (
+        "\n\n<project_context>\n\n"
+        "Mandatory active instructions from AGENTS.md/CLAUDE.md context files:\n\n"
+        "These instructions are active for every turn. Follow them as instruction contracts, not background reference. "
+        "They narrow and specialize your behavior unless they conflict with higher-priority system, developer, platform, or tool safety rules.\n\n"
+    )
     for file_path, content in context_files:
         section += f'<project_instructions path="{file_path}">\n{content}\n</project_instructions>\n\n'
     section += "</project_context>\n"

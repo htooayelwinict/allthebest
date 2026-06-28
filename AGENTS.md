@@ -49,11 +49,12 @@ Skill entries below are routing hints only. Do not execute the workflow from thi
 
 Exact skill files listed in this table are authorized reads for skill activation even when they are outside `pwd`. This exception applies only to the listed skill file, not to broad reads of its parent directory or other outside-cwd paths.
 
+Resolve `~` against the active runtime home. In the sandbox, this is normally `/agent-home`, not the host user directory.
+
 | Skill | Path | Use when |
 | --- | --- | --- |
-| `subagent-delegation` | `/Users/htooayelwin/.agents/skills/subagent-delegation/SKILL.md` | Lewis explicitly asks for subagents, child agents, reviewer agents, explorer agents, researcher agents, handoff, delegation, agent-to-agent workflow, or types `/subagents` as a prompt trigger. |
-| `web-search` | `/Users/htooayelwin/.agents/skills/web_search.md` | Lewis asks for Google News/current-facts lookup, recent public news, sports/current-result discovery, or bounded changing-fact verification. |
-| `orchestration` | `/Users/htooayelwin/.agents/skills/orchestration/SKILL.md` | Lewis asks for Orca, threaded coordination, blocking ask/reply flows, task DAGs, or structured multi-agent coordination. |
+| `subagent-delegation` | `~/.agents/skills/subagent-delegation/SKILL.md` | Lewis explicitly asks for subagents, child agents, reviewer agents, explorer agents, researcher agents, handoff, delegation, agent-to-agent workflow, or types `/subagents` as a prompt trigger. |
+| `web-search` | `~/.agents/skills/web_search.md` | Lewis asks for Google News/current-facts lookup, recent public news, sports/current-result discovery, or bounded changing-fact verification. |
 
 ## Skill Activation Rules
 
@@ -62,9 +63,14 @@ Exact skill files listed in this table are authorized reads for skill activation
 - Do not treat the skill registry as authorization to use the skill preemptively.
 - Do not use subagent tools unless `subagent-delegation` is active for the current task.
 - Do not use web-search commands unless `web-search` is active for the current task.
-- Do not use orchestration tooling unless `orchestration` is active for the current task.
 - If a skill path is unavailable, report that briefly and continue with the safest fallback.
 - `/subagents` is a prompt-level trigger for the `subagent-delegation` skill, not proof that a runtime slash command exists.
+
+## Coding Repair Discipline
+
+- If a test fails after you implement code, treat the test as the requested behavior unless Lewis changes the spec or the failure clearly proves the test itself is invalid.
+- Do not edit test expectations merely because the implementation's current behavior seems reasonable.
+- If behavior is ambiguous, state the ambiguity and prefer the test you just wrote as the temporary spec instead of silently weakening it.
 
 ## Subagents
 

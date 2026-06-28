@@ -1317,12 +1317,49 @@ def test_process_terminal_ports_pi_start_stop_progress_cleanup() -> None:
 
     assert terminal.writes == [
         "\x1b[?2004h",
-        "\x1b[?1000h\x1b[?1006h",
         "\x1b]9;4;3\x07",
         "\x1b]9;4;0;\x07",
-        "\x1b[?1006l\x1b[?1000l",
         "\x1b[?2004l",
     ]
+
+
+def test_process_terminal_disables_mouse_tracking_by_default_to_keep_touchpad_scroll_safe(monkeypatch) -> None:
+    class RecordingProcessTerminal(ProcessTerminal):
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            super().__init__(progress_keepalive_seconds=10)
+
+        def write(self, data: str) -> None:
+            self.writes.append(data)
+
+    monkeypatch.delenv("PI_TUI_MOUSE", raising=False)
+    monkeypatch.delenv("APPV23_TUI_MOUSE", raising=False)
+    terminal = RecordingProcessTerminal()
+
+    terminal.start(lambda data: None, lambda: None)
+    terminal.stop()
+
+    assert "\x1b[?1000h\x1b[?1006h" not in terminal.writes
+    assert "\x1b[?1006l\x1b[?1000l" not in terminal.writes
+
+
+def test_process_terminal_can_opt_into_mouse_tracking(monkeypatch) -> None:
+    class RecordingProcessTerminal(ProcessTerminal):
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+            super().__init__(progress_keepalive_seconds=10)
+
+        def write(self, data: str) -> None:
+            self.writes.append(data)
+
+    monkeypatch.setenv("APPV23_TUI_MOUSE", "1")
+    terminal = RecordingProcessTerminal()
+
+    terminal.start(lambda data: None, lambda: None)
+    terminal.stop()
+
+    assert "\x1b[?1000h\x1b[?1006h" in terminal.writes
+    assert "\x1b[?1006l\x1b[?1000l" in terminal.writes
 
 
 def test_process_terminal_ports_pi_utf8_text_decoding_before_stdin_buffer() -> None:

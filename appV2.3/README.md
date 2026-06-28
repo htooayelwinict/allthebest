@@ -100,7 +100,7 @@ Playwright is not installed in the base appv23 package or sandbox image. For bro
 python -m pip install ".[browser]"
 ```
 
-The global wrapper does not need the repo as the current directory. It mounts the selected `--cwd`, stores sandbox state in `$HOME/.appv23/sandbox-home`, and copies host `$HOME/.agents/skills` into sandbox `$HOME/.agents/skills` before launch.
+The global wrapper does not need the repo as the current directory. It mounts the selected `--cwd`, stores sandbox state in `$HOME/.appv23/sandbox-home`, copies host `$HOME/.agents/AGENTS.md` into sandbox `$HOME/agent/AGENTS.md`, and copies host `$HOME/.agents/skills` into sandbox `$HOME/.agents/skills` before launch.
 
 The image entrypoint is `appv23`. Direct Docker usage is:
 
@@ -127,6 +127,7 @@ Runtime mounts are intentionally narrow:
 
 Sandbox instruction imports are copied, not mounted:
 
+- Host `$HOME/.agents/AGENTS.md` is copied into sandbox `$HOME/agent/AGENTS.md` before launch.
 - Host `$HOME/.agents/skills` is copied into sandbox `$HOME/.agents/skills` before launch.
 - Use `--no-user-skills` to skip copying host user skills.
 - Use `--with-skills <path>` to copy an extra skill file, skill directory, or skills directory.

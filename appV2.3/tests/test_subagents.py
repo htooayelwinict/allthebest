@@ -1160,6 +1160,8 @@ def test_agent_session_spawn_subagent_tool_returns_bounded_parent_payload(tmp_pa
     rendered = "\n".join(block.text for block in result.content)
     assert len(rendered) < 2500
     assert "summary-end" not in rendered
+    assert "toolTrace:" not in rendered
+    assert "filesChanged:" not in rendered
     assert result.details["status"] == "failed"
     assert "finalResponse" not in result.details
     assert len(result.details["summary"]) < 1200

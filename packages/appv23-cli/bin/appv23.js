@@ -11,6 +11,7 @@ const DEFAULT_IMAGE =
 const PUBLIC_APPV23_IMAGE_PREFIX = "ghcr.io/htooayelwinict/appv23:";
 const CONTAINER_WORKSPACE = "/workspace";
 const CONTAINER_AGENT_HOME = "/agent-home";
+const IMPORTED_AGENTS_MARKER = "<!-- appv23-sandbox-imported-agents -->";
 const SKIP_IMPORT_NAMES = new Set([
   ".DS_Store",
   ".git",
@@ -224,23 +225,25 @@ function prepareSandboxImports(config, runtime = {}) {
   const homeDir = runtime.homeDir || os.homedir();
   const packageRoot = runtime.packageRoot || path.resolve(__dirname, "..");
   fs.mkdirSync(config.agentHome, { recursive: true, mode: 0o700 });
-  prepareAgentsFiles(config);
+  prepareAgentsFiles(config, homeDir);
   prepareSkills(config, homeDir, packageRoot);
 }
 
-function prepareAgentsFiles(config) {
-  if (!config.agentsFiles.length) {
+function prepareAgentsFiles(config, homeDir = os.homedir()) {
+  const sources = collectAgentsFiles(config, homeDir);
+  const target = path.join(config.agentHome, "agent", "AGENTS.md");
+  if (!sources.length) {
+    removeImportedAgentsFile(target);
     return;
   }
-  const target = path.join(config.agentHome, "agent", "AGENTS.md");
   const parts = [
-    "<!-- appv23-sandbox-imported-agents -->",
+    IMPORTED_AGENTS_MARKER,
     "# Imported appv23 sandbox instructions",
     "",
-    "These instructions were copied into the sandbox from explicit --agents-file arguments.",
+    "These instructions were copied into the sandbox from host ~/.agents/AGENTS.md and explicit --agents-file arguments.",
     "",
   ];
-  for (const source of config.agentsFiles) {
+  for (const source of sources) {
     const stat = fs.statSync(source);
     if (!stat.isFile()) {
       throw new Error(`agents file is not a file: ${source}`);
@@ -249,6 +252,36 @@ function prepareAgentsFiles(config) {
   }
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   fs.writeFileSync(target, parts.join("\n"), { mode: 0o600 });
+}
+
+function collectAgentsFiles(config, homeDir) {
+  const sources = [];
+  const userAgentsFile = path.join(homeDir, ".agents", "AGENTS.md");
+  if (fs.existsSync(userAgentsFile)) {
+    sources.push(userAgentsFile);
+  }
+  sources.push(...config.agentsFiles);
+  const deduped = [];
+  const seen = new Set();
+  for (const source of sources) {
+    const key = path.resolve(source);
+    if (seen.has(key)) {
+      continue;
+    }
+    deduped.push(key);
+    seen.add(key);
+  }
+  return deduped;
+}
+
+function removeImportedAgentsFile(target) {
+  if (!fs.existsSync(target)) {
+    return;
+  }
+  const text = fs.readFileSync(target, "utf8");
+  if (text.startsWith(IMPORTED_AGENTS_MARKER)) {
+    fs.unlinkSync(target);
+  }
 }
 
 function prepareSkills(config, homeDir, packageRoot) {

@@ -23,7 +23,7 @@ The launcher pulls and runs:
 ghcr.io/htooayelwinict/appv23:production
 ```
 
-It mounts only the selected `--cwd` as `/workspace`, stores sandbox state in `~/.appv23/sandbox-home`, and copies host `~/.agents/skills` into the sandbox.
+It mounts only the selected `--cwd` as `/workspace`, stores sandbox state in `~/.appv23/sandbox-home`, copies host `~/.agents/AGENTS.md` into the sandbox agent context, and copies host `~/.agents/skills` into the sandbox.
 
 ## Options
 

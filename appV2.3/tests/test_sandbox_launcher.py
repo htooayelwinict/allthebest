@@ -109,6 +109,27 @@ def test_prepare_sandbox_imports_copies_user_agents_skills(tmp_path: Path, monke
     assert not (config.agent_home / ".agents" / "skills" / ".env").exists()
 
 
+def test_prepare_sandbox_imports_copies_user_agents_file_by_default(tmp_path: Path, monkeypatch) -> None:
+    host_home = tmp_path / "host-home"
+    user_agents = host_home / ".agents"
+    user_agents.mkdir(parents=True)
+    (user_agents / "AGENTS.md").write_text("Global appv23 kernel\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(host_home))
+
+    config = resolve_sandbox_config(
+        workspace=tmp_path / "workspace",
+        app_root=tmp_path / "appV2.3",
+        agent_home=tmp_path / "sandbox-home",
+    )
+
+    prepare_sandbox_imports(config)
+
+    imported = config.agent_home / "agent" / "AGENTS.md"
+    text = imported.read_text(encoding="utf-8")
+    assert "appv23-sandbox-imported-agents" in text
+    assert "Global appv23 kernel" in text
+
+
 def test_prepare_sandbox_imports_copies_bundled_skills_before_user_overrides(tmp_path: Path, monkeypatch) -> None:
     app_root = tmp_path / "appV2.3"
     bundled_skill = app_root / "skills" / "subagent-delegation"

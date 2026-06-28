@@ -23,6 +23,14 @@ _PROGRESS_ACTIVE = "\x1b]9;4;3\x07"
 _PROGRESS_CLEAR = "\x1b]9;4;0;\x07"
 
 
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _mouse_tracking_enabled() -> bool:
+    return _env_flag_enabled("APPV23_TUI_MOUSE") or _env_flag_enabled("PI_TUI_MOUSE")
+
+
 class Terminal(Protocol):
     columns: int
     rows: int
@@ -151,6 +159,7 @@ class ProcessTerminal:
         self._saved_termios: list | None = None
         self._stdin_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._draining_input = False
+        self._mouse_tracking_enabled = False
 
     def write(self, data: str) -> None:  # pragma: no cover - real IO
         sys.stdout.write(data)
@@ -161,7 +170,9 @@ class ProcessTerminal:
         self.resize_handler = on_resize
         self._start_raw_stdin()
         self.write(_BRACKETED_PASTE_ENABLE)
-        self.write(_MOUSE_TRACKING_ENABLE)
+        self._mouse_tracking_enabled = _mouse_tracking_enabled()
+        if self._mouse_tracking_enabled:
+            self.write(_MOUSE_TRACKING_ENABLE)
 
     def stop(self) -> None:  # pragma: no cover - real IO
         self._stop_raw_stdin()
@@ -171,7 +182,9 @@ class ProcessTerminal:
             self._clear_progress_timer_locked()
         if progress_was_active:
             self.write(_PROGRESS_CLEAR)
-        self.write(_MOUSE_TRACKING_DISABLE)
+        if self._mouse_tracking_enabled:
+            self.write(_MOUSE_TRACKING_DISABLE)
+            self._mouse_tracking_enabled = False
         self.write(_BRACKETED_PASTE_DISABLE)
 
     def _start_raw_stdin(self) -> None:  # pragma: no cover - real IO

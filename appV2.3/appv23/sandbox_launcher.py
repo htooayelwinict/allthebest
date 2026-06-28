@@ -203,7 +203,8 @@ def prepare_sandbox_imports(config: SandboxConfig) -> None:
 
 def _prepare_agents_files(config: SandboxConfig) -> None:
     target = config.agent_home / "agent" / "AGENTS.md"
-    if not config.agents_files:
+    sources = _sandbox_agents_sources(config)
+    if not sources:
         if target.exists() and target.read_text(encoding="utf-8", errors="ignore").startswith(_IMPORTED_AGENTS_MARKER):
             target.unlink()
         return
@@ -212,10 +213,10 @@ def _prepare_agents_files(config: SandboxConfig) -> None:
         _IMPORTED_AGENTS_MARKER,
         "# Imported appv23 sandbox instructions",
         "",
-        "These instructions were copied into the sandbox from explicit --agents-file arguments.",
+        "These instructions were copied into the sandbox from host ~/.agents/AGENTS.md and explicit --agents-file arguments.",
         "",
     ]
-    for source in config.agents_files:
+    for source in sources:
         if not source.exists():
             raise ValueError(f"agents file does not exist: {source}")
         if not source.is_file():
@@ -232,6 +233,22 @@ def _prepare_agents_files(config: SandboxConfig) -> None:
     target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     target.write_text("\n".join(parts), encoding="utf-8")
     os.chmod(target, 0o600)
+
+
+def _sandbox_agents_sources(config: SandboxConfig) -> list[Path]:
+    sources: list[Path] = []
+    user_agents_file = Path.home() / ".agents" / "AGENTS.md"
+    if user_agents_file.exists():
+        sources.append(user_agents_file.resolve())
+    sources.extend(path.resolve() for path in config.agents_files)
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for source in sources:
+        key = str(source)
+        if key not in seen:
+            deduped.append(source)
+            seen.add(key)
+    return deduped
 
 
 def _prepare_skills(config: SandboxConfig) -> None:

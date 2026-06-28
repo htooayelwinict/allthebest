@@ -92,6 +92,7 @@ _MODEL_SUBAGENT_TIMEOUT_SECONDS_DEFAULT = 300
 _MODEL_SUBAGENT_TIMEOUT_SECONDS_MAX = 300
 _MODEL_SUBAGENT_SPAWN_LIMIT_PER_TURN = 3
 _SUBAGENT_RESULT_SUMMARY_LIMIT = 1000
+_SUBAGENT_VISIBLE_SUMMARY_LIMIT = 320
 _SUBAGENT_TOOL_TRACE_DISPLAY_LIMIT = 3
 _DEFAULT_ACTIVE_TOOL_NAMES = ["read", "bash", "edit", "write", *_SUBAGENT_TOOL_NAMES]
 _SPAWN_SUBAGENT_SCHEMA = {
@@ -2077,24 +2078,22 @@ class AgentSession:
         return "\n".join(part for part in parts if part).strip()
 
     def _format_subagent_result(self, result: SubagentResult) -> str:
-        heading = f"Subagent {result.task_id} {result.role} [{result.backend}] {result.status}"
-        files_changed = ", ".join(result.files_changed) if result.files_changed else "none"
-        errors = "; ".join(result.errors) if result.errors else "none"
+        heading = f"Subagent {result.task_id}"
+        summary = _truncate_subagent_text(result.summary, limit=_SUBAGENT_VISIBLE_SUMMARY_LIMIT)
         lines = [
             heading,
-            _truncate_subagent_text(result.summary, limit=_SUBAGENT_RESULT_SUMMARY_LIMIT),
-            f"filesChanged: {files_changed}",
-            f"errors: {errors}",
+            f"role: {result.role}",
+            f"backend: {result.backend}",
+            f"status: {result.status}",
+            f"summary: {summary or 'none'}",
         ]
         if result.guardrail:
             code = result.guardrail.get("code", "unknown")
             tool = result.guardrail.get("tool_name", result.guardrail.get("toolName", "tool"))
             count = result.guardrail.get("count", "?")
             lines.append(f"guardrail: {code} ({tool}, count={count})")
-        if result.tool_trace:
-            lines.append("toolTrace:")
-            for entry in result.tool_trace[-_SUBAGENT_TOOL_TRACE_DISPLAY_LIMIT:]:
-                lines.append(f"- {_format_subagent_tool_trace_entry(entry)}")
+        if result.status != "completed" and result.errors:
+            lines.append(f"error: {_truncate_subagent_text('; '.join(result.errors), limit=180)}")
         return "\n".join(lines).strip()
 
     def _handle_subagent_event(self, event: dict[str, object]) -> None:

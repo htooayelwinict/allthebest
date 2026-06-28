@@ -1082,7 +1082,7 @@ def test_agent_session_records_extension_subagent_observer_errors(tmp_path: Path
         session.shutdown()
 
 
-def test_subagent_result_format_reports_empty_files_changed_and_errors(tmp_path: Path) -> None:
+def test_subagent_result_format_uses_compact_public_summary(tmp_path: Path) -> None:
     session = AgentSession(cwd=str(tmp_path), model=faux_model())
     try:
         result = SubagentResult(
@@ -1095,8 +1095,13 @@ def test_subagent_result_format_reports_empty_files_changed_and_errors(tmp_path:
 
         formatted = session._format_subagent_result(result)
 
-        assert "filesChanged: none" in formatted
-        assert "errors: none" in formatted
+        assert "Subagent subagent-fixed" in formatted
+        assert "role: reviewer" in formatted
+        assert "backend: internal" in formatted
+        assert "status: completed" in formatted
+        assert "summary: Reviewed report that mentions appV2.2/tests/test_tui.py." in formatted
+        assert "filesChanged" not in formatted
+        assert "errors" not in formatted
     finally:
         session.shutdown()
 
@@ -1229,6 +1234,21 @@ def test_build_system_prompt_accepts_scope_narrowing_recovery_guidelines(tmp_pat
     assert "allowed_files, forbidden_files, test_command, success_criteria, and stop_condition" in prompt
     assert "Keep patches independently reviewable." in prompt
     assert "continue until finished" not in prompt.lower()
+
+
+def test_build_system_prompt_frames_context_files_as_mandatory_active_instructions(tmp_path: Path) -> None:
+    agents_path = tmp_path / "AGENTS.md"
+    prompt = build_system_prompt(
+        BuildSystemPromptOptions(
+            cwd=str(tmp_path),
+            context_files=[(str(agents_path), "A passing requested validation is terminal evidence.")],
+        )
+    )
+
+    assert "Mandatory active instructions from AGENTS.md/CLAUDE.md context files" in prompt
+    assert "These instructions are active for every turn" in prompt
+    assert "A passing requested validation is terminal evidence." in prompt
+    assert f'<project_instructions path="{agents_path}">' in prompt
 
 
 def test_build_system_prompt_includes_pi_docs_resolution_guidance(tmp_path: Path) -> None:
