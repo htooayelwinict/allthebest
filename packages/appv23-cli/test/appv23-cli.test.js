@@ -37,6 +37,10 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
   assert.match(agentsPrompt, /do not say.*read the key files directly/is);
   assert.match(agentsPrompt, /only allowed recovery paths/i);
   assert.match(agentsPrompt, /expand_subagent_result/i);
+  assert.match(agentsPrompt, /Subagent system contract/i);
+  assert.match(agentsPrompt, /Do not drop leading project directories/i);
+  assert.match(agentsPrompt, /glob is not available unless/i);
+  assert.match(agentsPrompt, /After two failed attempts/i);
   assert.match(subagentSkill, /truncated child result is not a failed child result/i);
   assert.match(subagentSkill, /subagents? (are|must remain) read-only/i);
   assert.match(subagentSkill, /must not write files/i);
@@ -47,6 +51,21 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
   assert.match(subagentSkill, /only allowed recovery paths/i);
   assert.match(subagentSkill, /expand_subagent_result/i);
   assert.match(subagentSkill, /spawn a narrower follow-up child task/i);
+  assert.match(subagentSkill, /Subagent system contract/i);
+  assert.match(subagentSkill, /Current working directory/i);
+  assert.match(subagentSkill, /Do not drop leading project directories/i);
+  assert.match(subagentSkill, /glob is not available unless/i);
+  assert.match(subagentSkill, /After two failed attempts/i);
+});
+
+test("package web-search skill uses curl-only network retrieval", () => {
+  const webSearchSkill = fs.readFileSync(path.join(packageRoot, "skills", "web-search", "SKILL.md"), "utf8");
+
+  assert.match(webSearchSkill, /curl --fail --location --silent --show-error/i);
+  assert.match(webSearchSkill, /sed|awk|xmllint|perl/i);
+  assert.doesNotMatch(webSearchSkill, /python3?\b/i);
+  assert.doesNotMatch(webSearchSkill, /urllib/i);
+  assert.doesNotMatch(webSearchSkill, /xml\.etree/i);
 });
 
 test("release image starts from python 3.13 slim and supports runtime apt installs", () => {

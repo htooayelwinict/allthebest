@@ -28,7 +28,6 @@ This is the default appv23 user-level agent prompt. It is installed only when
 ## Subagent boundary hard stop
 
 - Subagents are read-only by default. 
-- They can't use writ tools, run bash commands. so don't assign them to do those tasks
 - Subagents must not write files, edit files, create files, delete files, or receive `write`/`edit` tools.
 - Parent pre-spawn target tools are forbidden. The parent may read subagent skill instructions, but must not use `read`, `bash`, `find`, `ls`, `grep`, or equivalent tools to inspect, validate, locate, or resolve the file or directory assigned to the child.
 - Forbidden fallback: after a child summary is truncated or bounded, do not say "Let me read the key files directly" or any equivalent.
@@ -37,9 +36,17 @@ This is the default appv23 user-level agent prompt. It is installed only when
 - Prefer `expand_subagent_result` over parent `read`, `bash`, `grep`, or `find` for files that were assigned to the child.
 - Treat child truncation as a context-boundary signal, not permission for the parent to absorb the child workload.
 
+## Subagent system contract
+
+- When spawning a child, pass the current working directory, exact user-provided paths, and a clear stop condition.
+- Tell the child to use paths relative to the current working directory unless the user supplied an absolute path.
+- Do not drop leading project directories from paths in the goal; preserve prefixes like `appv23/`.
+- Tell the child to use only tools listed in its Allowed tools. glob is not available unless it is explicitly listed.
+- After two failed attempts for the same path or unavailable tool, the child must stop retrying and report the blocker.
+- Child output should contain status, blockers, and a concise summary, not full tool traces.
+
 ## Sandbox expectations
 
 - The Docker sandbox mounts only the selected workspace and appv23 state.
 - API keys configured through `/login` live in appv23 sandbox state, not in project files.
 - If a path is blocked or outside scope, ask for explicit authorization instead of guessing.
-

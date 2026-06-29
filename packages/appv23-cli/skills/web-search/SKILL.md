@@ -10,7 +10,8 @@ repo inspection, code edits, or ordinary reasoning.
 
 ## Rules
 
-- Use `curl` plus Python standard library parsing.
+- Use `curl` for network retrieval.
+- Prefer shell tools already common in the sandbox: `sed`, `awk`, `perl`, `grep`, and `head`.
 - Prefer Google News RSS for news/current-result lookup:
   `https://news.google.com/rss/search?q=<encoded-query>&hl=en-US&gl=US&ceid=US:en`
 - Keep output small: show at most 5 useful results.
@@ -21,31 +22,33 @@ repo inspection, code edits, or ordinary reasoning.
 ## Minimal command pattern
 
 ```bash
-python3 - <<'PY'
-import html
-import sys
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
-
-query = " ".join(sys.argv[1:]).strip() or "latest news"
-url = "https://news.google.com/rss/search?q={}&hl=en-US&gl=US&ceid=US:en".format(
-    urllib.parse.quote_plus(query)
+query='latest news'
+encoded=$(
+  printf '%s' "$query" |
+    sed -e 's/%/%25/g' -e 's/ /+/g' -e 's/&/%26/g' -e 's/#/%23/g' -e 's/?/%3F/g'
 )
-req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-with urllib.request.urlopen(req, timeout=15) as response:
-    data = response.read()
-root = ET.fromstring(data)
-for index, item in enumerate(root.findall("./channel/item")[:5], 1):
-    title = html.unescape(item.findtext("title") or "").strip()
-    link = html.unescape(item.findtext("link") or "").strip()
-    pub_date = html.unescape(item.findtext("pubDate") or "").strip()
-    print(f"{index}. {title}")
-    if pub_date:
-        print(f"   date: {pub_date}")
-    if link:
-        print(f"   source: {link}")
-PY
+url="https://news.google.com/rss/search?q=${encoded}&hl=en-US&gl=US&ceid=US:en"
+
+curl --fail --location --silent --show-error --max-time 15 -A 'Mozilla/5.0' "$url" |
+perl -0ne '
+  sub clean {
+    my $s = shift // "";
+    $s =~ s/<[^>]+>//g;
+    $s =~ s/&amp;/&/g; $s =~ s/&lt;/</g; $s =~ s/&gt;/>/g;
+    $s =~ s/&quot;/"/g; $s =~ s/&#39;/\\x27/g;
+    $s =~ s/^\s+|\s+$//g;
+    return $s;
+  }
+  while (m{<item>(.*?)</item>}sg && ++$n <= 5) {
+    my $item = $1;
+    my ($title) = $item =~ m{<title>(.*?)</title>}s;
+    my ($link) = $item =~ m{<link>(.*?)</link>}s;
+    my ($date) = $item =~ m{<pubDate>(.*?)</pubDate>}s;
+    print "$n. " . clean($title) . "\n";
+    print "   date: " . clean($date) . "\n" if clean($date);
+    print "   source: " . clean($link) . "\n" if clean($link);
+  }
+'
 ```
 
-Replace the query in the command with the user's requested search.
+Replace `latest news` with the user's requested search.
