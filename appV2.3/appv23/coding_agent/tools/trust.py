@@ -99,6 +99,39 @@ def project_tool_call_arguments_for_provider(tool_name: str, arguments: Any) -> 
     return projected
 
 
+def should_elide_tool_call_for_provider(tool_name: str, arguments: Any) -> bool:
+    """Return True when a historical tool call should not be replayed structurally.
+
+    Large full-file writes are safe to execute with raw content, but unsafe to
+    replay to the model as a schema-invalid historical call after content is
+    omitted. Provider context should describe the completed mutation as data
+    instead of showing a fresh-looking structured tool call.
+    """
+    if _normalized_tool_name(tool_name) != "write":
+        return False
+    sanitized = sanitize_tool_call_arguments(tool_name, arguments)
+    return isinstance(sanitized, dict) and sanitized.get("content_omitted") is True
+
+
+def provider_tool_call_elision_text(tool_name: str, arguments: Any) -> str:
+    sanitized = sanitize_tool_call_arguments(tool_name, arguments)
+    path = ""
+    chars = 0
+    if isinstance(sanitized, dict):
+        raw_path = sanitized.get("path")
+        if isinstance(raw_path, str):
+            path = raw_path
+        chars = _safe_int(sanitized.get("content_chars"))
+    label = _normalized_tool_name(tool_name) or "tool"
+    path_part = f" path={path}" if path else ""
+    chars_part = f", omitted content {chars} chars" if chars > 0 else ""
+    return (
+        f"[Historical {label} tool call elided from provider replay:{path_part}{chars_part}. "
+        "The mutation already completed in an earlier turn. Treat this as context data; "
+        "do not infer a callable tool-argument example from it.]"
+    )
+
+
 def write_content_omission_metadata(tool_name: str, arguments: Any) -> dict[str, Any] | None:
     if _normalized_tool_name(tool_name) != "write" or not isinstance(arguments, dict):
         return None

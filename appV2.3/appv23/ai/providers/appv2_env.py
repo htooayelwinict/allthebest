@@ -42,6 +42,8 @@ from appv23.ai.types import (
 )
 from appv23.coding_agent.tools.trust import (
     project_tool_call_arguments_for_provider,
+    provider_tool_call_elision_text,
+    should_elide_tool_call_for_provider,
     text_content_with_provider_trust,
 )
 
@@ -100,6 +102,7 @@ def convert_messages(context: Context, model: Model | None = None) -> "tuple[lis
     if context.system_prompt:
         messages.append({"role": "system", "content": _sanitize_surrogates(context.system_prompt)})
     context_messages = _transform_messages(context.messages, model) if model is not None else context.messages
+    context_messages = _elide_historical_mutating_tool_calls_for_provider(context_messages)
     index = 0
     while index < len(context_messages):
         message = context_messages[index]
@@ -117,6 +120,30 @@ def convert_messages(context: Context, model: Model | None = None) -> "tuple[lis
             for t in context.tools
         ]
     return messages, tools
+
+
+def _elide_historical_mutating_tool_calls_for_provider(messages: list[Message]) -> list[Message]:
+    """Collapse unsafe historical mutating tool-call pairs into plain context."""
+    elided_tool_call_ids: set[str] = set()
+    converted: list[Message] = []
+    for message in messages:
+        if isinstance(message, AssistantMessage):
+            next_content = []
+            elision_notes: list[str] = []
+            for block in message.content:
+                if isinstance(block, ToolCall) and should_elide_tool_call_for_provider(block.name, block.arguments):
+                    if block.id:
+                        elided_tool_call_ids.add(block.id)
+                    elision_notes.append(provider_tool_call_elision_text(block.name, block.arguments))
+                    continue
+                next_content.append(block)
+            if elision_notes:
+                converted.append(replace(message, content=[*next_content, TextContent(text="\n".join(elision_notes))]))
+                continue
+        if isinstance(message, ToolResultMessage) and message.tool_call_id in elided_tool_call_ids:
+            continue
+        converted.append(message)
+    return converted
 
 
 def _transform_messages(messages: list[Message], model: Model) -> list[Message]:

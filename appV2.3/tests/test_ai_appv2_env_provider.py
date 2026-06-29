@@ -55,7 +55,7 @@ def _openrouter_provider() -> AppV2EnvProvider:
     )
 
 
-def test_convert_messages_keeps_large_historical_write_structural_without_internal_text() -> None:
+def test_convert_messages_elides_historical_large_write_tool_call_pair_from_provider_context() -> None:
     large_content = "SMOKING-GUN-WRITE-CONTENT\n" + ("generated report body " * 500)
     assistant = AssistantMessage(
         content=[
@@ -72,7 +72,6 @@ def test_convert_messages_keeps_large_historical_write_structural_without_intern
         stop_reason="toolUse",
         timestamp=now_ms(),
     )
-
     tool_result = ToolResultMessage(
         tool_call_id="write-1",
         tool_name="write",
@@ -83,17 +82,16 @@ def test_convert_messages_keeps_large_historical_write_structural_without_intern
 
     converted, _tools = convert_messages(Context(messages=[assistant, tool_result]), _model())
 
-    encoded_args = converted[0]["tool_calls"][0]["function"]["arguments"]
-
+    assert len(converted) == 1
+    assert converted[0]["role"] == "assistant"
+    assert "tool_calls" not in converted[0]
+    assert "historical write tool call elided" in converted[0]["content"].lower()
+    assert "docs/report.md" in converted[0]["content"]
     assert "Historical write tool call omitted from provider replay" not in repr(converted)
     assert "regenerate full content" not in repr(converted)
     assert "SMOKING-GUN-WRITE-CONTENT" not in repr(converted)
     assert "[appv23 omitted historical write content:" not in repr(converted)
-    assert converted[0]["role"] == "assistant"
-    assert converted[0]["tool_calls"][0]["function"]["name"] == "write"
-    assert json.loads(encoded_args) == {"path": "docs/report.md"}
-    assert converted[1]["role"] == "tool"
-    assert converted[1]["tool_call_id"] == "write-1"
+    assert not any(message.get("role") == "tool" for message in converted)
 
 
 def test_convert_messages_does_not_turn_session_sanitized_write_metadata_into_assistant_text() -> None:
@@ -121,14 +119,15 @@ def test_convert_messages_does_not_turn_session_sanitized_write_metadata_into_as
 
     converted, _tools = convert_messages(Context(messages=[assistant]), _model())
 
-    encoded_args = converted[0]["tool_calls"][0]["function"]["arguments"]
-
     assert "Historical write tool call omitted from provider replay" not in repr(converted)
     assert "regenerate full content" not in repr(converted)
     assert "content_omitted" not in repr(converted)
     assert "content_chars" not in repr(converted)
     assert "content_sha256" not in repr(converted)
-    assert json.loads(encoded_args) == {"path": "docs/report.md"}
+    assert converted[0]["role"] == "assistant"
+    assert "tool_calls" not in converted[0]
+    assert "historical write tool call elided" in converted[0]["content"].lower()
+    assert "docs/report.md" in converted[0]["content"]
 
 
 def test_provider_write_projection_never_uses_refusable_content_placeholder() -> None:
@@ -148,7 +147,7 @@ def test_provider_write_projection_never_uses_refusable_content_placeholder() ->
     assert "content_omitted" not in args
 
 
-def test_convert_messages_preserves_matching_tool_result_for_historical_write_replay() -> None:
+def test_convert_messages_drops_matching_tool_result_for_elided_historical_write_replay() -> None:
     large_content = "SMOKING-GUN-WRITE-CONTENT\n" + ("generated report body " * 500)
     assistant = AssistantMessage(
         content=[
@@ -175,10 +174,12 @@ def test_convert_messages_preserves_matching_tool_result_for_historical_write_re
 
     converted, _tools = convert_messages(Context(messages=[assistant, tool_result]), _model())
 
+    assert len(converted) == 1
     assert converted[0]["role"] == "assistant"
-    assert json.loads(converted[0]["tool_calls"][0]["function"]["arguments"]) == {"path": "docs/report.md"}
-    assert converted[1]["role"] == "tool"
-    assert converted[1]["tool_call_id"] == "write-1"
+    assert "tool_calls" not in converted[0]
+    assert "historical write tool call elided" in converted[0]["content"].lower()
+    assert "docs/report.md" in converted[0]["content"]
+    assert not any(message.get("role") == "tool" for message in converted)
     assert "[appv23 omitted historical write content:" not in repr(converted)
     assert "SMOKING-GUN-WRITE-CONTENT" not in repr(converted)
 
@@ -204,12 +205,14 @@ def test_convert_messages_scrubs_legacy_write_redaction_marker_from_tool_call_ar
     converted, _tools = convert_messages(Context(messages=[assistant]), _model())
 
     assert converted[0]["role"] == "assistant"
-    assert json.loads(converted[0]["tool_calls"][0]["function"]["arguments"]) == {"path": "docs/report.md"}
+    assert "tool_calls" not in converted[0]
+    assert "historical write tool call elided" in converted[0]["content"].lower()
+    assert "docs/report.md" in converted[0]["content"]
     assert legacy_marker not in repr(converted)
     assert "[appv23 omitted historical write content:" not in repr(converted)
 
 
-def test_convert_messages_projects_existing_omitted_write_placeholder_to_path_only() -> None:
+def test_convert_messages_elides_existing_omitted_write_placeholder() -> None:
     assistant = AssistantMessage(
         content=[
             ToolCall(
@@ -240,7 +243,11 @@ def test_convert_messages_projects_existing_omitted_write_placeholder_to_path_on
     converted, _tools = convert_messages(Context(messages=[assistant, tool_result]), _model())
 
     assert "[appv23 omitted historical write content:" not in repr(converted)
-    assert json.loads(converted[0]["tool_calls"][0]["function"]["arguments"]) == {"path": "docs/report.md"}
+    assert len(converted) == 1
+    assert converted[0]["role"] == "assistant"
+    assert "tool_calls" not in converted[0]
+    assert "historical write tool call elided" in converted[0]["content"].lower()
+    assert "docs/report.md" in converted[0]["content"]
 
 
 def test_convert_messages_preserves_long_bash_command_in_tool_call_arguments() -> None:
