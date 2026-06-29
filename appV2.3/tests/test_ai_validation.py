@@ -53,6 +53,29 @@ def test_validate_tool_arguments_rejects_invalid_pi_integer_coercion() -> None:
         validate_tool_arguments(tool, _ToolCall(arguments={"count": "42.1"}))
 
 
+def test_validate_tool_arguments_ports_pi_error_envelope_with_received_arguments() -> None:
+    tool = _Tool(
+        name="edit",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "edits": {"type": "array"},
+            },
+            "required": ["path", "edits"],
+        },
+    )
+
+    with pytest.raises(ToolValidationError) as error:
+        validate_tool_arguments(tool, _ToolCall(arguments={"path": "notes.md"}))
+
+    message = str(error.value)
+    assert 'Validation failed for tool "edit":' in message
+    assert "  - edit: missing required property 'edits'" in message
+    assert "Received arguments:" in message
+    assert '"path": "notes.md"' in message
+
+
 def test_validate_tool_arguments_ports_pi_integer_string_coercion() -> None:
     tool = _Tool(
         name="take",

@@ -12,6 +12,7 @@ from appv23.agent import (
     AgentLoopTurnUpdate,
     AgentTool,
     AgentToolResult,
+    AfterToolCallResult,
     BeforeToolCallResult,
     ShouldStopAfterTurnContext,
     run_agent_loop,
@@ -142,7 +143,7 @@ def test_tool_call_turn_executes_and_continues() -> None:
     assert calls["n"] == 2
 
 
-def test_tool_call_history_is_sanitized_after_execution_before_next_model_call() -> None:
+def test_tool_call_history_keeps_raw_arguments_after_execution_before_next_model_call() -> None:
     model = faux_model()
     large_content = "SMOKING-GUN-WRITE-CONTENT\n" + ("generated report body " * 500)
     calls = {"n": 0}
@@ -187,8 +188,8 @@ def test_tool_call_history_is_sanitized_after_execution_before_next_model_call()
     assistant = next(m for m in second_context["messages"] if getattr(m, "role", None) == "assistant")
     tool_call = next(block for block in assistant.content if isinstance(block, ToolCall))
     assert tool_call.arguments["path"] == "docs/report.md"
-    assert tool_call.arguments["content"] != large_content
-    assert "SMOKING-GUN-WRITE-CONTENT" not in tool_call.arguments["content"]
+    assert tool_call.arguments["content"] == large_content
+    assert "[appv23 redacted tool argument" not in tool_call.arguments["content"]
 
 
 def test_agent_loop_stops_after_signal_aborted_during_tool_execution() -> None:
@@ -285,6 +286,214 @@ def test_duplicate_tool_calls_in_same_assistant_turn_execute_once() -> None:
         "call_1",
         "call_3",
     ]
+
+
+def test_overlapping_file_mutation_batch_executes_sequentially() -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    executions: list[str] = []
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return _multi_tool_call_response_events(
+                m,
+                [
+                    ("call_1", "write", {"path": "LOCAL_REVIEW.md", "content": "first"}),
+                    ("call_2", "write", {"path": "./LOCAL_REVIEW.md", "content": "second"}),
+                ],
+            )
+        return text_response_events(m, "done")
+
+    register_api_provider(create_faux_provider(script))
+
+    def write_execute(tool_call_id, args, signal=None, on_update=None):
+        executions.append(args["content"])
+        if args["content"] == "first":
+            first_started.set()
+            assert release_first.wait(timeout=2)
+        else:
+            second_started.set()
+        return AgentToolResult(content=[TextContent(text=f"wrote:{args['content']}")], details={})
+
+    write = AgentTool(
+        name="write",
+        description="write",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+        label="Write",
+        execute=write_execute,
+    )
+
+    run_error: list[BaseException] = []
+
+    def run_loop() -> None:
+        try:
+            run_agent_loop(
+                [UserMessage(content="go", timestamp=now_ms())],
+                _ctx(tools=[write]),
+                _config(model),
+                lambda e: None,
+            )
+        except BaseException as error:  # noqa: BLE001
+            run_error.append(error)
+
+    thread = threading.Thread(target=run_loop)
+    thread.start()
+    assert first_started.wait(timeout=2)
+    assert second_started.wait(timeout=0.05) is False
+    release_first.set()
+    thread.join(timeout=2)
+
+    assert run_error == []
+    assert thread.is_alive() is False
+    assert executions == ["first", "second"]
+
+
+def test_repeated_same_path_write_batch_does_not_block_second_landed_mutation() -> None:
+    from appv23.agent.tool_guardrails import ToolCallGuardrailController, toolguard_synthetic_result
+
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[str] = []
+    controller = ToolCallGuardrailController()
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return _multi_tool_call_response_events(
+                m,
+                [
+                    ("call_1", "write", {"path": "LOCAL_REVIEW.md", "content": "first"}),
+                    ("call_2", "write", {"path": "./LOCAL_REVIEW.md", "content": "second"}),
+                ],
+            )
+        return text_response_events(m, "done")
+
+    register_api_provider(create_faux_provider(script))
+
+    def write_execute(tool_call_id, args, signal=None, on_update=None):
+        executions.append(args["content"])
+        return AgentToolResult(content=[TextContent(text=f"wrote:{args['content']}")], details={})
+
+    write = AgentTool(
+        name="write",
+        description="write",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+        label="Write",
+        execute=write_execute,
+    )
+    config = _config(model)
+
+    def text_blocks(content) -> str:
+        return "".join(block.text for block in content if isinstance(block, TextContent))
+
+    def before_tool_call(context, signal=None):
+        decision = controller.before_call(context.tool_call.name, context.args)
+        if not decision.allows_execution:
+            return BeforeToolCallResult(block=True, reason=toolguard_synthetic_result(decision))
+        return None
+
+    def after_tool_call(context, signal=None):
+        controller.after_call(
+            context.tool_call.name,
+            context.args,
+            text_blocks(context.result.content),
+            failed=context.is_error,
+        )
+        return None
+
+    config.before_tool_call = before_tool_call
+    config.after_tool_call = after_tool_call
+
+    messages = run_agent_loop(
+        [UserMessage(content="go", timestamp=now_ms())],
+        _ctx(tools=[write]),
+        config,
+        lambda e: None,
+    )
+
+    tool_result_text = "\n".join(
+        text_blocks(message.content)
+        for message in messages
+        if getattr(message, "role", None) == "toolResult"
+    )
+    assert executions == ["first", "second"]
+    assert "repeated_file_mutation_block" not in tool_result_text
+
+
+def test_after_tool_call_terminate_uses_pi_batch_semantics() -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[str] = []
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return _multi_tool_call_response_events(
+                m,
+                [
+                    ("call_1", "write", {"path": "LOCAL_REVIEW.md", "content": "first"}),
+                    ("call_2", "write", {"path": "LOCAL_REVIEW.md", "content": "second"}),
+                    ("call_3", "write", {"path": "LOCAL_REVIEW.md", "content": "third"}),
+                ],
+            )
+        return text_response_events(m, "recovered")
+
+    register_api_provider(create_faux_provider(script))
+
+    def write_execute(tool_call_id, args, signal=None, on_update=None):
+        executions.append(args["content"])
+        return AgentToolResult(content=[TextContent(text=f"wrote:{args['content']}")], details={})
+
+    write = AgentTool(
+        name="write",
+        description="write",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+        label="Write",
+        execute=write_execute,
+    )
+    config = _config(model)
+    config.tool_execution = "sequential"
+
+    def after_tool_call(context, signal=None):
+        if context.args["content"] == "second":
+            return AfterToolCallResult(terminate=True)
+        return None
+
+    config.after_tool_call = after_tool_call
+
+    messages = run_agent_loop(
+        [UserMessage(content="go", timestamp=now_ms())],
+        _ctx(tools=[write]),
+        config,
+        lambda e: None,
+    )
+
+    assert executions == ["first", "second", "third"]
+    assert provider_calls["n"] == 2
+    assert len([message for message in messages if getattr(message, "role", None) == "toolResult"]) == 3
+    assert any(
+        getattr(message, "role", None) == "assistant"
+        and message.content
+        and getattr(message.content[0], "type", None) == "text"
+        and message.content[0].text == "recovered"
+        for message in messages
+    )
 
 
 def test_prepare_next_turn_snapshot_updates_loop_without_mutating_config() -> None:

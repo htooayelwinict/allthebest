@@ -185,7 +185,15 @@ class SessionStore:
     def append_session_info(self, name: str | None) -> str:
         return self._append_entry({"type": "session_info", "name": (name or "").strip()})
 
-    def append_compaction(self, summary: str, first_kept_entry_id: str, tokens_before: int, details=None) -> str:
+    def append_compaction(
+        self,
+        summary: str,
+        first_kept_entry_id: str,
+        tokens_before: int,
+        details=None,
+        *,
+        parent_id: str | None = None,
+    ) -> str:
         entry = {
             "type": "compaction",
             "summary": summary,
@@ -194,7 +202,16 @@ class SessionStore:
         }
         if details is not None:
             entry["details"] = details
-        return self._append_entry(entry)
+        previous_leaf = self.leaf_id
+        if parent_id is not None:
+            if parent_id not in self.by_id:
+                raise ValueError(f"Entry {parent_id} not found")
+            self.leaf_id = parent_id
+        try:
+            return self._append_entry(entry)
+        except Exception:
+            self.leaf_id = previous_leaf
+            raise
 
     def append_custom_entry(self, custom_type: str, data: Any | None = None) -> str:
         entry = {"type": "custom", "customType": custom_type}
@@ -551,11 +568,13 @@ def _serialize_block(block) -> dict[str, Any]:
             "redacted": block.redacted,
         }
     if isinstance(block, ToolCall):
+        from appv23.coding_agent.tools.trust import sanitize_tool_call_arguments
+
         return {
             "type": "toolCall",
             "id": block.id,
             "name": block.name,
-            "arguments": block.arguments,
+            "arguments": sanitize_tool_call_arguments(block.name, block.arguments),
             "thoughtSignature": block.thought_signature,
         }
     raise TypeError(f"Unsupported content block: {type(block).__name__}")

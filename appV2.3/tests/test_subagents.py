@@ -312,6 +312,20 @@ def test_subagent_task_prompt_prevents_parent_no_subagent_fallback(tmp_path):
     assert "Do not answer `subagent tool unavailable`" in prompt
 
 
+def test_subagent_task_prompt_contains_child_system_contract(tmp_path):
+    task = SubagentTask(role="reviewer", goal="inspect appv23/agent/agent_loop.py", cwd=str(tmp_path))
+
+    prompt = task.prompt()
+
+    assert "Subagent system contract" in prompt
+    assert f"Current working directory: {tmp_path}" in prompt
+    assert "Use paths relative to the current working directory" in prompt
+    assert "Do not drop leading project directories from paths in the Goal" in prompt
+    assert "Do not use tools that are not listed in Allowed tools" in prompt
+    assert "glob is not available unless it is explicitly listed" in prompt
+    assert "After two failed attempts for the same path or unavailable tool, stop retrying" in prompt
+
+
 def test_subagent_task_rejects_boolean_runtime_options(tmp_path):
     cases = (
         ({"timeout_seconds": True}, "Subagent timeout_seconds must be positive"),
@@ -1168,6 +1182,26 @@ def test_agent_session_spawn_subagent_tool_returns_bounded_parent_payload(tmp_pa
     assert "summary-end" not in result.details["summary"]
     assert len(result.details["toolTrace"]) <= 3
     assert result.details["toolTraceCount"] == 12
+
+
+def test_agent_session_spawn_subagent_tool_normalizes_safe_human_role(tmp_path):
+    seen_roles: list[str] = []
+
+    def backend(task):
+        seen_roles.append(task.role)
+        return f"summary for {task.role}"
+
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    session.subagents.register_backend(CallableSubagentBackend("internal", backend))
+
+    result = session._execute_spawn_subagent_tool(
+        "tool-call",
+        {"role": "provider-loop reviewer", "goal": "inspect appv23/agent/agent_loop.py", "wait": True},
+    )
+
+    assert result.details["status"] == "completed"
+    assert result.details["role"] == "provider-loop-reviewer"
+    assert seen_roles == ["provider-loop-reviewer"]
 
 
 def test_agent_session_expand_subagent_result_returns_bounded_full_child_output(tmp_path):

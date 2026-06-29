@@ -46,6 +46,7 @@ from appv23.agent.types import (
     TurnEndEvent,
     TurnStartEvent,
 )
+from appv23.agent.tool_dispatch import should_parallelize_tool_batch
 
 AgentEventSink = Callable[[AgentEvent], Any]
 
@@ -199,8 +200,6 @@ def _run_loop(
                 batch = _execute_tool_calls(current_context, message, config, signal, emit)
                 tool_results.extend(batch.messages)
                 has_more_tool_calls = not batch.terminate
-                if config.sanitize_tool_call_history:
-                    config.sanitize_tool_call_history(message)
                 for result in tool_results:
                     current_context.messages.append(result)
                     new_messages.append(result)
@@ -495,10 +494,7 @@ def _execute_tool_calls(
 ) -> _ExecutedBatch:
     tool_calls = [c for c in assistant_message.content if getattr(c, "type", None) == "toolCall"]
     tools = current_context.tools or []
-    has_sequential = any(
-        next((t.execution_mode for t in tools if t.name == tc.name), None) == "sequential" for tc in tool_calls
-    )
-    if config.tool_execution == "sequential" or has_sequential:
+    if config.tool_execution == "sequential" or not should_parallelize_tool_batch(tool_calls, tools):
         return _execute_sequential(current_context, assistant_message, tool_calls, config, signal, emit)
     return _execute_parallel(current_context, assistant_message, tool_calls, config, signal, emit)
 

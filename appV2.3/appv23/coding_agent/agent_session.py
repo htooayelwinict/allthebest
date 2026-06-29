@@ -16,6 +16,8 @@ from typing import Callable, Mapping, Optional
 from appv23.agent.agent import Agent
 from appv23.agent.types import AbortSignal
 from appv23.agent.types import AfterToolCallResult
+from appv23.agent.types import AgentContext
+from appv23.agent.types import AgentLoopTurnUpdate
 from appv23.agent.types import AgentTool
 from appv23.agent.types import AgentToolResult
 from appv23.agent.types import AgentMessage
@@ -73,7 +75,7 @@ from appv23.coding_agent.subagents import (
 from appv23.coding_agent.tools import create_all_tool_definitions
 from appv23.coding_agent.tools.bash import BASH_SCHEMA, BashExecOptions, BashOperations, create_local_bash_operations
 from appv23.coding_agent.tools.output_accumulator import OutputAccumulator
-from appv23.coding_agent.tools.trust import sanitize_assistant_tool_calls_for_history
+from appv23.coding_agent.tools.trust import create_trust_state, sanitize_assistant_tool_calls_for_history
 from appv23.coding_agent.tools.types import (
     ToolContext,
     ToolDefinition,
@@ -173,6 +175,8 @@ _RETRYABLE_ERROR_MARKERS = (
     "websocket error",
     "fetch failed",
     "socket hang up",
+    "sse stream received no data events",
+    "no data events",
     "stream ended",
     "timed out",
     "timeout",
@@ -800,7 +804,7 @@ class AgentSession:
             thinking_level = restored_context.thinking_level
             self._session_name = restored_context.session_name
 
-        self._trust_state: dict[str, object] = {"written_files": {}}
+        self._trust_state = create_trust_state()
 
         if tools is not None:
             base_tools = tools
@@ -860,6 +864,7 @@ class AgentSession:
             before_tool_call=self._before_tool_call,
             after_tool_call=self._after_tool_call,
             should_stop_after_turn=self._should_stop_after_turn,
+            prepare_next_turn=self._prepare_next_turn,
             transform_context=self._transform_context,
             steering_mode=steering_mode,
             follow_up_mode=follow_up_mode,
@@ -1449,8 +1454,15 @@ class AgentSession:
                 return tuple(tools)
         return _DEFAULT_SUBAGENT_ALLOWED_TOOLS
 
+    @staticmethod
+    def _normalize_subagent_role(role: str) -> str:
+        normalized = re.sub(r"[\s_]+", "-", role.strip())
+        normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
+        return normalized
+
     def _build_subagent_task(self, role: str, goal: str, options: dict | None = None) -> SubagentTask:
         options = options or {}
+        role = self._normalize_subagent_role(role)
         if "cwd" in options:
             raise ValueError("Subagent safety overrides are not supported: cwd")
         sandbox = options.get("sandbox")
@@ -1584,6 +1596,7 @@ class AgentSession:
         goal = _required_text_arg(args, "goal")
         context_pack = args.get("contextPack", "")
         self._reject_subagent_safety_override_text(role, goal, context_pack)
+        normalized_role = self._normalize_subagent_role(role)
         wait_for_result = args.get("wait", True)
         if not isinstance(wait_for_result, bool):
             raise ValueError("wait must be a boolean")
@@ -1595,7 +1608,7 @@ class AgentSession:
         if "contextPack" in args:
             options["contextPack"] = context_pack
         spawn_signature = (
-            role.strip().lower(),
+            normalized_role.lower(),
             re.sub(r"\s+", " ", goal.strip()).lower(),
             re.sub(r"\s+", " ", str(context_pack).strip()).lower(),
         )
@@ -1603,7 +1616,7 @@ class AgentSession:
             details = {
                 "status": "blocked",
                 "reason": "duplicate_subagent_spawn_this_turn",
-                "role": role,
+                "role": normalized_role,
                 "spawnedThisTurn": self._model_subagents_spawned_this_turn,
             }
             return self._subagent_tool_result(
@@ -1624,7 +1637,7 @@ class AgentSession:
                 "Summarize the existing child results and ask the user before launching another wave.",
                 details,
             )
-        task_id, task = self._spawn_subagent_task(role, goal, options)
+        task_id, task = self._spawn_subagent_task(normalized_role, goal, options)
         self._model_subagents_spawned_this_turn += 1
         self._model_subagent_spawn_signatures_this_turn.add(spawn_signature)
         if wait_for_result:
@@ -1637,7 +1650,7 @@ class AgentSession:
             return self._subagent_tool_result(self._format_subagent_result(result), _public_subagent_result_details(result))
         details = {
             "taskId": task_id,
-            "role": role,
+            "role": task.role,
             "backend": task.backend,
             "status": "queued",
             "goal": task.goal,
@@ -2344,29 +2357,11 @@ class AgentSession:
     followUp = follow_up
 
     def _steer_tool_loop_recovery(self, decision: ToolGuardrailDecision) -> None:
-        if decision.action != "warn" or decision.code not in {
-            "idempotent_consecutive_warning",
-            "idempotent_no_progress_warning",
-            "repeated_exact_failure_warning",
-            "same_tool_failure_warning",
-        }:
-            return
-        key = (decision.code, decision.tool_name, decision.count)
-        if key in self._tool_loop_recovery_steered_keys:
-            return
-        self._tool_loop_recovery_steered_keys.add(key)
-        self.agent.steer(
-            _user_message(
-                f"Tool loop recovery instruction ({decision.code}, count={decision.count}): "
-                "the last tool result already contains the information "
-                "or failure signal you need. Do not repeat the same tool call unchanged. If bash returned "
-                "a directory listing, find output, rg output, grep output, or file preview, do not call bash "
-                "again for the same inventory. For codebase scans, treat that output as inventory you already "
-                "have; choose relevant paths from it, then use read with path/offset/limit for file contents. "
-                "Use edit/write only for requested changes. If the result is insufficient, change the "
-                "query/path/glob once, or explain the blocker without calling the same command again."
-            )
-        )
+        # Hermes keeps recovery guidance attached to the tool result so the
+        # next provider request preserves role alternation and the warning is
+        # interpreted as observation-bound data.  Do not enqueue a separate
+        # user turn here.
+        return
 
     def send_custom_message(self, message: dict, options: dict | None = None, stream_fn=None) -> list[AgentMessage]:
         options = options or {}
@@ -2463,6 +2458,20 @@ class AgentSession:
             }
         )
         return None
+
+    def _prepare_next_turn(self, signal: AbortSignal | None = None) -> AgentLoopTurnUpdate:
+        active_tool_names = self.get_active_tool_names()
+        self.system_prompt = self._build_system_prompt(active_tool_names)
+        self.agent.state.system_prompt = self.system_prompt
+        return AgentLoopTurnUpdate(
+            context=AgentContext(
+                system_prompt=self.agent.state.system_prompt,
+                messages=list(self.agent.state.messages),
+                tools=list(self.agent.state.tools),
+            ),
+            model=self.agent.state.model,
+            thinking_level=self.agent.state.thinking_level,
+        )
 
     def clear_queue(self) -> dict[str, list[str]]:
         steering = list(self._steering_messages)
@@ -2873,6 +2882,41 @@ class AgentSession:
             )
             raise
 
+    def apply_compaction_result(
+        self,
+        compacted_messages: list[AgentMessage],
+        result,
+        *,
+        source_messages: list[AgentMessage] | None = None,
+        retain_source_suffix: bool = True,
+    ) -> list[AgentMessage]:
+        """Persist a Hermes compaction result through the Pi session boundary."""
+        if self._session_store is None or not getattr(result, "compressed", False):
+            self.agent.state.messages = compacted_messages
+            return compacted_messages
+
+        context_entry_ids = self._session_context_message_entry_ids()
+        source_messages = list(source_messages if source_messages is not None else self.messages)
+        summary = getattr(result, "summary", None) or _extract_compaction_result_summary(compacted_messages)
+        tokens_before = int(getattr(result, "tokens_before", 0) or estimate_tokens(source_messages))
+        first_kept = (
+            self._first_kept_entry_id_for_compaction_result(result, context_entry_ids)
+            if retain_source_suffix
+            else ""
+        )
+        parent_id = self._compaction_parent_entry_id(source_messages, context_entry_ids)
+        self._session_store.append_compaction(
+            summary,
+            first_kept,
+            tokens_before,
+            parent_id=parent_id,
+        )
+        snapshot = self._session_store.build_context(default_thinking_level=self.thinking_level)
+        self.agent.state.messages = snapshot.messages
+        self.agent.state.thinking_level = snapshot.thinking_level
+        self._session_name = snapshot.session_name
+        return snapshot.messages
+
     def _first_kept_entry_id_for_status(self, status, context_entry_ids: list[str]) -> str:
         index = status.first_kept_message_index
         if index is not None and 0 <= index < len(context_entry_ids):
@@ -2880,6 +2924,23 @@ class AgentSession:
         if self._session_store:
             return self._session_store.leaf_id or ""
         return ""
+
+    def _first_kept_entry_id_for_compaction_result(self, result, context_entry_ids: list[str]) -> str:
+        index = getattr(result, "first_kept_message_index", None)
+        if index is not None and 0 <= index < len(context_entry_ids):
+            return context_entry_ids[index]
+        return ""
+
+    def _compaction_parent_entry_id(
+        self,
+        source_messages: list[AgentMessage],
+        context_entry_ids: list[str],
+    ) -> str | None:
+        if source_messages and len(source_messages) <= len(context_entry_ids):
+            return context_entry_ids[len(source_messages) - 1]
+        if self._session_store:
+            return self._session_store.leaf_id
+        return None
 
     def _session_context_message_entry_ids(self) -> list[str]:
         if self._session_store is None:
@@ -3146,7 +3207,8 @@ class AgentSession:
 
         decision = self._tool_guardrails.before_call(context.tool_call.name, context.args)
         if not decision.allows_execution:
-            self._tool_guardrail_halt_decision = decision
+            if decision.should_halt:
+                self._tool_guardrail_halt_decision = decision
             return BeforeToolCallResult(block=True, reason=toolguard_synthetic_result(decision))
         return None
 

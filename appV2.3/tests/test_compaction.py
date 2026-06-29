@@ -109,7 +109,12 @@ def test_prune_summarizes_old_tool_result_and_truncates_args() -> None:
     pruned = compressor.prune_old_tool_results(messages)
     assert "elided" in pruned[2].content[0].text
     assert pruned[1].content[1].arguments.keys() == {"data"}
-    assert pruned[1].content[1].arguments["data"].startswith("[appv23 redacted tool argument data:")
+    data_arg = pruned[1].content[1].arguments["data"]
+    assert data_arg["_appv23_omitted_tool_argument"] is True
+    assert data_arg["field"] == "data"
+    assert data_arg["chars"] == 600
+    assert isinstance(data_arg["sha256"], str)
+    assert "[appv23 redacted tool argument" not in repr(data_arg)
 
 
 def test_prune_preserves_write_path_while_redacting_large_content_arg() -> None:
@@ -127,8 +132,12 @@ def test_prune_preserves_write_path_while_redacting_large_content_arg() -> None:
 
     arguments = pruned[1].content[1].arguments
     assert arguments["path"] == "docs/report.md"
-    assert arguments["content"] != big_args["content"]
-    assert "SMOKING-GUN-WRITE-CONTENT" not in arguments["content"]
+    assert "content" not in arguments
+    assert arguments["content_omitted"] is True
+    assert arguments["content_chars"] == len(big_args["content"])
+    assert isinstance(arguments["content_sha256"], str)
+    assert "SMOKING-GUN-WRITE-CONTENT" not in repr(arguments)
+    assert "[appv23 redacted tool argument" not in repr(arguments)
     assert "_truncated" not in arguments
 
 

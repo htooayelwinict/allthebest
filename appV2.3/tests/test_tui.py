@@ -2346,6 +2346,53 @@ def test_interactive_renderer_assistant_and_tool() -> None:
     assert any("file body" in line for line in lines)
 
 
+def test_interactive_renderer_hides_streaming_tool_call_drafts_until_execution_start() -> None:
+    from appv23.ai.types import ToolCall
+
+    terminal = FakeTerminal()
+    tui = TUI(terminal)
+    renderer = InteractiveRenderer(tui)
+
+    msg = _assistant("")
+    renderer.handle_event(MessageStartEvent(message=msg))
+    draft = AssistantMessage(
+        content=[ToolCall(id="c1", name="write", arguments={})],
+        api="faux",
+        provider="faux",
+        model="m",
+        usage=empty_usage(),
+        stop_reason="toolUse",
+        timestamp=now_ms(),
+    )
+    renderer.handle_event(MessageUpdateEvent(message=draft, assistant_message_event=None))
+
+    rendered_draft = "\n".join(tui.render(80))
+    assert "write" in rendered_draft
+    assert "-> write" not in rendered_draft
+    assert "write({})" not in rendered_draft
+
+    draft_with_args = AssistantMessage(
+        content=[ToolCall(id="c1", name="write", arguments={"path": "a.txt", "content": "body"})],
+        api="faux",
+        provider="faux",
+        model="m",
+        usage=empty_usage(),
+        stop_reason="toolUse",
+        timestamp=now_ms(),
+    )
+    renderer.handle_event(MessageUpdateEvent(message=draft_with_args, assistant_message_event=None))
+    rendered_updated_draft = "\n".join(tui.render(80))
+    assert "a.txt" in rendered_updated_draft
+    assert "-> write" not in rendered_updated_draft
+
+    renderer.handle_event(
+        ToolExecutionStartEvent(tool_call_id="c1", tool_name="write", args={"path": "a.txt", "content": "body"})
+    )
+    rendered_started = "\n".join(tui.render(80))
+    assert "write" in rendered_started
+    assert "a.txt" in rendered_started
+
+
 def test_interactive_renderer_skips_non_visual_turn_events() -> None:
     terminal = FakeTerminal()
     tui = TUI(terminal)

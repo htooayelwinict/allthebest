@@ -9,7 +9,6 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-
 IDEMPOTENT_TOOL_NAMES = frozenset(
     {
         "read",
@@ -58,6 +57,18 @@ MUTATING_TOOL_NAMES = frozenset(
         "process",
     }
 )
+
+FILE_MUTATING_TOOL_NAMES = frozenset({"edit", "write", "write_file", "patch"})
+FILE_MUTATION_PATH_ARG_NAMES = ("path", "file_path", "filename")
+FILE_OBSERVING_TOOL_NAMES = frozenset(
+    {
+        "read",
+        "read_file",
+        "mcp_filesystem_read_file",
+        "mcp_filesystem_read_text_file",
+    }
+)
+RECOVERABLE_BLOCK_CODES = frozenset()
 
 DEFAULT_NO_PROGRESS_BLOCK_TOOL_NAMES = frozenset(
     {
@@ -197,7 +208,11 @@ class ToolGuardrailDecision:
 
     @property
     def should_halt(self) -> bool:
-        return self.action in {"block", "halt"}
+        if self.action == "halt":
+            return True
+        if self.action == "block":
+            return self.code not in RECOVERABLE_BLOCK_CODES
+        return False
 
     def to_metadata(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -256,6 +271,8 @@ class ToolCallGuardrailController:
         self._consecutive_signature: ToolCallSignature | None = None
         self._consecutive_result_hash: str | None = None
         self._consecutive_count = 0
+        self._landed_file_mutations: dict[str, str] = {}
+        self._landed_file_mutation_counts: dict[str, int] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -263,7 +280,8 @@ class ToolCallGuardrailController:
         return self._halt_decision
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
-        signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        args = _coerce_args(args)
+        signature = ToolCallSignature.from_call(tool_name, args)
         if (
             self._is_idempotent(tool_name)
             and self._consecutive_signature == signature
@@ -416,6 +434,32 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
+        observed_path = _file_observation_path_key(tool_name, args, self.cwd)
+        if observed_path is not None:
+            self._landed_file_mutations.pop(observed_path, None)
+            self._landed_file_mutation_counts.pop(observed_path, None)
+
+        mutation_path = _file_mutation_path_key(tool_name, args, self.cwd)
+        if mutation_path is not None:
+            display_path = _display_file_mutation_path(tool_name, args)
+            mutation_count = self._landed_file_mutation_counts.get(mutation_path, 0) + 1
+            self._landed_file_mutation_counts[mutation_path] = mutation_count
+            self._landed_file_mutations[mutation_path] = display_path
+            if mutation_count > 1:
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="repeated_file_mutation_warning",
+                    message=(
+                        f"{tool_name} changed {display_path} {mutation_count} times in this turn. "
+                        "This is allowed only when you intentionally have complete replacement content. "
+                        "If you are refining an existing file, read the current file state first and prefer edit "
+                        "for precise changes instead of another blind full-file rewrite."
+                    ),
+                    tool_name=tool_name,
+                    count=mutation_count,
+                    signature=signature,
+                )
+
         if not self._is_idempotent(tool_name):
             self._forget_no_progress(tool_name, args, signature)
             self._reset_consecutive()
@@ -491,6 +535,36 @@ class ToolCallGuardrailController:
         progress_signature = _no_progress_signature(tool_name, args, self.cwd)
         if progress_signature is not None:
             self._no_progress.pop(progress_signature, None)
+
+
+def _file_mutation_path_key(tool_name: str, args: Mapping[str, Any], cwd: str | None = None) -> str | None:
+    if tool_name not in FILE_MUTATING_TOOL_NAMES:
+        return None
+    path = _file_mutation_arg_path(args)
+    if path is None:
+        return None
+    return _canonical_shell_path(path, cwd)
+
+
+def _file_observation_path_key(tool_name: str, args: Mapping[str, Any], cwd: str | None = None) -> str | None:
+    if tool_name not in FILE_OBSERVING_TOOL_NAMES:
+        return None
+    path = _file_mutation_arg_path(args)
+    if path is None:
+        return None
+    return _canonical_shell_path(path, cwd)
+
+
+def _file_mutation_arg_path(args: Mapping[str, Any]) -> str | None:
+    for name in FILE_MUTATION_PATH_ARG_NAMES:
+        value = args.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _display_file_mutation_path(tool_name: str, args: Mapping[str, Any]) -> str:
+    return _file_mutation_arg_path(args) or tool_name
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from appv23.ai.stream import complete_simple_sync
 from appv23.ai.model_resolver import ScopedModel
@@ -17,6 +17,7 @@ from appv23.ai.types import Context, Model, SimpleStreamOptions, TextContent, To
 from appv23.ai.types import AssistantMessage
 from appv23.coding_agent.agent_session import AgentSession
 from appv23.coding_agent.branch_summarization import SUMMARIZATION_SYSTEM_PROMPT
+from appv23.coding_agent.settings_manager import SettingsManager
 from appv23.compaction.compressor import ContextCompressor, estimate_tokens
 from appv23.compaction.timing import CompactionManager
 from appv23.tui.interactive import InteractiveRenderer
@@ -26,6 +27,49 @@ from appv23.tui.tui import TUI
 DEFAULT_CONTEXT_LENGTH = 32000
 PI_DEFAULT_COMPACTION_RESERVE_TOKENS = 16_384
 HERMES_STATIC_PROMPT_BREATHING_ROOM = 4_096
+
+
+def _resolve_session_retry_settings(settings_manager: object) -> tuple[bool, int, int]:
+    retry_settings = _call_setting(settings_manager, "getRetrySettings", "get_retry_settings")
+    if not isinstance(retry_settings, Mapping):
+        retry_settings = {}
+    enabled = _first_setting(
+        _call_setting(settings_manager, "getRetryEnabled", "get_retry_enabled"),
+        retry_settings.get("enabled"),
+        True,
+    )
+    max_retries = _coerce_nonnegative_int(
+        _first_setting(retry_settings.get("maxRetries"), retry_settings.get("max_retries"), 0),
+        default=0,
+    )
+    retry_delay_ms = _coerce_nonnegative_int(
+        _first_setting(retry_settings.get("baseDelayMs"), retry_settings.get("base_delay_ms"), 0),
+        default=0,
+    )
+    return bool(enabled), max_retries, retry_delay_ms
+
+
+def _call_setting(settings_manager: object, *names: str) -> Any:
+    for name in names:
+        candidate = getattr(settings_manager, name, None)
+        if callable(candidate):
+            return candidate()
+    return None
+
+
+def _first_setting(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _coerce_nonnegative_int(value: Any, *, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
 
 
 class CodingApp:
@@ -51,6 +95,8 @@ class CodingApp:
     ) -> None:
         self.cwd = cwd
         summarizer = summarizer or _model_summarizer(model, thinking_level=thinking_level)
+        settings_manager = settings_manager or SettingsManager.inMemory()
+        retry_enabled, max_retries, retry_delay_ms = _resolve_session_retry_settings(settings_manager)
         self.session = AgentSession(
             cwd=cwd,
             model=model,
@@ -58,6 +104,9 @@ class CodingApp:
             thinking_level=thinking_level,
             scoped_models=scoped_models,
             settings_manager=settings_manager,
+            retry_enabled=retry_enabled,
+            max_retries=max_retries,
+            retry_delay_ms=retry_delay_ms,
             max_iterations=max_iterations,
             tool_loop_guardrails=tool_loop_guardrails,
             session_path=session_path,
@@ -95,13 +144,14 @@ class CodingApp:
         # Hermes preflight timing-compaction phase.
         should_emit = self._will_compact_preflight(messages)
         before_compressions = self.compaction.compressor.compression_count
+        source_messages = list(messages)
         if should_emit:
             self.session._begin_compaction("threshold")
         try:
             compacted = self.compaction.maybe_compress_preflight(messages)
             if compacted is not messages:
-                messages[:] = compacted
-                self.session.agent.state.messages = list(compacted)
+                applied = self._apply_compaction_boundary(compacted, source_messages=source_messages)
+                messages[:] = applied
                 return messages
             return compacted
         except Exception as error:  # noqa: BLE001 - keep lifecycle events paired if compaction unexpectedly raises.
@@ -159,12 +209,13 @@ class CodingApp:
         prompt_tokens = _assistant_prompt_tokens(message)
         should_emit = self._will_compact_post_response()
         before_compressions = self.compaction.compressor.compression_count
+        source_messages = list(self.session.messages)
         if should_emit:
             self.session._begin_compaction("threshold")
         try:
             compacted = self.compaction.maybe_compress_post_response(self.session.messages, prompt_tokens)
             if compacted is not self.session.messages:
-                self.session.agent.state.messages = compacted
+                self._apply_compaction_boundary(compacted, source_messages=source_messages)
         except Exception as error:  # noqa: BLE001 - keep lifecycle events paired if compaction unexpectedly raises.
             if should_emit:
                 self.session._end_compaction(
@@ -231,7 +282,7 @@ class CodingApp:
             self.session.agent.state.messages = retained
             self.session._end_compaction(reason="overflow", result=None, aborted=False, will_retry=False)
             return True
-        self.session.agent.state.messages = compacted
+        compacted = self._apply_compaction_boundary(compacted, source_messages=retained)
         self.session._end_compaction(reason="overflow", result=compacted, aborted=False, will_retry=True)
         self.session.agent.continue_(stream_fn=stream_fn)
         self._compact_post_response()
@@ -261,7 +312,11 @@ class CodingApp:
             self.session._begin_compaction("threshold")
             try:
                 compacted = self.compaction.force_compress_error_context(retained)
-                self.session.agent.state.messages = list(compacted)
+                compacted = self._apply_compaction_boundary(
+                    compacted,
+                    source_messages=retained,
+                    retain_source_suffix=False,
+                )
             except Exception as error:  # noqa: BLE001 - keep lifecycle events paired if compaction unexpectedly raises.
                 self.session.agent.state.messages = list(retained)
                 self.session._end_compaction(
@@ -287,11 +342,12 @@ class CodingApp:
             return False
 
         before_compressions = self.compaction.compressor.compression_count
+        source_messages = list(self.session.messages)
         self.session._begin_compaction("threshold")
         try:
             compacted = self.compaction.maybe_compress_error_context(self.session.messages)
             if compacted is not self.session.messages:
-                self.session.agent.state.messages = list(compacted)
+                self._apply_compaction_boundary(compacted, source_messages=source_messages)
         except Exception as error:  # noqa: BLE001 - keep lifecycle events paired if compaction unexpectedly raises.
             self.session._end_compaction(
                 reason="threshold",
@@ -309,6 +365,24 @@ class CodingApp:
             )
             self.session._end_compaction(reason="threshold", result=result, aborted=False, will_retry=False)
             return result is not None
+
+    def _apply_compaction_boundary(
+        self,
+        compacted,
+        *,
+        source_messages,
+        retain_source_suffix: bool = True,
+    ):
+        result = self.compaction._last_compression_result  # noqa: SLF001 - app owns the compaction manager lifecycle.
+        if result is not None and getattr(result, "compressed", False):
+            return self.session.apply_compaction_result(
+                list(compacted),
+                result,
+                source_messages=list(source_messages),
+                retain_source_suffix=retain_source_suffix,
+            )
+        self.session.agent.state.messages = list(compacted)
+        return list(compacted)
 
     def _recover_output_cap(self, *, stream_fn=None) -> bool:
         message = _last_assistant_message(self.session.messages)

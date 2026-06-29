@@ -40,7 +40,10 @@ from appv23.ai.types import (
     empty_usage,
     now_ms,
 )
-from appv23.coding_agent.tools.trust import sanitize_tool_call_arguments, text_content_with_provider_trust
+from appv23.coding_agent.tools.trust import (
+    project_tool_call_arguments_for_provider,
+    text_content_with_provider_trust,
+)
 
 PROVIDER_API = "openai-completions"
 
@@ -49,6 +52,10 @@ _REASONING_FIELDS = ("reasoning_content", "reasoning", "reasoning_text")
 _TEXT_STREAM_GUARD_NOTICE = "\n\n[appv23 stopped display: repeated output/tool-protocol leak detected.]"
 _TEXT_STREAM_PROTOCOL_RE = re.compile(
     r"</?(?:tool_call|function_call|tool_response|function|parameter|system|developer|assistant|user)\b|<parameter=",
+    re.IGNORECASE,
+)
+_TEXT_STREAM_TOOL_PROTOCOL_LINE_RE = re.compile(
+    r"^\s*(?:</?(?:tool_call|function_call|tool_response|function|parameter)(?:\s[^>]*)?>|<parameter=[^>]*>?)\s*$",
     re.IGNORECASE,
 )
 _BILLING_PATTERNS = (
@@ -270,7 +277,10 @@ def _convert_message(message: Message, model: Model | None = None) -> dict:
         {
             "id": b.id,
             "type": "function",
-            "function": {"name": b.name, "arguments": json.dumps(sanitize_tool_call_arguments(b.name, b.arguments))},
+            "function": {
+                "name": b.name,
+                "arguments": json.dumps(project_tool_call_arguments_for_provider(b.name, b.arguments)),
+            },
         }
         for b in message.content
         if isinstance(b, ToolCall)
@@ -799,6 +809,7 @@ def parse_sse_chunks(
     started = False
     text_index: int | None = None
     text_buf = ""
+    text_guard_triggered = False
     thinking_index: int | None = None
     tool_call_blocks_by_index: dict[int, ToolCall] = {}
     tool_call_blocks_by_id: dict[str, ToolCall] = {}
@@ -861,6 +872,7 @@ def parse_sse_chunks(
                     "started": started,
                     "text_index": text_index,
                     "text_buf": text_buf,
+                    "text_guard_triggered": text_guard_triggered,
                     "thinking_index": thinking_index,
                     "tool_call_blocks_by_index": tool_call_blocks_by_index,
                     "tool_call_blocks_by_id": tool_call_blocks_by_id,
@@ -874,6 +886,7 @@ def parse_sse_chunks(
             started = state["started"]
             text_index = state["text_index"]
             text_buf = state["text_buf"]
+            text_guard_triggered = bool(state.get("text_guard_triggered"))
             thinking_index = state["thinking_index"]
             if state.get("finish_reason"):
                 finish_reason = state["finish_reason"]
@@ -892,13 +905,16 @@ def parse_sse_chunks(
 
 def _should_stop_text_stream(text: str) -> bool:
     tail = text[-2000:]
+    lines = [line.strip() for line in tail.splitlines() if line.strip()]
+    if any(_TEXT_STREAM_TOOL_PROTOCOL_LINE_RE.match(line) for line in lines[-4:]):
+        return True
+
     tokens = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{3,}\b", tail)
     if len(tokens) >= 16:
         last = [token.lower() for token in tokens[-16:]]
         if len(set(last)) == 1:
             return True
 
-    lines = [line.strip() for line in tail.splitlines() if line.strip()]
     if len(lines) >= 6 and len(lines[-1]) >= 12 and len(set(lines[-6:])) == 1:
         return True
 
@@ -999,6 +1015,12 @@ def _parse_sse_payload(
         message.content[text_index].text = text_buf
         yield TextDeltaEvent(content_index=text_index, delta=content_piece, partial=message)
 
+    if state.get("text_guard_triggered"):
+        usage_ref["usage"] = usage
+        if choice.get("finish_reason"):
+            state["finish_reason"] = "stop"
+        return
+
     for tc in delta.get("tool_calls") or []:
         start = ensure_start()
         if start:
@@ -1090,6 +1112,11 @@ class AppV2EnvProvider:
                 body["max_tokens"] = max_tokens
             if self.config.provider_sort:
                 body["provider"] = {"sort": self.config.provider_sort, "allow_fallbacks": True}
+            on_payload = getattr(options, "on_payload", None) if options is not None else None
+            if callable(on_payload):
+                next_body = on_payload(body)
+                if isinstance(next_body, dict):
+                    body = next_body
             option_headers = getattr(options, "headers", None) if options is not None else None
             headers = {str(key): str(value) for key, value in option_headers.items()} if isinstance(option_headers, dict) else {}
             option_api_key = getattr(options, "api_key", None) if options is not None else None
@@ -1100,6 +1127,9 @@ class AppV2EnvProvider:
             url = self.config.base_url.rstrip("/") + "/chat/completions"
             with httpx.Client(timeout=self.config.timeout_seconds) as client:
                 with client.stream("POST", url, json=body, headers=headers) as response:
+                    on_response = getattr(options, "on_response", None) if options is not None else None
+                    if callable(on_response):
+                        on_response({"status": response.status_code, "headers": dict(response.headers)})
                     response.raise_for_status()
                     for event in parse_sse_chunks(
                         response.iter_lines(),

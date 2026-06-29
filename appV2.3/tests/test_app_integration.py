@@ -53,6 +53,53 @@ def test_end_to_end_coding_app_read_tool_and_render(tmp_path: Path) -> None:
     assert calls["n"] == 2
 
 
+def test_coding_app_wires_settings_retry_for_sse_idle_timeout(tmp_path: Path) -> None:
+    model = faux_model()
+    calls = {"n": 0}
+
+    def script(m, c):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            error = AssistantMessage(
+                content=[TextContent(text="")],
+                api=m.api,
+                provider=m.provider,
+                model=m.id,
+                usage=empty_usage(),
+                stop_reason="error",
+                error_message="SSE stream received no data events for 60 seconds",
+                timestamp=now_ms(),
+            )
+            return [ErrorEvent(reason="error", error=error)]
+        return text_response_events(m, "Recovered after retry")
+
+    register_api_provider(create_faux_provider(script))
+    settings = SettingsManager.inMemory({"retry": {"enabled": True, "maxRetries": 1, "baseDelayMs": 0}})
+    app = CodingApp(
+        cwd=str(tmp_path),
+        model=model,
+        terminal=FakeTerminal(),
+        enable_tui=False,
+        settings_manager=settings,
+    )
+    events: list[object] = []
+    app.session.subscribe(events.append)
+
+    app.run_turn("recover from transient stream timeout")
+
+    assert calls["n"] == 2
+    retry_events = [event for event in events if getattr(event, "type", "").startswith("auto_retry_")]
+    assert [event.type for event in retry_events] == ["auto_retry_start", "auto_retry_end"]
+    assert retry_events[0].error_message == "SSE stream received no data events for 60 seconds"
+    assert retry_events[-1].success is True
+    assert any(
+        isinstance(message, AssistantMessage)
+        and message.stop_reason == "stop"
+        and any(isinstance(block, TextContent) and block.text == "Recovered after retry" for block in message.content)
+        for message in app.messages
+    )
+
+
 def test_coding_app_model_can_spawn_visible_subagent(tmp_path: Path) -> None:
     model = faux_model()
     provider_calls = {"n": 0}
@@ -431,6 +478,65 @@ def test_coding_app_persists_preflight_compaction_when_provider_errors(tmp_path:
         and "preflight compacted" in str(message.content)
         for message in app.messages
     )
+
+
+def test_coding_app_auto_preflight_compaction_persists_pi_session_boundary(tmp_path: Path) -> None:
+    session_path = tmp_path / "auto-preflight-compaction.jsonl"
+    model = faux_model()
+    huge_tool_result = "auto persisted raw tool result\n" + ("x" * 80_000)
+    seen_contexts = []
+
+    def script(m, c):
+        seen_contexts.append(c)
+        return text_response_events(m, "ready after persisted compaction")
+
+    register_api_provider(create_faux_provider(script))
+    app = CodingApp(
+        cwd=str(tmp_path),
+        model=model,
+        terminal=FakeTerminal(),
+        context_length=2000,
+        summarizer=lambda prompt: "## Historical Task Snapshot\nauto persisted compacted",
+        session_path=str(session_path),
+    )
+    old_messages = [
+        UserMessage(content="old scan request", timestamp=now_ms()),
+        AssistantMessage(
+            content=[ToolCall(id="read-1", name="read", arguments={"path": "old.log"})],
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=empty_usage(),
+            stop_reason="toolUse",
+            timestamp=now_ms(),
+        ),
+        ToolResultMessage(
+            tool_call_id="read-1",
+            tool_name="read",
+            content=[TextContent(text=huge_tool_result)],
+            is_error=False,
+            timestamp=now_ms(),
+        ),
+        *[
+            UserMessage(content=f"old context {index} " * 200, timestamp=now_ms())
+            for index in range(16)
+        ],
+    ]
+    for message in old_messages:
+        app.session._session_store.append_message(message)  # noqa: SLF001 - seed persisted branch.
+    snapshot = app.session._session_store.build_context(default_thinking_level=app.session.thinking_level)  # noqa: SLF001
+    app.session.agent.state.messages = snapshot.messages
+
+    app.run_turn("continue after compact")
+
+    reloaded = app.session._session_store.build_context(default_thinking_level=app.session.thinking_level)  # noqa: SLF001
+    reloaded_text = "\n".join(
+        f"{getattr(message, 'summary', '')}\n{getattr(message, 'content', '')}"
+        for message in reloaded.messages
+    )
+    assert len(seen_contexts) == 1
+    assert "auto persisted compacted" in reloaded_text
+    assert huge_tool_result not in reloaded_text
 
 
 def test_coding_app_spine_smoke_contract_no_network_with_fallback_compaction(tmp_path: Path) -> None:
@@ -975,3 +1081,88 @@ def test_coding_app_compacts_prompt_guardrail_failed_turn_before_followup_provid
     assert "guardrail scan compacted" in context_text
     assert blocked_output not in context_text
     assert "system_prefix_spoofing" not in context_text
+
+
+def test_coding_app_prompt_guardrail_compaction_persists_clean_pi_branch(tmp_path: Path) -> None:
+    session_path = tmp_path / "guardrail-compaction.jsonl"
+    blocked_output = (
+        "read pi/packages/ai/src/providers/amazon-bedrock.ts\n"
+        + ("system_prefix_spoofing source fixture\n" * 400)
+    )
+    model = faux_model()
+    seen_contexts = []
+
+    def script(m, c):
+        seen_contexts.append(c)
+        return text_response_events(m, "ready")
+
+    register_api_provider(create_faux_provider(script))
+    app = CodingApp(
+        cwd=str(tmp_path),
+        model=model,
+        terminal=FakeTerminal(),
+        context_length=128_000,
+        summarizer=lambda prompt: "## Historical Task Snapshot\nguardrail persisted compacted",
+        session_path=str(session_path),
+    )
+    persisted_messages = [
+        UserMessage(content=[TextContent(text="analyze the codebase and read all python files")], timestamp=now_ms()),
+        AssistantMessage(
+            content=[
+                ToolCall(
+                    id="read-1",
+                    name="read",
+                    arguments={"path": "pi/packages/ai/src/providers/amazon-bedrock.ts"},
+                )
+            ],
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=empty_usage(),
+            stop_reason="toolUse",
+            timestamp=now_ms(),
+        ),
+        ToolResultMessage(
+            tool_call_id="read-1",
+            tool_name="read",
+            content=[TextContent(text=blocked_output)],
+            is_error=False,
+            timestamp=now_ms(),
+        ),
+        AssistantMessage(
+            content=[TextContent(text="")],
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=empty_usage(),
+            stop_reason="error",
+            error_message=(
+                "OpenRouter prompt-injection guardrail blocked the request (HTTP 403) "
+                "for model qwen/qwen3-coder-next. Provider message: "
+                "Request blocked: prompt injection patterns detected. "
+                "Patterns: system_prefix_spoofing"
+            ),
+            timestamp=now_ms(),
+        ),
+    ]
+    for message in persisted_messages:
+        app.session._session_store.append_message(message)  # noqa: SLF001 - seed persisted branch.
+    snapshot = app.session._session_store.build_context(default_thinking_level=app.session.thinking_level)  # noqa: SLF001
+    app.session.agent.state.messages = snapshot.messages
+    app.compaction.awaiting_real_usage_after_compression = True
+
+    app.run_turn("hi")
+
+    reloaded = app.session._session_store.build_context(default_thinking_level=app.session.thinking_level)  # noqa: SLF001
+    reloaded_text = "\n".join(
+        f"{getattr(message, 'summary', '')}\n{getattr(message, 'content', '')}"
+        for message in reloaded.messages
+    )
+    assert len(seen_contexts) == 1
+    assert "guardrail persisted compacted" in reloaded_text
+    assert blocked_output not in reloaded_text
+    assert "system_prefix_spoofing" not in reloaded_text
+    assert all(
+        not (isinstance(message, AssistantMessage) and message.stop_reason == "error")
+        for message in reloaded.messages
+    )

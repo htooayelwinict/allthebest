@@ -330,6 +330,28 @@ def test_write_tool_creates_dirs(tmp_path: Path) -> None:
     assert result.details is None
 
 
+def test_write_tool_rejects_legacy_redacted_argument_marker(tmp_path: Path) -> None:
+    tool = create_tool("write", str(tmp_path))
+    marker = "[appv23 redacted tool argument content: 1786 chars, sha256=3d18fd8036fe9a37]"
+
+    with pytest.raises(ValueError, match="Refusing to write appv23 redacted tool argument marker"):
+        tool.execute("c1", {"path": "bad.txt", "content": marker})
+
+    assert not (tmp_path / "bad.txt").exists()
+
+
+def test_write_tool_rejects_historical_omission_placeholder(tmp_path: Path) -> None:
+    from appv23.coding_agent.tools.trust import omitted_write_content_placeholder
+
+    tool = create_tool("write", str(tmp_path))
+    marker = omitted_write_content_placeholder(chars=1786, sha256="3d18fd8036fe9a37")
+
+    with pytest.raises(ValueError, match="Refusing to write appv23 omitted historical write content marker"):
+        tool.execute("c1", {"path": "bad.txt", "content": marker})
+
+    assert not (tmp_path / "bad.txt").exists()
+
+
 def test_write_tool_keeps_queue_locked_until_aborted_write_settles(tmp_path: Path) -> None:
     target = tmp_path / "abort-write.txt"
     first_write_started = threading.Event()
@@ -2758,6 +2780,163 @@ def test_tool_loop_guardrail_warns_on_repeated_idempotent_no_progress() -> None:
     assert "returned the same result 2 times" in second.message
 
 
+def test_tool_loop_guardrail_allows_repeated_successful_same_path_mutations_with_warning() -> None:
+    from appv23.agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController()
+    first_args = {"path": "LOCAL_REVIEW.md", "content": "first draft"}
+    second_args = {"path": "./LOCAL_REVIEW.md", "content": "expanded draft"}
+    other_args = {"path": "OTHER_REVIEW.md", "content": "separate draft"}
+    edit_args = {"path": "LOCAL_REVIEW.md", "old": "first draft", "new": "first draft\n\nBoundary check"}
+
+    assert controller.before_call("write", first_args).action == "allow"
+    first = controller.after_call("write", first_args, "Successfully wrote 11 bytes to LOCAL_REVIEW.md", failed=False)
+    repeated = controller.before_call("write", second_args)
+    other = controller.before_call("write", other_args)
+
+    assert first.action == "allow"
+    assert repeated.action == "allow"
+    assert other.action == "allow"
+    second = controller.after_call("write", second_args, "Successfully wrote 14 bytes to LOCAL_REVIEW.md", failed=False)
+    assert second.action == "warn"
+    assert second.code == "repeated_file_mutation_warning"
+    assert "LOCAL_REVIEW.md" in second.message
+
+    controller.after_call("read", {"path": "LOCAL_REVIEW.md"}, "first draft", failed=False)
+    after_read_edit = controller.before_call("edit", edit_args)
+    assert after_read_edit.action == "allow"
+
+
+def test_agent_session_allows_repeated_same_path_write_batch_then_recovers_with_read_edit(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[str] = []
+
+    def multi_write_events(model):
+        calls = [
+            ToolCall(id="call_1", name="write", arguments={"path": "LOCAL_REVIEW.md", "content": "first"}),
+            ToolCall(id="call_2", name="write", arguments={"path": "./LOCAL_REVIEW.md", "content": "second"}),
+        ]
+        partial = AssistantMessage(
+            content=list(calls),
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=empty_usage(),
+            stop_reason="toolUse",
+            timestamp=now_ms(),
+        )
+        final = AssistantMessage(
+            content=list(calls),
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+            usage=empty_usage(),
+            stop_reason="toolUse",
+            timestamp=now_ms(),
+        )
+        events = [StartEvent(partial=partial)]
+        for index, tool_call in enumerate(calls):
+            events.append(ToolcallStartEvent(content_index=index, partial=partial))
+            events.append(ToolcallEndEvent(content_index=index, tool_call=tool_call, partial=partial))
+        events.append(DoneEvent(reason="toolUse", message=final))
+        return events
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return multi_write_events(m)
+        if provider_calls["n"] == 2:
+            return tool_call_response_events(
+                m,
+                "read",
+                {"path": "LOCAL_REVIEW.md"},
+                call_id="call_read",
+            )
+        if provider_calls["n"] == 3:
+            return tool_call_response_events(
+                m,
+                "edit",
+                {
+                    "path": "LOCAL_REVIEW.md",
+                    "old": "second",
+                    "new": "second\n\n## Boundary check\n- one\n- two\n- three\n",
+                },
+                call_id="call_edit",
+            )
+        return text_response_events(m, "recovered after read and edit")
+
+    def write_execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(args["content"])
+        (tmp_path / args["path"]).write_text(args["content"], encoding="utf-8")
+        return AgentToolResult(content=[TextContent(text=f"wrote:{args['content']}")], details={})
+
+    def read_execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append("read")
+        return AgentToolResult(content=[TextContent(text=(tmp_path / args["path"]).read_text(encoding="utf-8"))], details={})
+
+    def edit_execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append("edit")
+        target = tmp_path / args["path"]
+        content = target.read_text(encoding="utf-8")
+        target.write_text(content.replace(args["old"], args["new"], 1), encoding="utf-8")
+        return AgentToolResult(content=[TextContent(text="edited")], details={})
+
+    register_api_provider(create_faux_provider(script))
+    write_definition = ToolDefinition(
+        name="write",
+        label="Write",
+        description="write",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+        execute=write_execute,
+    )
+    read_definition = ToolDefinition(
+        name="read",
+        label="Read",
+        description="read",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+        execute=read_execute,
+    )
+    edit_definition = ToolDefinition(
+        name="edit",
+        label="Edit",
+        description="edit",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old": {"type": "string"},
+                "new": {"type": "string"},
+            },
+            "required": ["path", "old", "new"],
+        },
+        execute=edit_execute,
+    )
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[write_definition, read_definition, edit_definition])
+
+    session.prompt("write twice then recover")
+
+    tool_result_text = "\n".join(
+        _content_text(message.content)
+        for message in session.messages
+        if getattr(message, "role", None) == "toolResult"
+    )
+    assert executions == ["first", "second", "read", "edit"]
+    assert provider_calls["n"] == 4
+    assert "repeated_file_mutation_block" not in tool_result_text
+    assert "repeated_file_mutation_warning" in tool_result_text
+    assert session.messages[-1].role == "assistant"
+    assert session.messages[-1].content[0].text == "recovered after read and edit"
+
+
 def test_tool_failure_classifier_does_not_treat_read_source_error_tokens_as_failure() -> None:
     from appv23.agent.tool_guardrails import classify_tool_failure
 
@@ -3077,11 +3256,11 @@ def test_agent_session_deduplicates_duplicate_bash_calls_in_same_turn(tmp_path: 
     ]
 
 
-def test_agent_session_injects_recovery_steering_on_bash_no_progress_warning(tmp_path: Path) -> None:
+def test_agent_session_appends_recovery_guidance_to_bash_no_progress_tool_result(tmp_path: Path) -> None:
     model = faux_model()
     provider_calls = {"n": 0}
     executions: list[dict] = []
-    seen_user_messages: list[list[str]] = []
+    seen_tool_results: list[list[str]] = []
     repeated_args = {"command": "ls -la src/metrics"}
 
     def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
@@ -3102,17 +3281,15 @@ def test_agent_session_injects_recovery_steering_on_bash_no_progress_warning(tmp
         execute=execute,
     )
 
-    def _user_text(message) -> str:
-        content = getattr(message, "content", "")
-        if isinstance(content, str):
-            return content
-        return "".join(block.text for block in content if getattr(block, "type", None) == "text")
-
     def script(m, c):
         provider_calls["n"] += 1
-        users = [_user_text(message) for message in c.messages if getattr(message, "role", None) == "user"]
-        seen_user_messages.append(users)
-        if users and "Tool loop recovery instruction" in users[-1]:
+        tool_results = [
+            _content_text(message.content)
+            for message in c.messages
+            if getattr(message, "role", None) == "toolResult"
+        ]
+        seen_tool_results.append(tool_results)
+        if tool_results and "Tool loop warning" in tool_results[-1]:
             return text_response_events(m, "I will use the first listing and read the relevant files.")
         if provider_calls["n"] % 2 == 0:
             return tool_call_response_events(m, "bash", repeated_args, call_id=f"call_{provider_calls['n']}")
@@ -3134,11 +3311,11 @@ def test_agent_session_injects_recovery_steering_on_bash_no_progress_warning(tmp
     assert provider_calls["n"] == 5
     assert len(repeated_executions) == 2
     assert "idempotent_no_progress_warning" in tool_results[-1].content[0].text
-    assert any("Tool loop recovery instruction" in users[-1] for users in seen_user_messages if users)
+    assert any("Tool loop warning" in results[-1] for results in seen_tool_results if results)
     assert assistants[-1].content[0].text == "I will use the first listing and read the relevant files."
 
 
-def test_agent_session_broad_scan_recovery_steering_prefers_inventory_over_repeating_bash(tmp_path: Path) -> None:
+def test_agent_session_broad_scan_recovery_guidance_prefers_inventory_over_repeating_bash(tmp_path: Path) -> None:
     model = faux_model()
     provider_calls = {"n": 0}
     executions: list[dict] = []
@@ -3164,17 +3341,15 @@ def test_agent_session_broad_scan_recovery_steering_prefers_inventory_over_repea
         execute=execute,
     )
 
-    def _user_text(message) -> str:
-        content = getattr(message, "content", "")
-        if isinstance(content, str):
-            return content
-        return "".join(block.text for block in content if getattr(block, "type", None) == "text")
-
     def script(m, c):
         provider_calls["n"] += 1
-        users = [_user_text(message) for message in c.messages if getattr(message, "role", None) == "user"]
-        if users and "Tool loop recovery instruction" in users[-1]:
-            recovery_messages.append(users[-1])
+        tool_results = [
+            _content_text(message.content)
+            for message in c.messages
+            if getattr(message, "role", None) == "toolResult"
+        ]
+        if tool_results and "Tool loop warning" in tool_results[-1]:
+            recovery_messages.append(tool_results[-1])
             return text_response_events(m, "I will treat the listing as inventory and inspect only relevant files.")
         return tool_call_response_events(
             m,
@@ -3192,18 +3367,17 @@ def test_agent_session_broad_scan_recovery_steering_prefers_inventory_over_repea
     assert provider_calls["n"] == 3
     assert len(recovery_messages) == 1
     recovery = recovery_messages[0]
-    assert "Tool loop recovery instruction" in recovery
-    assert "do not call bash again for the same inventory" in recovery
-    assert "For codebase scans, treat that output as inventory" in recovery
+    assert "Tool loop warning" in recovery
+    assert "Do not call the same bash command" in recovery
+    assert "For codebase scans, treat listings/search output as inventory" in recovery
     assert "read with path/offset/limit" in recovery
-    assert "Use edit/write only for requested changes" in recovery
     assert session.messages[-1].role == "assistant"
     assert session.messages[-1].content[0].text == (
         "I will treat the listing as inventory and inspect only relevant files."
     )
 
 
-def test_agent_session_reissues_recovery_steering_for_escalating_tool_loop_warnings(tmp_path: Path) -> None:
+def test_agent_session_reissues_tool_result_guidance_for_escalating_tool_loop_warnings(tmp_path: Path) -> None:
     model = faux_model()
     provider_calls = {"n": 0}
     executions: list[dict] = []
@@ -3228,8 +3402,12 @@ def test_agent_session_reissues_recovery_steering_for_escalating_tool_loop_warni
 
     def script(m, c):
         provider_calls["n"] += 1
-        users = [_user_text(message) for message in c.messages if getattr(message, "role", None) == "user"]
-        recoveries = [text for text in users if "Tool loop recovery instruction" in text]
+        tool_results = [
+            _content_text(message.content)
+            for message in c.messages
+            if getattr(message, "role", None) == "toolResult"
+        ]
+        recoveries = [text for text in tool_results if "Tool loop warning" in text]
         recovery_lengths.append(len(recoveries))
         if len(recoveries) >= 2:
             return text_response_events(m, "I will stop retrying bash and use the existing failure.")
@@ -3684,11 +3862,11 @@ def test_agent_session_blocks_repeated_invalid_read_schema_loop_by_default(tmp_p
     assert "repeated_exact_failure_block" in session.messages[-1].content[0].text
 
 
-def test_agent_session_injects_recovery_steering_before_consecutive_bash_block(tmp_path: Path) -> None:
+def test_agent_session_appends_recovery_guidance_before_consecutive_bash_block(tmp_path: Path) -> None:
     model = faux_model()
     provider_calls = {"n": 0}
     executions: list[dict] = []
-    seen_user_messages: list[list[str]] = []
+    seen_tool_results: list[list[str]] = []
 
     def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
         executions.append(dict(args))
@@ -3707,17 +3885,15 @@ def test_agent_session_injects_recovery_steering_before_consecutive_bash_block(t
     )
     repeated_args = {"command": "find . -maxdepth 1 -type f -name 'jsonpatch.py'"}
 
-    def _user_text(message) -> str:
-        content = getattr(message, "content", "")
-        if isinstance(content, str):
-            return content
-        return "".join(block.text for block in content if getattr(block, "type", None) == "text")
-
     def script(m, c):
         provider_calls["n"] += 1
-        users = [_user_text(message) for message in c.messages if getattr(message, "role", None) == "user"]
-        seen_user_messages.append(users)
-        if users and "Tool loop recovery instruction" in users[-1]:
+        tool_results = [
+            _content_text(message.content)
+            for message in c.messages
+            if getattr(message, "role", None) == "toolResult"
+        ]
+        seen_tool_results.append(tool_results)
+        if tool_results and "Tool loop warning" in tool_results[-1]:
             return text_response_events(m, "I will use the existing result instead.")
         return tool_call_response_events(m, "bash", repeated_args, call_id=f"call_{provider_calls['n']}")
 
@@ -3732,7 +3908,7 @@ def test_agent_session_injects_recovery_steering_before_consecutive_bash_block(t
     assert executions == [repeated_args, repeated_args]
     assert len(tool_results) == 2
     assert "idempotent_no_progress_warning" in tool_results[-1].content[0].text
-    assert any("Tool loop recovery instruction" in users[-1] for users in seen_user_messages if users)
+    assert any("Tool loop warning" in results[-1] for results in seen_tool_results if results)
     assert assistants[-1].content[0].text == "I will use the existing result instead."
 
 
@@ -3785,6 +3961,49 @@ def test_agent_session_max_iterations_forces_toolless_summary(tmp_path: Path) ->
     assert saw_tools == [True, True, False]
     assert session.messages[-1].role == "assistant"
     assert session.messages[-1].content[0].text == "summary"
+
+
+def test_agent_session_prepare_next_turn_refreshes_pi_turn_state_after_tool_mutation(tmp_path: Path) -> None:
+    model = faux_model()
+    next_model = dataclasses.replace(model, id="next-model")
+    provider_models: list[str] = []
+    seen_tool_names: list[list[str]] = []
+    session_holder: dict[str, AgentSession] = {}
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        session_holder["session"].set_active_tools_by_name([])
+        session_holder["session"].set_model(next_model)
+        return AgentToolResult(content=[TextContent(text="state changed")], details={})
+
+    mutate_session_definition = ToolDefinition(
+        name="mutate_session",
+        label="mutate_session",
+        description="Mutate session state",
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_models.append(m.id)
+        seen_tool_names.append([tool.name for tool in c.tools or []])
+        if len(provider_models) == 1:
+            return tool_call_response_events(m, "mutate_session", {}, call_id="mutate_1")
+        return text_response_events(m, "done")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=model,
+        tool_definitions=[mutate_session_definition],
+    )
+    session_holder["session"] = session
+
+    session.prompt("mutate session")
+
+    assert provider_models == [model.id, next_model.id]
+    assert seen_tool_names == [["mutate_session"], []]
+    assert session.messages[-1].role == "assistant"
+    assert session.messages[-1].content[0].text == "done"
 
 
 def test_agent_session_accepts_hermes_tool_loop_guardrail_config(tmp_path: Path) -> None:
@@ -7094,6 +7313,44 @@ def test_export_html_from_file_reads_arbitrary_session_jsonl_without_live_state(
     with pytest.raises(FileNotFoundError, match=str(missing_path)):
         export_from_file(str(missing_path), str(tmp_path / "exports" / "missing.html"))
     assert not missing_path.exists()
+
+
+def test_session_store_redacts_large_write_content_when_persisting_assistant_tool_call(tmp_path: Path) -> None:
+    from appv23.ai.types import AssistantMessage, ToolCall, empty_usage, now_ms
+    from appv23.coding_agent.session_store import SessionStore
+
+    session_path = tmp_path / "session.jsonl"
+    store = SessionStore(str(session_path), cwd=str(tmp_path))
+    large_content = "SMOKING-GUN-WRITE-CONTENT\n" + ("generated report body " * 500)
+    assistant = AssistantMessage(
+        content=[
+            ToolCall(
+                id="write-1",
+                name="write",
+                arguments={"path": "docs/report.md", "content": large_content},
+            )
+        ],
+        api="openai-completions",
+        provider="openrouter",
+        model="acme/x",
+        usage=empty_usage(),
+        stop_reason="toolUse",
+        timestamp=now_ms(),
+    )
+
+    store.append_message(assistant)
+
+    raw = session_path.read_text(encoding="utf-8")
+    assert "SMOKING-GUN-WRITE-CONTENT" not in raw
+    assert "docs/report.md" in raw
+    assert "[appv23 redacted tool argument" not in raw
+
+    entry = json.loads(raw.splitlines()[-1])
+    args = entry["message"]["content"][0]["arguments"]
+    assert "content" not in args
+    assert args["content_omitted"] is True
+    assert args["content_chars"] == len(large_content)
+    assert isinstance(args["content_sha256"], str)
 
 
 def test_agent_session_get_user_messages_for_forking_from_session_entries(tmp_path: Path) -> None:

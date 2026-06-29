@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 from typing import Any
 
@@ -21,11 +22,36 @@ def validate_tool_arguments(tool: Any, tool_call: Any) -> dict[str, Any]:
     if args is None:
         args = {}
     if not isinstance(args, dict):
-        raise ToolValidationError(f"Tool {getattr(tool, 'name', '?')} arguments must be an object")
+        raise _tool_validation_error(tool, tool_call, f"{_tool_name(tool, tool_call)}: expected object")
     schema = getattr(tool, "parameters", None) or {}
     coerced = _coerce_with_json_schema(copy.deepcopy(args), schema)
-    _validate_value(coerced, schema, path=getattr(tool, "name", "args"))
+    try:
+        _validate_value(coerced, schema, path=_tool_name(tool, tool_call))
+    except ToolValidationError as error:
+        raise _tool_validation_error(tool, tool_call, str(error)) from error
     return coerced
+
+
+def _tool_name(tool: Any, tool_call: Any) -> str:
+    name = getattr(tool_call, "name", None) or getattr(tool, "name", None)
+    return str(name or "?")
+
+
+def _tool_validation_error(tool: Any, tool_call: Any, error: str) -> ToolValidationError:
+    tool_name = _tool_name(tool, tool_call)
+    received = _format_received_arguments(getattr(tool_call, "arguments", None))
+    return ToolValidationError(
+        f'Validation failed for tool "{tool_name}":\n'
+        f"  - {error}\n\n"
+        f"Received arguments:\n{received}"
+    )
+
+
+def _format_received_arguments(arguments: Any) -> str:
+    try:
+        return json.dumps(arguments, ensure_ascii=False, indent=2, default=str)
+    except TypeError:
+        return str(arguments)
 
 
 def _is_record(value: Any) -> bool:

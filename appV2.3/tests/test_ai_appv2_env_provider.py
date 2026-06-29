@@ -55,7 +55,7 @@ def _openrouter_provider() -> AppV2EnvProvider:
     )
 
 
-def test_convert_messages_redacts_large_write_content_from_tool_call_arguments() -> None:
+def test_convert_messages_projects_large_write_content_as_schema_valid_placeholder() -> None:
     large_content = "SMOKING-GUN-WRITE-CONTENT\n" + ("generated report body " * 500)
     assistant = AssistantMessage(
         content=[
@@ -75,12 +75,115 @@ def test_convert_messages_redacts_large_write_content_from_tool_call_arguments()
 
     converted, _tools = convert_messages(Context(messages=[assistant]), _model())
 
+    assert converted[0]["role"] == "assistant"
+    assert converted[0]["content"] == ""
+    assert converted[0]["tool_calls"][0]["function"]["name"] == "write"
     encoded_args = converted[0]["tool_calls"][0]["function"]["arguments"]
     args = json.loads(encoded_args)
     assert args["path"] == "docs/report.md"
-    assert args["content"] != large_content
+    assert args["content"].startswith("[appv23 omitted historical write content:")
     assert "SMOKING-GUN-WRITE-CONTENT" not in encoded_args
-    assert len(encoded_args) < 1200
+    assert "content_omitted" not in encoded_args
+    assert "[appv23 redacted tool argument" not in encoded_args
+    assert "Historical write completed" not in converted[0]["content"]
+
+
+def test_convert_messages_elides_matching_tool_result_for_omitted_write_history() -> None:
+    large_content = "SMOKING-GUN-WRITE-CONTENT\n" + ("generated report body " * 500)
+    assistant = AssistantMessage(
+        content=[
+            ToolCall(
+                id="write-1",
+                name="write",
+                arguments={"path": "docs/report.md", "content": large_content},
+            )
+        ],
+        api="openai-completions",
+        provider="openrouter",
+        model="acme/x",
+        usage=empty_usage(),
+        stop_reason="toolUse",
+        timestamp=now_ms(),
+    )
+    tool_result = ToolResultMessage(
+        tool_call_id="write-1",
+        tool_name="write",
+        content=[TextContent(text="Successfully wrote 11026 bytes to docs/report.md")],
+        is_error=False,
+        timestamp=now_ms(),
+    )
+
+    converted, _tools = convert_messages(Context(messages=[assistant, tool_result]), _model())
+
+    assert len(converted) == 2
+    assert converted[0]["role"] == "assistant"
+    assert converted[0]["content"] == ""
+    encoded_args = converted[0]["tool_calls"][0]["function"]["arguments"]
+    args = json.loads(encoded_args)
+    assert args["path"] == "docs/report.md"
+    assert args["content"].startswith("[appv23 omitted historical write content:")
+    assert converted[1]["role"] == "tool"
+    assert converted[1]["tool_call_id"] == "write-1"
+    assert "Successfully wrote 11026 bytes to docs/report.md" in converted[1]["content"]
+    assert "Historical write completed" not in repr(converted)
+    assert "File content was omitted" not in repr(converted)
+
+
+def test_convert_messages_scrubs_legacy_write_redaction_marker_from_tool_call_arguments() -> None:
+    legacy_marker = "[appv23 redacted tool argument content: 1786 chars, sha256=3d18fd8036fe9a37]"
+    assistant = AssistantMessage(
+        content=[
+            ToolCall(
+                id="write-1",
+                name="write",
+                arguments={"path": "docs/report.md", "content": legacy_marker},
+            )
+        ],
+        api="openai-completions",
+        provider="openrouter",
+        model="acme/x",
+        usage=empty_usage(),
+        stop_reason="toolUse",
+        timestamp=now_ms(),
+    )
+
+    converted, _tools = convert_messages(Context(messages=[assistant]), _model())
+
+    assert converted[0]["role"] == "assistant"
+    assert converted[0]["content"] == ""
+    encoded_args = converted[0]["tool_calls"][0]["function"]["arguments"]
+    args = json.loads(encoded_args)
+    assert args["path"] == "docs/report.md"
+    assert args["content"].startswith("[appv23 omitted historical write content:")
+    assert legacy_marker not in encoded_args
+    assert "Historical write completed" not in repr(converted)
+
+
+def test_convert_messages_preserves_long_bash_command_in_tool_call_arguments() -> None:
+    command = "python - <<'PY'\n" + ("print('probe')\n" * 120) + "PY"
+    assistant = AssistantMessage(
+        content=[
+            ToolCall(
+                id="bash-1",
+                name="bash",
+                arguments={"command": command, "timeout": 30},
+            )
+        ],
+        api="openai-completions",
+        provider="openrouter",
+        model="acme/x",
+        usage=empty_usage(),
+        stop_reason="toolUse",
+        timestamp=now_ms(),
+    )
+
+    converted, _tools = convert_messages(Context(messages=[assistant]), _model())
+
+    encoded_args = converted[0]["tool_calls"][0]["function"]["arguments"]
+    args = json.loads(encoded_args)
+    assert args["command"] == command
+    assert "[appv23 redacted tool argument command" not in encoded_args
+    assert args["timeout"] == 30
 
 
 def test_appv2_env_provider_uses_runtime_option_api_key_for_authorization(monkeypatch) -> None:
@@ -750,6 +853,68 @@ def test_write_read_roundtrip_marks_provider_content_as_untrusted(tmp_path) -> N
     assert content.endswith("</untrusted_file_content>")
 
 
+def test_appv2_env_provider_invokes_runtime_payload_hook(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeStream:
+        status_code = 200
+        headers = {"x-test": "yes"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    class FakeClient:
+        def __init__(self, timeout):
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url, json, headers):
+            captured["method"] = method
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return FakeStream()
+
+    class Options:
+        api_key = "runtime-key"
+        on_response = None
+        reasoning = None
+
+        def __init__(self):
+            self.seen_payloads: list[dict] = []
+
+        def on_payload(self, payload):
+            self.seen_payloads.append(payload)
+            mutated = dict(payload)
+            mutated["metadata"] = {"hooked": True}
+            return mutated
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    provider = _openrouter_provider()
+    options = Options()
+
+    events = list(provider.stream(_model(), Context(messages=[UserMessage("hello", timestamp=now_ms())]), options))
+
+    assert events[-1].type == "done"
+    assert options.seen_payloads
+    assert captured["json"]["metadata"] == {"hooked": True}
+
+
 def test_convert_messages_sanitizes_unpaired_surrogates_for_provider_payload() -> None:
     emoji = chr(0x1F648)
     high_surrogate = chr(0xD83D)
@@ -1266,6 +1431,52 @@ def test_parse_sse_stops_repeated_text_degeneration() -> None:
     final_text = events[-1].message.content[0].text
     assert final_text.count("Architecture") < 20
     assert "[appv23 stopped display:" in final_text
+
+
+def test_parse_sse_suppresses_split_tool_protocol_leak_before_display() -> None:
+    lines = [
+        _sse({"choices": [{"delta": {"content": "</parameter>\n"}}]}),
+        _sse({"choices": [{"delta": {"content": "<parameter=timeout>\n"}}]}),
+        _sse({"choices": [{"delta": {"content": "30\n"}}]}),
+        _sse({"choices": [{"delta": {"content": "</function>\n"}}]}),
+        _sse({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        "data: [DONE]",
+    ]
+
+    events = list(parse_sse_chunks(lines, _model()))
+
+    rendered = "".join(event.delta for event in events if event.type == "text_delta")
+    final_text = events[-1].message.content[0].text
+    assert "</parameter>" not in rendered
+    assert "<parameter=timeout>" not in rendered
+    assert "</function>" not in rendered
+    assert "\n30\n" not in f"\n{rendered}\n"
+    assert rendered == final_text
+    assert "[appv23 stopped display:" in final_text
+
+
+def test_parse_sse_drops_tool_calls_after_tool_protocol_leak() -> None:
+    lines = [
+        _sse({"choices": [{"delta": {"content": "</parameter>\n"}}]}),
+        _sse({"choices": [{"delta": {"tool_calls": [
+            {
+                "index": 0,
+                "id": "call_1",
+                "function": {
+                    "name": "write",
+                    "arguments": "{\"path\":\"notes.md\",\"content\":\"rewrite\"}",
+                },
+            }
+        ]}}]}),
+        _sse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        "data: [DONE]",
+    ]
+
+    events = list(parse_sse_chunks(lines, _model()))
+
+    assert events[-1].type == "done"
+    assert all(block.type != "toolCall" for block in events[-1].message.content)
+    assert "[appv23 stopped display:" in events[-1].message.content[0].text
 
 
 def test_parse_sse_tool_call_stream() -> None:

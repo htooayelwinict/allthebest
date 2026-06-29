@@ -96,8 +96,6 @@ class AssistantMessageComponent(Container):
                         self.add(Text(self.hidden_thinking_label))
                     else:
                         self.add(Markdown(f"Thinking:\n{block.thinking.strip()}"))
-            elif isinstance(block, ToolCall):
-                self.add(Text(f"-> {block.name}({_short_args(block.arguments)})"))
         if getattr(message, "stop_reason", None) == "error":
             self.add(Text(f"Error: {getattr(message, 'error_message', None) or 'Unknown error'}"))
         elif getattr(message, "stop_reason", None) == "aborted":
@@ -593,6 +591,23 @@ class InteractiveRenderer:
             needs_render = True
         elif etype == "message_update" and self._current_assistant is not None:
             self._current_assistant.update_content(event.message)
+            if getattr(event.message, "role", None) == "assistant":
+                for block in getattr(event.message, "content", []) or []:
+                    if not isinstance(block, ToolCall):
+                        continue
+                    component = self._tool_components.get(block.id)
+                    if component is None:
+                        component = ToolExecutionComponent(
+                            block.name,
+                            block.id,
+                            block.arguments,
+                            tool_definition=self.tool_definitions.get(block.name),
+                            cwd=self.cwd,
+                        )
+                        self._tool_components[block.id] = component
+                        self._add(component)
+                    else:
+                        component.args = block.arguments
             needs_render = True
         elif etype == "message_end" and getattr(event.message, "role", None) == "assistant":
             if self._current_assistant is not None:
@@ -600,15 +615,21 @@ class InteractiveRenderer:
                 needs_render = True
             self._current_assistant = None
         elif etype == "tool_execution_start":
-            component = ToolExecutionComponent(
-                event.tool_name,
-                event.tool_call_id,
-                event.args,
-                tool_definition=self.tool_definitions.get(event.tool_name),
-                cwd=self.cwd,
-            )
-            self._tool_components[event.tool_call_id] = component
-            self._add(component)
+            component = self._tool_components.get(event.tool_call_id)
+            if component is None:
+                component = ToolExecutionComponent(
+                    event.tool_name,
+                    event.tool_call_id,
+                    event.args,
+                    tool_definition=self.tool_definitions.get(event.tool_name),
+                    cwd=self.cwd,
+                )
+                self._tool_components[event.tool_call_id] = component
+                self._add(component)
+            else:
+                component.tool_name = event.tool_name
+                component.args = event.args
+                component.tool_definition = self.tool_definitions.get(event.tool_name)
             needs_render = True
         elif etype == "tool_execution_end":
             component = self._tool_components.get(event.tool_call_id)

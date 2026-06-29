@@ -18,6 +18,8 @@ from appv23.ai.types import AssistantMessage, TextContent, ToolCall
 
 TRUST_DETAILS_KEY = "appv23_trust"
 TOOL_ARGUMENT_REDACTION_MARKER = "[appv23 redacted tool argument"
+OMITTED_TOOL_ARGUMENT_KEY = "_appv23_omitted_tool_argument"
+OMITTED_WRITE_CONTENT_PLACEHOLDER_PREFIX = "[appv23 omitted historical write content:"
 
 _TOOL_ARGUMENT_STRING_MAX = 500
 _WRITE_CONTENT_STRING_MAX = 256
@@ -51,6 +53,13 @@ _PROMPT_OR_PROTOCOL_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+_LEGACY_TOOL_ARGUMENT_REDACTION_RE = re.compile(
+    r"^\[appv23 redacted tool argument (?P<label>[^:\]]+): (?P<chars>\d+) chars, sha256=(?P<sha256>[0-9a-f]{16,64})\]$"
+)
+_OMITTED_WRITE_CONTENT_PLACEHOLDER_RE = re.compile(
+    r"^\[appv23 omitted historical write content: (?P<chars>\d+) chars, sha256=(?P<sha256>[0-9a-f]{16,64})\]$"
+)
+
 
 def create_trust_state() -> dict[str, Any]:
     return {"written_files": {}}
@@ -63,15 +72,58 @@ def sanitize_tool_call_arguments(tool_name: str, arguments: Any) -> Any:
     conversation history and provider payload replay, where large generated
     content should be represented by provenance metadata instead of raw text.
     """
+    if isinstance(arguments, dict) and _normalized_tool_name(tool_name) == "write":
+        return _sanitize_write_arguments(tool_name, arguments)
     return _sanitize_tool_argument_value(tool_name, arguments, ())
 
 
+def project_tool_call_arguments_for_provider(tool_name: str, arguments: Any) -> Any:
+    """Return the model-visible argument projection for historical tool calls.
+
+    Raw tool arguments remain available for execution and UI/session state.
+    Provider replay gets a separate projection so generated file bodies,
+    redaction markers, and sanitizer metadata never become model-visible
+    instructions.  This mirrors Pi's before-provider boundary and Hermes'
+    data-normalization discipline.
+    """
+    sanitized = sanitize_tool_call_arguments(tool_name, arguments)
+    if _normalized_tool_name(tool_name) != "write" or not isinstance(sanitized, dict):
+        return sanitized
+    if sanitized.get("content_omitted") is not True:
+        return sanitized
+    projected: dict[str, Any] = {}
+    raw_path = sanitized.get("path")
+    if isinstance(raw_path, str) and raw_path:
+        projected["path"] = raw_path
+    projected["content"] = omitted_write_content_placeholder(
+        chars=_safe_int(sanitized.get("content_chars")),
+        sha256=str(sanitized.get("content_sha256") or "unknown"),
+    )
+    return projected
+
+
 def sanitize_assistant_tool_calls_for_history(message: AssistantMessage) -> AssistantMessage:
-    """Minimize replay-sensitive tool-call arguments in-place after execution."""
-    for block in getattr(message, "content", []):
-        if isinstance(block, ToolCall):
-            block.arguments = sanitize_tool_call_arguments(block.name, block.arguments)
+    """Deprecated no-op: runtime tool-call history must not be mutated.
+
+    Provider/session serializers call ``sanitize_tool_call_arguments`` on copied
+    payloads. Mutating the live assistant message can turn synthetic redaction
+    text into future executable tool input.
+    """
     return message
+
+
+def is_legacy_tool_argument_redaction_marker(value: Any) -> bool:
+    return _parse_legacy_tool_argument_redaction_marker(value) is not None
+
+
+def omitted_write_content_placeholder(*, chars: int, sha256: str) -> str:
+    safe_chars = max(0, int(chars or 0))
+    safe_sha256 = str(sha256 or "unknown")
+    return f"{OMITTED_WRITE_CONTENT_PLACEHOLDER_PREFIX} {safe_chars} chars, sha256={safe_sha256}]"
+
+
+def is_omitted_write_content_placeholder(value: Any) -> bool:
+    return isinstance(value, str) and _OMITTED_WRITE_CONTENT_PLACEHOLDER_RE.match(value.strip()) is not None
 
 
 def mark_agent_written_file(path: str, content: str, trust_state: dict[str, Any] | None = None) -> None:
@@ -206,24 +258,105 @@ def _sanitize_tool_argument_value(tool_name: str, value: Any, path: tuple[str, .
         return {str(key): _sanitize_tool_argument_value(tool_name, child, path + (str(key),)) for key, child in value.items()}
     if isinstance(value, list):
         return [_sanitize_tool_argument_value(tool_name, child, path + (str(index),)) for index, child in enumerate(value)]
+    parsed_legacy_marker = _parse_legacy_tool_argument_redaction_marker(value)
+    if parsed_legacy_marker:
+        return _omitted_tool_argument_metadata(value, path, parsed_legacy_marker)
     if isinstance(value, str) and _should_redact_tool_argument(tool_name, value, path):
-        return _redacted_tool_argument_marker(value, path)
+        return _omitted_tool_argument_metadata(value, path)
     return value
+
+
+def _sanitize_write_arguments(tool_name: str, arguments: dict[Any, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in arguments.items():
+        key_str = str(key)
+        if key_str == "content" and isinstance(value, str) and _should_omit_write_content(value):
+            sanitized.update(_omitted_write_content_metadata(value))
+            continue
+        sanitized[key_str] = _sanitize_tool_argument_value(tool_name, value, (key_str,))
+    return sanitized
 
 
 def _should_redact_tool_argument(tool_name: str, value: str, path: tuple[str, ...]) -> bool:
     leaf = path[-1].lower() if path else ""
-    normalized_tool_name = (tool_name or "").lower().replace("-", "_")
+    normalized_tool_name = _normalized_tool_name(tool_name)
+    if normalized_tool_name in {"bash", "terminal", "run"} and leaf in {"command", "cmd"}:
+        return False
     if normalized_tool_name == "write" and leaf == "content":
-        return len(value) > _WRITE_CONTENT_STRING_MAX
-    if leaf in {"content", "new_content", "replacement", "patch"} and len(value) > _TOOL_ARGUMENT_STRING_MAX:
+        return _should_omit_write_content(value)
+    if leaf in {"content", "new_content", "replacement", "patch", "data"} and len(value) > _TOOL_ARGUMENT_STRING_MAX:
         return True
-    return len(value) > _TOOL_ARGUMENT_STRING_MAX
+    return False
 
 
-def _redacted_tool_argument_marker(value: str, path: tuple[str, ...]) -> str:
+def _should_omit_write_content(value: str) -> bool:
+    return len(value) > _WRITE_CONTENT_STRING_MAX or is_legacy_tool_argument_redaction_marker(value)
+
+
+def _omitted_write_content_metadata(value: str) -> dict[str, Any]:
+    parsed_legacy_marker = _parse_legacy_tool_argument_redaction_marker(value)
+    if parsed_legacy_marker:
+        return {
+            "content_omitted": True,
+            "content_chars": parsed_legacy_marker["chars"],
+            "content_sha256": parsed_legacy_marker["sha256"],
+            "content_legacy_redaction_marker": True,
+        }
+    return {
+        "content_omitted": True,
+        "content_chars": len(value),
+        "content_sha256": _sha256_text(value),
+    }
+
+
+def _omitted_tool_argument_metadata(
+    value: str,
+    path: tuple[str, ...],
+    parsed_legacy_marker: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     label = ".".join(path) if path else "<root>"
-    return f"{TOOL_ARGUMENT_REDACTION_MARKER} {label}: {len(value)} chars, sha256={_sha256_text(value)}]"
+    if parsed_legacy_marker:
+        return {
+            OMITTED_TOOL_ARGUMENT_KEY: True,
+            "field": label,
+            "chars": parsed_legacy_marker["chars"],
+            "sha256": parsed_legacy_marker["sha256"],
+            "legacy_redaction_marker": True,
+        }
+    return {
+        OMITTED_TOOL_ARGUMENT_KEY: True,
+        "field": label,
+        "chars": len(value),
+        "sha256": _sha256_text(value),
+    }
+
+
+def _parse_legacy_tool_argument_redaction_marker(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, str):
+        return None
+    match = _LEGACY_TOOL_ARGUMENT_REDACTION_RE.match(value.strip())
+    if not match:
+        return None
+    try:
+        chars = int(match.group("chars"))
+    except ValueError:
+        chars = len(value)
+    return {
+        "label": match.group("label"),
+        "chars": chars,
+        "sha256": match.group("sha256"),
+    }
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalized_tool_name(tool_name: str) -> str:
+    return (tool_name or "").lower().replace("-", "_")
 
 
 def _sha256_text(value: str) -> str:

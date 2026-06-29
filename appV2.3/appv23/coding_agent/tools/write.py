@@ -10,7 +10,11 @@ from appv23.agent.types import AgentTool, AgentToolResult
 from appv23.ai.types import TextContent
 from appv23.coding_agent.tools.file_mutation_queue import with_file_mutation_queue
 from appv23.coding_agent.tools.path_utils import resolve_to_cwd
-from appv23.coding_agent.tools.trust import mark_agent_written_file
+from appv23.coding_agent.tools.trust import (
+    is_legacy_tool_argument_redaction_marker,
+    is_omitted_write_content_placeholder,
+    mark_agent_written_file,
+)
 from appv23.coding_agent.tools.types import ToolContext, ToolDefinition, wrap_tool_definition
 
 WRITE_SCHEMA = {
@@ -52,6 +56,14 @@ def _execute_write(
 ):
     path = args["path"]
     content = args["content"]
+    if is_legacy_tool_argument_redaction_marker(content):
+        raise ValueError(
+            "Refusing to write appv23 redacted tool argument marker; regenerate the full file content before writing."
+        )
+    if is_omitted_write_content_placeholder(content):
+        raise ValueError(
+            "Refusing to write appv23 omitted historical write content marker; regenerate the full file content before writing."
+        )
     absolute_path = resolve_to_cwd(path, cwd)
     parent = os.path.dirname(absolute_path)
 

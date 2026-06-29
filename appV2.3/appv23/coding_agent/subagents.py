@@ -127,6 +127,13 @@ class SubagentTask:
 
     def prompt(self) -> str:
         parts = [
+            "Subagent system contract:\n"
+            f"- Current working directory: {self.cwd}\n"
+            "- Use paths relative to the current working directory unless the Goal gives an absolute path.\n"
+            "- Do not drop leading project directories from paths in the Goal; preserve prefixes such as appv23/.\n"
+            "- Do not use tools that are not listed in Allowed tools; glob is not available unless it is explicitly listed.\n"
+            "- After two failed attempts for the same path or unavailable tool, stop retrying, summarize the blocker, "
+            "and return the best evidence gathered so far.",
             f"Role: {self.role}",
             "Delegation boundary: You are already the delegated child subagent. Execute the Goal directly with "
             "the available tools. Do not evaluate whether the parent has subagent tools. Do not answer "
