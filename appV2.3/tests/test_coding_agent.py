@@ -139,6 +139,10 @@ def test_file_tool_render_calls_display_cwd_relative_absolute_paths(tmp_path: Pa
     assert create_tool_definition("write", str(tmp_path)).render_call({"path": absolute_doc}, ctx) == "write docs/ROADMAP.md"
     assert create_tool_definition("edit", str(tmp_path)).render_call({"path": absolute_doc}, ctx) == "edit docs/ROADMAP.md"
     assert create_tool_definition("ls", str(tmp_path)).render_call({"path": str(tmp_path / "docs")}, ctx) == "ls docs"
+    assert (
+        create_tool_definition("read", str(tmp_path)).render_call({"path": absolute_doc}, ctx)
+        == "read docs/ROADMAP.md (to expand)"
+    )
 
 
 def test_successful_write_and_edit_results_do_not_render_raw_success_text(tmp_path: Path) -> None:

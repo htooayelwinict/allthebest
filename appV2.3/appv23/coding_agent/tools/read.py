@@ -265,6 +265,8 @@ def _render_read_call(args, ctx=None) -> str:
         kind, label = classification
         if kind == "skill":
             return f"[skill] {label}{line_range} (to expand)"
+        if kind == "docs" and label.startswith("docs/"):
+            return f"read {label}{line_range} (to expand)"
         return f"read {kind} {label}{line_range} (to expand)"
     path = (args or {}).get("file_path") or (args or {}).get("path") or ""
     display = format_path_relative_to_cwd(resolve_to_cwd(path, cwd), cwd) if cwd and path else path
