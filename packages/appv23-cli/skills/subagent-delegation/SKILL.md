@@ -20,6 +20,7 @@ Use this skill only when the user explicitly asks for subagents, delegation, han
 - Do not write files unless the user explicitly asks for written artifacts.
 - Subagents must remain read-only.
 - Subagents must not write files, edit files, create files, delete files, or receive `write`/`edit` tools.
+- If Lewis requests a written artifact from delegated work, the child should inspect only and the parent should write the artifact from the child summary.
 
 ## Scope control
 
@@ -62,6 +63,7 @@ Parent instructions:
 - Spawn first when the user explicitly delegates inspection.
 - Pass exact user-provided paths or names to the child. Do not use parent `read`, `bash`, `find`, `ls`, `grep`, or equivalent tools to inspect, validate, locate, or resolve delegated targets before or after spawning.
 - Keep child tools read-only. Do not grant write/edit tools to a child task.
+- Do not include file-writing instructions in a child goal. If the final answer requires a report file, ask the child for findings only, then the parent should write the file.
 - Use `expand_subagent_result` if the child summary is bounded and more child output is needed.
 
 ## Parent reporting

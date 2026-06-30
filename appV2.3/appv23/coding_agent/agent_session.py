@@ -126,6 +126,19 @@ _SUBAGENT_OPT_OUT_TERMS = (
     "don't use subagent",
     "don't use subagents",
 )
+_SUBAGENT_FILE_MUTATION_GOAL_PATTERN = re.compile(
+    r"\b(?:write|create|edit|modify|update|delete|remove|save|append|overwrite)\b"
+    r"[\s\S]{0,120}?"
+    r"(?:"
+    r"[\w./-]+\.(?:md|txt|json|ya?ml|py|js|ts|tsx|jsx|html|css|toml|ini|cfg|env|sh|rs|go|java|c|cpp|h|hpp|sql|csv|xml)"
+    r"|\b(?:file|files|document|documents|artifact|artifacts)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _subagent_goal_requests_file_mutation(goal: str) -> bool:
+    return bool(_SUBAGENT_FILE_MUTATION_GOAL_PATTERN.search(str(goal or "")))
 
 
 def _prompt_requests_subagent_tools(text: str) -> bool:
@@ -139,7 +152,13 @@ _SPAWN_SUBAGENT_SCHEMA = {
     "type": "object",
     "properties": {
         "role": {"type": "string", "description": "Short child-agent role name, e.g. reviewer or researcher."},
-        "goal": {"type": "string", "description": "Bounded task for the child agent to complete."},
+        "goal": {
+            "type": "string",
+            "description": (
+                "Bounded read-only task for the child agent. Do not ask the child to write, edit, create, "
+                "delete, or save files; if Lewis requested an artifact, the child should inspect and the parent should write it."
+            ),
+        },
         "backend": {"type": "string", "description": "Subagent backend to use. Defaults to internal."},
         "wait": {"type": "boolean", "description": "Wait for the child result before returning. Defaults to true."},
         "timeoutSeconds": {"type": "integer", "description": "Maximum seconds to wait for the child result."},
@@ -1818,6 +1837,19 @@ class AgentSession:
         goal = _required_text_arg(args, "goal")
         context_pack = args.get("contextPack", "")
         self._reject_subagent_safety_override_text(role, goal, context_pack)
+        if _subagent_goal_requests_file_mutation(goal):
+            details = {
+                "status": "blocked",
+                "reason": "read_only_subagent_file_mutation_goal",
+                "goal": goal,
+                "allowedTools": list(_DEFAULT_SUBAGENT_ALLOWED_TOOLS),
+            }
+            return self._subagent_tool_result(
+                "Subagents are read-only and cannot write, edit, create, delete, or save files. "
+                "If Lewis requested a written artifact, spawn the child for inspection only, then the parent should write "
+                "the requested file from the child summary.",
+                details,
+            )
         normalized_role = self._normalize_subagent_role(role)
         wait_for_result = args.get("wait", True)
         if not isinstance(wait_for_result, bool):

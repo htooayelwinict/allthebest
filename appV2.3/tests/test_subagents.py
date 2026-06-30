@@ -1205,6 +1205,35 @@ def test_agent_session_spawn_subagent_tool_normalizes_safe_human_role(tmp_path):
     assert seen_roles == ["provider-loop-reviewer"]
 
 
+def test_agent_session_spawn_subagent_tool_rejects_read_only_child_file_mutation_goal(tmp_path):
+    spawned_goals: list[str] = []
+
+    def backend(task):
+        spawned_goals.append(task.goal)
+        return "should not run"
+
+    session = AgentSession(cwd=str(tmp_path), model=faux_model())
+    session.subagents.register_backend(CallableSubagentBackend("internal", backend))
+
+    result = session._execute_spawn_subagent_tool(
+        "tool-call",
+        {
+            "role": "reviewer",
+            "goal": "Inspect the project and write REVIEW.md with the top 3 concrete risks.",
+            "wait": True,
+        },
+    )
+
+    rendered = "\n".join(block.text for block in result.content)
+    assert result.details["status"] == "blocked"
+    assert result.details["reason"] == "read_only_subagent_file_mutation_goal"
+    assert "Subagents are read-only" in rendered
+    assert "spawn the child for inspection only" in rendered
+    assert "parent should write" in rendered
+    assert spawned_goals == []
+    assert session.subagents.list_tasks() == []
+
+
 def test_agent_session_expand_subagent_result_returns_bounded_full_child_output(tmp_path):
     noisy_summary = "summary-start " + ("NOISE " * 280) + "summary-end"
 

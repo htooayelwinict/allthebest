@@ -33,6 +33,7 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
   assert.match(agentsPrompt, /tests pass but encode the opposite/i);
   assert.match(agentsPrompt, /subagents? (are|must remain) read-only/i);
   assert.match(agentsPrompt, /subagents? must not write files/i);
+  assert.match(agentsPrompt, /child should inspect.*parent should write/is);
   assert.match(agentsPrompt, /truncated child result is not a failed child result/i);
   assert.match(agentsPrompt, /pre-read, find, list, grep, or resolve delegated target files/i);
   assert.match(agentsPrompt, /do not re-read child-scoped files/i);
@@ -49,6 +50,7 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
   assert.match(subagentSkill, /truncated child result is not a failed child result/i);
   assert.match(subagentSkill, /subagents? (are|must remain) read-only/i);
   assert.match(subagentSkill, /must not write files/i);
+  assert.match(subagentSkill, /child should inspect.*parent should write/is);
   assert.match(subagentSkill, /pre-read, find, list, grep, or resolve delegated target files/i);
   assert.match(subagentSkill, /do not re-read files in the parent/i);
   assert.match(subagentSkill, /forbidden fallback/i);
