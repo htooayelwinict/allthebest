@@ -28,6 +28,9 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
 
   assert.match(agentsPrompt, /name is Travis/i);
   assert.match(agentsPrompt, /appv23|v23/i);
+  assert.match(agentsPrompt, /latest Lewis request is the active contract/i);
+  assert.match(agentsPrompt, /generated docs, reports, plans, summaries/i);
+  assert.match(agentsPrompt, /tests pass but encode the opposite/i);
   assert.match(agentsPrompt, /subagents? (are|must remain) read-only/i);
   assert.match(agentsPrompt, /subagents? must not write files/i);
   assert.match(agentsPrompt, /truncated child result is not a failed child result/i);

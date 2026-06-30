@@ -1304,6 +1304,14 @@ def test_default_system_prompt_identifies_appv23_and_prefers_file_tools(tmp_path
     assert "after a failed test, inspect the failure and relevant source or test before editing again" not in prompt
 
 
+def test_system_prompt_prioritizes_latest_user_request_over_generated_context(tmp_path: Path) -> None:
+    prompt = build_system_prompt(BuildSystemPromptOptions(cwd=str(tmp_path)))
+
+    assert "latest user request is the active contract" in prompt
+    assert "generated reports, plans, summaries" in prompt
+    assert "If tests pass but encode the opposite" in prompt
+
+
 def test_system_prompt_routes_nested_file_writes_away_from_shell_setup(tmp_path: Path) -> None:
     write_definition = create_tool_definition("write", str(tmp_path))
     bash_definition = create_tool_definition("bash", str(tmp_path))
