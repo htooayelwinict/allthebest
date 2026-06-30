@@ -17,7 +17,7 @@ from appv23.coding_agent.tools.edit_diff import (
     strip_bom,
 )
 from appv23.coding_agent.tools.file_mutation_queue import with_file_mutation_queue
-from appv23.coding_agent.tools.path_utils import resolve_to_cwd
+from appv23.coding_agent.tools.path_utils import render_tool_path, resolve_to_cwd
 from appv23.coding_agent.tools.types import ToolContext, ToolDefinition, wrap_tool_definition
 
 EDIT_SCHEMA = {
@@ -69,6 +69,22 @@ def prepare_edit_arguments(input_args):
     args.pop("newText", None)
     args["edits"] = edits
     return args
+
+
+def _ctx_value(ctx, key: str, default=None):
+    if isinstance(ctx, dict):
+        return ctx.get(key, default)
+    return getattr(ctx, key, default)
+
+
+def _render_edit_call(args, ctx=None) -> str:
+    return f"edit {render_tool_path((args or {}).get('file_path') or (args or {}).get('path'), _ctx_value(ctx, 'cwd', ''))}"
+
+
+def _render_edit_result(result: AgentToolResult, options=None, ctx=None) -> str:
+    if not _ctx_value(ctx, "is_error", False):
+        return ""
+    return "\n".join(block.text for block in result.content if isinstance(block, TextContent))
 
 
 def _validate_edit_input(args) -> tuple[str, list[dict]]:
@@ -146,7 +162,8 @@ def create_edit_tool_definition(cwd: str) -> ToolDefinition:
         ],
         execute=lambda tid, args, signal=None, on_update=None, ctx=None: _execute_edit(cwd, tid, args, signal, on_update, ctx),
         prepare_arguments=prepare_edit_arguments,
-        render_call=lambda args, ctx=None: f"edit {args.get('path', '')}",
+        render_call=_render_edit_call,
+        render_result=_render_edit_result,
     )
 
 

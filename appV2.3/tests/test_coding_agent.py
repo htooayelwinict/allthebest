@@ -132,6 +132,30 @@ def test_read_tool_schema_and_execution_accept_pi_number_limits(tmp_path: Path) 
     assert "line5" not in result.content[0].text
 
 
+def test_file_tool_render_calls_display_cwd_relative_absolute_paths(tmp_path: Path) -> None:
+    ctx = {"cwd": str(tmp_path)}
+    absolute_doc = str(tmp_path / "docs" / "ROADMAP.md")
+
+    assert create_tool_definition("write", str(tmp_path)).render_call({"path": absolute_doc}, ctx) == "write docs/ROADMAP.md"
+    assert create_tool_definition("edit", str(tmp_path)).render_call({"path": absolute_doc}, ctx) == "edit docs/ROADMAP.md"
+    assert create_tool_definition("ls", str(tmp_path)).render_call({"path": str(tmp_path / "docs")}, ctx) == "ls docs"
+
+
+def test_successful_write_and_edit_results_do_not_render_raw_success_text(tmp_path: Path) -> None:
+    ctx = {"cwd": str(tmp_path), "is_error": False}
+    write_definition = create_tool_definition("write", str(tmp_path))
+    edit_definition = create_tool_definition("edit", str(tmp_path))
+    absolute_doc = str(tmp_path / "docs" / "PLAN.md")
+
+    write_result = AgentToolResult(content=[TextContent(text=f"Successfully wrote 20 bytes to {absolute_doc}")])
+    edit_result = AgentToolResult(content=[TextContent(text=f"Successfully replaced 1 block(s) in {absolute_doc}.")])
+
+    assert write_definition.render_result is not None
+    assert edit_definition.render_result is not None
+    assert write_definition.render_result(write_result, {"expanded": False}, ctx) == ""
+    assert edit_definition.render_result(edit_result, {"expanded": False}, ctx) == ""
+
+
 def test_read_tool_returns_image_content(tmp_path: Path) -> None:
     png_data = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="

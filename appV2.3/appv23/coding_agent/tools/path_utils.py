@@ -165,3 +165,24 @@ def format_path_relative_to_cwd(path: str, cwd: str) -> str:
     if rel == "." or (rel != ".." and not rel.startswith(".." + os.sep) and not os.path.isabs(rel)):
         return rel.replace(os.sep, "/")
     return path
+
+
+def shorten_path(path: str) -> str:
+    home = os.path.expanduser("~")
+    if home and path.startswith(home):
+        return "~" + path[len(home) :]
+    return path
+
+
+def render_tool_path(path: str | None, cwd: str, *, empty_fallback: str | None = None) -> str:
+    if path is None:
+        return ""
+    value = path or empty_fallback or ""
+    if not value:
+        return "..."
+    if cwd:
+        resolved = resolve_to_cwd(value, cwd)
+        display = format_path_relative_to_cwd(resolved, cwd)
+    else:
+        display = expand_path(value)
+    return shorten_path(display)

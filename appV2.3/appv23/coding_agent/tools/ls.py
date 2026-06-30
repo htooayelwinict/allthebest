@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from appv23.agent.types import AgentTool, AgentToolResult
 from appv23.ai.types import TextContent
-from appv23.coding_agent.tools.path_utils import resolve_to_cwd
+from appv23.coding_agent.tools.path_utils import render_tool_path, resolve_to_cwd
 from appv23.coding_agent.tools.truncate import DEFAULT_MAX_BYTES, format_size, truncate_head, truncation_to_details
 from appv23.coding_agent.tools.types import ToolContext, ToolDefinition, wrap_tool_definition
 
@@ -33,6 +33,16 @@ class LsOperations:
 
 
 _DEFAULT_OPERATIONS = LsOperations(exists=os.path.exists, is_directory=os.path.isdir, readdir=os.listdir)
+
+
+def _ctx_value(ctx, key: str, default=None):
+    if isinstance(ctx, dict):
+        return ctx.get(key, default)
+    return getattr(ctx, key, default)
+
+
+def _render_ls_call(args, ctx=None) -> str:
+    return f"ls {render_tool_path((args or {}).get('path'), _ctx_value(ctx, 'cwd', ''), empty_fallback='.')}"
 
 
 def _check_aborted(signal) -> None:
@@ -111,7 +121,7 @@ def create_ls_tool_definition(cwd: str, operations: LsOperations | None = None) 
         execute=lambda tid, args, signal=None, on_update=None, ctx=None: _execute_ls(
             cwd, ops, tid, args, signal, on_update, ctx
         ),
-        render_call=lambda args, ctx=None: f"ls {args.get('path', '.')}",
+        render_call=_render_ls_call,
     )
 
 

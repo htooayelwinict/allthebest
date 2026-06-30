@@ -9,7 +9,7 @@ from typing import Callable
 from appv23.agent.types import AgentTool, AgentToolResult
 from appv23.ai.types import TextContent
 from appv23.coding_agent.tools.file_mutation_queue import with_file_mutation_queue
-from appv23.coding_agent.tools.path_utils import resolve_to_cwd
+from appv23.coding_agent.tools.path_utils import render_tool_path, resolve_to_cwd
 from appv23.coding_agent.tools.types import ToolContext, ToolDefinition, wrap_tool_definition
 
 WRITE_SCHEMA = {
@@ -38,6 +38,24 @@ def _default_write_file(path: str, content: str) -> None:
 
 
 _DEFAULT_OPERATIONS = WriteOperations(mkdir=_default_mkdir, write_file=_default_write_file)
+
+
+def _ctx_value(ctx, key: str, default=None):
+    if isinstance(ctx, dict):
+        return ctx.get(key, default)
+    return getattr(ctx, key, default)
+
+
+def _render_write_call(args, ctx=None) -> str:
+    return f"write {render_tool_path((args or {}).get('file_path') or (args or {}).get('path'), _ctx_value(ctx, 'cwd', ''))}"
+
+
+def _render_write_result(result: AgentToolResult, options=None, ctx=None) -> str:
+    if not _ctx_value(ctx, "is_error", False):
+        return ""
+    return "\n".join(block.text for block in result.content if isinstance(block, TextContent))
+
+
 def _execute_write(
     cwd: str,
     tool_call_id,
@@ -94,7 +112,8 @@ def create_write_tool_definition(cwd: str, operations: WriteOperations | None = 
         execute=lambda tid, args, signal=None, on_update=None, ctx=None: _execute_write(
             cwd, tid, args, signal, on_update, ctx, ops
         ),
-        render_call=lambda args, ctx=None: f"write {args.get('path', '')}",
+        render_call=_render_write_call,
+        render_result=_render_write_result,
     )
 
 
