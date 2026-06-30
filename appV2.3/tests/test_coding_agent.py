@@ -2994,6 +2994,45 @@ def test_package_manager_mutation_guardrail_ignores_read_only_test_commands() ->
     assert decision.action == "allow"
 
 
+def test_workspace_scope_violation_guardrail_counts_across_state_changes() -> None:
+    from appv23.agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController()
+    message = (
+        "Refusing bash outside the current working directory: /Users/example/.ledgerlite.json. "
+        "Current working directory is /tmp/work. Ask the user to name this exact absolute path if it is intentional."
+    )
+
+    first = controller.workspace_scope_violation_decision(
+        "bash",
+        {"command": "rm -f /Users/example/.ledgerlite.json && python -m pytest"},
+        "/Users/example/.ledgerlite.json",
+        message,
+    )
+    controller.after_call("write", {"path": "ledgerlite_cli.py", "content": "code"}, "ok", failed=False)
+    second = controller.workspace_scope_violation_decision(
+        "bash",
+        {"command": "cd /tmp/work && rm -f /Users/example/.ledgerlite.json && python -m pytest"},
+        "/Users/example/.ledgerlite.json",
+        message,
+    )
+    controller.after_call("write", {"path": "tests/test_ledgerlite_cli.py", "content": "tests"}, "ok", failed=False)
+    third = controller.workspace_scope_violation_decision(
+        "bash",
+        {"command": "rm -f /Users/example/.ledgerlite.json && true"},
+        "/Users/example/.ledgerlite.json",
+        message,
+    )
+
+    assert first.action == "block"
+    assert first.code == "workspace_scope_violation"
+    assert second.action == "warn"
+    assert second.code == "workspace_scope_repeated_warning"
+    assert third.action == "halt"
+    assert third.code == "workspace_scope_repeated_block"
+    assert "same out-of-workspace path 3 times" in third.message
+
+
 def test_tool_loop_guardrail_resets_exact_failure_after_successful_state_change() -> None:
     from appv23.agent.tool_guardrails import ToolCallGuardrailController
 
@@ -4920,6 +4959,81 @@ def test_agent_session_blocks_repeated_extension_blocked_bash_loop(tmp_path: Pat
     assert "STOP repeating" in tool_results[-1].content[0].text
     assert session.messages[-1].role == "assistant"
     assert "I stopped retrying bash" in session.messages[-1].content[0].text
+
+
+def test_agent_session_blocks_workspace_scope_bash_loop_across_successful_writes(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    bash_executions: list[dict] = []
+    write_executions: list[dict] = []
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-ledgerlite.json"
+    sequence = [
+        ("bash", {"command": f"rm -f {outside} && python -m pytest"}),
+        ("write", {"path": "ledgerlite_cli.py", "content": "code"}),
+        ("bash", {"command": f"cd {tmp_path} && rm -f {outside} && python -m pytest"}),
+        ("write", {"path": "tests/test_ledgerlite_cli.py", "content": "tests"}),
+        ("bash", {"command": f"rm -f {outside} && true"}),
+        ("bash", {"command": f"rm -f {outside} && python -m pytest"}),
+    ]
+
+    def execute_bash(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        bash_executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="should not execute")], details={})
+
+    def execute_write(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        write_executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="ok")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute_bash,
+    )
+    write_definition = ToolDefinition(
+        name="write",
+        label="write",
+        description="Write a file",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+        execute=execute_write,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] > len(sequence):
+            return text_response_events(m, "loop escaped")
+        name, args = sequence[provider_calls["n"] - 1]
+        return tool_call_response_events(m, name, args, call_id=f"call_{provider_calls['n']}")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=model,
+        tool_definitions=[bash_definition, write_definition],
+        max_iterations=8,
+    )
+
+    session.prompt("add a cli and run tests")
+
+    tool_results = [m for m in session.messages if getattr(m, "role", None) == "toolResult"]
+    assert provider_calls["n"] == 5
+    assert bash_executions == []
+    assert [args["path"] for args in write_executions] == ["ledgerlite_cli.py", "tests/test_ledgerlite_cli.py"]
+    assert tool_results[-1].is_error is True
+    assert "workspace_scope_repeated_block" in tool_results[-1].content[0].text
+    assert "same out-of-workspace path 3 times" in tool_results[-1].content[0].text
+    assert session.messages[-1].role == "assistant"
+    assert "I stopped retrying bash" in session.messages[-1].content[0].text
+    assert "workspace_scope_repeated_block" in session.messages[-1].content[0].text
 
 
 def test_agent_session_blocks_repeated_invalid_read_schema_loop_by_default(tmp_path: Path) -> None:

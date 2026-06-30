@@ -69,7 +69,10 @@ FILE_OBSERVING_TOOL_NAMES = frozenset(
     }
 )
 PACKAGE_MANAGER_MUTATION_REQUIRES_CONSENT_CODE = "package_manager_mutation_requires_consent"
-RECOVERABLE_BLOCK_CODES = frozenset({PACKAGE_MANAGER_MUTATION_REQUIRES_CONSENT_CODE})
+WORKSPACE_SCOPE_VIOLATION_CODE = "workspace_scope_violation"
+WORKSPACE_SCOPE_REPEATED_WARNING_CODE = "workspace_scope_repeated_warning"
+WORKSPACE_SCOPE_REPEATED_BLOCK_CODE = "workspace_scope_repeated_block"
+RECOVERABLE_BLOCK_CODES = frozenset({PACKAGE_MANAGER_MUTATION_REQUIRES_CONSENT_CODE, WORKSPACE_SCOPE_VIOLATION_CODE})
 
 DEFAULT_NO_PROGRESS_BLOCK_TOOL_NAMES = frozenset(
     {
@@ -385,6 +388,7 @@ class ToolCallGuardrailController:
         self._consecutive_count = 0
         self._landed_file_mutations: dict[str, str] = {}
         self._landed_file_mutation_counts: dict[str, int] = {}
+        self._workspace_scope_violation_counts: dict[ToolCallSignature, int] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -622,6 +626,50 @@ class ToolCallGuardrailController:
 
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
+    def workspace_scope_violation_decision(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        resolved_path: str,
+        message: str,
+    ) -> ToolGuardrailDecision:
+        args = _coerce_args(args)
+        signature = _workspace_scope_violation_signature(tool_name, resolved_path)
+        count = self._workspace_scope_violation_counts.get(signature, 0) + 1
+        self._workspace_scope_violation_counts[signature] = count
+
+        block_after = min(self.config.exact_failure_block_after, DEFAULT_READ_STYLE_NO_PROGRESS_BLOCK_AFTER)
+        if count >= block_after:
+            decision = ToolGuardrailDecision(
+                action="halt",
+                code=WORKSPACE_SCOPE_REPEATED_BLOCK_CODE,
+                message=_workspace_scope_violation_recovery_message(message, count, blocked=True),
+                tool_name=tool_name,
+                count=count,
+                signature=signature,
+            )
+            self._halt_decision = decision
+            return decision
+
+        if self.config.warnings_enabled and count >= self.config.exact_failure_warn_after:
+            return ToolGuardrailDecision(
+                action="warn",
+                code=WORKSPACE_SCOPE_REPEATED_WARNING_CODE,
+                message=_workspace_scope_violation_recovery_message(message, count, blocked=False),
+                tool_name=tool_name,
+                count=count,
+                signature=signature,
+            )
+
+        return ToolGuardrailDecision(
+            action="block",
+            code=WORKSPACE_SCOPE_VIOLATION_CODE,
+            message=message,
+            tool_name=tool_name,
+            count=count,
+            signature=signature,
+        )
+
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:
             return False
@@ -801,6 +849,30 @@ def _no_progress_signature(tool_name: str, args: Mapping[str, Any], cwd: str | N
     if semantic_key is None:
         return None
     return ToolCallSignature(tool_name=tool_name, args_hash=_sha256(semantic_key))
+
+
+def _workspace_scope_violation_signature(tool_name: str, resolved_path: str) -> ToolCallSignature:
+    semantic_key = json.dumps(
+        {
+            "kind": "workspace_scope_violation",
+            "path": _normalize_shell_path(resolved_path.replace("\\", "/")),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return ToolCallSignature(tool_name=tool_name, args_hash=_sha256(semantic_key))
+
+
+def _workspace_scope_violation_recovery_message(message: str, count: int, *, blocked: bool) -> str:
+    prefix = "BLOCKED: " if blocked else ""
+    return (
+        f"{prefix}{message} The same out-of-workspace path {count} times this turn was blocked. "
+        "The policy result has NOT changed and writing files inside the current working directory will not make "
+        "that external path valid. STOP repeating this tool call. Use a path inside the current working directory, "
+        "change the implementation to avoid the external path, or report the blocker and ask the user to authorize "
+        "the exact absolute path."
+    )
 
 
 def _bash_effective_args_key(args: Mapping[str, Any]) -> str | None:

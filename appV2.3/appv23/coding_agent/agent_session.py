@@ -3503,17 +3503,28 @@ class AgentSession:
             return text
         return ""
 
-    def _workspace_scope_violation(self, context) -> str | None:
+    def _workspace_scope_violation(self, context) -> ToolGuardrailDecision | None:
         tool_name = str(getattr(context.tool_call, "name", "") or "")
         args = context.args if isinstance(context.args, dict) else {}
         latest_user_message = self._latest_user_message_text(context.context)
         for raw_path in _tool_call_workspace_path_candidates(tool_name, args):
             violation = self._workspace_path_violation(tool_name, raw_path, latest_user_message)
             if violation is not None:
-                return violation
+                resolved_path, message = violation
+                return self._tool_guardrails.workspace_scope_violation_decision(
+                    tool_name,
+                    args,
+                    resolved_path,
+                    message,
+                )
         return None
 
-    def _workspace_path_violation(self, tool_name: str, raw_path: str, latest_user_message: str) -> str | None:
+    def _workspace_path_violation(
+        self,
+        tool_name: str,
+        raw_path: str,
+        latest_user_message: str,
+    ) -> tuple[str, str] | None:
         resolved = _safe_resolve_to_cwd(raw_path, self.cwd)
         if resolved is None or _path_is_within(resolved, self.cwd):
             return None
@@ -3521,7 +3532,7 @@ class AgentSession:
             return None
         if tool_name == "read" and self._read_path_is_registered_resource(resolved):
             return None
-        return (
+        return resolved, (
             f"Refusing {tool_name} outside the current working directory: {resolved}. "
             f"Current working directory is {self.cwd}. Ask the user to name this exact absolute path if it is intentional."
         )
@@ -3566,7 +3577,11 @@ class AgentSession:
 
         workspace_violation = self._workspace_scope_violation(context)
         if workspace_violation is not None:
-            return BeforeToolCallResult(block=True, reason=workspace_violation)
+            if workspace_violation.action in {"warn", "halt"}:
+                self._steer_tool_loop_recovery(workspace_violation)
+            if workspace_violation.should_halt:
+                self._tool_guardrail_halt_decision = workspace_violation
+            return BeforeToolCallResult(block=True, reason=toolguard_synthetic_result(workspace_violation))
 
         decision = package_manager_mutation_decision(
             context.tool_call.name,
