@@ -39,7 +39,9 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
   assert.match(agentsPrompt, /expand_subagent_result/i);
   assert.match(agentsPrompt, /Subagent system contract/i);
   assert.match(agentsPrompt, /Do not drop leading project directories/i);
-  assert.match(agentsPrompt, /glob is not available unless/i);
+  assert.match(agentsPrompt, /Allowed tools are its complete tool catalog/i);
+  assert.match(agentsPrompt, /For child file discovery, tell it to use `find` or `ls`/i);
+  assert.doesNotMatch(agentsPrompt, /glob is not available unless/i);
   assert.match(agentsPrompt, /After two failed attempts/i);
   assert.match(subagentSkill, /truncated child result is not a failed child result/i);
   assert.match(subagentSkill, /subagents? (are|must remain) read-only/i);
@@ -54,7 +56,9 @@ test("package prompts prevent parent rereads after bounded subagent summaries", 
   assert.match(subagentSkill, /Subagent system contract/i);
   assert.match(subagentSkill, /Current working directory/i);
   assert.match(subagentSkill, /Do not drop leading project directories/i);
-  assert.match(subagentSkill, /glob is not available unless/i);
+  assert.match(subagentSkill, /Allowed tools are the child's complete tool catalog/i);
+  assert.match(subagentSkill, /For file discovery, use `find` or `ls`/i);
+  assert.doesNotMatch(subagentSkill, /glob is not available unless/i);
   assert.match(subagentSkill, /After two failed attempts/i);
 });
 

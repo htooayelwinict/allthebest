@@ -321,8 +321,9 @@ def test_subagent_task_prompt_contains_child_system_contract(tmp_path):
     assert f"Current working directory: {tmp_path}" in prompt
     assert "Use paths relative to the current working directory" in prompt
     assert "Do not drop leading project directories from paths in the Goal" in prompt
-    assert "Do not use tools that are not listed in Allowed tools" in prompt
-    assert "glob is not available unless it is explicitly listed" in prompt
+    assert "Allowed tools are the complete tool catalog for this child" in prompt
+    assert "For file discovery, use find or ls" in prompt
+    assert "glob" not in prompt.lower()
     assert "After two failed attempts for the same path or unavailable tool, stop retrying" in prompt
 
 

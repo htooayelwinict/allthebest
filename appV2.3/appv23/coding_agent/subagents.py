@@ -131,7 +131,8 @@ class SubagentTask:
             f"- Current working directory: {self.cwd}\n"
             "- Use paths relative to the current working directory unless the Goal gives an absolute path.\n"
             "- Do not drop leading project directories from paths in the Goal; preserve prefixes such as appv23/.\n"
-            "- Do not use tools that are not listed in Allowed tools; glob is not available unless it is explicitly listed.\n"
+            "- Allowed tools are the complete tool catalog for this child. Do not use any tool names outside Allowed tools.\n"
+            "- For file discovery, use find or ls.\n"
             "- After two failed attempts for the same path or unavailable tool, stop retrying, summarize the blocker, "
             "and return the best evidence gathered so far.",
             f"Role: {self.role}",

@@ -48,11 +48,12 @@ Child instructions must say:
   - Current working directory: include the child's cwd or selected workspace.
   - Use paths relative to the current working directory unless the goal gives an absolute path.
   - Do not drop leading project directories from paths in the Goal; preserve prefixes like `appv23/`.
-  - Do not use tools that are not listed in Allowed tools. glob is not available unless it is explicitly listed.
+  - Allowed tools are the child's complete tool catalog. Do not use tool names outside Allowed tools.
+  - For file discovery, use `find` or `ls`.
   - After two failed attempts for the same path or unavailable tool, stop retrying and report the blocker.
 - Make one diagnostic attempt after a missing path or failed tool call, then stop and report the blocker.
 - Do not retry the same tool call with the same arguments.
-- Do not call a `glob` tool. This runtime does not provide one; use `ls`, `find`, `read`, or a bounded `bash` command when needed.
+- For file discovery, use `ls`, `find`, `read`, or a bounded `bash` command when needed.
 - Do not scan parent directories outside the assigned scope.
 - Do not include full tool traces in the final answer.
 
