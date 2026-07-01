@@ -13,6 +13,7 @@ import copy
 import hashlib
 import json
 import re
+import shlex
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -293,6 +294,7 @@ def _sanitize_summary_source_text(text: str) -> str:
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
+_FILE_OPERATION_TAG_RE = re.compile(r"<(read-files|modified-files)>\s*(.*?)\s*</\1>", re.DOTALL)
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
@@ -306,6 +308,89 @@ def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int =
         _dedupe_append(relevant_files, match.rstrip(".,:;"), limit=limit)
 
 
+def _tool_path(arguments: dict | None) -> str:
+    if not isinstance(arguments, dict):
+        return ""
+    value = arguments.get("path")
+    return value if isinstance(value, str) and value.strip() else ""
+
+
+def _bash_file_mutation_paths(arguments: dict | None) -> set[str]:
+    if not isinstance(arguments, dict):
+        return set()
+    command = arguments.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return set()
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return set()
+
+    paths: set[str] = set()
+    for index, token in enumerate(tokens):
+        redirect_path = _bash_redirection_path(token, tokens[index + 1] if index + 1 < len(tokens) else "")
+        if redirect_path:
+            if not _is_bash_sink_path(redirect_path):
+                paths.add(redirect_path)
+            continue
+        if token == "tee":
+            for candidate in tokens[index + 1 :]:
+                if candidate in {"|", "||", "&&", ";"}:
+                    break
+                if candidate == "--":
+                    continue
+                if candidate.startswith("-"):
+                    continue
+                if _bash_redirection_path(candidate, ""):
+                    continue
+                if _is_bash_sink_path(candidate):
+                    continue
+                paths.add(candidate)
+                break
+    return paths
+
+
+def _bash_redirection_path(token: str, next_token: str) -> str:
+    if token in {">", ">>", "1>", "1>>", "&>"}:
+        return next_token if next_token and next_token not in {"|", "||", "&&", ";"} else ""
+    for prefix in ("1>>", "1>", ">>", ">", "&>"):
+        if token.startswith(prefix) and len(token) > len(prefix):
+            return token[len(prefix) :]
+    return ""
+
+
+def _is_bash_sink_path(path: str) -> bool:
+    return path in {"/dev/null", "/dev/stdout", "/dev/stderr", "-"}
+
+
+def _extract_file_operation_tags(summary: str | None) -> tuple[set[str], set[str]]:
+    read_files: set[str] = set()
+    modified_files: set[str] = set()
+    if not summary:
+        return read_files, modified_files
+    for tag, body in _FILE_OPERATION_TAG_RE.findall(summary):
+        target = read_files if tag == "read-files" else modified_files
+        for line in body.splitlines():
+            value = line.strip()
+            if value:
+                target.add(value)
+    return read_files, modified_files
+
+
+def _strip_file_operation_tags(summary: str) -> str:
+    stripped = _FILE_OPERATION_TAG_RE.sub("", summary or "")
+    return re.sub(r"\n{3,}", "\n\n", stripped).rstrip()
+
+
+def _format_file_operations(read_files: list[str], modified_files: list[str]) -> str:
+    sections: list[str] = []
+    if read_files:
+        sections.append("<read-files>\n" + "\n".join(read_files) + "\n</read-files>")
+    if modified_files:
+        sections.append("<modified-files>\n" + "\n".join(modified_files) + "\n</modified-files>")
+    return "\n\n" + "\n\n".join(sections) if sections else ""
+
+
 @dataclass
 class CompressionResult:
     messages: list[Message]
@@ -314,6 +399,7 @@ class CompressionResult:
     summary: str | None = None
     tokens_before: int = 0
     first_kept_message_index: int | None = None
+    details: dict[str, list[str]] | None = None
 
 
 class ContextCompressor:
@@ -949,6 +1035,39 @@ Write only the summary body. Do not include any preamble or prefix."""
             parts.append(f"[{str(role).upper()}]: {content}")
         return "\n\n".join(parts)
 
+    def _file_operations_for_summary(self, middle: list[Message]) -> tuple[list[str], list[str]]:
+        read_files, previous_modified = _extract_file_operation_tags(self._previous_summary)
+        written_files: set[str] = set()
+        edited_files: set[str] = set(previous_modified)
+
+        for message in middle:
+            if getattr(message, "role", None) != "assistant":
+                continue
+            for call in self._tool_calls(message):
+                if call.name == "bash":
+                    written_files.update(_bash_file_mutation_paths(call.arguments))
+                    continue
+                path = _tool_path(call.arguments)
+                if not path:
+                    continue
+                if call.name == "read":
+                    read_files.add(path)
+                elif call.name == "write":
+                    written_files.add(path)
+                elif call.name == "edit":
+                    edited_files.add(path)
+
+        modified_files = written_files | edited_files
+        read_only = read_files - modified_files
+        return sorted(read_only), sorted(modified_files)
+
+    def _append_file_operations_to_summary(self, summary: str, middle: list[Message]) -> str:
+        read_files, modified_files = self._file_operations_for_summary(middle)
+        formatted = _format_file_operations(read_files, modified_files)
+        if not formatted:
+            return summary
+        return _strip_file_operation_tags(summary) + formatted
+
     @classmethod
     def _summary_content(cls, content: str) -> str:
         return _sanitize_summary_source_text(cls._truncate_summary_content(content))
@@ -994,6 +1113,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         assistant_actions: list[str] = []
         tool_actions: list[str] = []
         relevant_files: list[str] = []
+        read_files: list[str] = []
+        modified_files: list[str] = []
         blockers: list[str] = []
         last_dropped_turns: list[str] = []
         call_id_to_tool: dict[str, tuple[str, str]] = {}
@@ -1014,11 +1135,22 @@ Write only the summary body. Do not include any preamble or prefix."""
             if len(last_dropped_turns) > limit:
                 del last_dropped_turns[0]
 
+        def tool_path(arguments: dict | None) -> str:
+            if not isinstance(arguments, dict):
+                return ""
+            value = arguments.get("path") or arguments.get("file_path")
+            return value if isinstance(value, str) else ""
+
         for message in middle:
             if getattr(message, "role", None) != "assistant":
                 continue
             for call in self._tool_calls(message):
                 call_id_to_tool[call.id] = (call.name, str(call.arguments or ""))
+                path = tool_path(call.arguments)
+                if call.name == "read":
+                    _dedupe_append(read_files, path, limit=12)
+                elif call.name in {"write", "edit"}:
+                    _dedupe_append(modified_files, path, limit=12)
                 for value in (call.arguments or {}).values():
                     if isinstance(value, str):
                         _collect_path_mentions(value, relevant_files)
@@ -1070,13 +1202,20 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 ## Constraints & Preferences
 - This fallback was generated locally without an LLM summary call.
 - Secrets and credentials were redacted before preservation.
-- The summary may be incomplete; verify current files, git state, processes, and test results before making claims.
+- The summary may be incomplete. Inspect only the files or state needed for the latest user request before making claims.
+- Run tests only when the latest request asks for tests, or when validating a code change that genuinely requires test execution.
 
-## Completed Actions
-{chr(10).join(completed) if completed else "None recoverable from compacted turns."}
+	## Completed Actions
+	{chr(10).join(completed) if completed else "None recoverable from compacted turns."}
 
-## Active State
-Unknown from deterministic fallback. Inspect current repository/session state if needed.
+	## File Operations
+	Modified files:
+	{bullets(modified_files, limit=12)}
+	Read files:
+	{bullets(read_files, limit=12)}
+
+	## Active State
+	Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
 {HISTORICAL_IN_PROGRESS_HEADING}
 {active_task}
@@ -1097,7 +1236,7 @@ None recoverable from deterministic fallback.
 {bullets(relevant_files, limit=12)}
 
 {HISTORICAL_REMAINING_WORK_HEADING}
-Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
+Continue from the most recent unfulfilled user ask and protected tail messages. Inspect relevant state only when needed for that ask.
 
 ## Last Dropped Turns
 {bullets(last_dropped_turns, limit=8)}
@@ -1193,6 +1332,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             summary_text = _redact_sensitive_text(
                 self._static_fallback_summary(middle, reason=self._last_summary_error)
             )
+        read_files, modified_files = self._file_operations_for_summary(middle)
+        formatted_file_operations = _format_file_operations(read_files, modified_files)
+        if formatted_file_operations:
+            summary_text = _strip_file_operation_tags(summary_text) + formatted_file_operations
+        details = {"readFiles": read_files, "modifiedFiles": modified_files}
         result = self._assemble_compressed_messages(pruned, head_end, tail_start, summary_text)
         result = self._sanitize_tool_pairs(result)
         result = self._strip_historical_media(result)
@@ -1213,6 +1357,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             summary=summary_text,
             tokens_before=before,
             first_kept_message_index=tail_start,
+            details=details,
         )
 
     def _find_tail_start(self, messages: list[Message], head_end: int, *, deep: bool = False) -> int:

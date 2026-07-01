@@ -48,11 +48,17 @@ from appv23.coding_agent import (
     create_tool,
     create_tool_definition,
 )
-from appv23.coding_agent.agent_session import BashResult
+from appv23.coding_agent.agent_session import BashResult, default_convert_to_llm
 from appv23.coding_agent.system_prompt import BuildSystemPromptOptions
-from appv23.coding_agent.tools.bash import BashOperations, BashSpawnContext, create_bash_tool, create_local_bash_operations
+from appv23.coding_agent.tools.bash import (
+    BASH_SCHEMA,
+    BashOperations,
+    BashSpawnContext,
+    create_bash_tool,
+    create_local_bash_operations,
+)
 from appv23.coding_agent.tools.path_utils import resolve_to_cwd
-from appv23.coding_agent.tools.write import WriteOperations, create_write_tool
+from appv23.coding_agent.tools.write import WRITE_SCHEMA, WriteOperations, create_write_tool
 from appv23.coding_agent.tools.truncate import truncate_head
 from appv23.coding_agent.tools.types import ToolContext, ToolDefinition, wrap_tool_definition
 from appv23.ai.providers.faux import create_faux_provider, faux_model, text_response_events, tool_call_response_events
@@ -235,6 +241,13 @@ def test_write_tool_allows_empty_content_and_truncates_existing_file_like_pi(tmp
     assert target.read_text(encoding="utf-8") == ""
 
 
+def test_write_tool_requires_content_arg_like_pi_executor(tmp_path: Path) -> None:
+    tool = create_write_tool(str(tmp_path))
+
+    with pytest.raises(KeyError):
+        tool.execute("write-missing-content", {"path": "out.md"})
+
+
 def test_write_tool_writes_literal_historical_marker_text_like_pi_write(tmp_path: Path) -> None:
     target = tmp_path / "out.md"
     target.write_text("existing\n", encoding="utf-8")
@@ -262,6 +275,51 @@ def test_repeated_successful_write_mutations_are_not_model_guardrail_warnings(tm
     assert second.should_halt is False
     assert second.code == "allow"
     assert second.message == ""
+
+
+def test_repeated_identical_successful_write_mutation_warns_without_default_halt(tmp_path: Path) -> None:
+    from appv23.agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController(cwd=str(tmp_path))
+    args = {"path": "PROTOCOL_FIXTURE.md", "content": "line1 is"}
+
+    decisions = [
+        controller.after_call(
+            "write",
+            args,
+            "Successfully wrote 8 bytes to PROTOCOL_FIXTURE.md",
+            failed=False,
+        )
+        for _ in range(6)
+    ]
+
+    assert decisions[0].action == "allow"
+    assert decisions[1].action == "allow"
+    assert decisions[2].action == "warn"
+    assert decisions[-1].action == "warn"
+    assert decisions[-1].code == "mutating_no_progress_warning"
+    assert decisions[-1].should_halt is False
+
+
+def test_repeated_identical_successful_write_mutation_halts_when_hard_stop_enabled(tmp_path: Path) -> None:
+    from appv23.agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True), cwd=str(tmp_path))
+    args = {"path": "PROTOCOL_FIXTURE.md", "content": "line1 is"}
+
+    decisions = [
+        controller.after_call(
+            "write",
+            args,
+            "Successfully wrote 8 bytes to PROTOCOL_FIXTURE.md",
+            failed=False,
+        )
+        for _ in range(6)
+    ]
+
+    assert decisions[-1].action == "halt"
+    assert decisions[-1].code == "mutating_no_progress_halt"
+    assert decisions[-1].should_halt is True
 
 
 def test_read_tool_checks_abort_after_access_before_read_file(tmp_path: Path) -> None:
@@ -411,6 +469,9 @@ def test_write_tool_creates_dirs(tmp_path: Path) -> None:
     assert result.content[0].text == "Successfully wrote 5 bytes to sub/dir/new.txt"
     assert result.details["bytes_written"] == 5
     assert result.details["total_bytes"] == 5
+    assert len(result.details["content_sha256"]) == 64
+    assert result.details["line_count"] == 1
+    assert result.details["final_newline"] is False
 
 
 def test_write_tool_allows_empty_file_like_pi(tmp_path: Path) -> None:
@@ -440,6 +501,305 @@ def test_write_tool_accepts_protocol_literal_content_as_normal_pi_content(tmp_pa
 
     assert (tmp_path / "docs" / "probe.md").read_text(encoding="utf-8") == content
     assert f"Successfully wrote {len(content)} bytes to docs/probe.md" in result.content[0].text
+
+
+def test_agent_session_allows_empty_protocol_literal_write_content_like_pi(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        (tmp_path / args["path"]).write_text(args["content"], encoding="utf-8")
+        return AgentToolResult(content=[TextContent(text="wrote")], details={})
+
+    write_definition = ToolDefinition(
+        name="write",
+        label="Write",
+        description="write",
+        parameters=WRITE_SCHEMA,
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return tool_call_response_events(
+                m,
+                "write",
+                {"path": "MALFORMED_INPUT.md", "content": ""},
+                call_id="lossy_write",
+            )
+        return text_response_events(m, "reported failure")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[write_definition])
+
+    session.prompt(
+        "Create MALFORMED_INPUT.md as a data file containing these exact four literal lines: "
+        "</parameter> ; <parameter=timeout> ; 30 ; </function>"
+    )
+
+    tool_result_text = "\n".join(
+        _content_text(message.content)
+        for message in session.messages
+        if getattr(message, "role", None) == "toolResult"
+    )
+
+    assert executions == [{"path": "MALFORMED_INPUT.md", "content": ""}]
+    assert (tmp_path / "MALFORMED_INPUT.md").read_text(encoding="utf-8") == ""
+    assert "provider returned empty write.content" not in tool_result_text
+    assert "Protocol-safe fallback" not in tool_result_text
+
+
+def test_agent_session_allows_protocol_literal_write_content_without_semantic_blocker_like_pi(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[dict] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        (tmp_path / args["path"]).write_text(args["content"], encoding="utf-8")
+        return AgentToolResult(content=[TextContent(text="wrote")], details={})
+
+    write_definition = ToolDefinition(
+        name="write",
+        label="Write",
+        description="write",
+        parameters=WRITE_SCHEMA,
+        execute=execute,
+    )
+
+    corrupted_content = "</parameter> ; </timeout>; 30 ; </function>"
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] == 1:
+            return tool_call_response_events(
+                m,
+                "write",
+                {
+                    "path": "MALFORMED_INPUT.md",
+                    "content": corrupted_content,
+                },
+                call_id="lossy_write",
+            )
+        return text_response_events(m, "reported failure")
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[write_definition])
+
+    session.prompt(
+        "Create MALFORMED_INPUT.md as a data file containing these exact four literal lines: "
+        "</parameter> ; <parameter=timeout> ; 30 ; </function>"
+    )
+
+    tool_result_text = "\n".join(
+        _content_text(message.content)
+        for message in session.messages
+        if getattr(message, "role", None) == "toolResult"
+    )
+
+    assert executions == [{"path": "MALFORMED_INPUT.md", "content": corrupted_content}]
+    assert (tmp_path / "MALFORMED_INPUT.md").read_text(encoding="utf-8") == corrupted_content
+    assert "provider returned lossy write.content" not in tool_result_text
+    assert "Protocol-safe fallback" not in tool_result_text
+
+
+def test_agent_session_allows_complete_protocol_literal_write_content(tmp_path: Path) -> None:
+    model = faux_model()
+    content = "</parameter>\n<parameter=timeout>\n30\n</function>\n"
+    executions: list[dict] = []
+    provider_calls = {"n": 0}
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        (tmp_path / args["path"]).write_text(args["content"], encoding="utf-8")
+        return AgentToolResult(content=[TextContent(text="wrote")], details={})
+
+    write_definition = ToolDefinition(
+        name="write",
+        label="Write",
+        description="write",
+        parameters=WRITE_SCHEMA,
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] != 1:
+            return text_response_events(m, "done")
+        return tool_call_response_events(
+            m,
+            "write",
+            {"path": "MALFORMED_INPUT.md", "content": content},
+            call_id="safe_write",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[write_definition])
+
+    session.prompt(
+        "Create MALFORMED_INPUT.md as a data file containing these exact four literal lines: "
+        "</parameter> ; <parameter=timeout> ; 30 ; </function>"
+    )
+
+    assert executions == [{"path": "MALFORMED_INPUT.md", "content": content}]
+    assert (tmp_path / "MALFORMED_INPUT.md").read_text(encoding="utf-8") == content
+
+
+def test_agent_session_keeps_protocol_literal_json_escape_text_in_write_content_like_pi(tmp_path: Path) -> None:
+    model = faux_model()
+    content = "</parameter>\n<parameter=timeout>\n30\n</function>\n"
+    escaped_content = "\\u003c/parameter\\u003e\n\\u003cparameter=timeout\\u003e\n30\n\\u003c/function\\u003e\n"
+    executions: list[dict] = []
+    provider_calls = {"n": 0}
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        (tmp_path / args["path"]).write_text(args["content"], encoding="utf-8")
+        return AgentToolResult(content=[TextContent(text="wrote")], details={})
+
+    write_definition = ToolDefinition(
+        name="write",
+        label="Write",
+        description="write",
+        parameters=WRITE_SCHEMA,
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] != 1:
+            return text_response_events(m, "done")
+        return tool_call_response_events(
+            m,
+            "write",
+            {"path": "protocol_fixture.md", "content": escaped_content},
+            call_id="escaped_protocol_write",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[write_definition])
+
+    session.prompt(
+        "Create protocol_fixture.md containing exactly four literal lines: "
+        "</parameter> ; <parameter=timeout> ; 30 ; </function>"
+    )
+
+    assert executions == [{"path": "protocol_fixture.md", "content": escaped_content}]
+    assert (tmp_path / "protocol_fixture.md").read_text(encoding="utf-8") == escaped_content
+
+
+def test_agent_session_keeps_double_escaped_protocol_literal_json_escape_text_like_pi(tmp_path: Path) -> None:
+    model = faux_model()
+    content = "</parameter>\n<parameter=timeout>\n30\n</function>\n"
+    double_escaped_content = "\\\\u003c/parameter\\\\u003e\n\\\\u003cparameter=timeout\\\\u003e\n30\n\\\\u003c/function\\\\u003e\n"
+    executions: list[dict] = []
+    provider_calls = {"n": 0}
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        (tmp_path / args["path"]).write_text(args["content"], encoding="utf-8")
+        return AgentToolResult(content=[TextContent(text="wrote")], details={})
+
+    write_definition = ToolDefinition(
+        name="write",
+        label="Write",
+        description="write",
+        parameters=WRITE_SCHEMA,
+        execute=execute,
+    )
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] != 1:
+            return text_response_events(m, "done")
+        return tool_call_response_events(
+            m,
+            "write",
+            {"path": "protocol_fixture.md", "content": double_escaped_content},
+            call_id="double_escaped_protocol_write",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[write_definition])
+
+    session.prompt(
+        "Create protocol_fixture.md containing exactly four literal lines: "
+        "</parameter> ; <parameter=timeout> ; 30 ; </function>"
+    )
+
+    assert executions == [{"path": "protocol_fixture.md", "content": double_escaped_content}]
+    assert (tmp_path / "protocol_fixture.md").read_text(encoding="utf-8") == double_escaped_content
+
+
+def test_agent_session_allows_protocol_literal_shell_file_recovery_when_write_transport_fails(tmp_path: Path) -> None:
+    model = faux_model()
+    executions: list[dict] = []
+
+    def execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(dict(args))
+        return AgentToolResult(content=[TextContent(text="shell wrote")], details={})
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="bash",
+        parameters=BASH_SCHEMA,
+        execute=execute,
+    )
+
+    provider_calls = {"n": 0}
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        if provider_calls["n"] != 1:
+            return text_response_events(m, "done")
+        return tool_call_response_events(
+            m,
+            "bash",
+            {
+                "command": (
+                    "cat > protocol_fixture.md <<'EOF'\n"
+                    "</parameter>\n"
+                    "<parameter=timeout>\n"
+                    "30\n"
+                    "</function>\n"
+                    "EOF"
+                )
+            },
+            call_id="shell_protocol_write",
+        )
+
+    register_api_provider(create_faux_provider(script))
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    session.prompt(
+        "Create protocol_fixture.md containing exactly four literal lines: "
+        "</parameter> ; <parameter=timeout> ; 30 ; </function>"
+    )
+
+    tool_result_text = "\n".join(
+        _content_text(message.content)
+        for message in session.messages
+        if getattr(message, "role", None) == "toolResult"
+    )
+
+    assert executions == [
+        {
+            "command": (
+                "cat > protocol_fixture.md <<'EOF'\n"
+                "</parameter>\n"
+                "<parameter=timeout>\n"
+                "30\n"
+                "</function>\n"
+                "EOF"
+            )
+        }
+    ]
+    assert "shell wrote" in tool_result_text
+    assert "Refusing to use command execution" not in tool_result_text
 
 
 def test_write_tool_does_not_expose_escaped_protocol_literal_content_like_pi(tmp_path: Path) -> None:
@@ -577,6 +937,26 @@ def test_edit_tool_schema_rejects_empty_edits_before_execution(tmp_path: Path) -
 
     with pytest.raises(Exception, match=r"edit\.edits: expected array length >= 1"):
         validate_tool_arguments(tool, tool_call)
+
+
+def test_edit_tool_returns_neutral_final_file_metadata(tmp_path: Path) -> None:
+    target = tmp_path / "note.txt"
+    target.write_text("alpha\nbeta\n", encoding="utf-8")
+    tool = create_tool("edit", str(tmp_path))
+
+    result = tool.execute(
+        "e1",
+        {
+            "path": "note.txt",
+            "edits": [{"oldText": "beta", "newText": "gamma"}],
+        },
+    )
+
+    assert target.read_text(encoding="utf-8") == "alpha\ngamma\n"
+    assert result.details["total_bytes"] == len("alpha\ngamma\n".encode("utf-8"))
+    assert len(result.details["content_sha256"]) == 64
+    assert result.details["line_count"] == 2
+    assert result.details["final_newline"] is True
 
 
 def test_file_mutation_queue_serializes_same_path(tmp_path: Path) -> None:
@@ -1323,7 +1703,7 @@ def test_default_system_prompt_identifies_appv23_and_prefers_file_tools(tmp_path
     assert "inside appv23" in prompt
     assert "inside pi" not in prompt
     assert "If an edit fails to apply, re-read the file" not in prompt
-    assert "Do not use bash heredocs, echo, printf, or shell redirection" not in prompt
+    assert "Do not use bash heredocs, echo, printf, tee, cat >, or shell redirection" in prompt
     assert "stop after about three attempts on the same file" not in prompt
     assert "Explicit user process limits override tool-use persistence" not in prompt
     assert "If the user says to run something once, do not retry or work around it" not in prompt
@@ -1410,18 +1790,14 @@ def test_build_system_prompt_accepts_scope_narrowing_recovery_guidelines(tmp_pat
     assert "continue until finished" not in prompt.lower()
 
 
-def test_build_system_prompt_includes_pi_docs_resolution_guidance(tmp_path: Path) -> None:
+def test_default_system_prompt_does_not_advertise_pi_docs_without_explicit_scope(tmp_path: Path) -> None:
     prompt = build_system_prompt(BuildSystemPromptOptions(cwd=str(tmp_path)))
 
-    assert "Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):" in prompt
-    assert "- Main documentation:" in prompt
-    assert "- Additional docs:" in prompt
-    assert "- Examples:" in prompt
-    assert (
-        "- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory"
-        in prompt
-    )
-    assert "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)" in prompt
+    assert "Pi documentation" not in prompt
+    assert "Main documentation:" not in prompt
+    assert "Additional docs:" not in prompt
+    assert "Examples:" not in prompt
+    assert "Always read pi .md files completely" not in prompt
 
 
 def test_custom_prompt_includes_skills_when_selected_tools_unset(tmp_path: Path) -> None:
@@ -3243,6 +3619,52 @@ def test_agent_session_allows_repeated_same_path_write_batch_then_recovers_with_
     assert session.messages[-1].content[0].text == "recovered after read and edit"
 
 
+def test_agent_session_halts_repeated_identical_successful_write_loop(tmp_path: Path) -> None:
+    model = faux_model()
+    provider_calls = {"n": 0}
+    executions: list[str] = []
+    repeated_args = {"path": "PROTOCOL_FIXTURE.md", "content": "line1 is"}
+
+    def script(m, c):
+        provider_calls["n"] += 1
+        return tool_call_response_events(m, "write", repeated_args, call_id=f"call_{provider_calls['n']}")
+
+    def write_execute(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        executions.append(args["content"])
+        (tmp_path / args["path"]).write_text(args["content"], encoding="utf-8")
+        return AgentToolResult(
+            content=[TextContent(text=f"Successfully wrote {len(args['content'])} bytes to {args['path']}")],
+            details={},
+        )
+
+    register_api_provider(create_faux_provider(script))
+    write_definition = ToolDefinition(
+        name="write",
+        label="Write",
+        description="write",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+        execute=write_execute,
+    )
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=model,
+        tool_definitions=[write_definition],
+        tool_loop_guardrails={"hard_stop_enabled": True},
+    )
+
+    session.prompt("write protocol fixture")
+
+    assert executions == ["line1 is"] * 6
+    assert provider_calls["n"] == 6
+    assert session.messages[-1].role == "assistant"
+    assert "mutating_no_progress_halt" in session.messages[-1].content[0].text
+    assert (tmp_path / "PROTOCOL_FIXTURE.md").read_text(encoding="utf-8") == "line1 is"
+
+
 def test_tool_failure_classifier_does_not_treat_read_source_error_tokens_as_failure() -> None:
     from appv23.agent.tool_guardrails import classify_tool_failure
 
@@ -3365,6 +3787,50 @@ def test_tool_loop_guardrail_treats_bash_file_preview_variants_as_no_progress() 
     assert decisions[2].action == "halt"
     assert decisions[2].code == "idempotent_no_progress_block"
     assert "read with path/offset/limit" in decisions[2].message
+
+
+def test_tool_loop_guardrail_keeps_bash_file_preview_memory_across_shell_mutations() -> None:
+    from appv23.agent.tool_guardrails import ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController(cwd="/workspace")
+
+    first = controller.after_call(
+        "bash",
+        {"command": "cat docs/protocol_fixture.md"},
+        "# Protocol Fixture",
+        failed=False,
+    )
+    shell_write = controller.after_call(
+        "bash",
+        {"command": "printf '# Protocol Fixture\\n' > docs/protocol_fixture.md"},
+        "(no output)",
+        failed=False,
+    )
+    second = controller.after_call(
+        "bash",
+        {"command": "cat ./docs/protocol_fixture.md"},
+        "# Protocol Fixture",
+        failed=False,
+    )
+    shell_rewrite = controller.after_call(
+        "bash",
+        {"command": "printf '%s\\n' '# Protocol Fixture' '' '' '' > /workspace/docs/protocol_fixture.md"},
+        "(no output)",
+        failed=False,
+    )
+    third = controller.after_call(
+        "bash",
+        {"command": "cat /workspace/docs/protocol_fixture.md"},
+        "# Protocol Fixture",
+        failed=False,
+    )
+
+    assert first.action == "allow"
+    assert shell_write.action == "allow"
+    assert second.code == "idempotent_no_progress_warning"
+    assert shell_rewrite.action == "allow"
+    assert third.action == "halt"
+    assert third.code == "idempotent_no_progress_block"
 
 
 def test_tool_loop_guardrail_treats_bash_inventory_variants_as_no_progress() -> None:
@@ -7163,6 +7629,84 @@ def test_agent_session_manual_compaction_persists_pi_first_kept_boundary(tmp_pat
     assert _user_text(session.messages[1]) == _user_text(messages[expected_cut])
 
 
+def test_agent_session_manual_compaction_persists_pi_file_operation_details(tmp_path: Path) -> None:
+    from appv23.compaction import CompactionManager, ContextCompressor
+
+    session_path = tmp_path / "manual-compaction-file-details.jsonl"
+    compressor = ContextCompressor(context_length=700, protect_first_n=1, protect_last_n=1)
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=faux_model(),
+        session_path=str(session_path),
+        compaction_manager=CompactionManager(
+            compressor,
+            summarizer=lambda prompt: "## Goal\nPi file detail summary.",
+        ),
+    )
+    messages = [
+        UserMessage(content="goal", timestamp=now_ms()),
+        AssistantMessage(
+            content=[ToolCall(id="read-1", name="read", arguments={"path": "src/a.py"})],
+            api="faux",
+            provider="faux",
+            model="m",
+            usage=empty_usage(),
+            stop_reason="toolUse",
+            timestamp=now_ms(),
+        ),
+        ToolResultMessage(
+            tool_call_id="read-1",
+            tool_name="read",
+            content=[TextContent(text="a")],
+            is_error=False,
+            timestamp=now_ms(),
+        ),
+        AssistantMessage(
+            content=[ToolCall(id="write-1", name="write", arguments={"path": "src/b.py", "content": "b"})],
+            api="faux",
+            provider="faux",
+            model="m",
+            usage=empty_usage(),
+            stop_reason="toolUse",
+            timestamp=now_ms(),
+        ),
+        ToolResultMessage(
+            tool_call_id="write-1",
+            tool_name="write",
+            content=[TextContent(text="wrote")],
+            is_error=False,
+            timestamp=now_ms(),
+        ),
+    ]
+    for index in range(14):
+        messages.append(UserMessage(content=f"old filler {index} " * 30, timestamp=now_ms()))
+        messages.append(
+            AssistantMessage(
+                content=[TextContent(text=f"old ack {index} " * 30)],
+                api="faux",
+                provider="faux",
+                model="m",
+                usage=empty_usage(),
+                stop_reason="stop",
+                timestamp=now_ms(),
+            )
+        )
+    messages.append(UserMessage(content="latest request", timestamp=now_ms()))
+
+    session.agent.state.messages = list(messages)
+    for message in messages:
+        session._session_store.append_message(message)
+
+    session.compact()
+
+    persisted = [json.loads(line) for line in session_path.read_text(encoding="utf-8").splitlines()]
+    compaction_entry = next(entry for entry in persisted if entry["type"] == "compaction")
+    assert compaction_entry["details"] == {
+        "readFiles": ["src/a.py"],
+        "modifiedFiles": ["src/b.py"],
+    }
+
+
 def test_session_store_build_context_recreates_compaction_summary_message(tmp_path: Path) -> None:
     store = SessionStore(str(tmp_path / "session.jsonl"), cwd=str(tmp_path))
     first_id = store.append_message(UserMessage(content="kept", timestamp=now_ms()))
@@ -7173,6 +7717,31 @@ def test_session_store_build_context_recreates_compaction_summary_message(tmp_pa
     assert [message.role for message in snapshot.messages] == ["compactionSummary", "user"]
     assert snapshot.messages[0].summary == "Older work summary"
     assert snapshot.messages[0].tokensBefore == 23456
+
+
+def test_session_store_build_context_preserves_compaction_file_details_for_llm(tmp_path: Path) -> None:
+    store = SessionStore(str(tmp_path / "session.jsonl"), cwd=str(tmp_path))
+    first_id = store.append_message(UserMessage(content="kept", timestamp=now_ms()))
+    store.append_compaction(
+        "Older work summary without exact file inventory.",
+        first_id,
+        23456,
+        details={
+            "readFiles": ["source.md"],
+            "modifiedFiles": ["docs/alpha.md", "docs/beta.md"],
+        },
+    )
+
+    snapshot = store.build_context()
+    llm_messages = default_convert_to_llm(snapshot.messages)
+    summary_text = _user_text(llm_messages[0])
+
+    assert snapshot.messages[0].details == {
+        "readFiles": ["source.md"],
+        "modifiedFiles": ["docs/alpha.md", "docs/beta.md"],
+    }
+    assert "<read-files>\nsource.md\n</read-files>" in summary_text
+    assert "<modified-files>\ndocs/alpha.md\ndocs/beta.md\n</modified-files>" in summary_text
 
 
 def test_session_store_round_trips_bash_execution_and_llm_conversion(tmp_path: Path) -> None:
@@ -7591,10 +8160,11 @@ def test_agent_session_auto_retry_adds_malformed_tool_args_correction_context(tm
     assert "write" in recovery
     assert "Do not retry the same malformed tool call" in recovery
     assert "protocol-looking literal" in recovery
-    assert "path and content" in recovery
+    assert "Retry the write tool" in recovery
+    assert "JSON unicode escapes" in recovery
+    assert "change strategy with available tools" in recovery
+    assert "base64" not in recovery
     assert "content_escaped" not in recovery
-    assert "content_base64" not in recovery
-    assert "bash with a quoted heredoc" not in recovery
 
 
 def test_agent_session_continues_partial_stream_dropped_tool_calls_with_chunk_guidance(tmp_path: Path) -> None:
@@ -7652,10 +8222,144 @@ def test_agent_session_continues_partial_stream_dropped_tool_calls_with_chunk_gu
     follow_up_text = _content_text(follow_up.content)
     assert "previous tool call (bash)" in follow_up_text
     assert "Do NOT retry the same tool call" in follow_up_text
-    assert "write smaller files" in follow_up_text
+    assert "Retry the write tool" in follow_up_text
+    assert "JSON unicode escapes" in follow_up_text
+    assert "change strategy with available tools" in follow_up_text
+    assert "write smaller files" not in follow_up_text
+    assert "base64" not in follow_up_text
     assert "content_escaped" not in follow_up_text
-    assert "content_base64" not in follow_up_text
-    assert "quoted shell chunks" not in follow_up_text
+
+
+def test_agent_session_continues_malformed_streamed_mutating_tool_args_with_recovery_guidance(tmp_path: Path) -> None:
+    model = faux_model()
+    captured_contexts: list[object] = []
+
+    def stream_fn(model, context, options):
+        captured_contexts.append(context)
+        if len(captured_contexts) == 1:
+            stream = create_assistant_message_event_stream()
+            malformed = AssistantMessage(
+                content=[TextContent(text="I will write the fixture.")],
+                api=model.api,
+                provider=model.provider,
+                model=model.id,
+                usage=empty_usage(),
+                stop_reason="length",
+                response_id="partial-stream-stub",
+                diagnostics=[
+                    {
+                        "code": "malformed_streamed_tool_call_arguments",
+                        "dropped_tool_names": ["write"],
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            )
+            stream.push(DoneEvent(reason="length", message=malformed))
+            return stream
+        return create_faux_provider(lambda m, c: text_response_events(m, "Recovered")).stream_simple(
+            model,
+            context,
+            options,
+        )
+
+    session = AgentSession(
+        cwd=str(tmp_path),
+        model=model,
+        retry_enabled=True,
+        max_retries=2,
+        retry_delay_ms=0,
+    )
+
+    messages = session.prompt("Create a protocol literal fixture.", stream_fn=stream_fn)
+
+    assert len(captured_contexts) == 2
+    assert any(
+        isinstance(message, AssistantMessage)
+        and message.stop_reason == "stop"
+        and _content_text(message.content) == "Recovered"
+        for message in messages
+    )
+    follow_up = captured_contexts[1].messages[-1]
+    assert isinstance(follow_up, UserMessage)
+    follow_up_text = _content_text(follow_up.content)
+    assert "malformed streamed tool-call arguments" in follow_up_text
+    assert "This is a tool-argument formatting failure" in follow_up_text
+    assert "Do not retry the same malformed tool call" in follow_up_text
+    assert "Retry the write tool" in follow_up_text
+    assert "JSON unicode escapes" in follow_up_text
+    assert "change strategy with available tools" in follow_up_text
+    assert "too large or malformed" not in follow_up_text
+    assert "base64" not in follow_up_text
+    assert "content_escaped" not in follow_up_text
+
+
+def test_agent_session_internal_malformed_stream_recovery_does_not_trigger_user_process_limit(
+    tmp_path: Path,
+) -> None:
+    model = faux_model()
+    captured_contexts: list[object] = []
+    bash_executions: list[dict] = []
+    command = {"command": "echo '# Protocol Fixture"}
+
+    def execute_bash(tool_call_id, args, signal=None, on_update=None, ctx=None):
+        bash_executions.append(dict(args))
+        return AgentToolResult(
+            content=[TextContent(text="zsh:1: unmatched '\nCommand exited with code 1")],
+            details={},
+        )
+
+    bash_definition = ToolDefinition(
+        name="bash",
+        label="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+        execute=execute_bash,
+    )
+
+    def stream_fn(model, context, options):
+        captured_contexts.append(context)
+        if len(captured_contexts) == 1:
+            stream = create_assistant_message_event_stream()
+            malformed = AssistantMessage(
+                content=[TextContent(text="I will write the fixture.")],
+                api=model.api,
+                provider=model.provider,
+                model=model.id,
+                usage=empty_usage(),
+                stop_reason="length",
+                response_id="partial-stream-stub",
+                diagnostics=[
+                    {
+                        "code": "malformed_streamed_tool_call_arguments",
+                        "dropped_tool_names": ["write"],
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            )
+            stream.push(DoneEvent(reason="length", message=malformed))
+            return stream
+        if len(captured_contexts) == 2:
+            return create_faux_provider(
+                lambda m, c: tool_call_response_events(m, "bash", command, call_id="bad_bash")
+            ).stream_simple(model, context, options)
+        return create_faux_provider(
+            lambda m, c: text_response_events(m, "I can continue after the failed bash fallback.")
+        ).stream_simple(model, context, options)
+
+    session = AgentSession(cwd=str(tmp_path), model=model, tool_definitions=[bash_definition])
+
+    messages = session.prompt("Create a protocol literal fixture.", stream_fn=stream_fn)
+
+    assert bash_executions == [command]
+    assert len(captured_contexts) == 3
+    tool_results = [message for message in session.messages if getattr(message, "role", None) == "toolResult"]
+    assert "user_process_limit" not in _content_text(tool_results[-1].content)
+    assert messages[-1].role == "assistant"
+    assert _content_text(messages[-1].content) == "I can continue after the failed bash fallback."
 
 
 def test_agent_session_does_not_retry_pi_non_retryable_provider_limit_errors(tmp_path: Path) -> None:
@@ -9697,7 +10401,7 @@ def test_bash_shell_env_provides_managed_python_shim_without_runtime_venv(
     assert str(python3) in shim.read_text(encoding="utf-8")
 
 
-def test_system_prompt_has_file_deliverable_completion_contract(tmp_path: Path) -> None:
+def test_default_system_prompt_does_not_force_verification_for_written_deliverables(tmp_path: Path) -> None:
     prompt = build_system_prompt(
         BuildSystemPromptOptions(
             cwd=str(tmp_path),
@@ -9710,6 +10414,7 @@ def test_system_prompt_has_file_deliverable_completion_contract(tmp_path: Path) 
         )
     )
 
-    assert "# Finishing the job" in prompt
-    assert "that file path is the deliverable" in prompt
-    assert "If the target file does not exist, create it" in prompt
+    assert "# Finishing the job" not in prompt
+    assert "backed by real tool output" not in prompt
+    assert "summarize, report, review, document" not in prompt
+    assert "Use write only for new files or complete rewrites." in prompt

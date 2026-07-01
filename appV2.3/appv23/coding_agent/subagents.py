@@ -70,7 +70,11 @@ class SubagentTask:
     allowed_tools: tuple[str, ...] = _READ_ONLY_TOOLS
     context_pack: str = ""
     timeout_seconds: int = 1800
-    return_contract: str = "Return a concise summary, key findings, changed files, and blockers."
+    return_contract: str = (
+        "Return a concise summary, key findings, evidence, changed files, and blockers. "
+        "Every factual claim in your summary must be backed by observed evidence. "
+        "If evidence is missing or ambiguous, mark the claim as uncertain."
+    )
     parent_session_id: str | None = None
     parent_turn_id: str | None = None
     depth: int = 1
@@ -134,7 +138,11 @@ class SubagentTask:
             "- Allowed tools are the complete tool catalog for this child. Do not use any tool names outside Allowed tools.\n"
             "- For file discovery, use find or ls.\n"
             "- After two failed attempts for the same path or unavailable tool, stop retrying, summarize the blocker, "
-            "and return the best evidence gathered so far.",
+            "and return the best evidence gathered so far.\n"
+            "- Every factual claim in your summary must be backed by observed evidence from the available tools or context pack.\n"
+            "- If evidence is missing or ambiguous, mark the claim as uncertain and state what evidence is missing.\n"
+            "- Do not infer behavior from filenames, conventions, or expectations alone.\n"
+            "- Include an Evidence: section with path/command references for the claims that matter.",
             f"Role: {self.role}",
             "Delegation boundary: You are already the delegated child subagent. Execute the Goal directly with "
             "the available tools. Do not evaluate whether the parent has subagent tools. Do not answer "

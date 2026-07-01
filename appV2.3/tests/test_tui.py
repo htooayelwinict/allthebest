@@ -112,6 +112,7 @@ from appv23.coding_agent.session_store import BashExecutionMessage, BranchSummar
 from appv23.coding_agent.subagents import CallableSubagentBackend
 from appv23.coding_agent.tools.bash import BashOperations
 from appv23.coding_agent.tools.read import create_read_tool_definition
+from appv23.coding_agent.tools.types import ToolDefinition
 from appv23.ai.event_stream import create_assistant_message_event_stream
 from appv23.ai.stream import ApiProvider
 
@@ -3133,7 +3134,7 @@ def test_tool_execution_uses_render_hooks_collapsed_expanded_and_narrow_width(tm
     collapsed = "\n".join(component.render(30))
 
     assert "[skill] attio:12-14" in collapsed
-    assert "to expand" in collapsed
+    assert "to expand" in collapsed.replace("\n", " ")
 
     result = AgentToolResult(content=[TextContent(text="hidden skill body")], details=None)
     component.update_result(result, is_error=False)
@@ -3158,6 +3159,87 @@ def test_read_tool_render_tolerates_unvalidated_model_numeric_strings(tmp_path) 
     rendered = "\n".join(component.render(80))
 
     assert "read src/agents/facebook_surfer.py" in rendered
+
+
+def test_tool_execution_accepts_component_render_call_like_pi() -> None:
+    long_path = "/workspace/demo_okf_bundle/spec/final-important-suffix.md"
+
+    definition = ToolDefinition(
+        name="write",
+        label="Write",
+        description="Write file",
+        parameters={},
+        execute=lambda *args, **kwargs: AgentToolResult(content=[]),
+        render_call=lambda args, ctx: Text(f"write {args['path']}"),
+    )
+    component = ToolExecutionComponent(
+        "write",
+        "call-1",
+        {"path": long_path},
+        tool_definition=definition,
+        cwd="/workspace",
+    )
+
+    rendered = component.render(24)
+    joined = "\n".join(rendered)
+
+    assert "suffix.md" in joined
+    assert all(visible_width(line) <= 24 for line in rendered)
+
+
+def test_tool_execution_long_call_header_stays_single_stable_line() -> None:
+    long_path = "/workspace/demo_okf_bundle/spec/very/deep/final-important-suffix.md"
+
+    definition = ToolDefinition(
+        name="write",
+        label="Write",
+        description="Write file",
+        parameters={},
+        execute=lambda *args, **kwargs: AgentToolResult(content=[]),
+        render_call=lambda args, ctx: Text(f"write {args['path']}"),
+    )
+    component = ToolExecutionComponent(
+        "write",
+        "call-1",
+        {"path": long_path},
+        tool_definition=definition,
+        cwd="/workspace",
+    )
+
+    rendered = component.render(32)
+
+    assert len(rendered) == 1
+    assert "suffix.md" in rendered[0]
+    assert "very/deep" not in rendered[0]
+    assert visible_width(rendered[0]) <= 32
+
+
+def test_tool_execution_accepts_component_render_result_like_pi() -> None:
+    definition = ToolDefinition(
+        name="read",
+        label="Read",
+        description="Read file",
+        parameters={},
+        execute=lambda *args, **kwargs: AgentToolResult(content=[]),
+        render_call=lambda args, ctx: f"read {args['path']}",
+        render_result=lambda result, metadata, context: Text(
+            "[ok] first wrapped result line with final-important-suffix.md"
+        ),
+    )
+    component = ToolExecutionComponent(
+        "read",
+        "call-1",
+        {"path": "notes.md"},
+        tool_definition=definition,
+        cwd="/workspace",
+    )
+    component.update_result(AgentToolResult(content=[]), is_error=False)
+
+    rendered = component.render(28)
+    joined = "\n".join(rendered)
+
+    assert "final-important-suffix.md" in joined
+    assert all(visible_width(line) <= 28 for line in rendered)
 
 
 def test_tool_execution_collapses_long_generic_results_until_expanded() -> None:

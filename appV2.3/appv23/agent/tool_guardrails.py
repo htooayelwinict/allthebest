@@ -95,6 +95,8 @@ DEFAULT_NO_PROGRESS_BLOCK_TOOL_NAMES = frozenset(
 )
 DEFAULT_READ_STYLE_NO_PROGRESS_BLOCK_AFTER = 3
 DEFAULT_READ_STYLE_EXACT_FAILURE_BLOCK_AFTER = 4
+DEFAULT_MUTATING_NO_PROGRESS_WARN_AFTER = 3
+DEFAULT_MUTATING_NO_PROGRESS_HALT_AFTER = 6
 _BASH_FILE_PREVIEW_COMMANDS = frozenset({"awk", "cat", "head", "sed", "tail"})
 _BASH_INVENTORY_COMMANDS = frozenset({"find", "ls", "rg"})
 _BASH_READ_ONLY_COMMANDS = _BASH_FILE_PREVIEW_COMMANDS | _BASH_INVENTORY_COMMANDS | frozenset({"grep"})
@@ -180,6 +182,8 @@ class ToolCallGuardrailConfig:
     no_progress_block_after: int = 5
     consecutive_no_progress_warn_after: int = 3
     consecutive_no_progress_block_after: int = 4
+    mutating_no_progress_warn_after: int = DEFAULT_MUTATING_NO_PROGRESS_WARN_AFTER
+    mutating_no_progress_halt_after: int = DEFAULT_MUTATING_NO_PROGRESS_HALT_AFTER
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -215,6 +219,10 @@ class ToolCallGuardrailConfig:
                 warn_after.get("idempotent_consecutive", data.get("consecutive_no_progress_warn_after")),
                 defaults.consecutive_no_progress_warn_after,
             ),
+            mutating_no_progress_warn_after=_positive_int(
+                warn_after.get("mutating_no_progress", data.get("mutating_no_progress_warn_after")),
+                defaults.mutating_no_progress_warn_after,
+            ),
             exact_failure_block_after=_positive_int(
                 hard_stop_after.get("exact_failure", data.get("exact_failure_block_after")),
                 defaults.exact_failure_block_after,
@@ -230,6 +238,10 @@ class ToolCallGuardrailConfig:
             consecutive_no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_consecutive", data.get("consecutive_no_progress_block_after")),
                 defaults.consecutive_no_progress_block_after,
+            ),
+            mutating_no_progress_halt_after=_positive_int(
+                hard_stop_after.get("mutating_no_progress", data.get("mutating_no_progress_halt_after")),
+                defaults.mutating_no_progress_halt_after,
             ),
         )
 
@@ -389,6 +401,7 @@ class ToolCallGuardrailController:
         self._landed_file_mutations: dict[str, str] = {}
         self._landed_file_mutation_counts: dict[str, int] = {}
         self._workspace_scope_violation_counts: dict[ToolCallSignature, int] = {}
+        self._mutating_no_progress: dict[str, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -548,7 +561,6 @@ class ToolCallGuardrailController:
         if _tool_call_may_change_state(tool_name, args):
             self._exact_failure_counts.clear()
             self._same_tool_failure_counts.clear()
-            self._no_progress.clear()
             self._reset_consecutive()
         else:
             self._exact_failure_counts.pop(signature, None)
@@ -558,18 +570,55 @@ class ToolCallGuardrailController:
         if observed_path is not None:
             self._landed_file_mutations.pop(observed_path, None)
             self._landed_file_mutation_counts.pop(observed_path, None)
+            self._mutating_no_progress.pop(observed_path, None)
 
         mutation_path = _file_mutation_path_key(tool_name, args, self.cwd)
+        mutating_no_progress_decision: ToolGuardrailDecision | None = None
         if mutation_path is not None:
             display_path = _display_file_mutation_path(tool_name, args)
             mutation_count = self._landed_file_mutation_counts.get(mutation_path, 0) + 1
             self._landed_file_mutation_counts[mutation_path] = mutation_count
             self._landed_file_mutations[mutation_path] = display_path
+            mutation_fingerprint = _sha256(f"{canonical_tool_args(args)}\n{_result_hash(result)}")
+            previous_mutation = self._mutating_no_progress.get(mutation_path)
+            repeat_count = (
+                previous_mutation[1] + 1
+                if previous_mutation is not None and previous_mutation[0] == mutation_fingerprint
+                else 1
+            )
+            self._mutating_no_progress[mutation_path] = (mutation_fingerprint, repeat_count)
+            if self.config.hard_stop_enabled and repeat_count >= self.config.mutating_no_progress_halt_after:
+                mutating_no_progress_decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="mutating_no_progress_halt",
+                    message=(
+                        f"STOP: {tool_name} successfully mutated {display_path} with identical arguments "
+                        f"and result {repeat_count} times. The state is not progressing. Read the file, "
+                        "change strategy, or explain the blocker instead of repeating the same mutation."
+                    ),
+                    tool_name=tool_name,
+                    count=repeat_count,
+                    signature=signature,
+                )
+                self._halt_decision = mutating_no_progress_decision
+            elif self.config.warnings_enabled and repeat_count >= self.config.mutating_no_progress_warn_after:
+                mutating_no_progress_decision = ToolGuardrailDecision(
+                    action="warn",
+                    code="mutating_no_progress_warning",
+                    message=(
+                        f"{tool_name} has successfully mutated {display_path} with identical arguments "
+                        f"and result {repeat_count} times. This looks like a loop; read the file or "
+                        "change strategy instead of repeating the same mutation."
+                    ),
+                    tool_name=tool_name,
+                    count=repeat_count,
+                    signature=signature,
+                )
 
         if not self._is_idempotent(tool_name):
             self._forget_no_progress(tool_name, args, signature)
             self._reset_consecutive()
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+            return mutating_no_progress_decision or ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         result_hash = _result_hash(result)
         if self._consecutive_signature == signature and self._consecutive_result_hash == result_hash:

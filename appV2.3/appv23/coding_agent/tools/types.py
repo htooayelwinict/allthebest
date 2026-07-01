@@ -7,10 +7,15 @@ and tools/tool-definition-wrapper.ts.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 from appv23.agent.types import AgentTool, AgentToolResult
 from appv23.coding_agent.source_info import SourceInfo
+
+if TYPE_CHECKING:
+    from appv23.tui.component import Component
+
+ToolRenderContent = Union[str, "Component"]
 
 
 @dataclass
@@ -33,8 +38,8 @@ class ToolDefinition:
     prompt_snippet: str | None = None
     prompt_guidelines: list[str] = field(default_factory=list)
     render_shell: str = "default"  # "default" | "self"
-    render_call: Optional[Callable[..., str]] = None
-    render_result: Optional[Callable[..., str]] = None
+    render_call: Optional[Callable[..., ToolRenderContent]] = None
+    render_result: Optional[Callable[..., ToolRenderContent]] = None
     execution_mode: str | None = None
     prepare_arguments: Optional[Callable[[Any], Any]] = None
     source_info: SourceInfo | None = None

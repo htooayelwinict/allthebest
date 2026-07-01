@@ -41,57 +41,18 @@ def _tool_validation_error(tool: Any, tool_call: Any, error: str) -> ToolValidat
     tool_name = _tool_name(tool, tool_call)
     arguments = getattr(tool_call, "arguments", None)
     received = _format_received_arguments(tool_name, arguments)
-    recovery = _tool_validation_recovery_guidance(tool_name, arguments, error)
     return ToolValidationError(
         f'Validation failed for tool "{tool_name}":\n'
         f"  - {error}\n\n"
         f"Received arguments:\n{received}"
-        f"{recovery}"
     )
 
 
 def _format_received_arguments(tool_name: str, arguments: Any) -> str:
-    if tool_name == "write" and _contains_protocol_literal(arguments):
-        return f"[appv23 omitted protocol-shaped malformed {tool_name} arguments]"
     try:
         return json.dumps(arguments, ensure_ascii=False, indent=2, default=str)
     except TypeError:
         return str(arguments)
-
-
-def _contains_protocol_literal(value: Any) -> bool:
-    if isinstance(value, str):
-        return _looks_like_protocol_literal(value)
-    if isinstance(value, dict):
-        return any(_contains_protocol_literal(item) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_contains_protocol_literal(item) for item in value)
-    return False
-
-
-def _tool_validation_recovery_guidance(tool_name: str, arguments: Any, error: str) -> str:
-    return ""
-
-
-def _has_no_content_argument(arguments: dict[str, Any]) -> bool:
-    return not (isinstance(arguments.get("content"), str) and arguments.get("content") != "")
-
-
-def _looks_like_protocol_literal(value: str | None) -> bool:
-    if not isinstance(value, str):
-        return False
-    lowered = value.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "<function",
-            "</function",
-            "<parameter",
-            "</parameter",
-            "<tool_call",
-            "</tool_call",
-        )
-    )
 
 
 def _is_record(value: Any) -> bool:

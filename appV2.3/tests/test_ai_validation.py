@@ -104,7 +104,23 @@ def test_write_schema_matches_pi_path_content_contract() -> None:
 
     message = str(error.value)
     assert "write: missing required property 'content'" in message
-    assert "Recovery guidance" not in message
+    assert "Recovery guidance:" not in message
+    assert "content_escaped" not in message
+    assert "content_base64" not in message
+
+
+def test_write_missing_content_uses_neutral_pi_validation_error_without_recovery_guidance() -> None:
+    tool = _Tool(name="write", parameters=WRITE_SCHEMA)
+
+    with pytest.raises(ToolValidationError) as error:
+        validate_tool_arguments(tool, _ToolCall(arguments={"path": "protocol_fixture.md"}))
+
+    message = str(error.value)
+    assert "write: missing required property 'content'" in message
+    assert "Recovery guidance:" not in message
+    assert "The previous write call did not execute." not in message
+    assert "If the file content contains literal tool-protocol-looking text" not in message
+    assert "send one complete write call with path and content" not in message
     assert "content_escaped" not in message
     assert "content_base64" not in message
 
@@ -127,14 +143,26 @@ def test_write_schema_missing_path_protocol_spillover_stays_neutral_like_pi() ->
 
     message = str(error.value)
     assert "write: missing required property 'path'" in message
-    assert "[appv23 omitted protocol-shaped malformed write arguments]" in message
+    assert "[appv23 omitted protocol-shaped malformed write arguments]" not in message
+    assert "<function" in message
     assert "Recovery guidance" not in message
     assert "Regenerate the exact intended file bytes" not in message
     assert "content_escaped" not in message
     assert "content_base64" not in message
 
 
-def test_write_protocol_spillover_validation_error_does_not_echo_protocol_payload() -> None:
+def test_write_schema_matches_pi_simple_complete_content_contract() -> None:
+    content_description = WRITE_SCHEMA["properties"]["content"]["description"]
+
+    assert content_description == "Content to write to the file"
+    assert set(WRITE_SCHEMA["properties"]) == {"path", "content"}
+    assert "content_escaped" not in content_description
+    assert "content_base64" not in content_description
+    assert "JSON unicode escapes" not in content_description
+    assert "\\u003c" not in content_description
+
+
+def test_write_protocol_spillover_validation_error_echoes_received_arguments_like_pi() -> None:
     tool = _Tool(name="write", parameters=WRITE_SCHEMA)
 
     with pytest.raises(ToolValidationError) as error:
@@ -154,11 +182,11 @@ def test_write_protocol_spillover_validation_error_does_not_echo_protocol_payloa
     message = str(error.value)
     assert "Recovery guidance" not in message
     assert "Regenerate the exact intended file bytes" not in message
-    assert "[appv23 omitted protocol-shaped malformed write arguments]" in message
-    assert "<function" not in message
-    assert "</function" not in message
-    assert "<parameter" not in message
-    assert "</parameter" not in message
+    assert "[appv23 omitted protocol-shaped malformed write arguments]" not in message
+    assert "<function" in message
+    assert "</function" in message
+    assert "<parameter" in message
+    assert "</parameter" in message
 
 
 def test_write_schema_allows_empty_content_like_pi() -> None:
@@ -167,6 +195,52 @@ def test_write_schema_allows_empty_content_like_pi() -> None:
     assert validate_tool_arguments(tool, _ToolCall(arguments={"path": "docs/probe.md", "content": ""})) == {
         "path": "docs/probe.md",
         "content": "",
+    }
+
+
+def test_write_validation_keeps_protocol_literal_json_escape_content_like_pi() -> None:
+    tool = _Tool(name="write", parameters=WRITE_SCHEMA)
+
+    assert validate_tool_arguments(
+        tool,
+        _ToolCall(
+            arguments={
+                "path": "protocol_fixture.md",
+                "content": "\\u003c/parameter\\u003e\n\\u003cparameter=timeout\\u003e\n30\n\\u003c/function\\u003e\n",
+            }
+        ),
+    ) == {
+        "path": "protocol_fixture.md",
+        "content": "\\u003c/parameter\\u003e\n\\u003cparameter=timeout\\u003e\n30\n\\u003c/function\\u003e\n",
+    }
+
+
+def test_write_validation_keeps_double_escaped_protocol_literal_json_escape_content_like_pi() -> None:
+    tool = _Tool(name="write", parameters=WRITE_SCHEMA)
+
+    assert validate_tool_arguments(
+        tool,
+        _ToolCall(
+            arguments={
+                "path": "protocol_fixture.md",
+                "content": "\\\\u003c/parameter\\\\u003e\n\\\\u003cparameter=timeout\\\\u003e\n30\n\\\\u003c/function\\\\u003e\n",
+            }
+        ),
+    ) == {
+        "path": "protocol_fixture.md",
+        "content": "\\\\u003c/parameter\\\\u003e\n\\\\u003cparameter=timeout\\\\u003e\n30\n\\\\u003c/function\\\\u003e\n",
+    }
+
+
+def test_write_validation_keeps_non_protocol_json_escape_content() -> None:
+    tool = _Tool(name="write", parameters=WRITE_SCHEMA)
+
+    assert validate_tool_arguments(
+        tool,
+        _ToolCall(arguments={"path": "notes.md", "content": "\\u003chello\\u003e\n"}),
+    ) == {
+        "path": "notes.md",
+        "content": "\\u003chello\\u003e\n",
     }
 
 

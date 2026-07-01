@@ -35,6 +35,7 @@ from appv23.ai.types import (
     ThinkingDeltaEvent,
     ThinkingEndEvent,
     ThinkingStartEvent,
+    Tool,
     ToolCall,
     ToolResultMessage,
     ToolcallDeltaEvent,
@@ -44,11 +45,13 @@ from appv23.ai.types import (
     empty_usage,
     now_ms,
 )
+from appv23.ai.validation import ToolValidationError, validate_tool_arguments
 PROVIDER_API = "openai-completions"
 PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
 PARTIAL_STREAM_DROPPED_TOOL_CALLS_CODE = "partial_stream_dropped_tool_calls"
+MALFORMED_STREAMED_TOOL_CALL_ARGUMENTS_CODE = "malformed_streamed_tool_call_arguments"
 LEAKED_TOOL_PROTOCOL_TEXT_CODE = "leaked_tool_protocol_text"
-
+_MUTATING_TOOL_REQUIRED_ARGUMENTS = {"write": ("path", "content")}
 _VALID_JSON_ESCAPES = {'"', "\\", "/", "b", "f", "n", "r", "t", "u"}
 _REASONING_FIELDS = ("reasoning_content", "reasoning", "reasoning_text")
 _BILLING_PATTERNS = (
@@ -105,6 +108,17 @@ _NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support ima
 _NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)"
 
 
+def _has_tool_history(messages: list[Message]) -> bool:
+    for message in messages:
+        if getattr(message, "role", None) == "toolResult":
+            return True
+        if getattr(message, "role", None) == "assistant":
+            for block in getattr(message, "content", []) or []:
+                if isinstance(block, ToolCall):
+                    return True
+    return False
+
+
 def convert_messages(context: Context, model: Model | None = None) -> "tuple[list[dict], list[dict] | None]":
     messages: list[dict] = []
     if context.system_prompt:
@@ -132,6 +146,8 @@ def convert_messages(context: Context, model: Model | None = None) -> "tuple[lis
             {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
             for t in context.tools
         ]
+    elif _has_tool_history(context_messages):
+        tools = []
     return messages, tools
 
 
@@ -685,11 +701,6 @@ def _parse_json_with_repair(json_text: str) -> Any:
         raise
 
 
-def _looks_like_unrepairable_hanging_tool_args(json_text: str) -> bool:
-    stripped = json_text.strip()
-    return stripped.endswith(":") or bool(re.search(r'[:,]\s*"[^"]+"\s*:\s*$', stripped))
-
-
 def _partial_parse_json(json_text: str) -> Any:
     if not isinstance(json_text, str):
         raise TypeError(f"expecting str, got {type(json_text).__name__}")
@@ -848,8 +859,6 @@ def _parse_streaming_json(partial_json: str | None) -> dict:
     try:
         parsed = _parse_json_with_repair(partial_json)
     except Exception:
-        if _looks_like_unrepairable_hanging_tool_args(partial_json):
-            return {}
         try:
             parsed = _partial_parse_json(partial_json)
         except Exception:
@@ -903,13 +912,59 @@ def _parse_complete_tool_arguments(raw_arguments: str | None) -> dict | None:
     return _repair_complete_tool_arguments(raw_arguments)
 
 
-def _streaming_tool_arguments_are_malformed(raw_arguments: str | None) -> bool:
-    if not raw_arguments or not raw_arguments.strip():
-        return False
-    stripped = raw_arguments.strip()
-    if stripped == "{}":
-        return False
-    return _parse_complete_tool_arguments(stripped) is None
+def _malformed_finished_mutating_tool_call_names(
+    content: list[TextContent | ThinkingContent | ToolCall | ImageContent],
+    tool_arg_bufs: dict[int, str],
+) -> list[str]:
+    names: list[str] = []
+    for content_index, block in enumerate(content):
+        if not isinstance(block, ToolCall):
+            continue
+        required = _MUTATING_TOOL_REQUIRED_ARGUMENTS.get(block.name)
+        if not required:
+            continue
+        raw_arguments = tool_arg_bufs.get(content_index, "")
+        if not raw_arguments.strip():
+            continue
+        parsed = _parse_streaming_json(raw_arguments)
+        if not isinstance(parsed, dict) or any(key not in parsed for key in required):
+            if block.name not in names:
+                names.append(block.name)
+    return names
+
+
+def _malformed_finished_tool_call_names_against_active_schema(
+    content: list[TextContent | ThinkingContent | ToolCall | ImageContent],
+    tool_arg_bufs: dict[int, str],
+    tools: Iterable[Tool] | None,
+) -> list[str]:
+    tool_by_name = {tool.name: tool for tool in tools or []}
+    if not tool_by_name:
+        return []
+
+    names: list[str] = []
+    for content_index, block in enumerate(content):
+        if not isinstance(block, ToolCall):
+            continue
+        tool = tool_by_name.get(block.name)
+        if tool is None:
+            continue
+        raw_arguments = tool_arg_bufs.get(content_index, "")
+        if not raw_arguments.strip():
+            continue
+        parsed_arguments = _parse_streaming_json(raw_arguments)
+        try:
+            validated_arguments = validate_tool_arguments(
+                tool,
+                replace(block, arguments=parsed_arguments),
+            )
+        except ToolValidationError:
+            if block.name not in names:
+                names.append(block.name)
+            continue
+        block.arguments = validated_arguments
+        tool_arg_bufs[content_index] = json.dumps(validated_arguments)
+    return names
 
 
 def _looks_like_leaked_tool_protocol_text(text: str) -> bool:
@@ -963,6 +1018,7 @@ def parse_sse_chunks(
     clock: Callable[[], float] = time.monotonic,
     include_reasoning: bool = True,
     api_mode: str = "chat_completions",
+    tools: Iterable[Tool] | None = None,
 ) -> Iterator:
     """Pure transform: decoded SSE lines -> AssistantMessageEvent stream."""
     if api_mode == "codex_responses":
@@ -1019,7 +1075,7 @@ def parse_sse_chunks(
             elif isinstance(block, ThinkingContent):
                 yield ThinkingEndEvent(content_index=content_index, content=block.thinking, partial=message)
             elif isinstance(block, ToolCall):
-                block.arguments = _parse_complete_tool_arguments(tool_arg_bufs.get(content_index, "")) or {}
+                block.arguments = _parse_streaming_json(tool_arg_bufs.get(content_index, ""))
                 yield ToolcallEndEvent(content_index=content_index, tool_call=block, partial=message)
 
         if not started:
@@ -1031,42 +1087,50 @@ def parse_sse_chunks(
             isinstance(block, TextContent) and _looks_like_leaked_tool_protocol_text(block.text)
             for block in message.content
         )
-        malformed_tool_argument_indexes: set[int] = (
-            {
-                content_index
-                for content_index, raw_arguments in tool_arg_bufs.items()
-                if _streaming_tool_arguments_are_malformed(raw_arguments)
-            }
-            if has_finish_reason
-            else set()
-        )
-        should_drop_tool_calls = not has_finish_reason or bool(malformed_tool_argument_indexes)
+        malformed_mutating_tool_names: list[str] = []
+        if has_finish_reason and finish_reason == "tool_calls":
+            malformed_mutating_tool_names = (
+                _malformed_finished_tool_call_names_against_active_schema(message.content, tool_arg_bufs, tools)
+                if tools is not None
+                else _malformed_finished_mutating_tool_call_names(message.content, tool_arg_bufs)
+            )
+        should_drop_tool_calls = not has_finish_reason or bool(malformed_mutating_tool_names)
         dropped_tool_names: list[str] = []
         dropped_tool_finish_reason = finish_reason if has_finish_reason else None
         if should_drop_tool_calls:
-            dropped_tool_names = [
-                block.name or "?"
-                for content_index, block in enumerate(message.content)
-                if isinstance(block, ToolCall)
-                and (not malformed_tool_argument_indexes or content_index in malformed_tool_argument_indexes)
-            ]
+            if malformed_mutating_tool_names:
+                dropped_tool_names = malformed_mutating_tool_names
+            else:
+                dropped_tool_names = [
+                    block.name or "?"
+                    for block in message.content
+                    if isinstance(block, ToolCall)
+                ]
             message.content = [
-                block
-                for content_index, block in enumerate(message.content)
-                if not isinstance(block, ToolCall)
-                or (malformed_tool_argument_indexes and content_index not in malformed_tool_argument_indexes)
+                block for block in message.content if not isinstance(block, ToolCall)
             ]
-            for content_index in malformed_tool_argument_indexes:
-                tool_arg_bufs.pop(content_index, None)
-            if not has_finish_reason:
-                tool_arg_bufs.clear()
+            tool_arg_bufs.clear()
         has_remaining_tool_calls = any(isinstance(block, ToolCall) for block in message.content)
         if leaked_tool_protocol_text and not has_remaining_tool_calls:
             for block in message.content:
                 if isinstance(block, TextContent):
                     block.text = ""
         yield from end_content_events()
-        if dropped_tool_names and (not has_finish_reason or malformed_tool_argument_indexes):
+        if dropped_tool_names and malformed_mutating_tool_names:
+            message.stop_reason = "length"
+            message.response_id = PARTIAL_STREAM_STUB_ID
+            diagnostics = list(message.diagnostics or [])
+            diagnostics.append(
+                {
+                    "code": MALFORMED_STREAMED_TOOL_CALL_ARGUMENTS_CODE,
+                    "dropped_tool_names": dropped_tool_names,
+                    "finish_reason": dropped_tool_finish_reason,
+                }
+            )
+            message.diagnostics = diagnostics
+            yield DoneEvent(reason="length", message=message)
+            return
+        if dropped_tool_names and not has_finish_reason:
             message.stop_reason = "length"
             message.response_id = PARTIAL_STREAM_STUB_ID
             diagnostics = list(message.diagnostics or [])
@@ -1953,6 +2017,7 @@ class AppV2EnvProvider:
                         data_idle_timeout_seconds=self.config.timeout_seconds,
                         include_reasoning=bool(getattr(options, "reasoning", None)),
                         api_mode=api_mode,
+                        tools=context.tools,
                     ):
                         s.push(event)
         except Exception as exc:  # encode failure as an error event, never raise

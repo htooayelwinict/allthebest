@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Callable
@@ -56,6 +57,21 @@ def _render_write_result(result: AgentToolResult, options=None, ctx=None) -> str
     return "\n".join(block.text for block in result.content if isinstance(block, TextContent))
 
 
+def _file_content_metadata(content: str) -> dict[str, object]:
+    encoded = content.encode("utf-8")
+    if content == "":
+        line_count = 0
+    elif content.endswith("\n"):
+        line_count = content.count("\n")
+    else:
+        line_count = content.count("\n") + 1
+    return {
+        "content_sha256": hashlib.sha256(encoded).hexdigest(),
+        "line_count": line_count,
+        "final_newline": content.endswith(("\n", "\r")),
+    }
+
+
 def _execute_write(
     cwd: str,
     tool_call_id,
@@ -85,6 +101,7 @@ def _execute_write(
             "path": absolute_path,
             "bytes_written": len(content.encode("utf-8")),
             "total_bytes": os.path.getsize(absolute_path),
+            **_file_content_metadata(content),
         }
 
     with_file_mutation_queue(absolute_path, mutate)

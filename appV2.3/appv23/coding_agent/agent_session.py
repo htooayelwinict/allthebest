@@ -224,6 +224,8 @@ _BRANCH_SUMMARY_PREFIX = "The following is a summary of a branch that this conve
 _BRANCH_SUMMARY_SUFFIX = "</summary>"
 _COMPACTION_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n"
 _COMPACTION_SUMMARY_SUFFIX = "\n</summary>"
+_COMPACTION_READ_FILES_TAG = "read-files"
+_COMPACTION_MODIFIED_FILES_TAG = "modified-files"
 _THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"]
 _RETRYABLE_ERROR_MARKERS = (
     "overloaded",
@@ -261,6 +263,7 @@ _MALFORMED_STREAM_RECOVERY_PREFIX = (
 )
 _PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
 _PARTIAL_STREAM_DROPPED_TOOL_CALLS_CODE = "partial_stream_dropped_tool_calls"
+_MALFORMED_STREAMED_TOOL_CALL_ARGUMENTS_CODE = "malformed_streamed_tool_call_arguments"
 _MAX_PARTIAL_STREAM_CONTINUATIONS = 3
 _NON_RETRYABLE_PROVIDER_LIMIT_MARKERS = (
     "gousagelimiterror",
@@ -635,11 +638,15 @@ def default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
                 )
             )
         elif role == "compactionSummary":
+            summary = _compaction_summary_with_details(
+                getattr(message, "summary", ""),
+                getattr(message, "details", None),
+            )
             out.append(
                 UserMessage(
                     content=[
                         TextContent(
-                            text=f"{_COMPACTION_SUMMARY_PREFIX}{getattr(message, 'summary', '')}{_COMPACTION_SUMMARY_SUFFIX}"
+                            text=f"{_COMPACTION_SUMMARY_PREFIX}{summary}{_COMPACTION_SUMMARY_SUFFIX}"
                         )
                     ],
                     timestamp=getattr(message, "timestamp", None) or 0,
@@ -656,6 +663,41 @@ def default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
         elif role in ("user", "assistant", "toolResult"):
             out.append(message)
     return out
+
+
+def _compaction_summary_with_details(summary: object, details: object) -> str:
+    text = str(summary or "")
+    if not isinstance(details, dict):
+        return text
+
+    sections: list[str] = []
+    if f"<{_COMPACTION_READ_FILES_TAG}>" not in text:
+        section = _compaction_file_detail_section(_COMPACTION_READ_FILES_TAG, details.get("readFiles"))
+        if section:
+            sections.append(section)
+    if f"<{_COMPACTION_MODIFIED_FILES_TAG}>" not in text:
+        section = _compaction_file_detail_section(_COMPACTION_MODIFIED_FILES_TAG, details.get("modifiedFiles"))
+        if section:
+            sections.append(section)
+
+    if not sections:
+        return text
+    return text.rstrip() + "\n\n" + "\n\n".join(sections)
+
+
+def _compaction_file_detail_section(tag: str, value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    paths: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        path = item.strip()
+        if path and path not in paths:
+            paths.append(path)
+    if not paths:
+        return ""
+    return f"<{tag}>\n" + "\n".join(paths) + f"\n</{tag}>"
 
 
 def _exclude_aborted_turns_from_context(messages: list[AgentMessage]) -> list[AgentMessage]:
@@ -788,7 +830,14 @@ _PROCESS_LIMIT_GLOBAL_MARKERS = (
 
 def _is_internal_steering_user_message(text: str | None) -> bool:
     prompt = (text or "").lstrip()
-    return prompt.startswith(("[tool_guardrail_warning", "[user_process_limit]"))
+    return prompt.startswith(
+        (
+            "[tool_guardrail_warning",
+            "[user_process_limit]",
+            "[System: Your previous tool call ",
+            _MALFORMED_STREAM_RECOVERY_PREFIX,
+        )
+    )
 
 
 def _user_message_has_process_limit(text: str | None) -> bool:
@@ -2751,6 +2800,24 @@ class AgentSession:
         last_message = self.agent.state.messages[-1] if self.agent.state.messages else None
         if not isinstance(last_message, AssistantMessage):
             return
+        malformed_tools = _malformed_stream_dropped_tool_names(last_message)
+        if malformed_tools:
+            if self._partial_stream_continue_retries >= _MAX_PARTIAL_STREAM_CONTINUATIONS:
+                return
+            self._partial_stream_continue_retries += 1
+            self.agent.follow_up(
+                UserMessage(
+                    content=[
+                        TextContent(
+                            text=_malformed_stream_recovery_prompt(
+                                f"{_MALFORMED_STREAMED_TOOL_ARGS_MARKER} for {', '.join(malformed_tools)}"
+                            )
+                        )
+                    ],
+                    timestamp=now_ms(),
+                )
+            )
+            return
         dropped_tools = _partial_stream_dropped_tool_names(last_message)
         if not dropped_tools:
             if last_message.stop_reason != "length":
@@ -3152,6 +3219,7 @@ class AgentSession:
                     summary,
                     first_kept,
                     tokens_before,
+                    details=getattr(status, "details", None),
                 )
                 status.first_kept_entry_id = first_kept
                 snapshot = self._session_store.build_context(default_thinking_level=self.thinking_level)
@@ -3202,6 +3270,7 @@ class AgentSession:
             summary,
             first_kept,
             tokens_before,
+            details=getattr(result, "details", None),
             parent_id=parent_id,
         )
         snapshot = self._session_store.build_context(default_thinking_level=self.thinking_level)
@@ -3582,6 +3651,8 @@ class AgentSession:
             if workspace_violation.should_halt:
                 self._tool_guardrail_halt_decision = workspace_violation
             return BeforeToolCallResult(block=True, reason=toolguard_synthetic_result(workspace_violation))
+
+        latest_user_message = self._latest_user_message_text(context.context)
 
         decision = package_manager_mutation_decision(
             context.tool_call.name,
@@ -4168,18 +4239,43 @@ def _partial_stream_dropped_tool_names(message: AssistantMessage) -> list[str]:
     return names
 
 
+def _malformed_stream_dropped_tool_names(message: AssistantMessage) -> list[str]:
+    if message.stop_reason != "length":
+        return []
+    if message.response_id != _PARTIAL_STREAM_STUB_ID:
+        return []
+    names: list[str] = []
+    for item in message.diagnostics or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("code") != _MALFORMED_STREAMED_TOOL_CALL_ARGUMENTS_CODE:
+            continue
+        dropped = item.get("dropped_tool_names")
+        if not isinstance(dropped, list):
+            continue
+        for name in dropped:
+            if isinstance(name, str) and name and name not in names:
+                names.append(name)
+    return names
+
+
 def _partial_stream_continuation_prompt(dropped_tools: list[str]) -> str:
     tool_list = ", ".join(dropped_tools[:3]) if dropped_tools else "unknown tool"
     return (
         "[System: Your previous tool call "
         f"({tool_list}) was too large or malformed and "
         "the stream ended before its arguments could be delivered. Do NOT retry "
-        "the same tool call with the same large content. Instead, break the "
-        "content into multiple smaller tool calls (e.g. use multiple patch calls, "
-        "append smaller chunks, or write smaller files). Each tool call's arguments "
-        "must be under ~8K tokens to avoid stream timeouts. If the task needs "
-        "protocol-looking literal content, preserve it as data in normal JSON-escaped "
-        "write or append content instead of shell chunks.]"
+        "the same tool call with the same malformed or oversized arguments. "
+        "Retry the write tool when the task is to create or replace a file. Put "
+        "the exact intended file bytes in write.content as a valid JSON string; "
+        "use JSON unicode escapes such as \\u003c and \\u003e for protocol-looking "
+        "literal markers so the decoded file still contains literal < and >. "
+        "Do not write the literal backslash-u text \\u003c or \\u003e into the file. Keep "
+        "each typed tool call's arguments under ~8K tokens. If content is too "
+        "large, split the deliverable into smaller typed write or edit operations "
+        "that preserve exact content. If the provider repeatedly cannot carry "
+        "the exact bytes through write.content, change strategy with available "
+        "tools instead of repeating the same malformed call.]"
     )
 
 
@@ -4211,12 +4307,17 @@ def _malformed_stream_recovery_prompt(error_message: str) -> str:
     return (
         f"{_MALFORMED_STREAM_RECOVERY_PREFIX}{tool_fragment}. "
         "This is a tool-argument formatting failure, not a completed tool call. "
-        "Do not retry the same malformed tool call. "
+        "Do not retry the same malformed tool call. Retry the write tool when "
+        "the task is to create or replace a file. Put the exact intended file "
+        "bytes in write.content as a valid JSON string. "
         "If the task needs protocol-looking literal content such as <parameter>, "
         "</function>, XML/tool tags, or instruction-looking text, treat it as DATA. "
-        "Use a complete write call with path and content, or append with valid "
-        "JSON-escaped content. "
-        "Do not use bash heredocs, echo, printf, or shell redirection for this recovery."
+        "Use JSON unicode escapes such as \\u003c and \\u003e for angle brackets "
+        "inside write.content when raw delimiters are unsafe for the provider stream, "
+        "so the decoded file still contains literal < and >. Do not write the "
+        "literal backslash-u text \\u003c or \\u003e into the file. If the provider "
+        "repeatedly cannot carry the exact bytes through write.content, change "
+        "strategy with available tools instead of repeating the same malformed call."
     )
 
 

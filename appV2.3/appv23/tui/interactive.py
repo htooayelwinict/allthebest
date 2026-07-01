@@ -14,7 +14,7 @@ from appv23.agent.types import AgentToolResult
 from appv23.ai.types import ImageContent, TextContent, ThinkingContent, ToolCall
 from appv23.tui.component import Box, Component, Container, Markdown, Spacer, Text
 from appv23.tui.tui import TUI
-from appv23.tui.utils import truncate_to_width
+from appv23.tui.utils import truncate_to_width, visible_width
 
 OSC133_ZONE_START = "\x1b]133;A\x07"
 OSC133_ZONE_END = "\x1b]133;B\x07"
@@ -136,14 +136,15 @@ class ToolExecutionComponent(Container):
         self.expanded = expanded
 
     def render(self, width: int) -> list[str]:
-        lines = [truncate_to_width(self._render_call(), width)]
-        result_text = self._render_result()
-        if result_text:
-            for raw in result_text.split("\n"):
-                lines.extend(f"  {line}" for line in Markdown(raw).render(max(1, width - 2)))
+        lines = [_render_tool_call_header(self._render_call(), width)]
+        result_value = self._render_result()
+        if _has_tool_ui_value(result_value):
+            result_width = max(1, width - 2)
+            for line in _render_tool_ui_value(result_value, result_width, markdown=True):
+                lines.append(f"  {line}")
         return [truncate_to_width(line, width) for line in lines]
 
-    def _render_call(self) -> str:
+    def _render_call(self) -> Any:
         if self.tool_definition and self.tool_definition.render_call:
             try:
                 return self.tool_definition.render_call(
@@ -154,7 +155,7 @@ class ToolExecutionComponent(Container):
                 return f"$ {self.tool_name} {_short_args(self.args)}"
         return f"$ {self.tool_name} {_short_args(self.args)}"
 
-    def _render_result(self) -> str:
+    def _render_result(self) -> Any:
         if self.result is None:
             return ""
         if self.tool_definition and self.tool_definition.render_result:
@@ -176,6 +177,93 @@ class ToolExecutionComponent(Container):
             text = _collapse_result_text(text)
         prefix = "x" if self.is_error else "ok"
         return f"[{prefix}] {text}".rstrip()
+
+
+def _has_tool_ui_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value != ""
+    return True
+
+
+def _render_tool_call_header(value: Any, width: int) -> str:
+    width = max(1, int(width))
+    text = _tool_call_header_text(value, width)
+    return _truncate_tool_call_header(text, width)
+
+
+def _tool_call_header_text(value: Any, width: int) -> str:
+    if isinstance(value, Text):
+        text = value.text
+    elif isinstance(value, Component):
+        rendered = value.render(max(width, 160))
+        text = " ".join(line.strip() for line in rendered if line.strip())
+    else:
+        text = "" if value is None else str(value)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _truncate_tool_call_header(text: str, width: int) -> str:
+    if visible_width(text) <= width:
+        return text
+    expand_hint = " (to expand)"
+    if text.endswith(expand_hint) and visible_width(expand_hint) < width:
+        prefix = text[: -len(expand_hint)].rstrip()
+        compact_hint = " to expand"
+        hint = compact_hint if visible_width(prefix) + visible_width(compact_hint) <= width else expand_hint
+        prefix_width = width - visible_width(hint)
+        return truncate_to_width(prefix, prefix_width, "...") + hint
+    command, separator, detail = text.partition(" ")
+    if separator and "/" in detail:
+        detail_width = width - visible_width(command) - 1
+        if detail_width >= 8:
+            detail = _truncate_path_suffix(detail, detail_width)
+            candidate = f"{command} {detail}"
+            if visible_width(candidate) <= width:
+                return candidate
+    return truncate_to_width(text, width, "...")
+
+
+def _truncate_path_suffix(path: str, width: int) -> str:
+    if visible_width(path) <= width:
+        return path
+    suffix = path.rstrip("/").rsplit("/", 1)[-1] or path
+    marker = ".../"
+    marker_width = visible_width(marker)
+    if width <= marker_width:
+        return truncate_to_width(path, width, "...")
+    suffix_width = width - marker_width
+    if visible_width(suffix) > suffix_width:
+        suffix = _right_visible_slice(suffix, suffix_width)
+    return marker + suffix
+
+
+def _right_visible_slice(text: str, width: int) -> str:
+    width = max(1, int(width))
+    result = ""
+    used = 0
+    for char in reversed(text):
+        char_width = visible_width(char)
+        if used + char_width > width:
+            break
+        result = char + result
+        used += char_width
+    return result
+
+
+def _render_tool_ui_value(value: Any, width: int, *, markdown: bool) -> list[str]:
+    if isinstance(value, Component):
+        return value.render(width)
+    text = "" if value is None else str(value)
+    if text == "":
+        return []
+    if markdown:
+        lines: list[str] = []
+        for raw in text.split("\n"):
+            lines.extend(Markdown(raw).render(width))
+        return lines
+    return Text(text).render(width)
 
 
 class UserMessageComponent(Container):

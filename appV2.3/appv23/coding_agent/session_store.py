@@ -52,6 +52,7 @@ class CompactionSummaryMessage:
     summary: str
     tokens_before: int
     timestamp: int
+    details: Any | None = None
     role: str = "compactionSummary"
 
     @property
@@ -450,6 +451,7 @@ def _entry_to_message(entry: dict[str, Any]) -> AgentMessage | None:
             summary=entry["summary"],
             tokens_before=int(entry.get("tokensBefore", 0) or 0),
             timestamp=_timestamp_to_ms(entry.get("timestamp")),
+            details=entry.get("details"),
         )
     return None
 

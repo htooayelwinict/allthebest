@@ -56,6 +56,33 @@ def _openrouter_provider() -> AppV2EnvProvider:
     )
 
 
+def test_convert_messages_includes_empty_tools_when_tool_history_has_no_active_tools() -> None:
+    assistant = AssistantMessage(
+        content=[ToolCall(id="call_read", name="read", arguments={"path": "README.md"})],
+        api="openai-completions",
+        provider="openrouter",
+        model="acme/x",
+        usage=empty_usage(),
+        stop_reason="toolUse",
+        timestamp=now_ms(),
+    )
+    tool_result = ToolResultMessage(
+        tool_call_id="call_read",
+        tool_name="read",
+        content=[TextContent(text="contents")],
+        is_error=False,
+        timestamp=now_ms(),
+    )
+
+    messages, tools = convert_messages(
+        Context(system_prompt="", messages=[assistant, tool_result], tools=[]),
+        _model(),
+    )
+
+    assert [message["role"] for message in messages] == ["assistant", "tool"]
+    assert tools == []
+
+
 def test_chat_transport_omits_oversized_historical_write_content_at_provider_boundary() -> None:
     large_content = "SMOKING-GUN-WRITE-CONTENT\n" + ("generated report body " * 500)
     transport = ChatCompletionsTransport()
@@ -503,13 +530,236 @@ def test_parse_sse_chunks_does_not_turn_text_xml_into_tool_call() -> None:
     assert not any(isinstance(block, ToolCall) for block in done.message.content)
 
 
-def test_parse_streaming_json_replaces_unrepairable_hanging_tool_args_with_empty_object() -> None:
+def test_parse_streaming_json_preserves_valid_prefix_before_unfinished_property_like_pi() -> None:
     raw = '{"command": "ls -la", "timeout": 30, "background":'
 
-    assert appv2_env._parse_streaming_json(raw) == {}
+    assert appv2_env._parse_streaming_json(raw) == {"command": "ls -la", "timeout": 30}
 
 
-def test_parse_sse_chunks_maps_finished_malformed_tool_arguments_to_truncated_tool_recovery() -> None:
+def test_parse_streaming_json_preserves_valid_prefix_before_hanging_property_like_pi() -> None:
+    raw = '{"path": "protocol_fixture.md", "content": "", "timeout": '
+
+    assert appv2_env._parse_streaming_json(raw) == {"path": "protocol_fixture.md", "content": ""}
+
+
+def test_parse_sse_chunks_preserves_finished_write_arguments_for_agent_validation_like_pi() -> None:
+    raw_arguments = json.dumps(
+        {
+            "path": "MALFORMED_INPUT.md",
+            "content": "",
+            "timeout": "30",
+        }
+    )
+
+    events = list(parse_sse_chunks([
+        "data: " + json.dumps({
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "write",
+                                    "arguments": raw_arguments,
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }),
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ], _model()))
+
+    done = events[-1]
+    assert done.type == "done"
+    assert done.reason == "toolUse"
+    tool_calls = [block for block in done.message.content if isinstance(block, ToolCall)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "write"
+    assert tool_calls[0].arguments == {"path": "MALFORMED_INPUT.md", "content": "", "timeout": "30"}
+    assert done.message.diagnostics in (None, [])
+
+
+def test_parse_sse_chunks_preserves_finished_bash_arguments_for_agent_validation_like_pi() -> None:
+    raw_arguments = json.dumps(
+        {
+            "command": "printf '%s\\n' '</parameter>'",
+            "timeout": " ; 30 ; ",
+        }
+    )
+
+    events = list(parse_sse_chunks([
+        "data: " + json.dumps({
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "bash",
+                                    "arguments": raw_arguments,
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }),
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ], _model()))
+
+    done = events[-1]
+    assert done.type == "done"
+    assert done.reason == "toolUse"
+    tool_calls = [block for block in done.message.content if isinstance(block, ToolCall)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "bash"
+    assert tool_calls[0].arguments == {"command": "printf '%s\\n' '</parameter>'", "timeout": " ; 30 ; "}
+    assert done.message.diagnostics in (None, [])
+
+
+def test_parse_sse_chunks_drops_streamed_bash_arguments_that_fail_active_tool_schema() -> None:
+    raw_arguments = json.dumps(
+        {
+            "command": "printf '\n",
+            "timeout": "\n' >> docs/protocol_fixture.md",
+        }
+    )
+    bash_tool = Tool(
+        name="bash",
+        description="Execute a bash command",
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "number"},
+            },
+            "required": ["command"],
+        },
+    )
+
+    events = list(parse_sse_chunks([
+        "data: " + json.dumps({
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "bash",
+                                    "arguments": raw_arguments,
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }),
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ], _model(), tools=[bash_tool]))
+
+    done = events[-1]
+    assert done.type == "done"
+    assert done.reason == "length"
+    assert done.message.stop_reason == "length"
+    assert not any(isinstance(block, ToolCall) for block in done.message.content)
+    assert done.message.diagnostics == [
+        {
+            "code": "malformed_streamed_tool_call_arguments",
+            "dropped_tool_names": ["bash"],
+            "finish_reason": "tool_calls",
+        }
+    ]
+
+
+def test_parse_sse_chunks_allows_complete_protocol_literals_inside_valid_write_json() -> None:
+    content = "</parameter>\n<parameter=timeout>\n30\n</function>\n"
+    raw_arguments = json.dumps({"path": "MALFORMED_INPUT.md", "content": content})
+
+    events = list(parse_sse_chunks([
+        "data: " + json.dumps({
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "write",
+                                    "arguments": raw_arguments,
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }),
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ], _model()))
+
+    done = events[-1]
+    assert done.type == "done"
+    assert done.reason == "toolUse"
+    tool_calls = [block for block in done.message.content if isinstance(block, ToolCall)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "write"
+    assert tool_calls[0].arguments == {"path": "MALFORMED_INPUT.md", "content": content}
+
+
+def test_parse_sse_chunks_preserves_duplicate_mutating_tool_calls_for_agent_loop_like_pi() -> None:
+    raw_arguments = json.dumps({"path": "MALFORMED_INPUT.md", "content": "line 1 is "})
+
+    events = list(parse_sse_chunks([
+        "data: " + json.dumps({
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "write",
+                                    "arguments": raw_arguments,
+                                },
+                            },
+                            {
+                                "index": 1,
+                                "id": "call_2",
+                                "function": {
+                                    "name": "write",
+                                    "arguments": raw_arguments,
+                                },
+                            },
+                        ]
+                    }
+                }
+            ]
+        }),
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ], _model()))
+
+    done = events[-1]
+    assert done.type == "done"
+    assert done.reason == "toolUse"
+    tool_calls = [block for block in done.message.content if isinstance(block, ToolCall)]
+    assert [block.name for block in tool_calls] == ["write", "write"]
+    assert [block.arguments for block in tool_calls] == [
+        {"path": "MALFORMED_INPUT.md", "content": "line 1 is "},
+        {"path": "MALFORMED_INPUT.md", "content": "line 1 is "},
+    ]
+    assert done.message.diagnostics in (None, [])
+
+
+def test_parse_sse_chunks_preserves_repairable_finished_tool_arguments_like_pi() -> None:
     raw_arguments = '{"path":"NOTES.md","content":"# Notes\\n\\nSample lines:\\n\\n- `'
     events = list(parse_sse_chunks([
         "data: " + json.dumps({
@@ -535,17 +785,13 @@ def test_parse_sse_chunks_maps_finished_malformed_tool_arguments_to_truncated_to
 
     final = events[-1]
     assert final.type == "done"
-    assert final.reason == "length"
-    assert final.message.stop_reason == "length"
-    assert final.message.response_id == appv2_env.PARTIAL_STREAM_STUB_ID
-    assert final.message.diagnostics == [
-        {
-            "code": "partial_stream_dropped_tool_calls",
-            "dropped_tool_names": ["write"],
-            "finish_reason": "tool_calls",
-        }
-    ]
-    assert not any(isinstance(block, ToolCall) for block in final.message.content)
+    assert final.reason == "toolUse"
+    assert final.message.stop_reason == "toolUse"
+    tool_calls = [block for block in final.message.content if isinstance(block, ToolCall)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "write"
+    assert tool_calls[0].arguments == {"path": "NOTES.md", "content": "# Notes\n\nSample lines:\n\n- `"}
+    assert final.message.diagnostics in (None, [])
 
 
 def test_parse_sse_chunks_repairs_xml_polluted_tool_name() -> None:
@@ -560,7 +806,7 @@ def test_parse_sse_chunks_repairs_xml_polluted_tool_name() -> None:
                                 "id": "call_1",
                                 "function": {
                                     "name": "write<parameter=path",
-                                    "arguments": "{\"path\":\"x.md\"}",
+                                    "arguments": "{\"path\":\"x.md\",\"content\":\"ok\"}",
                                 },
                             }
                         ]
@@ -575,7 +821,7 @@ def test_parse_sse_chunks_repairs_xml_polluted_tool_name() -> None:
     assert done.type == "done"
     tool_call = next(block for block in done.message.content if isinstance(block, ToolCall))
     assert tool_call.name == "write"
-    assert tool_call.arguments == {"path": "x.md"}
+    assert tool_call.arguments == {"path": "x.md", "content": "ok"}
 
 
 def test_parse_sse_chunks_marks_provider_text_tool_xml_as_incomplete() -> None:
@@ -1775,6 +2021,93 @@ def test_hermes_style_chat_completions_transport_builds_openrouter_payload() -> 
     assert body["temperature"] == 0
     assert body["max_tokens"] == 200
     assert body["provider"] == {"sort": "latency", "allow_fallbacks": True}
+
+
+def test_hermes_style_openrouter_qwen_tools_omit_unsupported_parallel_tool_calls() -> None:
+    from appv23.ai.providers.catalog import get_provider_profile
+    from appv23.ai.providers.transports import get_transport
+
+    profile = get_provider_profile("openrouter")
+    transport = get_transport(profile.api_mode)
+
+    body = transport.build_kwargs(
+        model="qwen/qwen3-coder-next",
+        messages=[{"role": "user", "content": "write protocol fixture"}],
+        tools=[{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}],
+        profile=profile,
+        stream=True,
+        temperature=0,
+        max_tokens=None,
+    )
+
+    assert "parallel_tool_calls" not in body
+
+
+def test_hermes_style_openrouter_glm_tools_omit_parallel_tool_calls_by_default() -> None:
+    from appv23.ai.providers.catalog import get_provider_profile
+    from appv23.ai.providers.transports import get_transport
+
+    profile = get_provider_profile("openrouter")
+    transport = get_transport(profile.api_mode)
+
+    body = transport.build_kwargs(
+        model="z-ai/glm-5.2",
+        messages=[{"role": "user", "content": "write protocol fixture"}],
+        tools=[{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}],
+        profile=profile,
+        stream=True,
+        temperature=0,
+        max_tokens=None,
+    )
+
+    assert "parallel_tool_calls" not in body
+
+
+def test_openrouter_qwen_protocol_literal_user_text_is_not_rewritten_like_pi_provider() -> None:
+    from appv23.ai.providers.catalog import get_provider_profile
+    from appv23.ai.providers.transports import get_transport
+
+    profile = get_provider_profile("openrouter")
+    transport = get_transport(profile.api_mode)
+
+    body = transport.build_kwargs(
+        model="qwen/qwen3-coder-next",
+        messages=[{"role": "user", "content": "Write literal <function=write> and </function> into a file."}],
+        tools=[{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}],
+        profile=profile,
+        stream=True,
+        temperature=0,
+        max_tokens=None,
+    )
+
+    assert body["messages"] == [
+        {"role": "user", "content": "Write literal <function=write> and </function> into a file."}
+    ]
+    user_content = body["messages"][0]["content"]
+    assert "<function=write>" in user_content
+    assert "\\u003cfunction=write\\u003e" not in user_content
+
+
+def test_openrouter_non_qwen_protocol_literal_user_text_is_not_escaped() -> None:
+    from appv23.ai.providers.catalog import get_provider_profile
+    from appv23.ai.providers.transports import get_transport
+
+    profile = get_provider_profile("openrouter")
+    transport = get_transport(profile.api_mode)
+
+    body = transport.build_kwargs(
+        model="anthropic/claude-sonnet-4.6",
+        messages=[{"role": "user", "content": "Write literal <function=write> and </function> into a file."}],
+        tools=[{"type": "function", "function": {"name": "write", "parameters": {"type": "object"}}}],
+        profile=profile,
+        stream=True,
+        temperature=0,
+        max_tokens=None,
+    )
+
+    user_content = next(message["content"] for message in body["messages"] if message["role"] == "user")
+    assert "<function=write>" in user_content
+    assert "\\u003cfunction=write\\u003e" not in user_content
 
 
 def test_hermes_style_transport_exposes_convert_tools_boundary() -> None:
@@ -3257,7 +3590,7 @@ def test_convert_messages_inserts_marker_result_for_corrupted_historical_tool_ca
     assert messages[2]["role"] == "user"
 
 
-def test_parse_sse_chunks_maps_unrepairable_finished_tool_call_arguments_to_truncated_tool_recovery() -> None:
+def test_parse_sse_chunks_preserves_unrepairable_finished_tool_call_arguments_for_validation_like_pi() -> None:
     lines = [
         _sse({"choices": [{"delta": {"tool_calls": [
             {"index": 0, "id": "call_bad", "function": {"name": "read", "arguments": ""}}]}}]}),
@@ -3270,13 +3603,35 @@ def test_parse_sse_chunks_maps_unrepairable_finished_tool_call_arguments_to_trun
     events = list(parse_sse_chunks(lines, _model()))
 
     assert events[-1].type == "done"
+    assert events[-1].reason == "toolUse"
+    assert events[-1].message.stop_reason == "toolUse"
+    tool_calls = [block for block in events[-1].message.content if isinstance(block, ToolCall)]
+    assert len(tool_calls) == 1
+    assert tool_calls[0].name == "read"
+    assert tool_calls[0].arguments == {}
+    assert events[-1].message.diagnostics in (None, [])
+
+
+def test_parse_sse_chunks_drops_malformed_finished_mutating_tool_call_arguments_before_dispatch() -> None:
+    lines = [
+        _sse({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_bad_write", "function": {"name": "write", "arguments": ""}}]}}]}),
+        _sse({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": "{\"path\":\"BROKEN.md\""}}]}}]}),
+        _sse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        "data: [DONE]",
+    ]
+
+    events = list(parse_sse_chunks(lines, _model()))
+
+    assert events[-1].type == "done"
     assert events[-1].reason == "length"
     assert events[-1].message.stop_reason == "length"
     assert events[-1].message.response_id == appv2_env.PARTIAL_STREAM_STUB_ID
     assert events[-1].message.diagnostics == [
         {
-            "code": "partial_stream_dropped_tool_calls",
-            "dropped_tool_names": ["read"],
+            "code": "malformed_streamed_tool_call_arguments",
+            "dropped_tool_names": ["write"],
             "finish_reason": "tool_calls",
         }
     ]

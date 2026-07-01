@@ -38,6 +38,7 @@ class ManualCompressionStatus:
     warning: str | None = None
     info: str | None = None
     summary: str | None = None
+    details: dict[str, list[str]] | None = None
     tokens_before: int = 0
     first_kept_message_index: int | None = None
     first_kept_entry_id: str | None = None
@@ -608,6 +609,7 @@ class CompactionManager:
             warning=warning,
             info=info,
             summary=getattr(result, "summary", None),
+            details=getattr(result, "details", None),
             tokens_before=int(getattr(result, "tokens_before", before_tokens) or before_tokens),
             first_kept_message_index=getattr(result, "first_kept_message_index", None),
             deep=deep,

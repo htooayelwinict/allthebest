@@ -142,6 +142,129 @@ def test_prune_preserves_write_path_and_metadata_while_removing_large_content_ar
     assert "_truncated" not in arguments
 
 
+def test_compress_appends_pi_file_operation_tags_to_summary() -> None:
+    messages = [
+        _user("goal"),
+        _assistant(tool_calls=[ToolCall(id="read-1", name="read", arguments={"path": "src/a.py"})]),
+        _tool_result("a", name="read", tool_call_id="read-1"),
+        _assistant(tool_calls=[ToolCall(id="write-1", name="write", arguments={"path": "src/b.py", "content": "b"})]),
+        _tool_result("wrote", name="write", tool_call_id="write-1"),
+        _assistant(tool_calls=[ToolCall(id="edit-1", name="edit", arguments={"path": "src/c.py"})]),
+        _tool_result("edited", name="edit", tool_call_id="edit-1"),
+    ]
+    for index in range(14):
+        messages.append(_user(f"old filler {index} " * 30))
+        messages.append(_assistant(f"old ack {index} " * 30))
+    messages.append(_user("latest request"))
+
+    compressor = ContextCompressor(context_length=700, protect_first_n=1, protect_last_n=1)
+    result = compressor.compress(messages, summarizer=lambda _prompt: "## Goal\nsummary without files")
+
+    assert result.compressed is True
+    assert "<read-files>\nsrc/a.py\n</read-files>" in result.summary
+    assert "<modified-files>\nsrc/b.py\nsrc/c.py\n</modified-files>" in result.summary
+
+
+def test_compress_reports_pi_file_operation_details() -> None:
+    messages = [
+        _user("goal"),
+        _assistant(tool_calls=[ToolCall(id="read-1", name="read", arguments={"path": "src/a.py"})]),
+        _tool_result("a", name="read", tool_call_id="read-1"),
+        _assistant(tool_calls=[ToolCall(id="write-1", name="write", arguments={"path": "src/b.py", "content": "b"})]),
+        _tool_result("wrote", name="write", tool_call_id="write-1"),
+        _assistant(tool_calls=[ToolCall(id="edit-1", name="edit", arguments={"path": "src/c.py"})]),
+        _tool_result("edited", name="edit", tool_call_id="edit-1"),
+    ]
+    for index in range(14):
+        messages.append(_user(f"old filler {index} " * 30))
+        messages.append(_assistant(f"old ack {index} " * 30))
+    messages.append(_user("latest request"))
+
+    compressor = ContextCompressor(context_length=700, protect_first_n=1, protect_last_n=1)
+    result = compressor.compress(messages, summarizer=lambda _prompt: "## Goal\nsummary without files")
+
+    assert result.compressed is True
+    assert result.details == {
+        "readFiles": ["src/a.py"],
+        "modifiedFiles": ["src/b.py", "src/c.py"],
+    }
+
+
+def test_compress_tracks_historical_bash_file_mutations_in_file_details() -> None:
+    messages = [
+        _user("create docs from protocol fixture"),
+        _assistant(
+            tool_calls=[
+                ToolCall(
+                    id="bash-1",
+                    name="bash",
+                    arguments={"command": "printf '%s\\n' '# Protocol' > docs/protocol_fixture.md"},
+                )
+            ]
+        ),
+        _tool_result("wrote protocol fixture", name="bash", tool_call_id="bash-1"),
+        _assistant(
+            tool_calls=[
+                ToolCall(
+                    id="bash-2",
+                    name="bash",
+                    arguments={"command": "printf '%s\\n' '# Review' | tee reports/review.md >/dev/null"},
+                )
+            ]
+        ),
+        _tool_result("wrote review", name="bash", tool_call_id="bash-2"),
+    ]
+    for index in range(14):
+        messages.append(_user(f"old filler {index} " * 30))
+        messages.append(_assistant(f"old ack {index} " * 30))
+    messages.append(_user("latest request"))
+
+    compressor = ContextCompressor(context_length=700, protect_first_n=1, protect_last_n=1)
+    result = compressor.compress(messages, summarizer=lambda _prompt: "## Goal\nsummary without files")
+
+    assert result.compressed is True
+    assert result.details == {
+        "readFiles": [],
+        "modifiedFiles": ["docs/protocol_fixture.md", "reports/review.md"],
+    }
+    assert "<modified-files>\ndocs/protocol_fixture.md\nreports/review.md\n</modified-files>" in result.summary
+
+
+def test_compress_preserves_previous_pi_file_operation_tags_across_iterative_summary() -> None:
+    first_messages = [
+        _user("goal"),
+        _assistant(tool_calls=[ToolCall(id="write-1", name="write", arguments={"path": "src/old.py", "content": "old"})]),
+        _tool_result("wrote", name="write", tool_call_id="write-1"),
+    ]
+    for index in range(14):
+        first_messages.append(_user(f"old first filler {index} " * 30))
+        first_messages.append(_assistant(f"old first ack {index} " * 30))
+    first_messages.append(_user("latest first"))
+
+    compressor = ContextCompressor(context_length=700, protect_first_n=1, protect_last_n=1)
+    first = compressor.compress(first_messages, summarizer=lambda _prompt: "## Goal\nfirst summary")
+    assert "<modified-files>\nsrc/old.py\n</modified-files>" in first.summary
+
+    second_messages = list(first.messages)
+    second_messages.extend(
+        [
+            _user("new task"),
+            _assistant(tool_calls=[ToolCall(id="read-2", name="read", arguments={"path": "src/new.py"})]),
+            _tool_result("new", name="read", tool_call_id="read-2"),
+        ]
+    )
+    for index in range(14):
+        second_messages.append(_user(f"old second filler {index} " * 30))
+        second_messages.append(_assistant(f"old second ack {index} " * 30))
+    second_messages.append(_user("latest second"))
+
+    second = compressor.compress(second_messages, summarizer=lambda _prompt: "## Goal\nsecond summary dropped tags")
+
+    assert second.compressed is True
+    assert "<read-files>\nsrc/new.py\n</read-files>" in second.summary
+    assert "<modified-files>\nsrc/old.py\n</modified-files>" in second.summary
+
+
 def test_prune_summarizes_old_subagent_expansion_to_metadata_only() -> None:
     child_body = "sensitive child analysis body " * 80
     expanded = "\n".join(
@@ -739,6 +862,48 @@ def test_deterministic_fallback_preserves_hermes_continuity_anchors() -> None:
     assert "/tmp/project/src/app.py" in fallback
     assert "## Last Dropped Turns" in fallback
     assert len(fallback) <= 8_000
+
+
+def test_deterministic_fallback_preserves_pi_file_operation_inventory() -> None:
+    fallback = ContextCompressor()._static_fallback_summary(
+        [
+            _user("build ledger tools and document the result"),
+            _assistant(tool_calls=[ToolCall(id="w1", name="write", arguments={"path": "ledger_tools/parser.py", "content": "parser"})]),
+            _tool_result("Successfully wrote 6 bytes to ledger_tools/parser.py", name="write", tool_call_id="w1"),
+            _assistant(tool_calls=[ToolCall(id="e1", name="edit", arguments={"path": "ledger_tools/cli.py", "oldText": "old", "newText": "new"})]),
+            _tool_result("Successfully edited ledger_tools/cli.py", name="edit", tool_call_id="e1"),
+            _assistant(tool_calls=[ToolCall(id="r1", name="read", arguments={"path": "README.md"})]),
+            _tool_result("README contents", name="read", tool_call_id="r1"),
+        ],
+        reason="summary provider down",
+    )
+
+    assert "## File Operations" in fallback
+    assert "Modified files:" in fallback
+    assert "ledger_tools/parser.py" in fallback
+    assert "ledger_tools/cli.py" in fallback
+    assert "Read files:" in fallback
+    assert "README.md" in fallback
+
+
+def test_deterministic_fallback_does_not_force_broad_verification() -> None:
+    fallback = ContextCompressor()._static_fallback_summary(
+        [
+            _user("read docs/report.md and refine the summary only"),
+            _assistant(tool_calls=[ToolCall(id="r1", name="read", arguments={"path": "docs/report.md"})]),
+            _tool_result("report", name="read", tool_call_id="r1"),
+            _assistant(tool_calls=[ToolCall(id="e1", name="edit", arguments={"path": "docs/report.md"})]),
+            _tool_result("edited", name="edit", tool_call_id="e1"),
+        ],
+        reason="no auxiliary LLM provider configured",
+    )
+
+    assert "git state" not in fallback
+    assert "processes" not in fallback
+    assert "test results" not in fallback
+    assert "Verify state with tools before making claims" not in fallback
+    assert "Inspect only the files or state needed for the latest user request" in fallback
+    assert "Run tests only when the latest request asks for tests" in fallback
 
 
 def test_missing_summary_provider_uses_hermes_fallback_bookkeeping_and_cooldown() -> None:

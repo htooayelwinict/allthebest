@@ -103,8 +103,15 @@ def build_system_prompt(options: BuildSystemPromptOptions) -> str:
     has_find = "find" in tools
     has_ls = "ls" in tools
     has_read = "read" in tools
+    has_edit = "edit" in tools
+    has_write = "write" in tools
     if has_bash and not has_grep and not has_find and not has_ls:
         add("Use bash for file operations like ls, rg, find")
+    if has_bash and (has_edit or has_write):
+        add(
+            "Do not use bash heredocs, echo, printf, tee, cat >, or shell redirection "
+            "to create or rewrite project files when write or edit can do the same job."
+        )
     for guideline in options.prompt_guidelines:
         add(guideline)
     add("Be concise in your responses")

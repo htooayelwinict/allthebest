@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -102,6 +103,21 @@ def _validate_edit_input(args) -> tuple[str, list[dict]]:
     return path, edits
 
 
+def _file_content_metadata(content: str) -> dict[str, object]:
+    encoded = content.encode("utf-8")
+    if content == "":
+        line_count = 0
+    elif content.endswith("\n"):
+        line_count = content.count("\n")
+    else:
+        line_count = content.count("\n") + 1
+    return {
+        "content_sha256": hashlib.sha256(encoded).hexdigest(),
+        "line_count": line_count,
+        "final_newline": content.endswith(("\n", "\r")),
+    }
+
+
 def _execute_edit(cwd: str, tool_call_id, args, signal=None, on_update=None, ctx: ToolContext | None = None):
     path, edits = _validate_edit_input(args)
     absolute_path = resolve_to_cwd(path, cwd)
@@ -130,6 +146,8 @@ def _execute_edit(cwd: str, tool_call_id, args, signal=None, on_update=None, ctx
             raise RuntimeError("Operation aborted")
         result_details = {
             "path": absolute_path,
+            "total_bytes": os.path.getsize(absolute_path),
+            **_file_content_metadata(final_content),
             "diff": diff_result.diff,
             "patch": patch,
             "first_changed_line": diff_result.first_changed_line,

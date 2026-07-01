@@ -327,6 +327,17 @@ def test_subagent_task_prompt_contains_child_system_contract(tmp_path):
     assert "After two failed attempts for the same path or unavailable tool, stop retrying" in prompt
 
 
+def test_subagent_task_prompt_requires_evidence_bound_claims(tmp_path):
+    task = SubagentTask(role="reviewer", goal="inspect slugify behavior", cwd=str(tmp_path))
+
+    prompt = task.prompt()
+
+    assert "Every factual claim in your summary must be backed by observed evidence" in prompt
+    assert "If evidence is missing or ambiguous, mark the claim as uncertain" in prompt
+    assert "Do not infer behavior from filenames, conventions, or expectations alone" in prompt
+    assert "Evidence:" in prompt
+
+
 def test_subagent_task_rejects_boolean_runtime_options(tmp_path):
     cases = (
         ({"timeout_seconds": True}, "Subagent timeout_seconds must be positive"),
