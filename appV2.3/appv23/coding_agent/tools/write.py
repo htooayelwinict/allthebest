@@ -82,7 +82,7 @@ def _execute_write(
     operations: WriteOperations = _DEFAULT_OPERATIONS,
 ):
     path = args["path"]
-    content = args.get("content", "")
+    content = args["content"]
     absolute_path = resolve_to_cwd(path, cwd)
     parent = os.path.dirname(absolute_path)
     result_details: dict = {}

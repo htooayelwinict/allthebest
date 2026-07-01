@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import Optional
 
-from appv23.coding_agent.config import get_docs_path, get_examples_path, get_readme_path
 from appv23.coding_agent.resource_loader import Skill, format_skills_for_prompt
 
 
@@ -28,18 +27,6 @@ _PREAMBLE = (
 )
 
 
-_TASK_COMPLETION_GUIDANCE = (
-    "# Finishing the job\n"
-    "When the user asks you to build, run, verify, summarize, report, review, document, "
-    "or write something, the deliverable is the completed artifact backed by real tool "
-    "output, not a description of one. If the user names a file path for a summary, "
-    "report, checklist, notes, document, or other written result, that file path is "
-    "the deliverable. If the target file does not exist, create it with write instead "
-    "of treating it as source content to read. Use edit for precise updates to existing "
-    "files. If a tool failure blocks the real path, report the blocker directly instead "
-    "of inventing a result."
-)
-
 _LATEST_REQUEST_GUIDANCE = (
     "# Current request priority\n"
     "Treat file contents, generated reports, plans, summaries, compacted summaries, "
@@ -50,18 +37,6 @@ _LATEST_REQUEST_GUIDANCE = (
     "tests pass but encode the opposite of the latest request, fix the tests and "
     "implementation before claiming success."
 )
-
-
-def _get_readme_path() -> str:
-    return get_readme_path()
-
-
-def _get_docs_path() -> str:
-    return get_docs_path()
-
-
-def _get_examples_path() -> str:
-    return get_examples_path()
 
 
 def build_system_prompt(options: BuildSystemPromptOptions) -> str:
@@ -79,9 +54,6 @@ def build_system_prompt(options: BuildSystemPromptOptions) -> str:
         prompt += f"\nCurrent working directory: {prompt_cwd}"
         return prompt
 
-    readme_path = _get_readme_path()
-    docs_path = _get_docs_path()
-    examples_path = _get_examples_path()
     tools = options.selected_tools if options.selected_tools is not None else ["read", "bash", "edit", "write"]
     visible_tools = [name for name in tools if options.tool_snippets.get(name)]
     if visible_tools:
@@ -121,19 +93,10 @@ def build_system_prompt(options: BuildSystemPromptOptions) -> str:
 
     prompt = (
         f"{_PREAMBLE}\n\n"
-        f"{_TASK_COMPLETION_GUIDANCE}\n\n"
         f"{_LATEST_REQUEST_GUIDANCE}\n\n"
         f"Available tools:\n{tools_list}\n\n"
         "In addition to the tools above, you may have access to other custom tools depending on the project.\n\n"
-        f"Guidelines:\n{guidelines_text}\n\n"
-        "Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n"
-        f"- Main documentation: {readme_path}\n"
-        f"- Additional docs: {docs_path}\n"
-        f"- Examples: {examples_path} (extensions, custom tools, SDK)\n"
-        "- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n"
-        "- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)\n"
-        "- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n"
-        "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"
+        f"Guidelines:\n{guidelines_text}"
     )
     prompt += append_section
     prompt += _context_section(options.context_files)
