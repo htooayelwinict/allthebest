@@ -65,6 +65,7 @@ from appv24.workflows.repair import (
     repair_workflow_draft_messages,
 )
 from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
+from appv24.workflows.staging import run_workflow_draft_stages, should_stage_workflow_drafts
 from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text, validate_workflow_package
 
 
@@ -669,14 +670,33 @@ class InteractiveMode:
 
     def _run_turn_thread(self, prompt: str, before_compressions: int, before_tokens: int) -> None:
         try:
-            self.app.run_turn(
-                prompt,
-                on_post_response_compaction_start=self._show_post_response_compaction_status,
-            )
+            self._run_prompt_for_profile(prompt)
         except Exception as error:  # noqa: BLE001 - keep the TUI responsive if a turn fails outside agent handling
             self.history.add(StatusLine(f"Turn failed: {error}", kind="error"))
         finally:
             self._finish_turn_thread(before_compressions, before_tokens)
+
+    def _run_prompt_for_profile(self, prompt: str) -> None:
+        if not should_stage_workflow_drafts(self._profile_id()):
+            self.app.run_turn(
+                prompt,
+                on_post_response_compaction_start=self._show_post_response_compaction_status,
+            )
+            return
+
+        def on_stage(index: int, total: int, stage_id: str) -> None:
+            self.status.set_message("Staging workflow draft")
+            self.history.add(StatusLine(f"Workflow draft stage: {stage_id} {index}/{total}", kind="compact"))
+            self.tui.request_render()
+
+        run_workflow_draft_stages(
+            prompt,
+            lambda stage_prompt: self.app.run_turn(
+                stage_prompt,
+                on_post_response_compaction_start=self._show_post_response_compaction_status,
+            ),
+            on_stage=on_stage,
+        )
 
     def _finish_turn_thread(self, before_compressions: int, before_tokens: int) -> None:
         self._render_auto_compaction_notice(before_compressions, before_tokens)

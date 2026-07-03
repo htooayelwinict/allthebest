@@ -1074,12 +1074,15 @@ def test_interactive_mode_workflow_designer_lite_renders_validation_report(tmp_p
     assert "Workflow draft validation: passed" in rendered
 
 
-def test_interactive_mode_repairs_invalid_workflow_draft_before_validation_report(tmp_path) -> None:
+def test_interactive_mode_workflow_profile_stages_prompt_before_validation(tmp_path) -> None:
     calls = {"n": 0}
+    prompts: list[str] = []
 
     def script(model, context):
         calls["n"] += 1
-        text = _invalid_workflow_draft_text() if calls["n"] == 1 else _valid_workflow_draft_text()
+        user_messages = [message for message in context.messages if getattr(message, "role", None) == "user"]
+        prompts.append(user_messages[-1].content[0].text)
+        text = _valid_workflow_draft_text() if calls["n"] == 3 else "stage note"
         return text_response_events(model, text)
 
     register_api_provider(create_faux_provider(script))
@@ -1092,7 +1095,46 @@ def test_interactive_mode_repairs_invalid_workflow_draft_before_validation_repor
     assert mode.run() == 0
 
     rendered = strip_ansi("\n".join(app.tui.render(160)))
-    assert calls["n"] == 2
+    assert calls["n"] == 3
+    assert "Workflow draft staging 1/3: intent" in prompts[0]
+    assert "Workflow draft staging 2/3: skeleton" in prompts[1]
+    assert "Workflow draft staging 3/3: package" in prompts[2]
+    assert "design workflow" in prompts[0]
+    assert "Workflow draft stage: intent 1/3" in rendered
+    assert "Workflow draft stage: skeleton 2/3" in rendered
+    assert "Workflow draft stage: package 3/3" in rendered
+    assert "Workflow draft validation: passed" in rendered
+
+
+def test_interactive_mode_repairs_invalid_workflow_draft_before_validation_report(tmp_path) -> None:
+    calls = {"n": 0}
+
+    def script(model, context):
+        calls["n"] += 1
+        user_messages = [message for message in context.messages if getattr(message, "role", None) == "user"]
+        prompt = user_messages[-1].content[0].text
+        if "Repair attempt" in prompt:
+            text = _valid_workflow_draft_text()
+        elif "staging 3/3: package" in prompt:
+            text = _invalid_workflow_draft_text()
+        else:
+            text = "stage note"
+        return text_response_events(model, text)
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["design workflow", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert calls["n"] == 4
+    assert "Workflow draft stage: intent 1/3" in rendered
+    assert "Workflow draft stage: skeleton 2/3" in rendered
+    assert "Workflow draft stage: package 3/3" in rendered
     assert "Workflow draft repair: attempt 1/2" in rendered
     assert "Workflow draft validation: passed" in rendered
 
@@ -1133,7 +1175,14 @@ def test_interactive_mode_workflow_save_uses_repaired_valid_draft(tmp_path) -> N
 
     def script(model, context):
         calls["n"] += 1
-        text = _invalid_workflow_draft_text() if calls["n"] == 1 else _valid_workflow_draft_text()
+        user_messages = [message for message in context.messages if getattr(message, "role", None) == "user"]
+        prompt = user_messages[-1].content[0].text
+        if "Repair attempt" in prompt:
+            text = _valid_workflow_draft_text()
+        elif "staging 3/3: package" in prompt:
+            text = _invalid_workflow_draft_text()
+        else:
+            text = "stage note"
         return text_response_events(model, text)
 
     register_api_provider(create_faux_provider(script))
@@ -1156,8 +1205,9 @@ def test_interactive_mode_workflow_save_uses_repaired_valid_draft(tmp_path) -> N
 
     saved_path = tmp_path / "repaired-workflow"
     rendered = strip_ansi("\n".join(app.tui.render(160)))
-    assert calls["n"] == 2
+    assert calls["n"] == 4
     assert saved_path.joinpath("workflow.yaml").is_file()
+    assert "Workflow draft stage: package 3/3" in rendered
     assert "Workflow draft repair: attempt 1/2" in rendered
     assert "Workflow draft saved:" in rendered
 
