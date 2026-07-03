@@ -45,6 +45,7 @@ from appv24.workflows.repair import (
     repair_workflow_draft_messages,
 )
 from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
+from appv24.workflows.staging import run_workflow_draft_stages, should_stage_workflow_drafts
 from appv24.workflows.validator import validate_workflow_draft_text, validate_workflow_package
 
 
@@ -508,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
 
     prompt = " ".join(args.prompt).strip()
     if prompt:
-        app.run_turn(prompt)
+        _run_prompt_for_profile(app, selected_profile.id, prompt)
         repair_result = _repair_workflow_draft_if_needed(app, selected_profile.id)
         _print_last_assistant(app)
         _print_workflow_validation_if_needed(app, selected_profile.id, repair_result)
@@ -532,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if _handle_workflow_save_command(app, selected_profile.id, prompt):
             continue
-        app.run_turn(prompt)
+        _run_prompt_for_profile(app, selected_profile.id, prompt)
         repair_result = _repair_workflow_draft_if_needed(app, selected_profile.id)
         _print_last_assistant(app)
         _print_workflow_validation_if_needed(app, selected_profile.id, repair_result)
@@ -631,6 +632,17 @@ def _print_last_assistant(app: CodingApp) -> None:
         if texts:
             print("".join(texts))
         return
+
+
+def _run_prompt_for_profile(app: CodingApp, profile_id: str, prompt: str) -> None:
+    if not should_stage_workflow_drafts(profile_id):
+        app.run_turn(prompt)
+        return
+
+    def on_stage(index: int, total: int, stage_id: str) -> None:
+        print(f"Workflow draft stage: {stage_id} {index}/{total}")
+
+    run_workflow_draft_stages(prompt, app.run_turn, on_stage=on_stage)
 
 
 def _repair_workflow_draft_if_needed(app: CodingApp, profile_id: str) -> WorkflowDraftRepairResult | None:

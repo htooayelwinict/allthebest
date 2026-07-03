@@ -1910,7 +1910,7 @@ def test_cli_workflow_designer_lite_prompt_prints_validation_report(monkeypatch,
     assert "Workflow draft validation: passed" in captured.out
 
 
-def test_cli_workflow_profile_repairs_invalid_draft_before_printing(monkeypatch, tmp_path, capsys) -> None:
+def test_cli_workflow_profile_stages_prompt_before_validation(monkeypatch, tmp_path, capsys) -> None:
     created: dict[str, object] = {}
 
     class FakeApp:
@@ -1923,7 +1923,7 @@ def test_cli_workflow_profile_repairs_invalid_draft_before_printing(monkeypatch,
 
         def run_turn(self, prompt):
             self.run_prompts.append(prompt)
-            text = _invalid_workflow_draft_text() if len(self.run_prompts) == 1 else _valid_workflow_draft_text()
+            text = _valid_workflow_draft_text() if "staging 3/3: package" in prompt else "stage note"
             self.messages.append(_assistant_message(text))
 
     monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
@@ -1943,8 +1943,96 @@ def test_cli_workflow_profile_repairs_invalid_draft_before_printing(monkeypatch,
     captured = capsys.readouterr()
     app = created["app"]
     assert exit_code == 0
-    assert app.run_prompts[0] == "design workflow"
-    assert "Repair attempt 1/2" in app.run_prompts[1]
+    assert len(app.run_prompts) == 3
+    assert "Workflow draft staging 1/3: intent" in app.run_prompts[0]
+    assert "Workflow draft staging 2/3: skeleton" in app.run_prompts[1]
+    assert "Workflow draft staging 3/3: package" in app.run_prompts[2]
+    assert "design workflow" in app.run_prompts[0]
+    assert "Workflow draft stage: intent 1/3" in captured.out
+    assert "Workflow draft stage: skeleton 2/3" in captured.out
+    assert "Workflow draft stage: package 3/3" in captured.out
+    assert "Workflow draft validation: passed" in captured.out
+
+
+def test_cli_coding_profile_does_not_stage_prompt(monkeypatch, tmp_path, capsys) -> None:
+    created: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["kwargs"] = kwargs
+            created["app"] = self
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+            self.run_prompts: list[str] = []
+
+        def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
+            self.messages.append(_assistant_message(_valid_workflow_draft_text()))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "coding", "design workflow"])
+
+    captured = capsys.readouterr()
+    app = created["app"]
+    assert exit_code == 0
+    assert app.run_prompts == ["design workflow"]
+    assert "Workflow draft stage:" not in captured.out
+    assert "Workflow draft validation:" not in captured.out
+
+
+def test_cli_workflow_profile_repairs_invalid_draft_before_printing(monkeypatch, tmp_path, capsys) -> None:
+    created: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["kwargs"] = kwargs
+            created["app"] = self
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+            self.run_prompts: list[str] = []
+
+        def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
+            if "Repair attempt" in prompt:
+                text = _valid_workflow_draft_text()
+            elif "staging 3/3: package" in prompt:
+                text = _invalid_workflow_draft_text()
+            else:
+                text = "stage note"
+            self.messages.append(_assistant_message(text))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "design workflow"])
+
+    captured = capsys.readouterr()
+    app = created["app"]
+    assert exit_code == 0
+    assert "Workflow draft staging 1/3: intent" in app.run_prompts[0]
+    assert "Workflow draft staging 2/3: skeleton" in app.run_prompts[1]
+    assert "Workflow draft staging 3/3: package" in app.run_prompts[2]
+    assert "Repair attempt 1/2" in app.run_prompts[3]
     assert "Workflow draft repair: attempt 1/2" in captured.out
     assert "Workflow draft validation: passed" in captured.out
     assert "side_effect: send" not in captured.out
@@ -1986,7 +2074,10 @@ def test_cli_plain_workflow_save_writes_last_valid_draft(monkeypatch, tmp_path, 
     captured = capsys.readouterr()
     app = created["app"]
     assert exit_code == 0
-    assert app.run_prompts == ["design workflow"]
+    assert len(app.run_prompts) == 3
+    assert "Workflow draft staging 1/3: intent" in app.run_prompts[0]
+    assert "Workflow draft staging 2/3: skeleton" in app.run_prompts[1]
+    assert "Workflow draft staging 3/3: package" in app.run_prompts[2]
     assert saved_path.joinpath("workflow.yaml").is_file()
     assert saved_path.joinpath("dry_run_fixtures", "happy_path.yaml").is_file()
     assert "Workflow draft saved:" in captured.out
