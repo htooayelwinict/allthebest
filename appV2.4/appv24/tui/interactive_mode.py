@@ -684,6 +684,8 @@ class InteractiveMode:
         self._render_workflow_validation_if_needed(repair_result)
         with self._turn_lock:
             next_prompt = None if self._shutdown_requested or not self._queued_after_turn else self._queued_after_turn.pop(0)
+            if next_prompt is None:
+                self._turn_thread = None
         if next_prompt:
             next_before_compressions = self.app.compaction.compressor.compression_count
             next_before_tokens = estimate_tokens(self.app.messages)
@@ -698,13 +700,18 @@ class InteractiveMode:
         self.tui.request_render()
 
     def _handle_active_turn_prompt(self, prompt: str) -> bool:
-        if not self._is_turn_active():
-            return False
+        with self._turn_lock:
+            thread = self._turn_thread
+            active = thread is not None and thread.is_alive()
+            if not active:
+                return False
+            should_queue_after_turn = not self.app.session.is_streaming
+
         if self._dispatch_extension_command(prompt):
             self._refresh_footer()
             self.tui.request_render()
             return True
-        if self.app.session.is_streaming:
+        if not should_queue_after_turn:
             try:
                 self.app.session.prompt(prompt, streaming_behavior="steer")
             except Exception as error:  # noqa: BLE001 - queue errors should render, not crash input handling
@@ -714,6 +721,9 @@ class InteractiveMode:
             return True
 
         with self._turn_lock:
+            thread = self._turn_thread
+            if thread is None or not thread.is_alive():
+                return False
             self._queued_after_turn.append(prompt)
         self.history.add(StatusLine("Queued message for after current turn", kind="info"))
         self._refresh_footer()

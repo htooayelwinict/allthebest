@@ -98,6 +98,25 @@ def test_workflow_designer_lite_profile_is_passive_and_read_only() -> None:
     assert "```markdown rollback.md" in prompt
 
 
+def test_workflow_designer_lite_prompt_pins_schema_shapes() -> None:
+    prompt = profile_coding_app_kwargs(get_profile("workflow-designer-lite"))["append_system_prompt"]
+
+    assert "version: appv24.workflow/v1" in prompt
+    assert "triggers:" in prompt
+    assert "entrypoint:" in prompt
+    assert "For cron-like schedules, use type: schedule" in prompt
+    assert "version: appv24.connectors/v1" in prompt
+    assert "connectors:" in prompt
+    assert "connectors must be a YAML list" in prompt
+    assert "Each action item must be a YAML object with id:" in prompt
+    assert "side_effect must be boolean true or false" in prompt
+    assert "version: appv24.permissions/v1" in prompt
+    assert "permissions:" in prompt
+    assert "permissions must be a YAML list" in prompt
+    assert "Each approval item must be a YAML object with id:, mode: explicit, and required_for:" in prompt
+    assert "required_for values must be workflow step id strings only" in prompt
+
+
 def test_profile_lookup_normalizes_case_and_underscores() -> None:
     assert get_profile("Read_Only").id == "read-only"
     assert get_profile("SECURITY_LAB_LITE").id == "security-lab-lite"
