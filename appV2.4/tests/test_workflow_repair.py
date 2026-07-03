@@ -129,6 +129,10 @@ def test_build_workflow_repair_prompt_is_bounded_and_schema_specific() -> None:
     assert "rollback.md" in prompt
     assert "Do not call tools" in prompt
     assert "side_effect must be boolean true or false" in prompt
+    assert "approval: <approval-id>; never use approval_gate:" in prompt
+    assert "permissions[].actions must be connector action id strings" in prompt
+    assert "permissions[].scopes must grant every required_scopes value" in prompt
+    assert "approvals[].required_for must include the exact mutating workflow step id" in prompt
 
 
 def test_repair_noops_when_latest_draft_is_valid() -> None:

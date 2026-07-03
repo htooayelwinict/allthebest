@@ -80,7 +80,12 @@ def build_workflow_repair_prompt(
             "- workflow.yaml trigger type must be schedule, webhook, manual, or event.",
             "- connectors.yaml connectors[].actions must be a list of action objects.",
             "- connectors.yaml actions[].side_effect must be boolean true or false.",
+            "- Mutating workflow.yaml steps must use approval: <approval-id>; never use approval_gate:.",
+            "- permissions.yaml permissions[].actions must be connector action id strings.",
+            "- permissions.yaml permissions[].scopes must grant every required_scopes value used by granted actions.",
             "- permissions.yaml approvals[].required_for must be workflow step id strings.",
+            "- The approval id in steps[].approval must exist in permissions.yaml approvals[].id.",
+            "- approvals[].required_for must include the exact mutating workflow step id.",
         ]
     )
 

@@ -113,8 +113,13 @@ def test_workflow_designer_lite_prompt_pins_schema_shapes() -> None:
     assert "version: appv24.permissions/v1" in prompt
     assert "permissions:" in prompt
     assert "permissions must be a YAML list" in prompt
+    assert "permissions[].actions must be workflow connector action id strings" in prompt
+    assert "permissions[].scopes must include every required_scopes value" in prompt
+    assert "github permission must include scopes: [issues, security_events]" in prompt
     assert "Each approval item must be a YAML object with id:, mode: explicit, and required_for:" in prompt
     assert "required_for values must be workflow step id strings only" in prompt
+    assert "Mutating workflow steps must use approval: <approval-id>; never use approval_gate:" in prompt
+    assert "reference it from that step with approval:" in prompt
 
 
 def test_profile_lookup_normalizes_case_and_underscores() -> None:
