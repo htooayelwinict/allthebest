@@ -1,0 +1,28 @@
+version: appv24.workflow/v1
+name: dependency-security-review
+description: Review dependency alerts and draft a human-approved tracking issue.
+triggers:
+  - id: weekly
+    type: schedule
+    schedule: "0 9 * * 5"
+entrypoint: inspect_alerts
+steps:
+  - id: inspect_alerts
+    uses: github.list_dependabot_alerts
+    with:
+      repo:
+        inputRef: repo
+    next: draft_issue
+  - id: draft_issue
+    uses: github.create_issue
+    side_effect_class: create
+    approval: human-review
+    with:
+      repo:
+        inputRef: repo
+      title: Dependency security review
+      body:
+        fromStep: inspect_alerts
+    next: done
+  - id: done
+    type: terminal

@@ -1,0 +1,16 @@
+version: appv24.connectors/v1
+connectors:
+  - id: github
+    adapter: openapi
+    description: GitHub REST API adapter design target.
+    actions:
+      - id: list_dependabot_alerts
+        operationId: dependabot_list_alerts
+        side_effect: false
+        required_scopes:
+          - dependabot:read
+      - id: create_issue
+        operationId: issues_create
+        side_effect: true
+        required_scopes:
+          - issues:write

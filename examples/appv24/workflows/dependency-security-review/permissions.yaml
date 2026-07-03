@@ -1,0 +1,14 @@
+version: appv24.permissions/v1
+approvals:
+  - id: human-review
+    mode: explicit
+    required_for:
+      - draft_issue
+permissions:
+  - connector: github
+    actions:
+      - list_dependabot_alerts
+      - create_issue
+    scopes:
+      - dependabot:read
+      - issues:write

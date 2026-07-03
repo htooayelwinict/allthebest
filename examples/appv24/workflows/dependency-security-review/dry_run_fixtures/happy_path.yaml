@@ -1,0 +1,9 @@
+input:
+  repo: owner/project
+alerts:
+  high: 1
+  critical: 0
+approval:
+  human-review: approved
+expected:
+  terminal_step: done

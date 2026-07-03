@@ -576,3 +576,11 @@ def test_validate_workflow_package_load_error_uses_resolved_file_path(
     issue = result.issues[0]
     assert issue.code == "load_error"
     assert issue.file == str(result.root)
+
+
+def test_example_dependency_security_review_package_is_valid() -> None:
+    package = Path("examples/appv24/workflows/dependency-security-review")
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is True, result.messages()
