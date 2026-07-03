@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from appv24.workflows.errors import WorkflowPackageError
+from appv24.workflows.schema import validate_schema_documents
 from appv24.workflows.loader import load_package_documents
 
 
@@ -133,3 +134,28 @@ def test_load_package_documents_rejects_invalid_utf8_in_rollback(tmp_path: Path)
         load_package_documents(package)
 
     assert "failed to read rollback.md" in str(excinfo.value)
+
+
+def test_schema_validation_accepts_minimal_package(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+
+    documents = load_package_documents(package)
+    issues = validate_schema_documents(documents)
+
+    assert issues == []
+
+
+def test_schema_validation_rejects_missing_workflow_entrypoint(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    workflow_path = package / "workflow.yaml"
+    workflow_path.write_text(
+        workflow_path.read_text(encoding="utf-8").replace("entrypoint: inspect_alerts\n", "", 1),
+        encoding="utf-8",
+    )
+
+    documents = load_package_documents(package)
+    issues = validate_schema_documents(documents)
+
+    assert any("'entrypoint' is a required property" in issue.message for issue in issues)
