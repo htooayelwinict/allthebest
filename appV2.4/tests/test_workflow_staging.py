@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from appv24.workflows.staging import (
+    WorkflowDraftStageConfig,
+    build_workflow_stage_prompt,
+    run_workflow_draft_stages,
+    should_stage_workflow_drafts,
+)
+
+
+def test_should_stage_only_workflow_designer_profile() -> None:
+    assert should_stage_workflow_drafts("workflow-designer-lite")
+    assert should_stage_workflow_drafts("WORKFLOW_DESIGNER_LITE")
+    assert not should_stage_workflow_drafts("coding")
+    assert not should_stage_workflow_drafts(None)
+
+
+def test_build_intent_stage_prompt_is_passive_and_preserves_request() -> None:
+    prompt = build_workflow_stage_prompt(
+        "Every weekday, check GitHub alerts and draft a Telegram summary.",
+        stage_id="intent",
+        stage_index=1,
+        total_stages=3,
+    )
+
+    assert "Workflow draft staging 1/3: intent" in prompt
+    assert "Every weekday, check GitHub alerts and draft a Telegram summary." in prompt
+    assert "Do not call tools" in prompt
+    assert "Do not call external APIs" in prompt
+    assert "Do not write files" in prompt
+    assert "Return only an intent brief" in prompt
+    assert "workflow.yaml" not in prompt
+
+
+def test_build_package_stage_prompt_requires_full_package_sections() -> None:
+    prompt = build_workflow_stage_prompt(
+        "Create a human-approved dependency triage workflow.",
+        stage_id="package",
+        stage_index=3,
+        total_stages=3,
+    )
+
+    assert "Workflow draft staging 3/3: package" in prompt
+    assert "Return the complete workflow package draft" in prompt
+    assert "```yaml workflow.yaml" in prompt
+    assert "```yaml connectors.yaml" in prompt
+    assert "```yaml permissions.yaml" in prompt
+    assert "```yaml dry_run_fixtures/happy_path.yaml" in prompt
+    assert "```yaml dry_run_fixtures/rejection_path.yaml" in prompt
+    assert "```markdown rollback.md" in prompt
+
+
+def test_run_workflow_draft_stages_runs_default_stages_in_order() -> None:
+    prompts: list[str] = []
+    events: list[tuple[int, int, str]] = []
+
+    def run_turn(prompt: str) -> None:
+        prompts.append(prompt)
+
+    result = run_workflow_draft_stages(
+        "Build a weekly dependency alert workflow.",
+        run_turn,
+        on_stage=lambda index, total, stage_id: events.append((index, total, stage_id)),
+    )
+
+    assert result.staged
+    assert result.stage_ids == ("intent", "skeleton", "package")
+    assert result.prompts == tuple(prompts)
+    assert events == [(1, 3, "intent"), (2, 3, "skeleton"), (3, 3, "package")]
+    assert "intent brief" in prompts[0]
+    assert "workflow skeleton" in prompts[1]
+    assert "complete workflow package draft" in prompts[2]
+
+
+def test_run_workflow_draft_stages_noops_when_disabled() -> None:
+    prompts: list[str] = []
+
+    result = run_workflow_draft_stages(
+        "Build a workflow.",
+        lambda prompt: prompts.append(prompt),
+        config=WorkflowDraftStageConfig(enabled=False),
+    )
+
+    assert not result.staged
+    assert result.stage_ids == ()
+    assert result.prompts == ()
+    assert prompts == []
