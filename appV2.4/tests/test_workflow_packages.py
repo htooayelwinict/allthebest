@@ -579,7 +579,8 @@ def test_validate_workflow_package_load_error_uses_resolved_file_path(
 
 
 def test_example_dependency_security_review_package_is_valid() -> None:
-    package = Path("examples/appv24/workflows/dependency-security-review")
+    repo_root = Path(__file__).resolve().parents[2]
+    package = repo_root / "examples/appv24/workflows/dependency-security-review"
 
     result = validate_workflow_package(package)
 
