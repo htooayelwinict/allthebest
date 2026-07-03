@@ -159,3 +159,4 @@ def test_schema_validation_rejects_missing_workflow_entrypoint(tmp_path: Path) -
     issues = validate_schema_documents(documents)
 
     assert any("'entrypoint' is a required property" in issue.message for issue in issues)
+    assert any(issue.file == "workflow.yaml" and issue.code == "schema" for issue in issues)

@@ -151,7 +151,7 @@ def _collect_schema_issues(
 
 def _as_issue(file: str, error: ValidationError) -> WorkflowIssue:
     return WorkflowIssue(
-        code="jsonschema",
+        code="schema",
         file=file,
         path=tuple(error.path),
         message=error.message,
