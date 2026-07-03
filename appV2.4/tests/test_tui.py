@@ -226,6 +226,10 @@ Close the drafted issue if it was created.
 """
 
 
+def _invalid_workflow_draft_text() -> str:
+    return _valid_workflow_draft_text().replace("side_effect: true", "side_effect: send")
+
+
 def test_visible_width_strips_ansi() -> None:
     assert visible_width("\x1b[31mred\x1b[0m") == 3
     assert visible_width("plain") == 5
@@ -1070,6 +1074,29 @@ def test_interactive_mode_workflow_designer_lite_renders_validation_report(tmp_p
     assert "Workflow draft validation: passed" in rendered
 
 
+def test_interactive_mode_repairs_invalid_workflow_draft_before_validation_report(tmp_path) -> None:
+    calls = {"n": 0}
+
+    def script(model, context):
+        calls["n"] += 1
+        text = _invalid_workflow_draft_text() if calls["n"] == 1 else _valid_workflow_draft_text()
+        return text_response_events(model, text)
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["design workflow", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert calls["n"] == 2
+    assert "Workflow draft repair: attempt 1/2" in rendered
+    assert "Workflow draft validation: passed" in rendered
+
+
 def test_interactive_mode_workflow_save_writes_last_valid_draft(tmp_path) -> None:
     register_api_provider(
         create_faux_provider(lambda model, context: text_response_events(model, _valid_workflow_draft_text()))
@@ -1099,6 +1126,59 @@ def test_interactive_mode_workflow_save_writes_last_valid_draft(tmp_path) -> Non
     assert "Workflow draft saved:" in rendered
     assert f"Workflow draft saved: {saved_path.resolve()}" in history
     assert "Workflow draft validation: passed" in rendered
+
+
+def test_interactive_mode_workflow_save_uses_repaired_valid_draft(tmp_path) -> None:
+    calls = {"n": 0}
+
+    def script(model, context):
+        calls["n"] += 1
+        text = _invalid_workflow_draft_text() if calls["n"] == 1 else _valid_workflow_draft_text()
+        return text_response_events(model, text)
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["design workflow", "/workflow-save repaired-workflow", "/exit"])
+    holder: dict[str, InteractiveMode] = {}
+
+    def input_fn(prompt: str) -> str:
+        command = next(inputs)
+        if command.startswith("/workflow-save"):
+            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None)
+        return command
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    holder["mode"] = mode
+
+    assert mode.run() == 0
+
+    saved_path = tmp_path / "repaired-workflow"
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert calls["n"] == 2
+    assert saved_path.joinpath("workflow.yaml").is_file()
+    assert "Workflow draft repair: attempt 1/2" in rendered
+    assert "Workflow draft saved:" in rendered
+
+
+def test_interactive_mode_reports_failed_validation_after_repair_exhaustion(tmp_path) -> None:
+    register_api_provider(
+        create_faux_provider(lambda model, context: text_response_events(model, _invalid_workflow_draft_text()))
+    )
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["design workflow", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow draft repair: attempt 1/2" in rendered
+    assert "Workflow draft repair: attempt 2/2" in rendered
+    assert "Workflow draft validation: failed" in rendered
+    assert mode._last_workflow_validation is None
 
 
 def test_interactive_mode_workflow_save_requires_valid_draft(tmp_path) -> None:

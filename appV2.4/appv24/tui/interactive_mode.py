@@ -59,6 +59,11 @@ from appv24.workflows.live_validation import (
     format_workflow_validation_report,
     should_validate_workflow_drafts,
 )
+from appv24.workflows.repair import (
+    WorkflowDraftRepairConfig,
+    WorkflowDraftRepairResult,
+    repair_workflow_draft_messages,
+)
 from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
 from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text, validate_workflow_package
 
@@ -675,7 +680,8 @@ class InteractiveMode:
 
     def _finish_turn_thread(self, before_compressions: int, before_tokens: int) -> None:
         self._render_auto_compaction_notice(before_compressions, before_tokens)
-        self._render_workflow_validation_if_needed()
+        repair_result = self._repair_workflow_draft_if_needed()
+        self._render_workflow_validation_if_needed(repair_result)
         with self._turn_lock:
             next_prompt = None if self._shutdown_requested or not self._queued_after_turn else self._queued_after_turn.pop(0)
         if next_prompt:
@@ -1281,15 +1287,46 @@ class InteractiveMode:
     def _profile_id(self) -> str | None:
         return getattr(self.app, "profile_id", getattr(self.app.session, "profile_id", None))
 
-    def _render_workflow_validation_if_needed(self) -> None:
+    def _repair_workflow_draft_if_needed(self) -> WorkflowDraftRepairResult | None:
+        if not should_validate_workflow_drafts(self._profile_id()):
+            return None
+
+        def on_attempt(attempt: int, max_attempts: int, _validation) -> None:
+            self.status.set_message("Repairing workflow draft")
+            self.history.add(StatusLine(f"Workflow draft repair: attempt {attempt}/{max_attempts}", kind="compact"))
+            self._refresh_footer()
+            self.tui.request_render()
+
+        try:
+            return repair_workflow_draft_messages(
+                self.app.messages,
+                self._run_workflow_repair_turn,
+                config=WorkflowDraftRepairConfig(max_attempts=2, max_issues=8),
+                on_attempt=on_attempt,
+            )
+        except Exception as error:  # noqa: BLE001 - repair should not crash interactive mode
+            self.history.add(StatusLine(f"Workflow draft repair failed: {error}", kind="error"))
+            return None
+
+    def _run_workflow_repair_turn(self, prompt: str) -> None:
+        self.app.run_turn(
+            prompt,
+            on_post_response_compaction_start=self._show_post_response_compaction_status,
+        )
+
+    def _render_workflow_validation_if_needed(self, repair_result: WorkflowDraftRepairResult | None = None) -> None:
         if not should_validate_workflow_drafts(self._profile_id()):
             return
 
-        text = assistant_text_from_messages(self.app.messages)
-        if not text.strip():
+        if repair_result is not None:
+            result = repair_result.validation
+        else:
+            text = assistant_text_from_messages(self.app.messages)
+            result = validate_workflow_draft_text(text) if text.strip() else None
+
+        if result is None:
             return
 
-        result = validate_workflow_draft_text(text)
         self._last_workflow_validation = result if result.validation.ok else None
         kind = "info" if result.validation.ok else "error"
         self.history.add(StatusLine(format_workflow_validation_report(result), kind=kind))
