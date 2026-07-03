@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from appv24.workflows.errors import WorkflowIssue
+from appv24.workflows.errors import WorkflowIssue, sorted_issues
 from appv24.workflows.loader import PackageDocuments
 
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+REQUIRED_PROPERTY_PATTERN = re.compile(r"'(?P<name>[^']+)' is a required property")
 
 WORKFLOW_SCHEMA = {
     "$schema": SCHEMA_DIALECT,
@@ -18,11 +20,12 @@ WORKFLOW_SCHEMA = {
     "additionalProperties": True,
     "required": ["version", "name", "triggers", "entrypoint", "steps"],
     "properties": {
-        "version": {"type": "string"},
+        "version": {"type": "string", "const": "appv24.workflow/v1"},
         "name": {"type": "string"},
         "description": {"type": "string"},
         "triggers": {
             "type": "array",
+            "minItems": 1,
             "items": {
                 "type": "object",
                 "additionalProperties": True,
@@ -36,6 +39,7 @@ WORKFLOW_SCHEMA = {
         "entrypoint": {"type": "string"},
         "steps": {
             "type": "array",
+            "minItems": 1,
             "items": {
                 "type": "object",
                 "additionalProperties": True,
@@ -59,9 +63,10 @@ CONNECTORS_SCHEMA = {
     "additionalProperties": True,
     "required": ["version", "connectors"],
     "properties": {
-        "version": {"type": "string"},
+        "version": {"type": "string", "const": "appv24.connectors/v1"},
         "connectors": {
             "type": "array",
+            "minItems": 1,
             "items": {
                 "type": "object",
                 "additionalProperties": True,
@@ -71,9 +76,11 @@ CONNECTORS_SCHEMA = {
                     "adapter": {"type": "string"},
                     "actions": {
                         "type": "array",
+                        "minItems": 1,
                         "items": {
                             "type": "object",
                             "additionalProperties": True,
+                            "required": ["id"],
                             "properties": {
                                 "id": {"type": "string"},
                             },
@@ -91,9 +98,10 @@ PERMISSIONS_SCHEMA = {
     "additionalProperties": True,
     "required": ["version", "approvals", "permissions"],
     "properties": {
-        "version": {"type": "string"},
+        "version": {"type": "string", "const": "appv24.permissions/v1"},
         "approvals": {
             "type": "array",
+            "minItems": 1,
             "items": {
                 "type": "object",
                 "additionalProperties": True,
@@ -103,6 +111,7 @@ PERMISSIONS_SCHEMA = {
                     "mode": {"type": "string"},
                     "required_for": {
                         "type": "array",
+                        "minItems": 1,
                         "items": {"type": "string"},
                     },
                 },
@@ -110,6 +119,7 @@ PERMISSIONS_SCHEMA = {
         },
         "permissions": {
             "type": "array",
+            "minItems": 1,
             "items": {
                 "type": "object",
                 "additionalProperties": True,
@@ -118,10 +128,12 @@ PERMISSIONS_SCHEMA = {
                     "connector": {"type": "string"},
                     "actions": {
                         "type": "array",
+                        "minItems": 1,
                         "items": {"type": "string"},
                     },
                     "scopes": {
                         "type": "array",
+                        "minItems": 1,
                         "items": {"type": "string"},
                     },
                 },
@@ -136,11 +148,15 @@ def validate_schema_documents(documents: PackageDocuments) -> list[WorkflowIssue
     Draft202012Validator.check_schema(CONNECTORS_SCHEMA)
     Draft202012Validator.check_schema(PERMISSIONS_SCHEMA)
 
-    return [
-        *_collect_schema_issues("workflow.yaml", WORKFLOW_SCHEMA, documents.workflow),
-        *_collect_schema_issues("connectors.yaml", CONNECTORS_SCHEMA, documents.connectors),
-        *_collect_schema_issues("permissions.yaml", PERMISSIONS_SCHEMA, documents.permissions),
-    ]
+    return list(
+        sorted_issues(
+            [
+                *_collect_schema_issues("workflow.yaml", WORKFLOW_SCHEMA, documents.workflow),
+                *_collect_schema_issues("connectors.yaml", CONNECTORS_SCHEMA, documents.connectors),
+                *_collect_schema_issues("permissions.yaml", PERMISSIONS_SCHEMA, documents.permissions),
+            ]
+        )
+    )
 
 
 def _collect_schema_issues(
@@ -153,6 +169,29 @@ def _as_issue(file: str, error: ValidationError) -> WorkflowIssue:
     return WorkflowIssue(
         code="schema",
         file=file,
-        path=tuple(error.path),
-        message=error.message,
+        path=_issue_path(error),
+        message=_issue_message(error),
     )
+
+
+def _issue_path(error: ValidationError) -> tuple[str | int, ...]:
+    required_property = _required_property_name(error)
+    if required_property is None:
+        return tuple(error.path)
+    return (*tuple(error.path), required_property)
+
+
+def _issue_message(error: ValidationError) -> str:
+    required_property = _required_property_name(error)
+    if required_property is None:
+        return error.message
+    return f"missing required property '{required_property}' ({error.message})"
+
+
+def _required_property_name(error: ValidationError) -> str | None:
+    if error.validator != "required":
+        return None
+    match = REQUIRED_PROPERTY_PATTERN.search(error.message)
+    if match is None:
+        return None
+    return match.group("name")

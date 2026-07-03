@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from appv24.workflows.errors import WorkflowPackageError
 from appv24.workflows.schema import validate_schema_documents
-from appv24.workflows.loader import load_package_documents
+from appv24.workflows.loader import PackageDocuments, load_package_documents
 
 
 def test_workflow_validator_dependencies_are_importable() -> None:
@@ -88,6 +89,49 @@ permissions:
     (root / "rollback.md").write_text("# Rollback\n\nClose the drafted issue if it was created.\n", encoding="utf-8")
 
 
+def replace_documents(
+    documents: PackageDocuments,
+    *,
+    workflow: object | None = None,
+    connectors: object | None = None,
+    permissions: object | None = None,
+) -> PackageDocuments:
+    return PackageDocuments(
+        root=documents.root,
+        workflow=documents.workflow if workflow is None else workflow,
+        connectors=documents.connectors if connectors is None else connectors,
+        permissions=documents.permissions if permissions is None else permissions,
+        dry_run_fixtures=documents.dry_run_fixtures,
+        rollback_text=documents.rollback_text,
+    )
+
+
+def assign_path_value(document: object, path: tuple[str | int, ...], value: object) -> None:
+    target = document
+    for part in path[:-1]:
+        target = target[part]
+    target[path[-1]] = value
+
+
+def assert_has_issue(
+    issues: list,
+    *,
+    file: str,
+    code: str = "schema",
+    path: tuple[str | int, ...] | None = None,
+    location: str | None = None,
+    message_substring: str | None = None,
+) -> None:
+    matches = [issue for issue in issues if issue.file == file and issue.code == code]
+    if path is not None:
+        matches = [issue for issue in matches if issue.path == path]
+    if location is not None:
+        matches = [issue for issue in matches if issue.location == location]
+    if message_substring is not None:
+        matches = [issue for issue in matches if message_substring in issue.message]
+    assert matches, f"expected issue not found: file={file!r} code={code!r} path={path!r} location={location!r}"
+
+
 def test_load_package_documents_reads_required_files(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
@@ -149,14 +193,103 @@ def test_schema_validation_accepts_minimal_package(tmp_path: Path) -> None:
 def test_schema_validation_rejects_missing_workflow_entrypoint(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
-    workflow_path = package / "workflow.yaml"
-    workflow_path.write_text(
-        workflow_path.read_text(encoding="utf-8").replace("entrypoint: inspect_alerts\n", "", 1),
-        encoding="utf-8",
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow.pop("entrypoint")
+
+    issues = validate_schema_documents(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        path=("entrypoint",),
+        location="workflow.yaml:entrypoint",
+        message_substring="'entrypoint' is a required property",
     )
 
-    documents = load_package_documents(package)
-    issues = validate_schema_documents(documents)
 
-    assert any("'entrypoint' is a required property" in issue.message for issue in issues)
-    assert any(issue.file == "workflow.yaml" and issue.code == "schema" for issue in issues)
+@pytest.mark.parametrize(
+    ("attribute", "filename", "expected_version"),
+    [
+        ("workflow", "workflow.yaml", "appv24.workflow/v1"),
+        ("connectors", "connectors.yaml", "appv24.connectors/v1"),
+        ("permissions", "permissions.yaml", "appv24.permissions/v1"),
+    ],
+)
+def test_schema_validation_rejects_invalid_version_literal(
+    tmp_path: Path, attribute: str, filename: str, expected_version: str
+) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    document = deepcopy(getattr(documents, attribute))
+    document["version"] = "appv24.invalid/v999"
+
+    issues = validate_schema_documents(replace_documents(documents, **{attribute: document}))
+
+    assert_has_issue(issues, file=filename, path=("version",))
+    assert any(issue.file == filename and expected_version in issue.message for issue in issues)
+
+
+def test_schema_validation_rejects_connector_action_missing_id(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][0].pop("id")
+
+    issues = validate_schema_documents(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="connectors.yaml",
+        path=("connectors", 0, "actions", 0, "id"),
+        message_substring="'id' is a required property",
+    )
+
+
+@pytest.mark.parametrize(
+    ("attribute", "filename", "path"),
+    [
+        ("workflow", "workflow.yaml", ("triggers",)),
+        ("workflow", "workflow.yaml", ("steps",)),
+        ("connectors", "connectors.yaml", ("connectors",)),
+        ("connectors", "connectors.yaml", ("connectors", 0, "actions")),
+        ("permissions", "permissions.yaml", ("approvals",)),
+        ("permissions", "permissions.yaml", ("approvals", 0, "required_for")),
+        ("permissions", "permissions.yaml", ("permissions",)),
+        ("permissions", "permissions.yaml", ("permissions", 0, "actions")),
+        ("permissions", "permissions.yaml", ("permissions", 0, "scopes")),
+    ],
+)
+def test_schema_validation_rejects_empty_required_collections(
+    tmp_path: Path, attribute: str, filename: str, path: tuple[str | int, ...]
+) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    document = deepcopy(getattr(documents, attribute))
+    assign_path_value(document, path, [])
+
+    issues = validate_schema_documents(replace_documents(documents, **{attribute: document}))
+
+    assert_has_issue(issues, file=filename, path=path)
+
+
+def test_schema_validation_returns_issues_in_deterministic_order(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow["version"] = "appv24.invalid/v999"
+    workflow.pop("entrypoint")
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][0].pop("id")
+
+    issues = validate_schema_documents(replace_documents(documents, workflow=workflow, connectors=connectors))
+
+    expected = sorted(
+        issues,
+        key=lambda issue: (issue.file, tuple(str(part) for part in issue.path), issue.code, issue.message),
+    )
+    assert issues == expected
