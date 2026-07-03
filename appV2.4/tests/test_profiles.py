@@ -85,6 +85,8 @@ def test_workflow_designer_lite_profile_is_passive_and_read_only() -> None:
     assert "Profile: workflow-designer-lite." in prompt
     assert "workflow-as-code designs" in prompt
     assert "final response only" in prompt
+    assert "appv24 may ask for staged workflow compiler passes" in prompt
+    assert "Only the package stage should emit labeled fenced code blocks" in prompt
     assert "Do not run workflows" in prompt
     assert "Do not call external APIs" in prompt
     assert "Do not request raw secrets" in prompt
