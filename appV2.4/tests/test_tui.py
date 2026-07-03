@@ -1070,6 +1070,88 @@ def test_interactive_mode_workflow_designer_lite_renders_validation_report(tmp_p
     assert "Workflow draft validation: passed" in rendered
 
 
+def test_interactive_mode_workflow_save_writes_last_valid_draft(tmp_path) -> None:
+    register_api_provider(
+        create_faux_provider(lambda model, context: text_response_events(model, _valid_workflow_draft_text()))
+    )
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["design workflow", "/workflow-save saved-workflow", "/exit"])
+    holder: dict[str, InteractiveMode] = {}
+
+    def input_fn(prompt: str) -> str:
+        command = next(inputs)
+        if command.startswith("/workflow-save"):
+            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None)
+        return command
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    holder["mode"] = mode
+
+    assert mode.run() == 0
+
+    saved_path = tmp_path / "saved-workflow"
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    history = strip_ansi("\n".join(mode.history.render(1000)))
+    assert saved_path.joinpath("workflow.yaml").is_file()
+    assert saved_path.joinpath("dry_run_fixtures", "happy_path.yaml").is_file()
+    assert "Workflow draft saved:" in rendered
+    assert f"Workflow draft saved: {saved_path.resolve()}" in history
+    assert "Workflow draft validation: passed" in rendered
+
+
+def test_interactive_mode_workflow_save_requires_valid_draft(tmp_path) -> None:
+    calls = {"model": 0}
+
+    def script(model, context):
+        calls["model"] += 1
+        return text_response_events(model, "model should not run")
+
+    register_api_provider(create_faux_provider(script))
+    terminal = FakeTerminal(columns=140, rows=40)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["/workflow-save saved-workflow", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(140)))
+    assert calls["model"] == 0
+    assert not (tmp_path / "saved-workflow").exists()
+    assert "Workflow draft save failed: last workflow draft is not valid" in rendered
+    assert "model should not run" not in rendered
+
+
+def test_interactive_mode_workflow_save_rejects_parent_traversal(tmp_path) -> None:
+    outside_name = f"{tmp_path.name}-outside-workflow-save"
+    register_api_provider(
+        create_faux_provider(lambda model, context: text_response_events(model, _valid_workflow_draft_text()))
+    )
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["design workflow", f"/workflow-save ../{outside_name}", "/exit"])
+    holder: dict[str, InteractiveMode] = {}
+
+    def input_fn(prompt: str) -> str:
+        command = next(inputs)
+        if command.startswith("/workflow-save"):
+            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None)
+        return command
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    holder["mode"] = mode
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow draft save failed:" in rendered
+    assert "must stay inside" in rendered
+    assert not (tmp_path.parent / outside_name).exists()
+
+
 def test_interactive_mode_coding_profile_does_not_render_workflow_validation(tmp_path) -> None:
     register_api_provider(
         create_faux_provider(lambda model, context: text_response_events(model, _valid_workflow_draft_text()))

@@ -43,6 +43,10 @@ class WorkflowDraftParseResult:
     issues: tuple[WorkflowIssue, ...] = ()
 
 
+class WorkflowDraftSaveError(Exception):
+    """Raised when a workflow draft cannot be safely saved to disk."""
+
+
 def extract_workflow_draft_blocks(text: str) -> WorkflowDraftExtraction:
     workflow = ""
     connectors = ""
@@ -160,6 +164,70 @@ def parse_workflow_draft_blocks(blocks: WorkflowDraftBlocks) -> WorkflowDraftPar
             rollback_text=blocks.rollback_text,
         )
     )
+
+
+def save_workflow_draft_blocks(blocks: WorkflowDraftBlocks, *, cwd: str | Path, relative_path: str) -> Path:
+    relative = Path(relative_path)
+    if relative.is_absolute():
+        raise WorkflowDraftSaveError("workflow draft save path must be a relative path")
+
+    cwd_path = Path(cwd).expanduser().resolve()
+    target_path = (cwd_path / relative).resolve()
+    try:
+        target_path.relative_to(cwd_path)
+    except ValueError as error:
+        raise WorkflowDraftSaveError("workflow draft save path must stay inside cwd") from error
+
+    parsed = parse_workflow_draft_blocks(blocks)
+    if parsed.documents is None:
+        messages = "; ".join(issue.message for issue in parsed.issues) or "workflow draft is not parseable"
+        raise WorkflowDraftSaveError(f"workflow draft is not parseable: {messages}")
+    documents = parsed.documents
+
+    planned_files = [
+        target_path / "workflow.yaml",
+        target_path / "connectors.yaml",
+        target_path / "permissions.yaml",
+    ]
+    planned_files.extend(
+        target_path / "dry_run_fixtures" / Path(filename).name for filename in documents.dry_run_fixtures
+    )
+    if blocks.rollback_text is not None:
+        planned_files.append(target_path / "rollback.md")
+
+    existing_files = [path for path in planned_files if path.exists()]
+    if existing_files:
+        first = existing_files[0]
+        raise WorkflowDraftSaveError(f"workflow draft output file already exists: {first}")
+
+    target_path.mkdir(parents=True, exist_ok=True)
+    (target_path / "workflow.yaml").write_text(
+        yaml.safe_dump(documents.workflow, sort_keys=False),
+        encoding="utf-8",
+    )
+    (target_path / "connectors.yaml").write_text(
+        yaml.safe_dump(documents.connectors, sort_keys=False),
+        encoding="utf-8",
+    )
+    (target_path / "permissions.yaml").write_text(
+        yaml.safe_dump(documents.permissions, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    if documents.dry_run_fixtures:
+        fixture_dir = target_path / "dry_run_fixtures"
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        for filename, document in documents.dry_run_fixtures.items():
+            (fixture_dir / Path(filename).name).write_text(
+                yaml.safe_dump(document, sort_keys=False),
+                encoding="utf-8",
+            )
+
+    if blocks.rollback_text is not None:
+        rollback_text = blocks.rollback_text.rstrip("\r\n") + "\n"
+        (target_path / "rollback.md").write_text(rollback_text, encoding="utf-8")
+
+    return target_path
 
 
 def _find_closing_fence(lines: list[str], start: int, opening_length: int) -> int | None:

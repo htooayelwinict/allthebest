@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+import yaml
+
+import appv24.workflows.drafts as drafts
 from appv24.workflows.drafts import (
     WorkflowDraftBlocks,
+    WorkflowDraftSaveError,
     extract_workflow_draft_blocks,
     parse_workflow_draft_blocks,
 )
@@ -112,6 +117,19 @@ Here is the package draft.
 ```markdown rollback.md
 {ROLLBACK_MARKDOWN}```
 """
+
+
+def valid_workflow_draft_blocks(*, rollback_text: str | None = ROLLBACK_MARKDOWN) -> WorkflowDraftBlocks:
+    return WorkflowDraftBlocks(
+        workflow=WORKFLOW_YAML,
+        connectors=CONNECTORS_YAML,
+        permissions=PERMISSIONS_YAML,
+        dry_run_fixtures={
+            "dry_run_fixtures/happy_path.yml": FIXTURE_YAML,
+            "dry_run_fixtures/rejection_path.yaml": REJECTION_FIXTURE_YAML,
+        },
+        rollback_text=rollback_text,
+    )
 
 
 def test_extract_workflow_draft_blocks_reads_labeled_fences() -> None:
@@ -258,6 +276,63 @@ def test_validate_workflow_draft_text_reports_missing_blocks_without_documents()
     assert result.documents is None
     assert not result.ok
     assert_has_issue(result.validation.issues, code="missing_block", file="workflow.yaml")
+
+
+def test_save_workflow_draft_blocks_writes_package_under_cwd(tmp_path) -> None:
+    saved_path = drafts.save_workflow_draft_blocks(
+        valid_workflow_draft_blocks(rollback_text=ROLLBACK_MARKDOWN.rstrip("\n")),
+        cwd=tmp_path,
+        relative_path="drafts/dependency-security-review",
+    )
+
+    assert saved_path == (tmp_path / "drafts" / "dependency-security-review").resolve()
+    assert yaml.safe_load((saved_path / "workflow.yaml").read_text(encoding="utf-8"))["name"] == (
+        "dependency-security-review"
+    )
+    assert yaml.safe_load((saved_path / "connectors.yaml").read_text(encoding="utf-8"))["connectors"][0]["id"] == (
+        "github"
+    )
+    assert yaml.safe_load((saved_path / "permissions.yaml").read_text(encoding="utf-8"))["approvals"][0]["id"] == (
+        "human-review"
+    )
+    assert (saved_path / "dry_run_fixtures" / "happy_path.yaml").is_file()
+    assert yaml.safe_load((saved_path / "dry_run_fixtures" / "rejection_path.yaml").read_text(encoding="utf-8")) == {
+        "approval": {"human-review": "rejected"}
+    }
+    assert (saved_path / "rollback.md").read_text(encoding="utf-8") == ROLLBACK_MARKDOWN
+
+
+def test_save_workflow_draft_blocks_rejects_absolute_path(tmp_path) -> None:
+    with pytest.raises(WorkflowDraftSaveError, match="relative path"):
+        drafts.save_workflow_draft_blocks(
+            valid_workflow_draft_blocks(),
+            cwd=tmp_path,
+            relative_path=str((tmp_path / "absolute").resolve()),
+        )
+
+
+def test_save_workflow_draft_blocks_rejects_parent_traversal(tmp_path) -> None:
+    with pytest.raises(WorkflowDraftSaveError, match="must stay inside"):
+        drafts.save_workflow_draft_blocks(
+            valid_workflow_draft_blocks(),
+            cwd=tmp_path,
+            relative_path="../outside",
+        )
+
+
+def test_save_workflow_draft_blocks_rejects_overwrite(tmp_path) -> None:
+    package_path = tmp_path / "drafts" / "existing"
+    package_path.mkdir(parents=True)
+    (package_path / "workflow.yaml").write_text("existing: true\n", encoding="utf-8")
+
+    with pytest.raises(WorkflowDraftSaveError, match="already exists"):
+        drafts.save_workflow_draft_blocks(
+            valid_workflow_draft_blocks(),
+            cwd=tmp_path,
+            relative_path="drafts/existing",
+        )
+
+    assert (package_path / "workflow.yaml").read_text(encoding="utf-8") == "existing: true\n"
 
 
 def test_format_workflow_validation_report_passes_exactly() -> None:

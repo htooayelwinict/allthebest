@@ -39,7 +39,8 @@ from appv24.workflows.live_validation import (
     format_workflow_validation_report,
     should_validate_workflow_drafts,
 )
-from appv24.workflows.validator import validate_workflow_draft_text
+from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
+from appv24.workflows.validator import validate_workflow_draft_text, validate_workflow_package
 
 
 logger = logging.getLogger(__name__)
@@ -523,6 +524,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not prompt:
             continue
+        if _handle_workflow_save_command(app, selected_profile.id, prompt):
+            continue
         app.run_turn(prompt)
         _print_last_assistant(app)
         _print_workflow_validation_if_needed(app, selected_profile.id)
@@ -633,6 +636,56 @@ def _print_workflow_validation_if_needed(app: CodingApp, profile_id: str) -> Non
 
     result = validate_workflow_draft_text(text)
     print(format_workflow_validation_report(result))
+
+
+def _handle_workflow_save_command(app: CodingApp, profile_id: str, prompt: str) -> bool:
+    if not _is_workflow_save_command(prompt):
+        return False
+
+    if not should_validate_workflow_drafts(profile_id):
+        print("Workflow draft save failed: active profile is not workflow-designer-lite")
+        return True
+
+    relative_path = prompt.partition(" ")[2].strip()
+    if not relative_path:
+        print("Workflow draft save failed: missing relative path")
+        return True
+
+    text = assistant_text_from_messages(app.messages)
+    result = validate_workflow_draft_text(text)
+    if not result.ok:
+        print("Workflow draft save failed: last workflow draft is not valid")
+        print(format_workflow_validation_report(result))
+        return True
+
+    try:
+        saved_path = save_workflow_draft_blocks(result.blocks, cwd=app.cwd, relative_path=relative_path)
+    except WorkflowDraftSaveError as error:
+        print(f"Workflow draft save failed: {error}")
+        return True
+
+    disk_validation = validate_workflow_package(saved_path)
+    print(f"Workflow draft saved: {saved_path}")
+    print(_format_workflow_package_validation_report(disk_validation))
+    return True
+
+
+def _is_workflow_save_command(prompt: str) -> bool:
+    return prompt == "/workflow-save" or prompt.startswith("/workflow-save ")
+
+
+def _format_workflow_package_validation_report(result, max_issues: int = 12) -> str:
+    if result.ok:
+        return "Workflow package validation: passed"
+
+    visible_count = max(0, max_issues)
+    lines = ["Workflow package validation: failed"]
+    lines.extend(f"- {issue.code} {issue.location}: {issue.message}" for issue in result.issues[:visible_count])
+
+    remaining = len(result.issues) - visible_count
+    if remaining > 0:
+        lines.append(f"- ... {remaining} more issue(s)")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

@@ -59,7 +59,8 @@ from appv24.workflows.live_validation import (
     format_workflow_validation_report,
     should_validate_workflow_drafts,
 )
-from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text
+from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
+from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text, validate_workflow_package
 
 
 InputFn = Callable[[str], str]
@@ -256,6 +257,7 @@ class InteractiveMode:
             {"name": "models", "description": "List available models"},
             {"name": "params", "description": "Show active provider generation parameters"},
             {"name": "quit", "description": "Exit the interactive session"},
+            {"name": "workflow-save", "description": "Save the last valid workflow draft"},
         ]
         runner = getattr(self.app.session, "extension_runner", None)
         if runner is not None and hasattr(runner, "get_all_registered_commands"):
@@ -399,6 +401,8 @@ class InteractiveMode:
                 params_query = _parse_params_command(prompt)
                 if params_query is not None:
                     self._run_params_command(params_query)
+                    continue
+                if self._run_workflow_save_command(prompt):
                     continue
                 if self._dispatch_extension_command(prompt):
                     self._refresh_footer()
@@ -829,6 +833,7 @@ class InteractiveMode:
             "/params - Show active provider generation parameters.",
             "/login - Configure provider authentication.",
             "/logout - Remove provider authentication.",
+            "/workflow-save <path> - Save the last valid workflow draft under the current working directory.",
             "/compact or /compress - Safely compress conversation context.",
             "/compact deep [focus] - Run bounded multi-pass compaction toward a fresh-session baseline.",
             "/agents - List delegated subagents.",
@@ -838,6 +843,45 @@ class InteractiveMode:
             "!<command> - Run a shell command outside model context.",
         ):
             self.history.add(Text(line))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_save_command(self, prompt: str) -> bool:
+        if not _is_workflow_save_command(prompt):
+            return False
+
+        if not should_validate_workflow_drafts(self._profile_id()):
+            self._render_workflow_save_error("active profile is not workflow-designer-lite")
+            return True
+
+        relative_path = prompt.partition(" ")[2].strip()
+        if not relative_path:
+            self._render_workflow_save_error("missing relative path")
+            return True
+
+        validation = self._last_workflow_validation
+        if validation is None or not validation.ok:
+            self._render_workflow_save_error("last workflow draft is not valid")
+            return True
+
+        try:
+            saved_path = save_workflow_draft_blocks(validation.blocks, cwd=self.app.cwd, relative_path=relative_path)
+        except WorkflowDraftSaveError as error:
+            self._render_workflow_save_error(str(error))
+            return True
+
+        self.history.add(StatusLine(f"Workflow draft saved: {saved_path}", kind="info"))
+        disk_validation = validate_workflow_package(saved_path)
+        disk_kind = "info" if disk_validation.ok else "error"
+        self.history.add(StatusLine(_format_workflow_package_validation_report(disk_validation), kind=disk_kind))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_save_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow draft save failed: {message}", kind="error"))
         self.status.set_message("Idle")
         self._refresh_footer()
         self.tui.request_render()
@@ -1759,6 +1803,24 @@ def _is_command_like_slash_prompt(prompt: str) -> bool:
 
 def _is_help_command(prompt: str) -> bool:
     return prompt == "/help" or prompt.startswith("/help ")
+
+
+def _is_workflow_save_command(prompt: str) -> bool:
+    return prompt == "/workflow-save" or prompt.startswith("/workflow-save ")
+
+
+def _format_workflow_package_validation_report(result, max_issues: int = 12) -> str:
+    if result.ok:
+        return "Workflow package validation: passed"
+
+    visible_count = max(0, max_issues)
+    lines = ["Workflow package validation: failed"]
+    lines.extend(f"- {issue.code} {issue.location}: {issue.message}" for issue in result.issues[:visible_count])
+
+    remaining = len(result.issues) - visible_count
+    if remaining > 0:
+        lines.append(f"- ... {remaining} more issue(s)")
+    return "\n".join(lines)
 
 
 def _parse_auth_command(prompt: str) -> tuple[str, str | None] | None:
