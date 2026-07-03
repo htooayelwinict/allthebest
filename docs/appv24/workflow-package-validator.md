@@ -43,3 +43,28 @@ if not result.ok:
 ## Adapter Targets
 
 Connector adapters may reference MCP, OpenAPI, AsyncAPI, webhook, direct API, IaC, manual, or platform export targets. These are design-time targets in v1. They are not executed by the validator.
+
+## Live Draft Validation
+
+When appv24 runs with `--profile workflow-designer-lite`, assistant responses that contain labeled workflow package blocks are validated after the assistant turn finishes.
+
+The draft validator looks for fenced blocks labeled:
+
+```text
+workflow.yaml
+connectors.yaml
+permissions.yaml
+dry_run_fixtures/happy_path.yaml
+dry_run_fixtures/rejection_path.yaml
+rollback.md
+```
+
+Validation is in-memory and passive. It does not write files, run workflows, call APIs, send messages, provision resources, or read secrets.
+
+In interactive mode or the plain input loop, save the last valid draft explicitly:
+
+```text
+/workflow-save relative/path
+```
+
+The save path must be relative to the active `--cwd`. Existing files are not overwritten.
