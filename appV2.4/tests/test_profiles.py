@@ -89,6 +89,13 @@ def test_workflow_designer_lite_profile_is_passive_and_read_only() -> None:
     assert "Do not call external APIs" in prompt
     assert "Do not request raw secrets" in prompt
     assert "Do not edit, write, delete, move, or create files." in prompt
+    assert "labeled fenced code blocks" in prompt
+    assert "```yaml workflow.yaml" in prompt
+    assert "```yaml connectors.yaml" in prompt
+    assert "```yaml permissions.yaml" in prompt
+    assert "```yaml dry_run_fixtures/happy_path.yaml" in prompt
+    assert "```yaml dry_run_fixtures/rejection_path.yaml" in prompt
+    assert "```markdown rollback.md" in prompt
 
 
 def test_profile_lookup_normalizes_case_and_underscores() -> None:
