@@ -1152,6 +1152,78 @@ def test_interactive_mode_workflow_save_rejects_parent_traversal(tmp_path) -> No
     assert not (tmp_path.parent / outside_name).exists()
 
 
+def test_interactive_mode_workflow_save_rejects_while_turn_active(tmp_path) -> None:
+    second_stream_started = threading.Event()
+    second_stream_released = threading.Event()
+    second_stream_finished = threading.Event()
+    input_calls = {"n": 0}
+    stream_calls = {"n": 0}
+
+    def stream_fn(model, context, options):
+        stream_calls["n"] += 1
+        if stream_calls["n"] == 1:
+            events = text_response_events(model, _valid_workflow_draft_text())
+            provider = create_faux_provider(lambda m, c: events)
+            return provider.stream_simple(model, context, options)
+
+        events = text_response_events(model, "new draft is still streaming")
+        stream = create_assistant_message_event_stream()
+        stream.push(events[0])
+        second_stream_started.set()
+
+        def finish() -> None:
+            second_stream_released.wait(timeout=2)
+            for event in events[1:]:
+                stream.push(event)
+            second_stream_finished.set()
+
+        threading.Thread(target=finish, daemon=True).start()
+        return stream
+
+    register_api_provider(ApiProvider(api="faux", stream=stream_fn, stream_simple=stream_fn))
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    holder: dict[str, InteractiveMode] = {}
+
+    def input_fn(prompt: str) -> str:
+        index = input_calls["n"]
+        input_calls["n"] += 1
+        if index == 0:
+            return "design workflow"
+        if index == 1:
+            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None)
+            return "revise workflow"
+        if index == 2:
+            assert second_stream_started.wait(timeout=2)
+            return "/workflow-save saved-workflow"
+        if index == 3:
+            second_stream_released.set()
+            second_stream_finished.wait(timeout=2)
+            return "/exit"
+        raise EOFError
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    holder["mode"] = mode
+    thread = threading.Thread(target=mode.run)
+    thread.start()
+
+    try:
+        thread.join(timeout=3)
+    finally:
+        second_stream_released.set()
+        if thread.is_alive():
+            mode._shutdown_requested = True
+            thread.join(timeout=2)
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert not thread.is_alive()
+    assert not (tmp_path / "saved-workflow").exists()
+    assert app.session.get_steering_messages() == []
+    assert mode._queued_after_turn == []
+    assert "Workflow draft save failed: wait for the current turn to finish" in rendered
+
+
 def test_interactive_mode_coding_profile_does_not_render_workflow_validation(tmp_path) -> None:
     register_api_provider(
         create_faux_provider(lambda model, context: text_response_events(model, _valid_workflow_draft_text()))

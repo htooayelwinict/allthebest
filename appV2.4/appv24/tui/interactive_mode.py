@@ -851,6 +851,10 @@ class InteractiveMode:
         if not _is_workflow_save_command(prompt):
             return False
 
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_save_error("wait for the current turn to finish")
+            return True
+
         if not should_validate_workflow_drafts(self._profile_id()):
             self._render_workflow_save_error("active profile is not workflow-designer-lite")
             return True

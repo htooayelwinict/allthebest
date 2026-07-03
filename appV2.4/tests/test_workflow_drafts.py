@@ -366,6 +366,52 @@ def test_save_workflow_draft_blocks_rejects_existing_fixture_directory_file_befo
     assert not (target_path / "permissions.yaml").exists()
 
 
+def test_save_workflow_draft_blocks_cleans_up_after_write_failure(monkeypatch, tmp_path) -> None:
+    target_path = tmp_path / "drafts" / "write-failure"
+    original_write_text = Path.write_text
+
+    def fail_connectors_write(path: Path, text: str, *args, **kwargs):
+        if path.name == "connectors.yaml":
+            raise OSError("simulated write failure")
+        return original_write_text(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_connectors_write)
+
+    with pytest.raises(WorkflowDraftSaveError, match="simulated write failure"):
+        drafts.save_workflow_draft_blocks(
+            valid_workflow_draft_blocks(),
+            cwd=tmp_path,
+            relative_path="drafts/write-failure",
+        )
+
+    assert not target_path.exists()
+    assert list((tmp_path / "drafts").glob(".workflow-draft-save-*")) == []
+
+
+def test_save_workflow_draft_blocks_rejects_target_created_before_publish(monkeypatch, tmp_path) -> None:
+    target_path = tmp_path / "drafts" / "race"
+    original_rename = Path.rename
+
+    def create_target_before_publish(path: Path, target: str | Path):
+        if Path(target) == target_path:
+            target_path.mkdir(parents=True)
+            (target_path / "marker.txt").write_text("do not overwrite\n", encoding="utf-8")
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", create_target_before_publish)
+
+    with pytest.raises(WorkflowDraftSaveError, match="already exists"):
+        drafts.save_workflow_draft_blocks(
+            valid_workflow_draft_blocks(),
+            cwd=tmp_path,
+            relative_path="drafts/race",
+        )
+
+    assert (target_path / "marker.txt").read_text(encoding="utf-8") == "do not overwrite\n"
+    assert not (target_path / "workflow.yaml").exists()
+    assert list((tmp_path / "drafts").glob(".workflow-draft-save-*")) == []
+
+
 def test_format_workflow_validation_report_passes_exactly() -> None:
     result = validate_workflow_draft_text(valid_workflow_draft_text())
 
