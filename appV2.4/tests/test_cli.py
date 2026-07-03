@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,95 @@ from appv24.ai.stream import register_api_provider, reset_api_providers
 def setup_function() -> None:
     reset_api_providers()
     reset_models()
+
+
+def _assistant_message(text: str) -> SimpleNamespace:
+    return SimpleNamespace(role="assistant", content=[SimpleNamespace(type="text", text=text)])
+
+
+def _valid_workflow_draft_text() -> str:
+    workflow_yaml = """
+version: appv24.workflow/v1
+name: dependency-security-review
+description: Review dependency alerts and draft a human-approved issue.
+triggers:
+  - id: weekly
+    type: schedule
+    schedule: "0 9 * * 5"
+entrypoint: inspect_alerts
+steps:
+  - id: inspect_alerts
+    uses: github.list_dependabot_alerts
+    next: draft_issue
+  - id: draft_issue
+    uses: github.create_issue
+    side_effect_class: create
+    approval: human-review
+    next: done
+  - id: done
+    type: terminal
+""".lstrip()
+    connectors_yaml = """
+version: appv24.connectors/v1
+connectors:
+  - id: github
+    adapter: openapi
+    description: GitHub REST API.
+    actions:
+      - id: list_dependabot_alerts
+        operationId: dependabot_list_alerts
+        side_effect: false
+      - id: create_issue
+        operationId: issues_create
+        side_effect: true
+        required_scopes:
+          - issues:write
+""".lstrip()
+    permissions_yaml = """
+version: appv24.permissions/v1
+approvals:
+  - id: human-review
+    mode: explicit
+    required_for:
+      - draft_issue
+permissions:
+  - connector: github
+    actions:
+      - list_dependabot_alerts
+      - create_issue
+    scopes:
+      - dependabot:read
+      - issues:write
+""".lstrip()
+
+    return f"""
+Here is the package draft.
+
+```yaml workflow.yaml
+{workflow_yaml}```
+
+```yaml connectors.yaml
+{connectors_yaml}```
+
+```yaml permissions.yaml
+{permissions_yaml}```
+
+```yaml dry_run_fixtures/happy_path.yaml
+input:
+  repo: owner/project
+```
+
+```yaml dry_run_fixtures/rejection_path.yaml
+approval:
+  human-review: rejected
+```
+
+```markdown rollback.md
+# Rollback
+
+Close the drafted issue if it was created.
+```
+"""
 
 
 @pytest.fixture(autouse=True)
@@ -1780,6 +1870,74 @@ def test_cli_workflow_designer_lite_profile_passes_profile_options_to_coding_app
     assert kwargs["tool_loop_guardrails"] == {"hard_stop_enabled": True}
     assert "workflow-as-code designs" in kwargs["append_system_prompt"]
     assert "final response only" in kwargs["append_system_prompt"]
+
+
+def test_cli_workflow_designer_lite_prompt_prints_validation_report(monkeypatch, tmp_path, capsys) -> None:
+    created: dict[str, object] = {}
+    assistant_text = _valid_workflow_draft_text()
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["kwargs"] = kwargs
+            self.messages = []
+
+        def run_turn(self, prompt):
+            created["prompt"] = prompt
+            self.messages.append(_assistant_message(assistant_text))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "design workflow"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert created["prompt"] == "design workflow"
+    assert "Here is the package draft." in captured.out
+    assert "Workflow draft validation: passed" in captured.out
+
+
+def test_cli_coding_prompt_does_not_print_workflow_validation_report(monkeypatch, tmp_path, capsys) -> None:
+    created: dict[str, object] = {}
+    assistant_text = _valid_workflow_draft_text()
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["kwargs"] = kwargs
+            self.messages = []
+
+        def run_turn(self, prompt):
+            created["prompt"] = prompt
+            self.messages.append(_assistant_message(assistant_text))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "coding", "design workflow"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert created["prompt"] == "design workflow"
+    assert "Here is the package draft." in captured.out
+    assert "Workflow draft validation:" not in captured.out
 
 
 def test_cli_unknown_profile_stops_before_provider_startup(monkeypatch, tmp_path, capsys) -> None:

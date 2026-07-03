@@ -34,6 +34,12 @@ from appv24.profiles import (
     validate_builtin_profiles,
 )
 from appv24.tui.interactive_mode import InteractiveMode
+from appv24.workflows.live_validation import (
+    assistant_text_from_messages,
+    format_workflow_validation_report,
+    should_validate_workflow_drafts,
+)
+from appv24.workflows.validator import validate_workflow_draft_text
 
 
 logger = logging.getLogger(__name__)
@@ -497,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     if prompt:
         app.run_turn(prompt)
         _print_last_assistant(app)
+        _print_workflow_validation_if_needed(app, selected_profile.id)
         return 0
 
     if not args.plain:
@@ -517,6 +524,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         app.run_turn(prompt)
         _print_last_assistant(app)
+        _print_workflow_validation_if_needed(app, selected_profile.id)
 
 
 def _split_models_arg(value: str | None) -> list[str] | None:
@@ -612,6 +620,18 @@ def _print_last_assistant(app: CodingApp) -> None:
         if texts:
             print("".join(texts))
         return
+
+
+def _print_workflow_validation_if_needed(app: CodingApp, profile_id: str) -> None:
+    if not should_validate_workflow_drafts(profile_id):
+        return
+
+    text = assistant_text_from_messages(app.messages)
+    if not text.strip():
+        return
+
+    result = validate_workflow_draft_text(text)
+    print(format_workflow_validation_report(result))
 
 
 if __name__ == "__main__":
