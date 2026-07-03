@@ -69,6 +69,20 @@ In interactive mode or the plain input loop, save the last valid draft explicitl
 
 The save path must be relative to the active `--cwd`. Existing files are not overwritten.
 
+## Live Draft Staging
+
+When appv24 runs with `--profile workflow-designer-lite`, user workflow requests are compiled through visible staged turns before validation:
+
+```text
+intent -> skeleton -> package -> validation -> repair if needed
+```
+
+The staging loop is passive. It does not execute workflows, call connector APIs, read secrets, run shell commands, provision infrastructure, send messages, or write package files.
+
+The first two stages produce review notes only. The package stage must return the labeled workflow package blocks that the draft validator already understands.
+
+Staging uses normal `CodingApp.run_turn()` calls. This means stage prompts and assistant responses are visible in the session transcript. appv24 does not create hidden internal workflow turns in this version.
+
 ## Live Draft Repair
 
 When `appv24` runs with `--profile workflow-designer-lite`, the CLI and TUI validate the latest assistant workflow draft after each assistant turn.
