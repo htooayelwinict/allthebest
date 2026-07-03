@@ -111,6 +111,10 @@ Close the drafted issue if it was created.
 """
 
 
+def _invalid_workflow_draft_text() -> str:
+    return _valid_workflow_draft_text().replace("side_effect: true", "side_effect: send")
+
+
 @pytest.fixture(autouse=True)
 def _disable_real_startup_live_catalog_fetch(monkeypatch) -> None:
     monkeypatch.setenv("APPV24_MODEL_CATALOG_STARTUP_FETCH", "false")
@@ -1906,6 +1910,46 @@ def test_cli_workflow_designer_lite_prompt_prints_validation_report(monkeypatch,
     assert "Workflow draft validation: passed" in captured.out
 
 
+def test_cli_workflow_profile_repairs_invalid_draft_before_printing(monkeypatch, tmp_path, capsys) -> None:
+    created: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["kwargs"] = kwargs
+            created["app"] = self
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+            self.run_prompts: list[str] = []
+
+        def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
+            text = _invalid_workflow_draft_text() if len(self.run_prompts) == 1 else _valid_workflow_draft_text()
+            self.messages.append(_assistant_message(text))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "design workflow"])
+
+    captured = capsys.readouterr()
+    app = created["app"]
+    assert exit_code == 0
+    assert app.run_prompts[0] == "design workflow"
+    assert "Repair attempt 1/2" in app.run_prompts[1]
+    assert "Workflow draft repair: attempt 1/2" in captured.out
+    assert "Workflow draft validation: passed" in captured.out
+    assert "side_effect: send" not in captured.out
+
+
 def test_cli_plain_workflow_save_writes_last_valid_draft(monkeypatch, tmp_path, capsys) -> None:
     created: dict[str, object] = {}
     assistant_text = _valid_workflow_draft_text()
@@ -2023,6 +2067,42 @@ def test_cli_coding_prompt_does_not_print_workflow_validation_report(monkeypatch
     assert exit_code == 0
     assert created["prompt"] == "design workflow"
     assert "Here is the package draft." in captured.out
+    assert "Workflow draft validation:" not in captured.out
+
+
+def test_cli_coding_profile_does_not_repair_workflow_draft(monkeypatch, tmp_path, capsys) -> None:
+    created: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["kwargs"] = kwargs
+            created["app"] = self
+            self.messages = []
+            self.run_prompts: list[str] = []
+
+        def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
+            self.messages.append(_assistant_message(_invalid_workflow_draft_text()))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "coding", "answer normally"])
+
+    captured = capsys.readouterr()
+    app = created["app"]
+    assert exit_code == 0
+    assert app.run_prompts == ["answer normally"]
+    assert "Workflow draft repair:" not in captured.out
     assert "Workflow draft validation:" not in captured.out
 
 

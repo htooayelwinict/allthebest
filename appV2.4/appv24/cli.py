@@ -39,6 +39,11 @@ from appv24.workflows.live_validation import (
     format_workflow_validation_report,
     should_validate_workflow_drafts,
 )
+from appv24.workflows.repair import (
+    WorkflowDraftRepairConfig,
+    WorkflowDraftRepairResult,
+    repair_workflow_draft_messages,
+)
 from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
 from appv24.workflows.validator import validate_workflow_draft_text, validate_workflow_package
 
@@ -504,8 +509,9 @@ def main(argv: list[str] | None = None) -> int:
     prompt = " ".join(args.prompt).strip()
     if prompt:
         app.run_turn(prompt)
+        repair_result = _repair_workflow_draft_if_needed(app, selected_profile.id)
         _print_last_assistant(app)
-        _print_workflow_validation_if_needed(app, selected_profile.id)
+        _print_workflow_validation_if_needed(app, selected_profile.id, repair_result)
         return 0
 
     if not args.plain:
@@ -527,8 +533,9 @@ def main(argv: list[str] | None = None) -> int:
         if _handle_workflow_save_command(app, selected_profile.id, prompt):
             continue
         app.run_turn(prompt)
+        repair_result = _repair_workflow_draft_if_needed(app, selected_profile.id)
         _print_last_assistant(app)
-        _print_workflow_validation_if_needed(app, selected_profile.id)
+        _print_workflow_validation_if_needed(app, selected_profile.id, repair_result)
 
 
 def _split_models_arg(value: str | None) -> list[str] | None:
@@ -626,15 +633,38 @@ def _print_last_assistant(app: CodingApp) -> None:
         return
 
 
-def _print_workflow_validation_if_needed(app: CodingApp, profile_id: str) -> None:
+def _repair_workflow_draft_if_needed(app: CodingApp, profile_id: str) -> WorkflowDraftRepairResult | None:
+    if not should_validate_workflow_drafts(profile_id):
+        return None
+
+    def on_attempt(attempt: int, max_attempts: int, _validation) -> None:
+        print(f"Workflow draft repair: attempt {attempt}/{max_attempts}")
+
+    return repair_workflow_draft_messages(
+        app.messages,
+        app.run_turn,
+        config=WorkflowDraftRepairConfig(max_attempts=2, max_issues=8),
+        on_attempt=on_attempt,
+    )
+
+
+def _print_workflow_validation_if_needed(
+    app: CodingApp,
+    profile_id: str,
+    repair_result: WorkflowDraftRepairResult | None = None,
+) -> None:
     if not should_validate_workflow_drafts(profile_id):
         return
 
-    text = assistant_text_from_messages(app.messages)
-    if not text.strip():
+    if repair_result is not None:
+        result = repair_result.validation
+    else:
+        text = assistant_text_from_messages(app.messages)
+        result = validate_workflow_draft_text(text) if text.strip() else None
+
+    if result is None:
         return
 
-    result = validate_workflow_draft_text(text)
     print(format_workflow_validation_report(result))
 
 
