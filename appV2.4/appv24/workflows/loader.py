@@ -51,7 +51,7 @@ def _read_mapping(path: Path) -> Mapping[str, Any]:
             parsed = json.loads(path.read_text(encoding="utf-8"))
         else:
             parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, yaml.YAMLError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, yaml.YAMLError) as error:
         raise WorkflowPackageError(f"failed to parse {path.name}: {error}") from error
     if parsed is None:
         parsed = {}
@@ -80,5 +80,5 @@ def _read_optional_text(path: Path) -> str | None:
         return None
     try:
         return path.read_text(encoding="utf-8")
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         raise WorkflowPackageError(f"failed to read {path.name}: {error}") from error

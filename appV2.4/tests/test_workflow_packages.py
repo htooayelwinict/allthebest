@@ -111,3 +111,25 @@ def test_load_package_documents_rejects_missing_required_file(tmp_path: Path) ->
         load_package_documents(package)
 
     assert "missing required file: permissions.yaml" in str(excinfo.value)
+
+
+def test_load_package_documents_rejects_invalid_utf8_in_workflow(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    (package / "workflow.yaml").write_bytes(b"\xff")
+
+    with pytest.raises(WorkflowPackageError) as excinfo:
+        load_package_documents(package)
+
+    assert "failed to parse workflow.yaml" in str(excinfo.value)
+
+
+def test_load_package_documents_rejects_invalid_utf8_in_rollback(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    (package / "rollback.md").write_bytes(b"\xff")
+
+    with pytest.raises(WorkflowPackageError) as excinfo:
+        load_package_documents(package)
+
+    assert "failed to read rollback.md" in str(excinfo.value)
