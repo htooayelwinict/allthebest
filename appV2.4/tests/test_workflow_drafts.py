@@ -368,14 +368,14 @@ def test_save_workflow_draft_blocks_rejects_existing_fixture_directory_file_befo
 
 def test_save_workflow_draft_blocks_cleans_up_after_write_failure(monkeypatch, tmp_path) -> None:
     target_path = tmp_path / "drafts" / "write-failure"
-    original_write_text = Path.write_text
+    original_write_text = drafts._write_text_exclusive
 
-    def fail_connectors_write(path: Path, text: str, *args, **kwargs):
+    def fail_connectors_write(path: Path, text: str):
         if path.name == "connectors.yaml":
             raise OSError("simulated write failure")
-        return original_write_text(path, text, *args, **kwargs)
+        return original_write_text(path, text)
 
-    monkeypatch.setattr(Path, "write_text", fail_connectors_write)
+    monkeypatch.setattr(drafts, "_write_text_exclusive", fail_connectors_write)
 
     with pytest.raises(WorkflowDraftSaveError, match="simulated write failure"):
         drafts.save_workflow_draft_blocks(
@@ -390,15 +390,15 @@ def test_save_workflow_draft_blocks_cleans_up_after_write_failure(monkeypatch, t
 
 def test_save_workflow_draft_blocks_rejects_target_created_before_publish(monkeypatch, tmp_path) -> None:
     target_path = tmp_path / "drafts" / "race"
-    original_rename = Path.rename
+    original_mkdir = Path.mkdir
 
-    def create_target_before_publish(path: Path, target: str | Path):
-        if Path(target) == target_path:
-            target_path.mkdir(parents=True)
+    def create_target_before_publish(path: Path, *args, **kwargs):
+        if path == target_path and not target_path.exists():
+            original_mkdir(target_path, parents=True)
             (target_path / "marker.txt").write_text("do not overwrite\n", encoding="utf-8")
-        return original_rename(path, target)
+        return original_mkdir(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "rename", create_target_before_publish)
+    monkeypatch.setattr(Path, "mkdir", create_target_before_publish)
 
     with pytest.raises(WorkflowDraftSaveError, match="already exists"):
         drafts.save_workflow_draft_blocks(
@@ -409,6 +409,29 @@ def test_save_workflow_draft_blocks_rejects_target_created_before_publish(monkey
 
     assert (target_path / "marker.txt").read_text(encoding="utf-8") == "do not overwrite\n"
     assert not (target_path / "workflow.yaml").exists()
+    assert list((tmp_path / "drafts").glob(".workflow-draft-save-*")) == []
+
+
+def test_save_workflow_draft_blocks_rejects_empty_target_directory_created_before_publish(monkeypatch, tmp_path) -> None:
+    target_path = tmp_path / "drafts" / "empty-race"
+    original_mkdir = Path.mkdir
+
+    def create_empty_target_before_publish(path: Path, *args, **kwargs):
+        if path == target_path and not target_path.exists():
+            original_mkdir(target_path, parents=True)
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", create_empty_target_before_publish)
+
+    with pytest.raises(WorkflowDraftSaveError, match="already exists"):
+        drafts.save_workflow_draft_blocks(
+            valid_workflow_draft_blocks(),
+            cwd=tmp_path,
+            relative_path="drafts/empty-race",
+        )
+
+    assert target_path.is_dir()
+    assert list(target_path.iterdir()) == []
     assert list((tmp_path / "drafts").glob(".workflow-draft-save-*")) == []
 
 

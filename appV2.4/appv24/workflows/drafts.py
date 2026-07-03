@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 import shutil
 from typing import Any, Mapping
-import uuid
 
 import yaml
 
@@ -210,69 +209,46 @@ def save_workflow_draft_blocks(blocks: WorkflowDraftBlocks, *, cwd: str | Path, 
     except OSError as error:
         raise WorkflowDraftSaveError(f"failed to prepare workflow draft save directory: {error}") from error
 
-    staging_path = _create_staging_directory(target_path.parent)
+    payloads: list[tuple[Path, str]] = [
+        (Path("workflow.yaml"), yaml.safe_dump(documents.workflow, sort_keys=False)),
+        (Path("connectors.yaml"), yaml.safe_dump(documents.connectors, sort_keys=False)),
+        (Path("permissions.yaml"), yaml.safe_dump(documents.permissions, sort_keys=False)),
+    ]
+    payloads.extend(
+        (Path("dry_run_fixtures") / Path(filename).name, yaml.safe_dump(document, sort_keys=False))
+        for filename, document in documents.dry_run_fixtures.items()
+    )
+    if blocks.rollback_text is not None:
+        payloads.append((Path("rollback.md"), blocks.rollback_text.rstrip("\r\n") + "\n"))
+
+    target_claimed = False
     try:
-        _write_text_exclusive(
-            staging_path / "workflow.yaml",
-            yaml.safe_dump(documents.workflow, sort_keys=False),
-        )
-        _write_text_exclusive(
-            staging_path / "connectors.yaml",
-            yaml.safe_dump(documents.connectors, sort_keys=False),
-        )
-        _write_text_exclusive(
-            staging_path / "permissions.yaml",
-            yaml.safe_dump(documents.permissions, sort_keys=False),
-        )
-
-        if documents.dry_run_fixtures:
-            fixture_dir = staging_path / "dry_run_fixtures"
-            fixture_dir.mkdir(parents=True, exist_ok=False)
-            for filename, document in documents.dry_run_fixtures.items():
-                _write_text_exclusive(
-                    fixture_dir / Path(filename).name,
-                    yaml.safe_dump(document, sort_keys=False),
-                )
-
-        if blocks.rollback_text is not None:
-            rollback_text = blocks.rollback_text.rstrip("\r\n") + "\n"
-            _write_text_exclusive(staging_path / "rollback.md", rollback_text)
-
-        if target_path.exists():
-            raise WorkflowDraftSaveError(f"workflow draft output file already exists: {target_path}")
         try:
-            staging_path.rename(target_path)
-        except OSError as error:
-            if target_path.exists():
-                raise WorkflowDraftSaveError(f"workflow draft output file already exists: {target_path}") from error
-            raise WorkflowDraftSaveError(f"failed to publish workflow draft: {error}") from error
+            target_path.mkdir(mode=0o700, exist_ok=False)
+        except FileExistsError as error:
+            raise WorkflowDraftSaveError(f"workflow draft output file already exists: {target_path}") from error
+        target_claimed = True
+        for relative_file, text in payloads:
+            output_path = target_path / relative_file
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_text_exclusive(output_path, text)
     except WorkflowDraftSaveError:
-        _remove_tree(staging_path)
+        if target_claimed:
+            _remove_tree(target_path)
         raise
     except OSError as error:
-        _remove_tree(staging_path)
+        if target_claimed:
+            _remove_tree(target_path)
         raise WorkflowDraftSaveError(str(error)) from error
 
     return target_path
 
 
-def _create_staging_directory(parent: Path) -> Path:
-    for _ in range(10):
-        staging_path = parent / f".workflow-draft-save-{uuid.uuid4().hex}"
-        try:
-            staging_path.mkdir(mode=0o700)
-        except FileExistsError:
-            continue
-        except OSError as error:
-            raise WorkflowDraftSaveError(f"failed to create workflow draft staging directory: {error}") from error
-        return staging_path
-    raise WorkflowDraftSaveError("failed to create workflow draft staging directory")
-
-
 def _write_text_exclusive(path: Path, text: str) -> None:
     if path.exists():
         raise WorkflowDraftSaveError(f"workflow draft output file already exists: {path}")
-    path.write_text(text, encoding="utf-8")
+    with path.open("x", encoding="utf-8") as file:
+        file.write(text)
 
 
 def _remove_tree(path: Path) -> None:
