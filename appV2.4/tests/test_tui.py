@@ -142,6 +142,90 @@ def _wait_until(predicate, timeout: float = 2.0, interval: float = 0.02) -> bool
     return predicate()
 
 
+def _valid_workflow_draft_text() -> str:
+    workflow_yaml = """
+version: appv24.workflow/v1
+name: dependency-security-review
+description: Review dependency alerts and draft a human-approved issue.
+triggers:
+  - id: weekly
+    type: schedule
+    schedule: "0 9 * * 5"
+entrypoint: inspect_alerts
+steps:
+  - id: inspect_alerts
+    uses: github.list_dependabot_alerts
+    next: draft_issue
+  - id: draft_issue
+    uses: github.create_issue
+    side_effect_class: create
+    approval: human-review
+    next: done
+  - id: done
+    type: terminal
+""".lstrip()
+    connectors_yaml = """
+version: appv24.connectors/v1
+connectors:
+  - id: github
+    adapter: openapi
+    description: GitHub REST API.
+    actions:
+      - id: list_dependabot_alerts
+        operationId: dependabot_list_alerts
+        side_effect: false
+      - id: create_issue
+        operationId: issues_create
+        side_effect: true
+        required_scopes:
+          - issues:write
+""".lstrip()
+    permissions_yaml = """
+version: appv24.permissions/v1
+approvals:
+  - id: human-review
+    mode: explicit
+    required_for:
+      - draft_issue
+permissions:
+  - connector: github
+    actions:
+      - list_dependabot_alerts
+      - create_issue
+    scopes:
+      - dependabot:read
+      - issues:write
+""".lstrip()
+    return f"""
+Here is the package draft.
+
+```yaml workflow.yaml
+{workflow_yaml}```
+
+```yaml connectors.yaml
+{connectors_yaml}```
+
+```yaml permissions.yaml
+{permissions_yaml}```
+
+```yaml dry_run_fixtures/happy_path.yaml
+input:
+  repo: owner/project
+```
+
+```yaml dry_run_fixtures/rejection_path.yaml
+approval:
+  human-review: rejected
+```
+
+```markdown rollback.md
+# Rollback
+
+Close the drafted issue if it was created.
+```
+"""
+
+
 def test_visible_width_strips_ansi() -> None:
     assert visible_width("\x1b[31mred\x1b[0m") == 3
     assert visible_width("plain") == 5
@@ -968,6 +1052,38 @@ def test_interactive_mode_submit_rejoins_bottom_after_manual_scroll(tmp_path) ->
     assert mode.run() == 0
 
     assert not app.tui.is_scrolled()
+
+
+def test_interactive_mode_workflow_designer_lite_renders_validation_report(tmp_path) -> None:
+    register_api_provider(
+        create_faux_provider(lambda model, context: text_response_events(model, _valid_workflow_draft_text()))
+    )
+    terminal = FakeTerminal(columns=140, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["design workflow", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(140)))
+    assert "Workflow draft validation: passed" in rendered
+
+
+def test_interactive_mode_coding_profile_does_not_render_workflow_validation(tmp_path) -> None:
+    register_api_provider(
+        create_faux_provider(lambda model, context: text_response_events(model, _valid_workflow_draft_text()))
+    )
+    terminal = FakeTerminal(columns=140, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "coding"
+    inputs = iter(["design workflow", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(140)))
+    assert "Workflow draft validation:" not in rendered
 
 
 def test_tui_page_keys_scroll_transcript_before_focused_input() -> None:

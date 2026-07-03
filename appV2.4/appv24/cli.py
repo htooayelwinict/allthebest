@@ -498,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         agent_dir=agent_dir,
         **runtime_options,
     )
+    app.profile_id = selected_profile.id
 
     prompt = " ".join(args.prompt).strip()
     if prompt:

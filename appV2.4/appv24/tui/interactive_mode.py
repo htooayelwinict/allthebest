@@ -54,6 +54,12 @@ from appv24.tui.interactive import (
     message_to_component,
     user_message_to_component,
 )
+from appv24.workflows.live_validation import (
+    assistant_text_from_messages,
+    format_workflow_validation_report,
+    should_validate_workflow_drafts,
+)
+from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text
 
 
 InputFn = Callable[[str], str]
@@ -181,6 +187,7 @@ class InteractiveMode:
         self._shutdown_requested = False
         self._openrouter_model_cache: tuple[float, list[object]] | None = None
         self._last_openrouter_model_fetch_error: Exception | None = None
+        self._last_workflow_validation: WorkflowDraftValidationResult | None = None
         self._last_turn_finished_at = 0.0
         self._last_idle_ctrl_c_at = 0.0
         self.setup_autocomplete_provider()
@@ -664,6 +671,7 @@ class InteractiveMode:
 
     def _finish_turn_thread(self, before_compressions: int, before_tokens: int) -> None:
         self._render_auto_compaction_notice(before_compressions, before_tokens)
+        self._render_workflow_validation_if_needed()
         with self._turn_lock:
             next_prompt = None if self._shutdown_requested or not self._queued_after_turn else self._queued_after_turn.pop(0)
         if next_prompt:
@@ -1221,6 +1229,22 @@ class InteractiveMode:
                 kind="compact",
             )
         )
+
+    def _profile_id(self) -> str | None:
+        return getattr(self.app, "profile_id", getattr(self.app.session, "profile_id", None))
+
+    def _render_workflow_validation_if_needed(self) -> None:
+        if not should_validate_workflow_drafts(self._profile_id()):
+            return
+
+        text = assistant_text_from_messages(self.app.messages)
+        if not text.strip():
+            return
+
+        result = validate_workflow_draft_text(text)
+        self._last_workflow_validation = result if result.validation.ok else None
+        kind = "info" if result.validation.ok else "error"
+        self.history.add(StatusLine(format_workflow_validation_report(result), kind=kind))
 
     def _refresh_footer(self) -> None:
         self.footer.model = self.app.session.model.id
