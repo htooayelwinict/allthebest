@@ -506,6 +506,38 @@ def test_validate_workflow_package_returns_ok_result_for_valid_package(tmp_path:
     assert result.issues == ()
 
 
+def test_validate_workflow_documents_returns_ok_for_valid_documents(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+
+    from appv24.workflows import validate_workflow_documents
+
+    result = validate_workflow_documents(documents)
+
+    assert result.ok
+    assert result.root == documents.root
+    assert result.issues == ()
+
+
+def test_validate_workflow_documents_skips_semantics_when_schema_fails(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow.pop("entrypoint")
+    workflow["steps"][0]["next"] = "missing_step"
+    broken = replace_documents(documents, workflow=workflow)
+
+    from appv24.workflows import validate_workflow_documents
+
+    result = validate_workflow_documents(broken)
+
+    assert not result.ok
+    assert_has_issue(result.issues, file="workflow.yaml", path=("entrypoint",))
+    assert not any(issue.code == "unknown_transition" for issue in result.issues)
+
+
 def test_validate_workflow_package_skips_semantics_when_schema_issues_exist(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
