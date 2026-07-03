@@ -7,6 +7,11 @@ from appv24.workflows.drafts import (
     extract_workflow_draft_blocks,
     parse_workflow_draft_blocks,
 )
+from appv24.workflows.live_validation import (
+    format_workflow_validation_report,
+    should_validate_workflow_drafts,
+)
+from appv24.workflows.validator import validate_workflow_draft_text
 
 
 WORKFLOW_YAML = """
@@ -70,12 +75,43 @@ input:
   repo: owner/project
 """.lstrip()
 
+REJECTION_FIXTURE_YAML = """
+approval:
+  human-review: rejected
+""".lstrip()
+
+ROLLBACK_MARKDOWN = "# Rollback\n\nClose the drafted issue if it was created.\n"
+
 
 def assert_has_issue(issues: tuple, *, code: str, file: str, message_substring: str | None = None) -> None:
     matches = [issue for issue in issues if issue.code == code and issue.file == file and issue.path == ()]
     if message_substring is not None:
         matches = [issue for issue in matches if message_substring in issue.message]
     assert matches, f"expected issue not found: code={code!r} file={file!r}"
+
+
+def valid_workflow_draft_text(*, workflow: str = WORKFLOW_YAML) -> str:
+    return f"""
+Here is the package draft.
+
+```yaml workflow.yaml
+{workflow}```
+
+```yaml connectors.yaml
+{CONNECTORS_YAML}```
+
+```yaml permissions.yaml
+{PERMISSIONS_YAML}```
+
+```yaml dry_run_fixtures/happy_path.yaml
+{FIXTURE_YAML}```
+
+```yaml dry_run_fixtures/rejection_path.yaml
+{REJECTION_FIXTURE_YAML}```
+
+```markdown rollback.md
+{ROLLBACK_MARKDOWN}```
+"""
 
 
 def test_extract_workflow_draft_blocks_reads_labeled_fences() -> None:
@@ -195,3 +231,52 @@ def test_parse_workflow_draft_blocks_requires_mapping_documents() -> None:
 
     assert result.documents is None
     assert_has_issue(result.issues, code="invalid_document", file="workflow.yaml", message_substring="mapping")
+
+
+def test_validate_workflow_draft_text_accepts_valid_draft() -> None:
+    result = validate_workflow_draft_text(valid_workflow_draft_text())
+
+    assert result.ok
+    assert result.documents is not None
+    assert result.blocks.workflow == WORKFLOW_YAML
+    assert result.validation.issues == ()
+
+
+def test_validate_workflow_draft_text_reports_semantic_issues() -> None:
+    broken_workflow = WORKFLOW_YAML.replace("next: done", "next: missing_step", 1)
+
+    result = validate_workflow_draft_text(valid_workflow_draft_text(workflow=broken_workflow))
+
+    assert not result.ok
+    assert result.documents is not None
+    assert any(issue.code == "unknown_transition" for issue in result.validation.issues)
+
+
+def test_validate_workflow_draft_text_reports_missing_blocks_without_documents() -> None:
+    result = validate_workflow_draft_text("No fenced package blocks here.\n")
+
+    assert result.documents is None
+    assert not result.ok
+    assert_has_issue(result.validation.issues, code="missing_block", file="workflow.yaml")
+
+
+def test_format_workflow_validation_report_passes_exactly() -> None:
+    result = validate_workflow_draft_text(valid_workflow_draft_text())
+
+    assert format_workflow_validation_report(result) == "Workflow draft validation: passed"
+
+
+def test_format_workflow_validation_report_failure_includes_missing_block() -> None:
+    result = validate_workflow_draft_text("No fenced package blocks here.\n")
+
+    report = format_workflow_validation_report(result)
+
+    assert report.startswith("Workflow draft validation: failed")
+    assert "missing_block workflow.yaml" in report
+
+
+def test_should_validate_workflow_drafts_only_matches_workflow_designer_lite() -> None:
+    assert should_validate_workflow_drafts("workflow-designer-lite")
+    assert should_validate_workflow_drafts(" WORKFLOW_DESIGNER_LITE ")
+    assert not should_validate_workflow_drafts("coding")
+    assert not should_validate_workflow_drafts(None)
