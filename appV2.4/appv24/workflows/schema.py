@@ -31,7 +31,7 @@ WORKFLOW_SCHEMA = {
                 "required": ["id", "type"],
                 "properties": {
                     "id": {"type": "string", "minLength": 1},
-                    "type": {"enum": ["schedule", "webhook", "manual", "event"]},
+                    "type": {"type": "string", "enum": ["schedule", "webhook", "manual", "event"]},
                     "schedule": {"type": "string"},
                     "event": {"type": "object"},
                 },
@@ -47,12 +47,13 @@ WORKFLOW_SCHEMA = {
                 "required": ["id"],
                 "properties": {
                     "id": {"type": "string", "minLength": 1},
-                    "type": {"enum": ["action", "terminal", "decision", "manual_approval"]},
+                    "type": {"type": "string", "enum": ["action", "terminal", "decision", "manual_approval"]},
                     "uses": {"type": "string", "pattern": r"^[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+$"},
                     "with": {"type": "object"},
                     "next": {"type": ["string", "null"]},
                     "branches": {"type": "object", "additionalProperties": {"type": "string"}},
                     "side_effect_class": {
+                        "type": "string",
                         "enum": ["read", "create", "update", "delete", "send", "publish", "provision"]
                     },
                     "approval": {"type": "string"},
@@ -80,6 +81,7 @@ CONNECTORS_SCHEMA = {
                 "properties": {
                     "id": {"type": "string", "minLength": 1},
                     "adapter": {
+                        "type": "string",
                         "enum": [
                             "mcp",
                             "openapi",
@@ -130,7 +132,7 @@ PERMISSIONS_SCHEMA = {
                 "required": ["id", "mode", "required_for"],
                 "properties": {
                     "id": {"type": "string", "minLength": 1},
-                    "mode": {"enum": ["explicit"]},
+                    "mode": {"type": "string", "enum": ["explicit"]},
                     "required_for": {
                         "type": "array",
                         "items": {"type": "string"},
