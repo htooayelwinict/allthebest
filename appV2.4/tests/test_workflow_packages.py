@@ -255,11 +255,6 @@ def test_schema_validation_rejects_connector_action_missing_id(tmp_path: Path) -
         ("workflow", "workflow.yaml", ("steps",)),
         ("connectors", "connectors.yaml", ("connectors",)),
         ("connectors", "connectors.yaml", ("connectors", 0, "actions")),
-        ("permissions", "permissions.yaml", ("approvals",)),
-        ("permissions", "permissions.yaml", ("approvals", 0, "required_for")),
-        ("permissions", "permissions.yaml", ("permissions",)),
-        ("permissions", "permissions.yaml", ("permissions", 0, "actions")),
-        ("permissions", "permissions.yaml", ("permissions", 0, "scopes")),
     ],
 )
 def test_schema_validation_rejects_empty_required_collections(
@@ -274,6 +269,93 @@ def test_schema_validation_rejects_empty_required_collections(
     issues = validate_schema_documents(replace_documents(documents, **{attribute: document}))
 
     assert_has_issue(issues, file=filename, path=path)
+
+
+def test_schema_validation_accepts_permissions_without_approvals(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    permissions = deepcopy(documents.permissions)
+    permissions.pop("approvals")
+
+    issues = validate_schema_documents(replace_documents(documents, permissions=permissions))
+
+    assert issues == []
+
+
+def test_schema_validation_accepts_permission_without_scopes(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    permissions = deepcopy(documents.permissions)
+    permissions["permissions"][0].pop("scopes")
+
+    issues = validate_schema_documents(replace_documents(documents, permissions=permissions))
+
+    assert issues == []
+
+
+@pytest.mark.parametrize("path", [("name",), ("entrypoint",)])
+def test_schema_validation_rejects_empty_workflow_names(
+    tmp_path: Path, path: tuple[str | int, ...]
+) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    assign_path_value(workflow, path, "")
+
+    issues = validate_schema_documents(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(issues, file="workflow.yaml", path=path)
+
+
+def test_schema_validation_rejects_invalid_trigger_type(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow["triggers"][0]["type"] = "polling"
+
+    issues = validate_schema_documents(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(issues, file="workflow.yaml", path=("triggers", 0, "type"))
+
+
+def test_schema_validation_rejects_invalid_step_type(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow["steps"][0]["type"] = "loop"
+
+    issues = validate_schema_documents(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(issues, file="workflow.yaml", path=("steps", 0, "type"))
+
+
+def test_schema_validation_rejects_non_dotted_step_uses(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow["steps"][0]["uses"] = "github"
+
+    issues = validate_schema_documents(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(issues, file="workflow.yaml", path=("steps", 0, "uses"))
+
+
+def test_schema_validation_rejects_invalid_connector_adapter(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["adapter"] = "sdk"
+
+    issues = validate_schema_documents(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(issues, file="connectors.yaml", path=("connectors", 0, "adapter"))
 
 
 def test_schema_validation_returns_issues_in_deterministic_order(tmp_path: Path) -> None:

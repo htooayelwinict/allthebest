@@ -16,130 +16,150 @@ REQUIRED_PROPERTY_PATTERN = re.compile(r"'(?P<name>[^']+)' is a required propert
 
 WORKFLOW_SCHEMA = {
     "$schema": SCHEMA_DIALECT,
+    "$id": "https://appv24.local/schemas/workflow.schema.json",
     "type": "object",
-    "additionalProperties": True,
     "required": ["version", "name", "triggers", "entrypoint", "steps"],
     "properties": {
-        "version": {"type": "string", "const": "appv24.workflow/v1"},
-        "name": {"type": "string"},
+        "version": {"const": "appv24.workflow/v1"},
+        "name": {"type": "string", "minLength": 1},
         "description": {"type": "string"},
         "triggers": {
             "type": "array",
             "minItems": 1,
             "items": {
                 "type": "object",
-                "additionalProperties": True,
                 "required": ["id", "type"],
                 "properties": {
-                    "id": {"type": "string"},
-                    "type": {"type": "string"},
+                    "id": {"type": "string", "minLength": 1},
+                    "type": {"enum": ["schedule", "webhook", "manual", "event"]},
+                    "schedule": {"type": "string"},
+                    "event": {"type": "object"},
                 },
+                "additionalProperties": True,
             },
         },
-        "entrypoint": {"type": "string"},
+        "entrypoint": {"type": "string", "minLength": 1},
         "steps": {
             "type": "array",
             "minItems": 1,
             "items": {
                 "type": "object",
-                "additionalProperties": True,
                 "required": ["id"],
                 "properties": {
-                    "id": {"type": "string"},
-                    "type": {"type": "string"},
-                    "uses": {"type": "string"},
-                    "next": {"type": "string"},
+                    "id": {"type": "string", "minLength": 1},
+                    "type": {"enum": ["action", "terminal", "decision", "manual_approval"]},
+                    "uses": {"type": "string", "pattern": r"^[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+$"},
+                    "with": {"type": "object"},
+                    "next": {"type": ["string", "null"]},
+                    "branches": {"type": "object", "additionalProperties": {"type": "string"}},
+                    "side_effect_class": {
+                        "enum": ["read", "create", "update", "delete", "send", "publish", "provision"]
+                    },
                     "approval": {"type": "string"},
-                    "side_effect_class": {"type": "string"},
                 },
+                "additionalProperties": True,
             },
         },
     },
+    "additionalProperties": True,
 }
 
 CONNECTORS_SCHEMA = {
     "$schema": SCHEMA_DIALECT,
+    "$id": "https://appv24.local/schemas/connectors.schema.json",
     "type": "object",
-    "additionalProperties": True,
     "required": ["version", "connectors"],
     "properties": {
-        "version": {"type": "string", "const": "appv24.connectors/v1"},
+        "version": {"const": "appv24.connectors/v1"},
         "connectors": {
             "type": "array",
             "minItems": 1,
             "items": {
                 "type": "object",
-                "additionalProperties": True,
                 "required": ["id", "adapter", "actions"],
                 "properties": {
-                    "id": {"type": "string"},
-                    "adapter": {"type": "string"},
+                    "id": {"type": "string", "minLength": 1},
+                    "adapter": {
+                        "enum": [
+                            "mcp",
+                            "openapi",
+                            "asyncapi",
+                            "webhook",
+                            "direct_api",
+                            "iac",
+                            "manual",
+                            "platform_export",
+                        ]
+                    },
+                    "description": {"type": "string"},
                     "actions": {
                         "type": "array",
                         "minItems": 1,
                         "items": {
                             "type": "object",
-                            "additionalProperties": True,
                             "required": ["id"],
                             "properties": {
-                                "id": {"type": "string"},
+                                "id": {"type": "string", "minLength": 1},
+                                "operationId": {"type": "string"},
+                                "tool": {"type": "string"},
+                                "side_effect": {"type": "boolean"},
+                                "required_scopes": {"type": "array", "items": {"type": "string"}},
                             },
+                            "additionalProperties": True,
                         },
                     },
                 },
+                "additionalProperties": True,
             },
         },
     },
+    "additionalProperties": True,
 }
 
 PERMISSIONS_SCHEMA = {
     "$schema": SCHEMA_DIALECT,
+    "$id": "https://appv24.local/schemas/permissions.schema.json",
     "type": "object",
-    "additionalProperties": True,
-    "required": ["version", "approvals", "permissions"],
+    "required": ["version", "permissions"],
     "properties": {
-        "version": {"type": "string", "const": "appv24.permissions/v1"},
+        "version": {"const": "appv24.permissions/v1"},
         "approvals": {
             "type": "array",
-            "minItems": 1,
             "items": {
                 "type": "object",
-                "additionalProperties": True,
                 "required": ["id", "mode", "required_for"],
                 "properties": {
-                    "id": {"type": "string"},
-                    "mode": {"type": "string"},
+                    "id": {"type": "string", "minLength": 1},
+                    "mode": {"enum": ["explicit"]},
                     "required_for": {
                         "type": "array",
-                        "minItems": 1,
                         "items": {"type": "string"},
                     },
                 },
+                "additionalProperties": True,
             },
         },
         "permissions": {
             "type": "array",
-            "minItems": 1,
             "items": {
                 "type": "object",
-                "additionalProperties": True,
-                "required": ["connector", "actions", "scopes"],
+                "required": ["connector", "actions"],
                 "properties": {
-                    "connector": {"type": "string"},
+                    "connector": {"type": "string", "minLength": 1},
                     "actions": {
                         "type": "array",
-                        "minItems": 1,
                         "items": {"type": "string"},
                     },
                     "scopes": {
                         "type": "array",
-                        "minItems": 1,
                         "items": {"type": "string"},
                     },
                 },
+                "additionalProperties": True,
             },
         },
     },
+    "additionalProperties": True,
 }
 
 
