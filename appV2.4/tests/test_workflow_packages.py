@@ -506,7 +506,7 @@ def test_validate_workflow_package_returns_ok_result_for_valid_package(tmp_path:
     assert result.issues == ()
 
 
-def test_validate_workflow_package_collects_schema_and_semantic_issues(tmp_path: Path) -> None:
+def test_validate_workflow_package_skips_semantics_when_schema_issues_exist(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
     workflow_path = package / "workflow.yaml"
@@ -521,5 +521,58 @@ def test_validate_workflow_package_collects_schema_and_semantic_issues(tmp_path:
 
     assert result.ok is False
     assert any(issue.code == "schema" for issue in result.issues)
+    assert not any(issue.code == "unknown_action" for issue in result.issues)
+    assert all(issue.code == "schema" for issue in result.issues)
+    assert result.messages() == sorted(result.messages())
+
+
+def test_validate_workflow_package_collects_semantic_issues_for_schema_valid_package(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    workflow_path = package / "workflow.yaml"
+    workflow_path.write_text(
+        workflow_path.read_text(encoding="utf-8").replace("github.create_issue", "github.close_issue"),
+        encoding="utf-8",
+    )
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is False
     assert any(issue.code == "unknown_action" for issue in result.issues)
     assert result.messages() == sorted(result.messages())
+
+
+def test_validate_workflow_package_returns_schema_issue_for_structurally_invalid_package(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    (package / "connectors.yaml").write_text(
+        """
+version: appv24.connectors/v1
+connectors: null
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    try:
+        result = validate_workflow_package(package)
+    except Exception as error:
+        pytest.fail(f"validate_workflow_package raised {error!r}")
+
+    assert isinstance(result, WorkflowValidationResult)
+    assert result.ok is False
+    assert any(issue.code == "schema" for issue in result.issues)
+    assert all(issue.code == "schema" for issue in result.issues)
+
+
+def test_validate_workflow_package_load_error_uses_resolved_file_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = validate_workflow_package(Path("missing-package"))
+
+    assert result.ok is False
+    assert len(result.issues) == 1
+    issue = result.issues[0]
+    assert issue.code == "load_error"
+    assert issue.file == str(result.root)
