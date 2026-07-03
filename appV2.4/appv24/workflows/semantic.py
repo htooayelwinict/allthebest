@@ -12,6 +12,7 @@ from appv24.workflows.loader import PackageDocuments
 MUTATING_SIDE_EFFECTS = {"create", "update", "delete", "send", "publish", "provision"}
 SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|secret|password|credential)", re.IGNORECASE)
 SECRET_VALUE_RE = re.compile(r"(sk-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+)")
+URL_METADATA_KEYS = {"token_url"}
 
 
 def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
@@ -19,7 +20,9 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     workflow = documents.workflow
     connectors = _connector_actions(documents.connectors)
     approval_ids = _approval_ids(documents.permissions)
+    approval_required_for = _approval_required_for(documents.permissions)
     permission_actions = _permission_actions(documents.permissions)
+    permission_scopes = _permission_scopes(documents.permissions)
     steps = _steps(workflow)
     step_ids = [str(step.get("id", "")) for step in steps]
     known_steps = set(step_ids)
@@ -27,10 +30,10 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     issues.extend(_duplicate_step_issues(step_ids))
     issues.extend(_entrypoint_issues(workflow, known_steps))
     issues.extend(_transition_issues(steps, known_steps))
-    issues.extend(_connector_reference_issues(steps, connectors, permission_actions))
+    issues.extend(_connector_reference_issues(steps, connectors, permission_actions, permission_scopes))
 
     mutating_steps = _mutating_steps(steps, connectors)
-    issues.extend(_approval_issues(mutating_steps, approval_ids))
+    issues.extend(_approval_issues(mutating_steps, approval_ids, approval_required_for))
     issues.extend(_raw_secret_issues("workflow.yaml", workflow))
     issues.extend(_raw_secret_issues("connectors.yaml", documents.connectors))
     issues.extend(_raw_secret_issues("permissions.yaml", documents.permissions))
@@ -119,6 +122,7 @@ def _connector_reference_issues(
     steps: Iterable[Mapping[str, Any]],
     connectors: Mapping[str, Mapping[str, Mapping[str, Any]]],
     permission_actions: Mapping[str, set[str]],
+    permission_scopes: Mapping[str, set[str]],
 ) -> list[WorkflowIssue]:
     issues: list[WorkflowIssue] = []
     for index, step in enumerate(steps):
@@ -144,6 +148,18 @@ def _connector_reference_issues(
                     f"permissions for {connector_id} do not allow {action_id}",
                 )
             )
+        granted_scopes = permission_scopes.get(connector_id, set())
+        action = connectors[connector_id][action_id]
+        for scope in sorted(str(scope) for scope in action.get("required_scopes", []) if isinstance(scope, str)):
+            if scope not in granted_scopes and "*" not in granted_scopes:
+                issues.append(
+                    WorkflowIssue(
+                        "permission_missing_scope",
+                        "permissions.yaml",
+                        ("permissions",),
+                        f"permissions for {connector_id} do not grant {scope} required by {action_id}",
+                    )
+                )
     return issues
 
 
@@ -158,9 +174,30 @@ def _permission_actions(permissions_document: Mapping[str, Any]) -> dict[str, se
     return actions
 
 
+def _permission_scopes(permissions_document: Mapping[str, Any]) -> dict[str, set[str]]:
+    scopes: dict[str, set[str]] = {}
+    for permission in permissions_document.get("permissions", []):
+        if not isinstance(permission, dict) or not isinstance(permission.get("connector"), str):
+            continue
+        connector_id = str(permission["connector"])
+        raw_scopes = permission.get("scopes", [])
+        scopes[connector_id] = {str(scope) for scope in raw_scopes if isinstance(scope, str)}
+    return scopes
+
+
 def _approval_ids(permissions_document: Mapping[str, Any]) -> set[str]:
     approvals = permissions_document.get("approvals", [])
     return {str(approval["id"]) for approval in approvals if isinstance(approval, dict) and isinstance(approval.get("id"), str)}
+
+
+def _approval_required_for(permissions_document: Mapping[str, Any]) -> dict[str, set[str]]:
+    requirements: dict[str, set[str]] = {}
+    for approval in permissions_document.get("approvals", []):
+        if not isinstance(approval, dict) or not isinstance(approval.get("id"), str):
+            continue
+        raw_required_for = approval.get("required_for", [])
+        requirements[str(approval["id"])] = {str(step_id) for step_id in raw_required_for if isinstance(step_id, str)}
+    return requirements
 
 
 def _mutating_steps(
@@ -181,7 +218,11 @@ def _mutating_steps(
     return mutating
 
 
-def _approval_issues(mutating_steps: Iterable[Mapping[str, Any]], approval_ids: set[str]) -> list[WorkflowIssue]:
+def _approval_issues(
+    mutating_steps: Iterable[Mapping[str, Any]],
+    approval_ids: set[str],
+    approval_required_for: Mapping[str, set[str]],
+) -> list[WorkflowIssue]:
     issues: list[WorkflowIssue] = []
     for step in mutating_steps:
         step_id = str(step.get("id", "unknown"))
@@ -191,6 +232,15 @@ def _approval_issues(mutating_steps: Iterable[Mapping[str, Any]], approval_ids: 
             issues.append(WorkflowIssue("missing_side_effect_class", "workflow.yaml", ("steps", step_id), f"{step_id} requires side_effect_class"))
         if not isinstance(approval, str) or approval not in approval_ids:
             issues.append(WorkflowIssue("missing_approval", "workflow.yaml", ("steps", step_id), f"{step_id} requires an explicit approval gate"))
+        elif step_id not in approval_required_for.get(approval, set()):
+            issues.append(
+                WorkflowIssue(
+                    "missing_approval",
+                    "workflow.yaml",
+                    ("steps", step_id),
+                    f"{step_id} requires approval {approval} to list the step in required_for",
+                )
+            )
     return issues
 
 
@@ -201,7 +251,7 @@ def _raw_secret_issues(filename: str, value: Any, path: tuple[str | int, ...] = 
             return []
         for key, child in value.items():
             child_path = (*path, str(key))
-            if SECRET_KEY_RE.search(str(key)) and isinstance(child, str):
+            if SECRET_KEY_RE.search(str(key)) and isinstance(child, str) and not _is_url_metadata(key, child):
                 issues.append(WorkflowIssue("raw_secret", filename, child_path, "use secretRef instead of inline secret value"))
             issues.extend(_raw_secret_issues(filename, child, child_path))
     elif isinstance(value, list):
@@ -210,3 +260,8 @@ def _raw_secret_issues(filename: str, value: Any, path: tuple[str | int, ...] = 
     elif isinstance(value, str) and SECRET_VALUE_RE.search(value):
         issues.append(WorkflowIssue("raw_secret", filename, path, "inline secret-looking value is not allowed"))
     return issues
+
+
+def _is_url_metadata(key: object, value: str) -> bool:
+    normalized_key = str(key).lower().replace("-", "_")
+    return normalized_key in URL_METADATA_KEYS and value.startswith(("http://", "https://"))

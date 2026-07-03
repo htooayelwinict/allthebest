@@ -444,3 +444,51 @@ def test_semantic_validation_requires_rollback_and_fixtures_for_mutation(tmp_pat
 
     assert any(issue.code == "missing_rollback" for issue in issues)
     assert any(issue.code == "missing_fixture" and "rejection_path.yaml" in issue.message for issue in issues)
+
+
+def test_semantic_validation_requires_approval_to_cover_mutating_step(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    permissions_path = package / "permissions.yaml"
+    permissions_path.write_text(
+        permissions_path.read_text(encoding="utf-8").replace("      - draft_issue", "      - other_step"),
+        encoding="utf-8",
+    )
+
+    issues = validate_semantics(load_package_documents(package))
+
+    assert any(issue.code == "missing_approval" and "draft_issue" in issue.message for issue in issues)
+
+
+def test_semantic_validation_requires_permission_scopes_for_connector_action(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    connectors_path = package / "connectors.yaml"
+    connectors_path.write_text(
+        connectors_path.read_text(encoding="utf-8").replace(
+            "          - issues:write\n",
+            "          - issues:write\n          - contents:write\n",
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_semantics(load_package_documents(package))
+
+    assert any(
+        issue.code == "permission_missing_scope" and "create_issue" in issue.message and "contents:write" in issue.message
+        for issue in issues
+    )
+
+
+def test_semantic_validation_allows_token_url_metadata(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    connectors_path = package / "connectors.yaml"
+    connectors_path.write_text(
+        connectors_path.read_text(encoding="utf-8") + "\noauth:\n  token_url: https://example.test/oauth/token\n",
+        encoding="utf-8",
+    )
+
+    issues = validate_semantics(load_package_documents(package))
+
+    assert not any(issue.code == "raw_secret" for issue in issues)
