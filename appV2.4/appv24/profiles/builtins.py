@@ -46,6 +46,25 @@ _SECURITY_LAB_LITE_APPEND = (
     "or run shell commands."
 )
 
+_WORKFLOW_DESIGNER_LITE_APPEND = (
+    "Profile: workflow-designer-lite.\n"
+    "Design safe, reviewable workflow-as-code designs from natural language. "
+    "Treat every workflow as a passive design artifact, not executable work. "
+    "Use local repository files only as evidence when needed. "
+    "Produce the workflow design in the final response only. "
+    "Do not edit, write, delete, move, or create files. "
+    "Do not run shell commands. "
+    "Do not run workflows. "
+    "Do not call external APIs. "
+    "Do not request raw secrets, send messages, "
+    "publish, provision cloud resources, or mutate external systems. "
+    "When useful, structure the response with workflow summary, assumptions, "
+    "workflow.yaml draft, connectors.yaml draft, permissions.yaml draft, approval gates, "
+    "dry-run fixtures, test plan, rollback plan, risk review, and future runner target. "
+    "Connector targets may include MCP, direct API, OpenAPI, LangGraph, n8n or Pipedream export, "
+    "and IaC, but only as design targets."
+)
+
 BUILTIN_PROFILES: tuple[AppProfile, ...] = (
     AppProfile(
         id="coding",
@@ -100,6 +119,16 @@ BUILTIN_PROFILES: tuple[AppProfile, ...] = (
         excluded_tool_names=MUTATING_TOOLS,
         append_system_prompt=_SECURITY_LAB_LITE_APPEND,
         max_iterations=50,
+        tool_loop_guardrails={"hard_stop_enabled": True},
+    ),
+    AppProfile(
+        id="workflow-designer-lite",
+        display_name="Workflow Designer Lite",
+        description="Passive natural-language workflow package designer.",
+        allowed_tool_names=READ_ONLY_TOOLS,
+        excluded_tool_names=MUTATING_TOOLS,
+        append_system_prompt=_WORKFLOW_DESIGNER_LITE_APPEND,
+        max_iterations=60,
         tool_loop_guardrails={"hard_stop_enabled": True},
     ),
 )

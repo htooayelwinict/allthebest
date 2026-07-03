@@ -1,0 +1,38 @@
+FROM python:3.13-slim
+
+ARG APPV24_REPO=https://github.com/htooayelwinict/allthebest.git
+ARG APPV24_REF=profile/appv24-built-in-profiles
+
+ENV PYTHONUNBUFFERED=1 \
+    APPV24_NO_VENV_REEXEC=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    HOME=/agent-home \
+    APPV24_CODING_AGENT_DIR=/agent-home/agent
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        ripgrep \
+        sudo \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --home-dir /agent-home --shell /bin/bash appv24 \
+    && mkdir -p /workspace /agent-home/agent \
+    && chown -R appv24:appv24 /workspace /agent-home \
+    && printf 'Defaults:appv24 env_keep += "DEBIAN_FRONTEND"\nappv24 ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg\n' > /etc/sudoers.d/appv24-apt \
+    && chmod 0440 /etc/sudoers.d/appv24-apt
+
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && git clone --depth 1 --filter=blob:none --sparse --branch "${APPV24_REF}" "${APPV24_REPO}" /tmp/allthebest \
+    && git -C /tmp/allthebest sparse-checkout set appV2.4 \
+    && python -m pip install --no-cache-dir /tmp/allthebest/appV2.4 \
+    && rm -rf /tmp/allthebest
+
+WORKDIR /workspace
+
+USER appv24
+
+ENTRYPOINT ["appv24"]
+CMD ["--cwd", "/workspace"]

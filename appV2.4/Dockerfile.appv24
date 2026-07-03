@@ -1,0 +1,29 @@
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    APPV24_NO_VENV_REEXEC=1 \
+    HOME=/agent-home \
+    APPV24_CODING_AGENT_DIR=/agent-home/agent
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/appV2.4
+
+COPY pyproject.toml README.md ./
+COPY appv24 ./appv24
+COPY scripts ./scripts
+
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir .
+
+WORKDIR /workspace
+
+ENTRYPOINT ["appv24"]
+CMD ["--cwd", "/workspace"]

@@ -1,0 +1,15 @@
+{
+  "name": "appv24-tui",
+  "version": "2.4.0",
+  "private": true,
+  "type": "module",
+  "appv24Config": {
+    "name": "appv24",
+    "configDir": ".appv24"
+  },
+  "scripts": {
+    "tui": "python3 scripts/appv24_tui.py",
+    "tui:sandbox": "python3 scripts/appv24_sandbox.py"
+  },
+  "dependencies": {}
+}

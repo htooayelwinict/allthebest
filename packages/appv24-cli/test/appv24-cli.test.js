@@ -1,0 +1,298 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const test = require("node:test");
+
+const packageRoot = path.resolve(__dirname, "..");
+const packageJson = require("../package.json");
+const {
+  buildDockerCommand,
+  buildPullCommand,
+  parseArgs,
+  prepareSandboxImports,
+  recordPullSuccess,
+  shouldUseIsolatedDockerConfig,
+} = require("../bin/appv24.js");
+
+test("package exposes appv24 binaries only", () => {
+  assert.equal(packageJson.name, "@htooayelwinict/appv24");
+  assert.equal(packageJson.bin.appv24, "bin/appv24.js");
+  assert.equal(packageJson.bin["appv24-sandbox"], "bin/appv24.js");
+  assert.equal(Object.hasOwn(packageJson.bin, "appv23"), false);
+  assert.equal(Object.hasOwn(packageJson.bin, "appv23-sandbox"), false);
+  assert.equal(fs.existsSync(path.join(packageRoot, packageJson.bin.appv24)), true);
+});
+
+test("package prompts prevent parent rereads after bounded subagent summaries", () => {
+  const agentsPrompt = fs.readFileSync(path.join(packageRoot, "agents", "AGENTS.md"), "utf8");
+  const subagentSkill = fs.readFileSync(path.join(packageRoot, "skills", "subagent-delegation", "SKILL.md"), "utf8");
+
+  assert.match(agentsPrompt, /name is Travis/i);
+  assert.match(agentsPrompt, /appv24|v24/i);
+  assert.match(agentsPrompt, /latest Lewis request is the active contract/i);
+  assert.match(agentsPrompt, /generated docs, reports, plans, summaries/i);
+  assert.match(agentsPrompt, /tests pass but encode the opposite/i);
+  assert.match(agentsPrompt, /subagents? (are|must remain) read-only/i);
+  assert.match(agentsPrompt, /subagents? must not write files/i);
+  assert.match(agentsPrompt, /child should inspect.*parent should write/is);
+  assert.match(agentsPrompt, /truncated child result is not a failed child result/i);
+  assert.match(agentsPrompt, /pre-read, find, list, grep, or resolve delegated target files/i);
+  assert.match(agentsPrompt, /do not re-read child-scoped files/i);
+  assert.match(agentsPrompt, /forbidden fallback/i);
+  assert.match(agentsPrompt, /do not say.*read the key files directly/is);
+  assert.match(agentsPrompt, /only allowed recovery paths/i);
+  assert.match(agentsPrompt, /expand_subagent_result/i);
+  assert.match(agentsPrompt, /Subagent system contract/i);
+  assert.match(agentsPrompt, /Do not drop leading project directories/i);
+  assert.match(agentsPrompt, /Allowed tools are its complete tool catalog/i);
+  assert.match(agentsPrompt, /For child file discovery, tell it to use `find` or `ls`/i);
+  assert.doesNotMatch(agentsPrompt, /glob is not available unless/i);
+  assert.match(agentsPrompt, /After two failed attempts/i);
+  assert.match(subagentSkill, /truncated child result is not a failed child result/i);
+  assert.match(subagentSkill, /subagents? (are|must remain) read-only/i);
+  assert.match(subagentSkill, /must not write files/i);
+  assert.match(subagentSkill, /child should inspect.*parent should write/is);
+  assert.match(subagentSkill, /pre-read, find, list, grep, or resolve delegated target files/i);
+  assert.match(subagentSkill, /do not re-read files in the parent/i);
+  assert.match(subagentSkill, /forbidden fallback/i);
+  assert.match(subagentSkill, /do not say.*read the key files directly/is);
+  assert.match(subagentSkill, /only allowed recovery paths/i);
+  assert.match(subagentSkill, /expand_subagent_result/i);
+  assert.match(subagentSkill, /spawn a narrower follow-up child task/i);
+  assert.match(subagentSkill, /Subagent system contract/i);
+  assert.match(subagentSkill, /Current working directory/i);
+  assert.match(subagentSkill, /Do not drop leading project directories/i);
+  assert.match(subagentSkill, /Allowed tools are the child's complete tool catalog/i);
+  assert.match(subagentSkill, /For file discovery, use `find` or `ls`/i);
+  assert.doesNotMatch(subagentSkill, /glob is not available unless/i);
+  assert.match(subagentSkill, /After two failed attempts/i);
+});
+
+test("package web-search skill uses curl-only network retrieval", () => {
+  const webSearchSkill = fs.readFileSync(path.join(packageRoot, "skills", "web-search", "SKILL.md"), "utf8");
+
+  assert.match(webSearchSkill, /curl --fail --location --silent --show-error/i);
+  assert.match(webSearchSkill, /sed|awk|xmllint|perl/i);
+  assert.doesNotMatch(webSearchSkill, /python3?\b/i);
+  assert.doesNotMatch(webSearchSkill, /urllib/i);
+  assert.doesNotMatch(webSearchSkill, /xml\.etree/i);
+});
+
+test("release image starts from python 3.13 slim and installs appv24", () => {
+  const dockerfile = fs.readFileSync(path.resolve(packageRoot, "..", "..", "Dockerfile.appv24.release"), "utf8");
+
+  assert.match(dockerfile, /^FROM python:3\.13-slim/m);
+  assert.match(dockerfile, /sparse-checkout set appV2\.4/);
+  assert.match(dockerfile, /pip install --no-cache-dir \/tmp\/allthebest\/appV2\.4/);
+  assert.match(dockerfile, /ENTRYPOINT \["appv24"\]/);
+  assert.match(dockerfile, /\bsudo\b/);
+  assert.match(dockerfile, /useradd .*appv24/);
+  assert.match(dockerfile, /env_keep \+= "DEBIAN_FRONTEND"/);
+  assert.match(dockerfile, /appv24 ALL=.*NOPASSWD:.*apt-get/);
+  assert.match(dockerfile, /USER appv24/);
+});
+
+test("package defaults to appv24 production GHCR image and auto pull", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const config = parseArgs(["--agent-home", path.join(root, "agent-home")]);
+
+  assert.equal(config.image, "ghcr.io/htooayelwinict/appv24:production");
+  assert.equal(config.pull, "auto");
+  assert.deepEqual(buildPullCommand(config), ["docker", "pull", "ghcr.io/htooayelwinict/appv24:production"]);
+  assert.equal(shouldUseIsolatedDockerConfig(config, {}), true);
+});
+
+test("package auto pull skips when pull cache is fresh", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const config = parseArgs(["--agent-home", path.join(root, "agent-home")]);
+
+  recordPullSuccess(config, { nowMs: 1000 });
+
+  assert.deepEqual(buildPullCommand(config, { nowMs: 2000 }), []);
+});
+
+test("package auto pull runs when pull cache is stale", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const config = parseArgs(["--agent-home", path.join(root, "agent-home")]);
+
+  recordPullSuccess(config, { nowMs: 1000 });
+
+  assert.deepEqual(
+    buildPullCommand(config, { nowMs: 1000 + 6 * 60 * 60 * 1000 + 1 }),
+    ["docker", "pull", "ghcr.io/htooayelwinict/appv24:production"],
+  );
+});
+
+test("package pull flags override auto pull cache", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const agentHome = path.join(root, "agent-home");
+  const forceConfig = parseArgs(["--agent-home", agentHome, "--pull"]);
+  const skipConfig = parseArgs(["--agent-home", agentHome, "--no-pull"]);
+
+  recordPullSuccess(forceConfig, { nowMs: 1000 });
+
+  assert.deepEqual(buildPullCommand(forceConfig, { nowMs: 2000 }), [
+    "docker",
+    "pull",
+    "ghcr.io/htooayelwinict/appv24:production",
+  ]);
+  assert.deepEqual(buildPullCommand(skipConfig, { nowMs: 1000 + 6 * 60 * 60 * 1000 + 1 }), []);
+});
+
+test("package builds install-capable docker command for npx-style use", () => {
+  const workspace = path.join(packageRoot, "fixtures", "workspace");
+  const config = parseArgs(["--cwd", workspace, "--", "hello"]);
+  const command = buildDockerCommand(config, { uid: 501, gid: 20, pid: 24680 });
+
+  assert.deepEqual(command.slice(0, 5), ["docker", "run", "--rm", "-it", "--name"]);
+  assert.equal(command.includes("--cap-drop"), false);
+  assert.equal(command.includes("--security-opt"), false);
+  assert.equal(command.includes("no-new-privileges"), false);
+  assert.ok(command.includes("--pids-limit"));
+  assert.ok(command.includes("512"));
+  assert.equal(command.includes("--user"), false);
+  assert.ok(command.includes("DEBIAN_FRONTEND=noninteractive"));
+  assert.ok(command.includes("APPV24_SANDBOX=1"));
+  assert.ok(command.includes("APPV24_NO_VENV_REEXEC=1"));
+  assert.ok(command.includes("APPV24_CODING_AGENT_DIR=/agent-home/agent"));
+  assert.ok(command.includes(`${workspace}:/workspace:rw`));
+  assert.ok(command.includes("ghcr.io/htooayelwinict/appv24:production"));
+  assert.deepEqual(command.slice(-4), ["ghcr.io/htooayelwinict/appv24:production", "--cwd", "/workspace", "hello"]);
+});
+
+test("package copies bundled skills into sandbox home", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledSkill = path.join(syntheticPackageRoot, "skills", "subagent-delegation");
+  const hostHome = path.join(root, "host-home");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledSkill, { recursive: true });
+  fs.mkdirSync(hostHome, { recursive: true });
+  fs.writeFileSync(path.join(bundledSkill, "SKILL.md"), "---\nname: subagent-delegation\n---\nBundled policy\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "subagent-delegation", "SKILL.md"), "utf8"),
+    "---\nname: subagent-delegation\n---\nBundled policy\n",
+  );
+});
+
+test("package seeds bundled AGENTS.md into host home when missing", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledAgentsDir = path.join(syntheticPackageRoot, "agents");
+  const hostHome = path.join(root, "host-home");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledAgentsDir, { recursive: true });
+  fs.mkdirSync(hostHome, { recursive: true });
+  fs.writeFileSync(path.join(bundledAgentsDir, "AGENTS.md"), "Bundled appv24 kernel\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(fs.readFileSync(path.join(hostHome, ".agents", "AGENTS.md"), "utf8"), "Bundled appv24 kernel\n");
+  const imported = fs.readFileSync(path.join(agentHome, "agent", "AGENTS.md"), "utf8");
+  assert.match(imported, /Bundled appv24 kernel/);
+});
+
+test("package seeds bundled skills into host home without overwriting user skills", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledWebSearch = path.join(syntheticPackageRoot, "skills", "web-search");
+  const hostHome = path.join(root, "host-home");
+  const userWebSearch = path.join(hostHome, ".agents", "skills", "web-search");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledWebSearch, { recursive: true });
+  fs.mkdirSync(userWebSearch, { recursive: true });
+  fs.writeFileSync(path.join(bundledWebSearch, "SKILL.md"), "---\nname: web-search\n---\nBundled search\n");
+  fs.writeFileSync(path.join(userWebSearch, "SKILL.md"), "---\nname: web-search\n---\nUser search\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(hostHome, ".agents", "skills", "web-search", "SKILL.md"), "utf8"),
+    "---\nname: web-search\n---\nUser search\n",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "web-search", "SKILL.md"), "utf8"),
+    "---\nname: web-search\n---\nUser search\n",
+  );
+});
+
+test("package seeds bundled skills into host home when missing", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledWebSearch = path.join(syntheticPackageRoot, "skills", "web-search");
+  const hostHome = path.join(root, "host-home");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledWebSearch, { recursive: true });
+  fs.mkdirSync(hostHome, { recursive: true });
+  fs.writeFileSync(path.join(bundledWebSearch, "SKILL.md"), "---\nname: web-search\n---\nBundled search\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(hostHome, ".agents", "skills", "web-search", "SKILL.md"), "utf8"),
+    "---\nname: web-search\n---\nBundled search\n",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "web-search", "SKILL.md"), "utf8"),
+    "---\nname: web-search\n---\nBundled search\n",
+  );
+});
+
+test("package user skills override bundled skills", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const syntheticPackageRoot = path.join(root, "package");
+  const bundledSkill = path.join(syntheticPackageRoot, "skills", "subagent-delegation");
+  const hostHome = path.join(root, "host-home");
+  const userSkill = path.join(hostHome, ".agents", "skills", "subagent-delegation");
+  const agentHome = path.join(root, "agent-home");
+  fs.mkdirSync(bundledSkill, { recursive: true });
+  fs.mkdirSync(userSkill, { recursive: true });
+  fs.writeFileSync(path.join(bundledSkill, "SKILL.md"), "---\nname: subagent-delegation\n---\nBundled policy\n");
+  fs.writeFileSync(path.join(userSkill, "SKILL.md"), "---\nname: subagent-delegation\n---\nUser policy\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  assert.equal(
+    fs.readFileSync(path.join(agentHome, ".agents", "skills", "subagent-delegation", "SKILL.md"), "utf8"),
+    "---\nname: subagent-delegation\n---\nUser policy\n",
+  );
+});
+
+test("package copies user AGENTS.md into sandbox agent context by default", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "appv24-cli-"));
+  const hostHome = path.join(root, "host-home");
+  const userAgentsDir = path.join(hostHome, ".agents");
+  const agentHome = path.join(root, "agent-home");
+  const syntheticPackageRoot = path.join(root, "package");
+  fs.mkdirSync(userAgentsDir, { recursive: true });
+  fs.mkdirSync(syntheticPackageRoot, { recursive: true });
+  fs.writeFileSync(path.join(userAgentsDir, "AGENTS.md"), "Global appv24 kernel\n");
+
+  prepareSandboxImports(
+    { agentHome, agentsFiles: [], skillsPaths: [], importUserSkills: true },
+    { homeDir: hostHome, packageRoot: syntheticPackageRoot },
+  );
+
+  const imported = fs.readFileSync(path.join(agentHome, "agent", "AGENTS.md"), "utf8");
+  assert.match(imported, /appv24 sandbox instructions/);
+  assert.match(imported, /Global appv24 kernel/);
+});

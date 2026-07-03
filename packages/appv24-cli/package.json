@@ -1,0 +1,27 @@
+{
+  "name": "@htooayelwinict/appv24",
+  "version": "2.4.0",
+  "description": "npx-friendly Docker launcher for the appv24 coding-agent sandbox.",
+  "license": "MIT",
+  "bin": {
+    "appv24": "bin/appv24.js",
+    "appv24-sandbox": "bin/appv24.js"
+  },
+  "files": [
+    "agents/**/*.md",
+    "bin/appv24.js",
+    "skills/**/*.md",
+    "README.md",
+    "package.json"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test test/appv24-cli.test.js",
+    "pack:dry-run": "npm pack --dry-run"
+  }
+}
