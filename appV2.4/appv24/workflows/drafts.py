@@ -184,20 +184,23 @@ def save_workflow_draft_blocks(blocks: WorkflowDraftBlocks, *, cwd: str | Path, 
         raise WorkflowDraftSaveError(f"workflow draft is not parseable: {messages}")
     documents = parsed.documents
 
-    planned_files = [
+    planned_paths = [
+        target_path,
         target_path / "workflow.yaml",
         target_path / "connectors.yaml",
         target_path / "permissions.yaml",
     ]
-    planned_files.extend(
+    if documents.dry_run_fixtures:
+        planned_paths.append(target_path / "dry_run_fixtures")
+    planned_paths.extend(
         target_path / "dry_run_fixtures" / Path(filename).name for filename in documents.dry_run_fixtures
     )
     if blocks.rollback_text is not None:
-        planned_files.append(target_path / "rollback.md")
+        planned_paths.append(target_path / "rollback.md")
 
-    existing_files = [path for path in planned_files if path.exists()]
-    if existing_files:
-        first = existing_files[0]
+    existing_paths = [path for path in planned_paths if path.exists()]
+    if existing_paths:
+        first = existing_paths[0]
         raise WorkflowDraftSaveError(f"workflow draft output file already exists: {first}")
 
     target_path.mkdir(parents=True, exist_ok=True)

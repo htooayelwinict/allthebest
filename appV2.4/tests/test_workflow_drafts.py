@@ -335,6 +335,37 @@ def test_save_workflow_draft_blocks_rejects_overwrite(tmp_path) -> None:
     assert (package_path / "workflow.yaml").read_text(encoding="utf-8") == "existing: true\n"
 
 
+def test_save_workflow_draft_blocks_rejects_existing_target_file(tmp_path) -> None:
+    target_path = tmp_path / "drafts"
+    target_path.write_text("existing draft file\n", encoding="utf-8")
+
+    with pytest.raises(WorkflowDraftSaveError, match="already exists"):
+        drafts.save_workflow_draft_blocks(
+            valid_workflow_draft_blocks(),
+            cwd=tmp_path,
+            relative_path="drafts",
+        )
+
+    assert target_path.read_text(encoding="utf-8") == "existing draft file\n"
+
+
+def test_save_workflow_draft_blocks_rejects_existing_fixture_directory_file_before_writing(tmp_path) -> None:
+    target_path = tmp_path / "drafts" / "existing"
+    target_path.mkdir(parents=True)
+    (target_path / "dry_run_fixtures").write_text("not a directory\n", encoding="utf-8")
+
+    with pytest.raises(WorkflowDraftSaveError, match="already exists"):
+        drafts.save_workflow_draft_blocks(
+            valid_workflow_draft_blocks(),
+            cwd=tmp_path,
+            relative_path="drafts/existing",
+        )
+
+    assert not (target_path / "workflow.yaml").exists()
+    assert not (target_path / "connectors.yaml").exists()
+    assert not (target_path / "permissions.yaml").exists()
+
+
 def test_format_workflow_validation_report_passes_exactly() -> None:
     result = validate_workflow_draft_text(valid_workflow_draft_text())
 
