@@ -8,6 +8,7 @@ import pytest
 from appv24.workflows.errors import WorkflowPackageError
 from appv24.workflows.schema import validate_schema_documents
 from appv24.workflows.loader import PackageDocuments, load_package_documents
+from appv24.workflows.semantic import validate_semantics
 
 
 def test_workflow_validator_dependencies_are_importable() -> None:
@@ -375,3 +376,71 @@ def test_schema_validation_returns_issues_in_deterministic_order(tmp_path: Path)
         key=lambda issue: (issue.file, tuple(str(part) for part in issue.path), issue.code, issue.message),
     )
     assert issues == expected
+
+
+def test_semantic_validation_rejects_unknown_transition_target(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    workflow_path = package / "workflow.yaml"
+    workflow_path.write_text(
+        workflow_path.read_text(encoding="utf-8").replace("next: done", "next: missing_step", 1),
+        encoding="utf-8",
+    )
+    issues = validate_semantics(load_package_documents(package))
+
+    assert any(
+        issue.code == "unknown_transition" and issue.message == "step draft_issue points to missing_step"
+        for issue in issues
+    )
+
+
+def test_semantic_validation_rejects_unknown_connector_action(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    workflow_path = package / "workflow.yaml"
+    workflow_path.write_text(
+        workflow_path.read_text(encoding="utf-8").replace("github.create_issue", "github.close_issue"),
+        encoding="utf-8",
+    )
+    issues = validate_semantics(load_package_documents(package))
+
+    assert any(issue.code == "unknown_action" and "github.close_issue" in issue.message for issue in issues)
+
+
+def test_semantic_validation_requires_approval_for_mutation(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    workflow_path = package / "workflow.yaml"
+    workflow_path.write_text(
+        workflow_path.read_text(encoding="utf-8").replace("    approval: human-review\n", ""),
+        encoding="utf-8",
+    )
+    issues = validate_semantics(load_package_documents(package))
+
+    assert any(issue.code == "missing_approval" and "draft_issue" in issue.message for issue in issues)
+
+
+def test_semantic_validation_rejects_raw_secret_values(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    connectors_path = package / "connectors.yaml"
+    connectors_path.write_text(
+        connectors_path.read_text(encoding="utf-8")
+        + "\ncredentials:\n  api_token: sk-or-v1-this-value-must-not-be-inline\n",
+        encoding="utf-8",
+    )
+    issues = validate_semantics(load_package_documents(package))
+
+    assert any(issue.code == "raw_secret" and issue.file == "connectors.yaml" for issue in issues)
+
+
+def test_semantic_validation_requires_rollback_and_fixtures_for_mutation(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    (package / "rollback.md").unlink()
+    (package / "dry_run_fixtures" / "rejection_path.yaml").unlink()
+
+    issues = validate_semantics(load_package_documents(package))
+
+    assert any(issue.code == "missing_rollback" for issue in issues)
+    assert any(issue.code == "missing_fixture" and "rejection_path.yaml" in issue.message for issue in issues)
