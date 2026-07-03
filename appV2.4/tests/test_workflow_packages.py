@@ -9,6 +9,7 @@ from appv24.workflows.errors import WorkflowPackageError
 from appv24.workflows.schema import validate_schema_documents
 from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.semantic import validate_semantics
+from appv24.workflows import WorkflowValidationResult, validate_workflow_package
 
 
 def test_workflow_validator_dependencies_are_importable() -> None:
@@ -492,3 +493,33 @@ def test_semantic_validation_allows_token_url_metadata(tmp_path: Path) -> None:
     issues = validate_semantics(load_package_documents(package))
 
     assert not any(issue.code == "raw_secret" for issue in issues)
+
+
+def test_validate_workflow_package_returns_ok_result_for_valid_package(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+
+    result = validate_workflow_package(package)
+
+    assert isinstance(result, WorkflowValidationResult)
+    assert result.ok is True
+    assert result.issues == ()
+
+
+def test_validate_workflow_package_collects_schema_and_semantic_issues(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    workflow_path = package / "workflow.yaml"
+    workflow_path.write_text(
+        workflow_path.read_text(encoding="utf-8")
+        .replace("entrypoint: inspect_alerts\n", "")
+        .replace("github.create_issue", "github.close_issue"),
+        encoding="utf-8",
+    )
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is False
+    assert any(issue.code == "schema" for issue in result.issues)
+    assert any(issue.code == "unknown_action" for issue in result.issues)
+    assert result.messages() == sorted(result.messages())
