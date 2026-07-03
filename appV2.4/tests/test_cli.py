@@ -1844,9 +1844,12 @@ def test_cli_workflow_designer_lite_profile_passes_profile_options_to_coding_app
     class FakeApp:
         def __init__(self, **kwargs):
             created["kwargs"] = kwargs
+            created["app"] = self
             self.messages = []
+            self.run_prompts: list[str] = []
 
         def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
             created["prompt"] = prompt
 
     monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
@@ -1866,8 +1869,12 @@ def test_cli_workflow_designer_lite_profile_passes_profile_options_to_coding_app
     )
 
     kwargs = created["kwargs"]
+    app = created["app"]
     assert exit_code == 0
-    assert created["prompt"] == "design workflow"
+    assert len(app.run_prompts) == 3
+    assert "Workflow draft staging 1/3: intent" in app.run_prompts[0]
+    assert "Workflow draft staging 2/3: skeleton" in app.run_prompts[1]
+    assert "Workflow draft staging 3/3: package" in app.run_prompts[2]
     assert kwargs["allowed_tool_names"] == ["read", "grep", "find", "ls"]
     assert kwargs["excluded_tool_names"] == ["bash", "edit", "write"]
     assert kwargs["max_iterations"] == 60
@@ -1883,9 +1890,12 @@ def test_cli_workflow_designer_lite_prompt_prints_validation_report(monkeypatch,
     class FakeApp:
         def __init__(self, **kwargs):
             created["kwargs"] = kwargs
+            created["app"] = self
             self.messages = []
+            self.run_prompts: list[str] = []
 
         def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
             created["prompt"] = prompt
             self.messages.append(_assistant_message(assistant_text))
 
@@ -1904,8 +1914,12 @@ def test_cli_workflow_designer_lite_prompt_prints_validation_report(monkeypatch,
     exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "design workflow"])
 
     captured = capsys.readouterr()
+    app = created["app"]
     assert exit_code == 0
-    assert created["prompt"] == "design workflow"
+    assert len(app.run_prompts) == 3
+    assert "Workflow draft staging 1/3: intent" in app.run_prompts[0]
+    assert "Workflow draft staging 2/3: skeleton" in app.run_prompts[1]
+    assert "Workflow draft staging 3/3: package" in app.run_prompts[2]
     assert "Here is the package draft." in captured.out
     assert "Workflow draft validation: passed" in captured.out
 
@@ -2121,7 +2135,10 @@ def test_cli_plain_workflow_save_rejects_parent_traversal(monkeypatch, tmp_path,
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert created["app"].run_prompts == ["design workflow"]
+    assert len(created["app"].run_prompts) == 3
+    assert "Workflow draft staging 1/3: intent" in created["app"].run_prompts[0]
+    assert "Workflow draft staging 2/3: skeleton" in created["app"].run_prompts[1]
+    assert "Workflow draft staging 3/3: package" in created["app"].run_prompts[2]
     assert "Workflow draft save failed:" in captured.out
     assert "must stay inside" in captured.out
     assert not (tmp_path.parent / outside_name).exists()

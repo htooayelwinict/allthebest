@@ -1291,7 +1291,7 @@ def test_interactive_mode_workflow_save_rejects_while_turn_active(tmp_path) -> N
 
     def stream_fn(model, context, options):
         stream_calls["n"] += 1
-        if stream_calls["n"] == 1:
+        if stream_calls["n"] <= 3:
             events = text_response_events(model, _valid_workflow_draft_text())
             provider = create_faux_provider(lambda m, c: events)
             return provider.stream_simple(model, context, options)
