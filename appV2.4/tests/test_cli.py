@@ -2084,6 +2084,40 @@ def test_cli_workflow_profile_repairs_invalid_draft_before_printing(monkeypatch,
     assert "side_effect: send" not in captured.out
 
 
+def test_cli_workflow_repair_provider_error_reports_failure(monkeypatch, tmp_path, capsys) -> None:
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+            self.run_prompts: list[str] = []
+
+        def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
+            if "Repair attempt" in prompt:
+                raise RuntimeError("provider exploded")
+            text = _invalid_workflow_draft_text() if "staging 3/3: package" in prompt else "stage note"
+            self.messages.append(_assistant_message(text))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "design workflow"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow draft repair failed: provider exploded" in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_cli_plain_workflow_save_writes_last_valid_draft(monkeypatch, tmp_path, capsys) -> None:
     created: dict[str, object] = {}
     assistant_text = _valid_workflow_draft_text()

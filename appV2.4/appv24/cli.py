@@ -653,12 +653,16 @@ def _repair_workflow_draft_if_needed(app: CodingApp, profile_id: str) -> Workflo
         suffix = f"{attempt}/{max_attempts}" if max_attempts is not None else str(attempt)
         print(f"Workflow draft repair: attempt {suffix}")
 
-    return repair_workflow_draft_messages(
-        app.messages,
-        app.run_turn,
-        config=WorkflowDraftRepairConfig(max_issues=8),
-        on_attempt=on_attempt,
-    )
+    try:
+        return repair_workflow_draft_messages(
+            app.messages,
+            app.run_turn,
+            config=WorkflowDraftRepairConfig(max_issues=8),
+            on_attempt=on_attempt,
+        )
+    except Exception as error:  # noqa: BLE001 - repair failures are rendered as product feedback
+        print(f"Workflow draft repair failed: {error}")
+        return None
 
 
 def _print_workflow_validation_if_needed(

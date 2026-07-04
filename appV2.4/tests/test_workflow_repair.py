@@ -480,6 +480,42 @@ def test_repair_stops_after_max_attempts_when_invalid_persists() -> None:
     assert len(prompts) == 2
 
 
+def test_repair_config_stops_at_finite_attempt_bound() -> None:
+    messages = [_assistant_message(_invalid_draft())]
+    prompts: list[str] = []
+
+    result = repair_workflow_draft_messages(
+        messages,
+        lambda prompt: prompts.append(prompt),
+        config=WorkflowDraftRepairConfig(max_attempts=1, max_issues=8),
+    )
+
+    assert result.attempts == 1
+    assert result.exhausted is True
+    assert result.stop_reason == "max_attempts"
+    assert len(prompts) == 1
+
+
+def test_repair_config_unbounded_attempts_can_converge() -> None:
+    messages = [_assistant_message(_invalid_draft())]
+    prompts: list[str] = []
+
+    def run_turn(prompt: str) -> None:
+        prompts.append(prompt)
+        messages.append(_assistant_message(_valid_draft()))
+
+    result = repair_workflow_draft_messages(
+        messages,
+        run_turn,
+        config=WorkflowDraftRepairConfig(max_attempts=None, max_issues=8),
+    )
+
+    assert result.attempts == 1
+    assert result.repaired is True
+    assert result.validation is not None
+    assert result.validation.ok is True
+
+
 def test_repair_stops_when_repair_turn_aborts_with_partial_draft() -> None:
     messages = [_assistant_message(_invalid_draft())]
     prompts: list[str] = []
