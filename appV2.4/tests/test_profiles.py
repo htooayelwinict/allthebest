@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from appv24.coding_agent.tools import allToolNames
+from appv24.workflows.prompt_fragments import render_required_package_blocks_fragment
 from appv24.profiles import (
     DEFAULT_PROFILE_ID,
     ProfileError,
@@ -122,6 +123,22 @@ def test_workflow_designer_lite_prompt_pins_schema_shapes() -> None:
     assert "required_for values must be workflow step id strings only" in prompt
     assert "Mutating workflow steps must use approval: <approval-id>; never use approval_gate:" in prompt
     assert "reference it from that step with approval:" in prompt
+
+
+def test_workflow_profile_uses_shared_required_block_fragment() -> None:
+    prompt = profile_coding_app_kwargs(get_profile("workflow-designer-lite"))["append_system_prompt"]
+    fragment = render_required_package_blocks_fragment()
+
+    for label in (
+        "```yaml workflow.yaml",
+        "```yaml connectors.yaml",
+        "```yaml permissions.yaml",
+        "```yaml dry_run_fixtures/happy_path.yaml",
+        "```yaml dry_run_fixtures/rejection_path.yaml",
+        "```markdown rollback.md",
+    ):
+        assert label in fragment
+        assert label in prompt
 
 
 def test_profile_lookup_normalizes_case_and_underscores() -> None:

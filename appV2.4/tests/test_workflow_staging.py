@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from appv24.workflows.prompt_fragments import (
+    render_required_package_blocks_fragment,
+    render_schema_reminders_fragment,
+)
 from appv24.workflows.staging import (
     WorkflowDraftStageConfig,
     build_workflow_stage_prompt,
@@ -13,6 +17,26 @@ def test_should_stage_only_workflow_designer_profile() -> None:
     assert should_stage_workflow_drafts("WORKFLOW_DESIGNER_LITE")
     assert not should_stage_workflow_drafts("coding")
     assert not should_stage_workflow_drafts(None)
+
+
+def test_prompt_fragments_render_required_package_blocks() -> None:
+    fragment = render_required_package_blocks_fragment()
+
+    assert "```yaml workflow.yaml" in fragment
+    assert "```yaml connectors.yaml" in fragment
+    assert "```yaml permissions.yaml" in fragment
+    assert "```yaml dry_run_fixtures/happy_path.yaml" in fragment
+    assert "```yaml dry_run_fixtures/rejection_path.yaml" in fragment
+    assert "```markdown rollback.md" in fragment
+
+
+def test_prompt_fragments_render_schema_reminders() -> None:
+    fragment = render_schema_reminders_fragment()
+
+    assert "workflow.yaml version must be appv24.workflow/v1" in fragment
+    assert "connectors.yaml connectors must be a list" in fragment
+    assert "permissions.yaml permissions must be a list" in fragment
+    assert "permissions.yaml approvals[].required_for must be workflow step id strings" in fragment
 
 
 def test_build_intent_stage_prompt_is_passive_and_preserves_request() -> None:

@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from appv24.workflows.prompt_fragments import (
+    render_passive_safety_fragment,
+    render_secret_reference_fragment,
+    render_side_effect_contract_fragment,
+)
 from appv24.workflows.repair import (
     WorkflowDraftRepairConfig,
     build_workflow_repair_prompt,
@@ -14,6 +19,18 @@ from appv24.workflows.validator import validate_workflow_draft_text
 
 def _assistant_message(text: str) -> SimpleNamespace:
     return SimpleNamespace(role="assistant", content=[SimpleNamespace(type="text", text=text)])
+
+
+def test_prompt_fragments_render_repair_safety_rules() -> None:
+    safety = render_passive_safety_fragment()
+    side_effects = render_side_effect_contract_fragment()
+    secrets = render_secret_reference_fragment()
+
+    assert "Do not call tools" in safety
+    assert "Do not run shell commands" in safety
+    assert "Brokered mutating actions require approval_required: true" in side_effects
+    assert "Design-only actions must use execution_mode: design_only" in side_effects
+    assert "secretRef values must be reference names only" in secrets
 
 
 def _valid_draft() -> str:
