@@ -26,6 +26,8 @@ fix/* = isolated appv24 bug-fix branches
 
 This cleanup does not merge appv24 into main, appv23, or appv231. It prepares the current appv24 profile branch to land under the appv24 line when Lewis decides.
 
+Branch creation, branch rename, upstream replacement, or push to `next/appv24` is not part of this implementation unless Lewis separately gives that explicit git instruction.
+
 ## Rules Boundary
 
 `rules.md` is a hard reference for this work. appv24 should grow through profiles, workflow modules, docs, examples, and tests, not through kernel changes.
@@ -35,6 +37,7 @@ Allowed areas:
 ```text
 appV2.4/appv24/workflows/
 appV2.4/appv24/profiles/
+appV2.4/appv24/cli.py only if required for /workflow-save or profile enforcement
 appV2.4/appv24/tui/interactive_mode.py only if required for /workflow-save enforcement
 appV2.4/tests/
 docs/
@@ -76,12 +79,14 @@ Repair behavior should be documented and tested as:
 ```text
 default: finite bounded repair attempts
 profile/test override: configurable larger or effectively unbounded attempt mode
-always exits: validation success, user abort, timeout, provider error, or explicit configured stop
+always exits: validation success, user abort, timeout, provider error surfaced by run_turn, or explicit configured stop
 ```
 
 The default should remain cost-safe. Workflow-specific testing may configure a larger or unbounded-style loop to prove the repair pipeline can keep improving a draft until validation passes.
 
 The docs must not claim a hard two-attempt limit if the runtime is configurable.
+
+Provider errors should be handled at the CLI/TUI repair boundary by reporting repair failure. This cleanup must not change provider streaming, provider payload construction, or the agent loop.
 
 ## Workflow-Designer Tool Contract
 
@@ -142,7 +147,7 @@ Staging, repair, and tests should consume shared fragments instead of duplicatin
 
 ## Runtime Profile-Enforcement Tests
 
-The cleanup must add deterministic offline tests for profile isolation.
+The cleanup must verify existing deterministic coverage and add missing offline tests for profile isolation.
 
 Minimum test coverage:
 
