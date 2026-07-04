@@ -20,13 +20,15 @@ PackageDocuments
 
 ```python
 from appv24.workflows.examples import golden_workflow_examples
+from appv24.workflows.fixtures import require_fixture
 from appv24.workflows.reports import build_enablement_report
 
 example = golden_workflow_examples()["telegram_support_ticket"]
+fixture = require_fixture(example.fixtures, "happy_path.yaml")
 report = build_enablement_report(
     example.documents,
     "happy_path.yaml",
-    example.fixtures["happy_path.yaml"],
+    fixture,
     broker=example.broker,
 )
 ```
