@@ -13,6 +13,8 @@ from appv24.workflows.loader import PackageDocuments
 
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 REQUIRED_PROPERTY_PATTERN = re.compile(r"'(?P<name>[^']+)' is a required property")
+SIDE_EFFECT_CLASS_VALUES = ["create", "update", "delete", "send", "publish", "provision"]
+EXECUTION_MODE_VALUES = ["brokered", "manual", "design_only"]
 
 WORKFLOW_SCHEMA = {
     "$schema": SCHEMA_DIALECT,
@@ -105,6 +107,32 @@ CONNECTORS_SCHEMA = {
                                 "operationId": {"type": "string"},
                                 "tool": {"type": "string"},
                                 "side_effect": {"type": "boolean"},
+                                "side_effect_class": {"type": "string", "enum": SIDE_EFFECT_CLASS_VALUES},
+                                "execution_mode": {"type": "string", "enum": EXECUTION_MODE_VALUES},
+                                "approval_required": {"type": "boolean"},
+                                "dry_run_supported": {"type": "boolean"},
+                                "idempotency": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key_fields": {
+                                            "type": "array",
+                                            "minItems": 1,
+                                            "items": {"type": "string", "minLength": 1},
+                                        },
+                                    },
+                                    "additionalProperties": True,
+                                },
+                                "outputs": {
+                                    "type": "object",
+                                    "properties": {
+                                        "allowed": {
+                                            "type": "array",
+                                            "minItems": 1,
+                                            "items": {"type": "string", "minLength": 1},
+                                        },
+                                    },
+                                    "additionalProperties": True,
+                                },
                                 "required_scopes": {"type": "array", "items": {"type": "string"}},
                             },
                             "additionalProperties": True,

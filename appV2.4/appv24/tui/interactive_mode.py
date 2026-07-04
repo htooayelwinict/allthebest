@@ -1321,9 +1321,10 @@ class InteractiveMode:
         if not should_validate_workflow_drafts(self._profile_id()):
             return None
 
-        def on_attempt(attempt: int, max_attempts: int, _validation) -> None:
+        def on_attempt(attempt: int, max_attempts: int | None, _validation) -> None:
+            suffix = f"{attempt}/{max_attempts}" if max_attempts is not None else str(attempt)
             self.status.set_message("Repairing workflow draft")
-            self.history.add(StatusLine(f"Workflow draft repair: attempt {attempt}/{max_attempts}", kind="compact"))
+            self.history.add(StatusLine(f"Workflow draft repair: attempt {suffix}", kind="compact"))
             self._refresh_footer()
             self.tui.request_render()
 
@@ -1331,7 +1332,7 @@ class InteractiveMode:
             return repair_workflow_draft_messages(
                 self.app.messages,
                 self._run_workflow_repair_turn,
-                config=WorkflowDraftRepairConfig(max_attempts=2, max_issues=8),
+                config=WorkflowDraftRepairConfig(max_issues=8),
                 on_attempt=on_attempt,
             )
         except Exception as error:  # noqa: BLE001 - repair should not crash interactive mode

@@ -649,13 +649,14 @@ def _repair_workflow_draft_if_needed(app: CodingApp, profile_id: str) -> Workflo
     if not should_validate_workflow_drafts(profile_id):
         return None
 
-    def on_attempt(attempt: int, max_attempts: int, _validation) -> None:
-        print(f"Workflow draft repair: attempt {attempt}/{max_attempts}")
+    def on_attempt(attempt: int, max_attempts: int | None, _validation) -> None:
+        suffix = f"{attempt}/{max_attempts}" if max_attempts is not None else str(attempt)
+        print(f"Workflow draft repair: attempt {suffix}")
 
     return repair_workflow_draft_messages(
         app.messages,
         app.run_turn,
-        config=WorkflowDraftRepairConfig(max_attempts=2, max_issues=8),
+        config=WorkflowDraftRepairConfig(max_issues=8),
         on_attempt=on_attempt,
     )
 

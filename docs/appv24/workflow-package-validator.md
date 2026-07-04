@@ -26,8 +26,11 @@ rollback.md
 6. `connector.action` references point to declared connectors and actions.
 7. Permissions allow every connector action used by workflow steps.
 8. Mutating steps require `side_effect_class` and an explicit approval gate.
-9. Inline secret-looking values are rejected. Use `secretRef` instead.
-10. Mutating workflows require `dry_run_fixtures/happy_path.yaml`, `dry_run_fixtures/rejection_path.yaml`, and `rollback.md`.
+9. Brokered mutating connector actions require explicit side-effect contract metadata.
+10. Design-only mutating connector actions may be described, but workflow steps must not call them.
+11. Inline secret-looking values are rejected. Use `secretRef` instead.
+12. Mutating workflows require `dry_run_fixtures/happy_path.yaml`, `dry_run_fixtures/rejection_path.yaml`, and `rollback.md`.
+13. `rollback.md` must be manual and non-executable. API, CLI, shell, token, destructive HTTP method, and broad destructive-scope examples are rejected.
 
 ## Python API
 
@@ -43,6 +46,57 @@ if not result.ok:
 ## Adapter Targets
 
 Connector adapters may reference MCP, OpenAPI, AsyncAPI, webhook, direct API, IaC, manual, or platform export targets. These are design-time targets in v1. They are not executed by the validator.
+
+## Side-Effect Contract
+
+Mutating connector actions must declare enough metadata for a future broker to enforce the action without guessing. The validator checks this contract but does not execute it.
+
+Brokered mutating action example:
+
+```yaml
+- id: create_issue
+  operationId: issues_create
+  side_effect: true
+  side_effect_class: create
+  execution_mode: brokered
+  approval_required: true
+  dry_run_supported: true
+  idempotency:
+    key_fields:
+      - repo
+      - alert_id
+  outputs:
+    allowed:
+      - issue_number
+      - issue_url
+  required_scopes:
+    - issues:write
+```
+
+Rules:
+
+- `execution_mode` must be `brokered`, `manual`, or `design_only`.
+- brokered mutating actions require `approval_required: true` and `dry_run_supported: true`.
+- brokered `create`, `send`, `publish`, and `provision` actions require `idempotency.key_fields`.
+- brokered mutating actions require `outputs.allowed` with explicit field names. `*` is rejected.
+- workflow steps that call brokered mutating actions still require a valid approval gate.
+
+Design-only mutating actions are allowed for future targets such as Telegram, email, Slack, or cloud notifications. They must not be called by workflow steps.
+
+```yaml
+- id: send_message
+  side_effect: true
+  side_effect_class: send
+  execution_mode: design_only
+  approval_required: false
+  dry_run_supported: false
+```
+
+If `permissions.yaml` mentions a design-only action, that permission entry must be marked:
+
+```yaml
+design_only: true
+```
 
 ## Live Draft Validation
 

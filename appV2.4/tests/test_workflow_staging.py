@@ -48,6 +48,13 @@ def test_build_package_stage_prompt_requires_full_package_sections() -> None:
     assert "```yaml dry_run_fixtures/happy_path.yaml" in prompt
     assert "```yaml dry_run_fixtures/rejection_path.yaml" in prompt
     assert "```markdown rollback.md" in prompt
+    assert "rollback.md must be manual, non-executable" in prompt
+    assert "Do not include API, CLI, shell, curl, Terraform, kubectl, cloud CLI, or token examples in rollback.md" in prompt
+    assert "Brokered mutating actions require approval_required: true" in prompt
+    assert "Design-only actions must use execution_mode: design_only and must not be called by workflow steps" in prompt
+    assert "Read, classify, analyze, summarize, draft, format, and local artifact steps must use side_effect: false" in prompt
+    assert "Only external create, update, delete, send, publish, or provision actions should be mutating" in prompt
+    assert "outputs.allowed" in prompt
 
 
 def test_run_workflow_draft_stages_runs_default_stages_in_order() -> None:

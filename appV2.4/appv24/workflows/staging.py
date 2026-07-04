@@ -49,7 +49,7 @@ def build_workflow_stage_prompt(
         "- Do not write files.",
         "- Do not request raw secrets.",
         "- Do not execute, publish, provision, send, or mutate anything.",
-        "- Use placeholders such as ${secrets.NAME} for secret references.",
+        "- Use secret references, redacted markers, or checksums for secrets; never raw secret values.",
         "",
     ]
 
@@ -101,11 +101,24 @@ def build_workflow_stage_prompt(
             "- connectors.yaml version must be appv24.connectors/v1.",
             "- connectors.yaml connectors must be a list.",
             "- connectors.yaml actions must be objects with id and side_effect boolean.",
+            "- Read, classify, analyze, summarize, draft, format, and local artifact steps must use side_effect: false unless they mutate external systems.",
+            "- Only external create, update, delete, send, publish, or provision actions should be mutating.",
+            "- Mutating connector actions must include side_effect_class, execution_mode, approval_required, and dry_run_supported.",
+            "- Brokered mutating actions require approval_required: true and dry_run_supported: true.",
+            "- Brokered create/send/publish/provision actions require idempotency.key_fields.",
+            "- Brokered mutating actions require outputs.allowed with explicit field names and no wildcard.",
+            "- Design-only actions must use execution_mode: design_only and must not be called by workflow steps.",
+            "- Draft-only outputs must be represented as local artifact drafts, not connector send/publish calls.",
+            "- Secret examples must use reference names such as secretRef: CONNECTOR_CREDENTIAL_REF, checksum fields, redacted: true, or non-secret references.",
+            "- secretRef values must be reference names only, never raw tokens, passwords, keys, or credentials.",
             "- permissions.yaml version must be appv24.permissions/v1.",
             "- permissions.yaml permissions must be a list.",
             "- permissions.yaml permissions[].actions must be connector action id strings.",
             "- permissions.yaml approvals[].required_for must be workflow step id strings.",
             "- Every mutating step must have an explicit approval gate.",
+            "- rollback.md must be manual, non-executable rollback guidance.",
+            "- Do not include API, CLI, shell, curl, Terraform, kubectl, cloud CLI, or token examples in rollback.md.",
+            "- rollback.md must not include ${secrets.*}, Authorization headers, HTTP method examples, or copy-paste commands.",
         ]
     else:
         body = [

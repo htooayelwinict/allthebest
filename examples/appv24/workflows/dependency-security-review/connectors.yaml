@@ -12,5 +12,17 @@ connectors:
       - id: create_issue
         operationId: issues_create
         side_effect: true
+        side_effect_class: create
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        idempotency:
+          key_fields:
+            - repo
+            - title
+        outputs:
+          allowed:
+            - issue_number
+            - issue_url
         required_scopes:
           - issues:write

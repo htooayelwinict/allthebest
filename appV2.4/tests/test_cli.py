@@ -61,6 +61,18 @@ connectors:
       - id: create_issue
         operationId: issues_create
         side_effect: true
+        side_effect_class: create
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        idempotency:
+          key_fields:
+            - repo
+            - alert_id
+        outputs:
+          allowed:
+            - issue_number
+            - issue_url
         required_scopes:
           - issues:write
 """.lstrip()
@@ -2046,8 +2058,10 @@ def test_cli_workflow_profile_repairs_invalid_draft_before_printing(monkeypatch,
     assert "Workflow draft staging 1/3: intent" in app.run_prompts[0]
     assert "Workflow draft staging 2/3: skeleton" in app.run_prompts[1]
     assert "Workflow draft staging 3/3: package" in app.run_prompts[2]
-    assert "Repair attempt 1/2" in app.run_prompts[3]
-    assert "Workflow draft repair: attempt 1/2" in captured.out
+    assert "Repair attempt 1." in app.run_prompts[3]
+    assert "Repair attempt 1/" not in app.run_prompts[3]
+    assert "Workflow draft repair: attempt 1" in captured.out
+    assert "Workflow draft repair: attempt 1/" not in captured.out
     assert "Workflow draft validation: passed" in captured.out
     assert "side_effect: send" not in captured.out
 

@@ -177,6 +177,18 @@ connectors:
       - id: create_issue
         operationId: issues_create
         side_effect: true
+        side_effect_class: create
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        idempotency:
+          key_fields:
+            - repo
+            - alert_id
+        outputs:
+          allowed:
+            - issue_number
+            - issue_url
         required_scopes:
           - issues:write
 """.lstrip()
@@ -1135,7 +1147,8 @@ def test_interactive_mode_repairs_invalid_workflow_draft_before_validation_repor
     assert "Workflow draft stage: intent 1/3" in rendered
     assert "Workflow draft stage: skeleton 2/3" in rendered
     assert "Workflow draft stage: package 3/3" in rendered
-    assert "Workflow draft repair: attempt 1/2" in rendered
+    assert "Workflow draft repair: attempt 1" in rendered
+    assert "Workflow draft repair: attempt 1/" not in rendered
     assert "Workflow draft validation: passed" in rendered
 
 
@@ -1208,7 +1221,8 @@ def test_interactive_mode_workflow_save_uses_repaired_valid_draft(tmp_path) -> N
     assert calls["n"] == 4
     assert saved_path.joinpath("workflow.yaml").is_file()
     assert "Workflow draft stage: package 3/3" in rendered
-    assert "Workflow draft repair: attempt 1/2" in rendered
+    assert "Workflow draft repair: attempt 1" in rendered
+    assert "Workflow draft repair: attempt 1/" not in rendered
     assert "Workflow draft saved:" in rendered
 
 
@@ -1225,8 +1239,10 @@ def test_interactive_mode_reports_failed_validation_after_repair_exhaustion(tmp_
     assert mode.run() == 0
 
     rendered = strip_ansi("\n".join(app.tui.render(160)))
-    assert "Workflow draft repair: attempt 1/2" in rendered
-    assert "Workflow draft repair: attempt 2/2" in rendered
+    assert "Workflow draft repair: attempt 1" in rendered
+    assert "Workflow draft repair: attempt 2" in rendered
+    assert "Workflow draft repair: attempt 1/" not in rendered
+    assert "Workflow draft repair: attempt 2/" not in rendered
     assert "Workflow draft validation: failed" in rendered
     assert mode._last_workflow_validation is None
 

@@ -60,6 +60,18 @@ connectors:
       - id: create_issue
         operationId: issues_create
         side_effect: true
+        side_effect_class: create
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        idempotency:
+          key_fields:
+            - repo
+            - alert_id
+        outputs:
+          allowed:
+            - issue_number
+            - issue_url
         required_scopes:
           - issues:write
 """.lstrip(),
@@ -360,6 +372,53 @@ def test_schema_validation_rejects_invalid_connector_adapter(tmp_path: Path) -> 
     assert_has_issue(issues, file="connectors.yaml", path=("connectors", 0, "adapter"))
 
 
+def test_schema_validation_rejects_invalid_action_execution_mode(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][1]["execution_mode"] = "automatic"
+
+    issues = validate_schema_documents(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(issues, file="connectors.yaml", path=("connectors", 0, "actions", 1, "execution_mode"))
+
+
+def test_schema_validation_rejects_invalid_action_side_effect_class(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][1]["side_effect_class"] = "mutate"
+
+    issues = validate_schema_documents(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(issues, file="connectors.yaml", path=("connectors", 0, "actions", 1, "side_effect_class"))
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("connectors", 0, "actions", 1, "outputs", "allowed"), "issue_url"),
+        (("connectors", 0, "actions", 1, "outputs", "allowed", 0), 123),
+        (("connectors", 0, "actions", 1, "idempotency", "key_fields"), "repo"),
+        (("connectors", 0, "actions", 1, "idempotency", "key_fields", 0), 123),
+    ],
+)
+def test_schema_validation_rejects_invalid_broker_contract_collection_values(
+    tmp_path: Path, path: tuple[str | int, ...], value: object
+) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    assign_path_value(connectors, path, value)
+
+    issues = validate_schema_documents(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(issues, file="connectors.yaml", path=path)
+
+
 def test_schema_validation_returns_issues_in_deterministic_order(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
@@ -481,6 +540,221 @@ def test_semantic_validation_requires_permission_scopes_for_connector_action(tmp
     )
 
 
+def test_semantic_validation_requires_broker_metadata_for_mutating_action(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][1].pop("execution_mode")
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="connectors.yaml",
+        code="missing_side_effect_contract",
+        message_substring="github.create_issue requires execution_mode",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "message_substring"),
+    [
+        ("approval_required", "approval_required: true"),
+        ("dry_run_supported", "dry_run_supported: true"),
+    ],
+)
+def test_semantic_validation_requires_brokered_mutation_booleans(
+    tmp_path: Path, field: str, message_substring: str
+) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][1][field] = False
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="connectors.yaml",
+        code="invalid_side_effect_contract",
+        message_substring=message_substring,
+    )
+
+
+def test_semantic_validation_requires_brokered_outputs_allowed(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][1].pop("outputs")
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="connectors.yaml",
+        code="missing_side_effect_contract",
+        message_substring="github.create_issue requires outputs.allowed",
+    )
+
+
+def test_semantic_validation_rejects_brokered_outputs_wildcard(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][1]["outputs"]["allowed"] = ["*"]
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="connectors.yaml",
+        code="invalid_side_effect_contract",
+        message_substring="github.create_issue outputs.allowed must not include wildcard",
+    )
+
+
+def test_semantic_validation_requires_idempotency_for_brokered_create(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][1].pop("idempotency")
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="connectors.yaml",
+        code="missing_side_effect_contract",
+        message_substring="github.create_issue requires idempotency.key_fields",
+    )
+
+
+def test_semantic_validation_rejects_design_only_action_used_by_workflow_step(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][1]["execution_mode"] = "design_only"
+    workflow = deepcopy(documents.workflow)
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="design_only_action_used",
+        message_substring="draft_issue must not call design-only action github.create_issue",
+    )
+
+
+def test_semantic_validation_allows_design_only_action_in_permissions_when_unused(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"].append(
+        {
+            "id": "telegram",
+            "adapter": "openapi",
+            "actions": [
+                {
+                    "id": "send_message",
+                    "side_effect": True,
+                    "side_effect_class": "send",
+                    "execution_mode": "design_only",
+                    "approval_required": False,
+                    "dry_run_supported": False,
+                }
+            ],
+        }
+    )
+    permissions = deepcopy(documents.permissions)
+    permissions["permissions"].append(
+        {
+            "connector": "telegram",
+            "actions": ["send_message"],
+            "scopes": ["send_message"],
+            "design_only": True,
+        }
+    )
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors, permissions=permissions))
+
+    assert not any(issue.code in {"missing_side_effect_contract", "invalid_side_effect_contract", "design_only_action_used"} for issue in issues)
+
+
+def test_semantic_validation_requires_design_only_permission_marker(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"].append(
+        {
+            "id": "telegram",
+            "adapter": "openapi",
+            "actions": [
+                {
+                    "id": "send_message",
+                    "side_effect": True,
+                    "side_effect_class": "send",
+                    "execution_mode": "design_only",
+                    "approval_required": False,
+                    "dry_run_supported": False,
+                }
+            ],
+        }
+    )
+    permissions = deepcopy(documents.permissions)
+    permissions["permissions"].append(
+        {
+            "connector": "telegram",
+            "actions": ["send_message"],
+            "scopes": ["send_message"],
+        }
+    )
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors, permissions=permissions))
+
+    assert_has_issue(
+        issues,
+        file="permissions.yaml",
+        code="invalid_side_effect_contract",
+        message_substring="permissions for design-only action telegram.send_message must set design_only: true",
+    )
+
+
+def test_semantic_validation_allows_manual_mutating_action_declared_without_step_use(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"].append(
+        {
+            "id": "support",
+            "adapter": "manual",
+            "actions": [
+                {
+                    "id": "create_ticket",
+                    "side_effect": True,
+                    "side_effect_class": "create",
+                    "execution_mode": "manual",
+                    "approval_required": True,
+                    "dry_run_supported": False,
+                }
+            ],
+        }
+    )
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert not any(issue.code == "invalid_side_effect_contract" and "support.create_ticket" in issue.message for issue in issues)
+
+
 def test_semantic_validation_allows_token_url_metadata(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
@@ -493,6 +767,76 @@ def test_semantic_validation_allows_token_url_metadata(tmp_path: Path) -> None:
     issues = validate_semantics(load_package_documents(package))
 
     assert not any(issue.code == "raw_secret" for issue in issues)
+
+
+def test_semantic_validation_allows_secret_ref_scalar_fields(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    fixture_path = package / "dry_run_fixtures" / "happy_path.yaml"
+    fixture_path.write_text(
+        "findings:\n"
+        "  - category: credential\n"
+        "    secretRef: CONNECTOR_CREDENTIAL_REF\n"
+        "    checksum_before: abc111\n"
+        "    checksum_after: def222\n",
+        encoding="utf-8",
+    )
+
+    issues = validate_semantics(load_package_documents(package))
+
+    assert not any(issue.code == "raw_secret" for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "rollback_text",
+    [
+        "# Rollback\n\n```bash\ncurl -X DELETE https://api.example.test/resource/123\n```\n",
+        "# Rollback\n\nUse the API example `DELETE /repos/owner/repo/issues/123`.\n",
+        "# Rollback\n\nDo not use a GitHub token with `delete_repo` for rollback.\n",
+        "# Rollback\n\n```bash\nterraform destroy -target=aws_instance.web\n```\n",
+        "# Rollback\n\n```bash\nkubectl delete deployment web\n```\n",
+        "# Rollback\n\n```bash\n-H \"Authorization: Bearer ${secrets.GITHUB_TOKEN}\"\n```\n",
+    ],
+)
+def test_semantic_validation_rejects_unsafe_rollback_examples(tmp_path: Path, rollback_text: str) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    (package / "rollback.md").write_text(rollback_text, encoding="utf-8")
+
+    issues = validate_semantics(load_package_documents(package))
+
+    assert any(issue.code == "unsafe_rollback" and issue.file == "rollback.md" for issue in issues)
+
+
+def test_semantic_validation_allows_manual_rollback_notes(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    (package / "rollback.md").write_text(
+        "# Rollback\n\n"
+        "- Review the drafted issue in the product UI.\n"
+        "- Close the drafted issue manually after human approval if it was created by mistake.\n"
+        "- Record the reviewer, timestamp, and reason in the audit log.\n",
+        encoding="utf-8",
+    )
+
+    issues = validate_semantics(load_package_documents(package))
+
+    assert not any(issue.code == "unsafe_rollback" for issue in issues)
+
+
+def test_semantic_validation_allows_manual_delete_word_in_rollback_notes(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    (package / "rollback.md").write_text(
+        "# Rollback\n\n"
+        "If a design-only Telegram draft is accidentally sent, open the chat manually.\n"
+        "If the bot has delete permission, remove the message from the chat using the UI.\n",
+        encoding="utf-8",
+    )
+
+    issues = validate_semantics(load_package_documents(package))
+
+    assert not any(issue.code == "unsafe_rollback" for issue in issues)
 
 
 def test_validate_workflow_package_returns_ok_result_for_valid_package(tmp_path: Path) -> None:
