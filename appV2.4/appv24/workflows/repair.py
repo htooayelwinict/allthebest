@@ -9,6 +9,12 @@ from typing import Any, Mapping
 
 from appv24.workflows.live_validation import assistant_text_from_messages, latest_assistant_stop_reason
 from appv24.workflows.prompt_examples import render_repair_micro_examples
+from appv24.workflows.prompt_fragments import (
+    render_rollback_safety_fragment,
+    render_schema_reminders_fragment,
+    render_secret_reference_fragment,
+    render_side_effect_contract_fragment,
+)
 from appv24.workflows.repair_directives import render_workflow_repair_directives
 from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text
 
@@ -199,27 +205,10 @@ def build_workflow_repair_prompt(
             "- Fix schema and semantic validation issues only.",
             "- Return the full package because the validator consumes complete drafts; treat it as a minimal patched copy.",
             "- Do not call tools, APIs, shell commands, or write files.",
-            "- For cron-like workflows, use workflow.yaml trigger type schedule.",
-            "- workflow.yaml trigger type must be schedule, webhook, manual, or event.",
-            "- connectors.yaml connectors[].actions must be a list of action objects.",
-            "- connectors.yaml actions[].side_effect must be boolean true or false.",
-            "- Read, classify, analyze, summarize, draft, format, and local artifact steps must use side_effect: false unless they mutate external systems.",
-            "- Only external create, update, delete, send, publish, or provision actions should be mutating.",
-            "- Mutating connector actions must include side_effect_class, execution_mode, approval_required, and dry_run_supported.",
-            "- Brokered mutating actions require approval_required: true, dry_run_supported: true, idempotency.key_fields, and outputs.allowed.",
-            "- Design-only connector actions must not be referenced by workflow steps.",
-            "- Draft-only outputs must be represented as local artifact drafts, not connector send/publish calls.",
-            "- Notification, email, chat, message, or report drafts stored locally are local artifact drafts with side_effect: false.",
-            "- Secret references may use secretRef: NAME, checksum fields, redacted: true, or non-secret references; never raw secret values.",
-            '- Prefer normal input keys with scalar secret reference values, for example github_token: "secretRef: GITHUB_TOKEN_REF".',
-            "- Do not invent keys like github_token_secretRef: GITHUB_TOKEN.",
-            "- secretRef values must be reference names only, never raw tokens, passwords, keys, or credentials.",
-            "- Mutating workflow.yaml steps must use approval: <approval-id>; never use approval_gate:.",
-            "- permissions.yaml permissions[].actions must be connector action id strings.",
-            "- permissions.yaml permissions[].scopes must grant every required_scopes value used by granted actions.",
-            "- permissions.yaml approvals[].required_for must be workflow step id strings.",
-            "- The approval id in steps[].approval must exist in permissions.yaml approvals[].id.",
-            "- approvals[].required_for must include the exact mutating workflow step id.",
+            render_schema_reminders_fragment(),
+            render_side_effect_contract_fragment(),
+            render_secret_reference_fragment(),
+            render_rollback_safety_fragment(),
         ]
     )
     return "\n".join(lines)

@@ -263,6 +263,14 @@ def test_build_workflow_repair_prompt_scopes_the_fix_to_failed_paths() -> None:
     assert "Output the full package again, not a patch." not in prompt
 
 
+def test_repair_prompt_includes_shared_contract_fragments() -> None:
+    result = validate_workflow_draft_text(_invalid_draft())
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=None)
+
+    assert render_side_effect_contract_fragment() in prompt
+    assert render_secret_reference_fragment() in prompt
+
+
 def test_repeated_repair_prompt_tells_model_to_revert_unrelated_drift() -> None:
     result = validate_workflow_draft_text(_schema_drift_draft())
 

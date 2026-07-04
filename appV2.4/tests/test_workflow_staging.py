@@ -85,6 +85,18 @@ def test_build_package_stage_prompt_requires_full_package_sections() -> None:
     assert "appv24 only designs workflow packages; it does not execute workflows" in prompt
 
 
+def test_package_stage_prompt_includes_shared_fragments() -> None:
+    prompt = build_workflow_stage_prompt(
+        "design a workflow",
+        stage_id="package",
+        stage_index=3,
+        total_stages=3,
+    )
+
+    assert render_required_package_blocks_fragment() in prompt
+    assert render_schema_reminders_fragment() in prompt
+
+
 def test_build_package_stage_prompt_includes_schema_micro_examples() -> None:
     prompt = build_workflow_stage_prompt(
         "Create a human-approved dependency triage workflow.",

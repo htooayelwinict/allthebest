@@ -7,6 +7,11 @@ or environment-defined profiles.
 from __future__ import annotations
 
 from appv24.profiles.types import AppProfile
+from appv24.workflows.prompt_fragments import (
+    render_required_package_blocks_fragment,
+    render_schema_reminders_fragment,
+    render_side_effect_contract_fragment,
+)
 
 DEFAULT_PROFILE_ID = "coding"
 READ_ONLY_TOOLS = ("read", "grep", "find", "ls")
@@ -46,61 +51,28 @@ _SECURITY_LAB_LITE_APPEND = (
     "or run shell commands."
 )
 
-_WORKFLOW_DESIGNER_LITE_APPEND = (
-    "Profile: workflow-designer-lite.\n"
-    "Design safe, reviewable workflow-as-code designs from natural language. "
-    "Treat every workflow as a passive design artifact, not executable work. "
-    "Use local repository files only as evidence when needed. "
-    "Produce the workflow design in the final response only. "
-    "appv24 may ask for staged workflow compiler passes. "
-    "When a stage prompt asks for intent or skeleton, answer only that stage. "
-    "Only the package stage should emit labeled fenced code blocks. "
-    "Do not edit, write, delete, move, or create files. "
-    "Do not run shell commands. "
-    "Do not run workflows. "
-    "Do not call external APIs. "
-    "Do not request raw secrets, send messages, "
-    "publish, provision cloud resources, or mutate external systems. "
-    "Structure the response with workflow summary, assumptions, approval gates, "
-    "test plan, risk review, future runner target, and artifact drafts using labeled fenced code blocks "
-    "with these exact opening labels: '```yaml workflow.yaml', '```yaml connectors.yaml', "
-    "'```yaml permissions.yaml', '```yaml dry_run_fixtures/happy_path.yaml', "
-    "'```yaml dry_run_fixtures/rejection_path.yaml', and '```markdown rollback.md'. "
-    "Use these appv24 schema shapes exactly. "
-    "workflow.yaml top-level shape: version: appv24.workflow/v1, name:, triggers:, entrypoint:, steps:. "
-    "triggers must be a YAML list with items containing id and type. "
-    "For cron-like schedules, use type: schedule and put the cron expression in schedule:. "
-    "Never use type: cron. "
-    "entrypoint must name the first step id. "
-    "steps must be a YAML list with items containing id and either uses: connector.action or type: terminal, "
-    "decision, manual_approval, or action. "
-    "Mutating workflow steps must use approval: <approval-id>; never use approval_gate:. "
-    "connectors.yaml top-level shape: version: appv24.connectors/v1, connectors:. "
-    "connectors must be a YAML list, not a mapping keyed by connector name. "
-    "Each connector item needs id, adapter, and actions. "
-    "adapter must be one of mcp, openapi, asyncapi, webhook, direct_api, iac, manual, or platform_export. "
-    "actions must be a YAML list of objects, not strings. "
-    "Each action item must be a YAML object with id:, plus optional operationId:, tool:, side_effect:, "
-    "and required_scopes:. "
-    "side_effect must be boolean true or false. "
-    "permissions.yaml top-level shape: version: appv24.permissions/v1, permissions:, and optional approvals:. "
-    "approvals must be a YAML list of objects, not gate_id/connector/action entries. "
-    "Each approval item must be a YAML object with id:, mode: explicit, and required_for:. "
-    "required_for values must be workflow step id strings only, for example required_for: [create_issue]. "
-    "Do not put connector/action objects inside required_for. "
-    "permissions must be a YAML list, not a mapping keyed by connector name. "
-    "Each permission item needs connector and actions. "
-    "permissions[].actions must be workflow connector action id strings. "
-    "permissions[].scopes must include every required_scopes value for the granted connector actions, "
-    "or use '*' only when intentionally granting all scopes. "
-    "For example, if github.create_issue requires issues and github.get_dependabot_alerts requires "
-    "security_events, the github permission must include scopes: [issues, security_events]. "
-    "If a step has side_effect_class create, update, delete, send, publish, or provision, add an explicit "
-    "approval gate in permissions.yaml and reference it from that step with approval:. "
-    "The approval id in workflow.yaml steps[].approval must exist in permissions.yaml approvals[].id, "
-    "and approvals[].required_for must include that exact workflow step id. "
-    "Connector targets may include MCP, direct API, OpenAPI, LangGraph, n8n or Pipedream export, "
-    "and IaC, but only as design targets."
+_WORKFLOW_DESIGNER_LITE_APPEND = " ".join(
+    (
+        "Profile: workflow-designer-lite.",
+        "Design safe, reviewable workflow-as-code designs from natural language.",
+        "Treat every workflow as a passive design artifact, not executable work.",
+        "Use local repository files only as evidence when needed.",
+        "Produce the workflow design in the final response only.",
+        "appv24 may ask for staged workflow compiler passes.",
+        "When a stage prompt asks for intent or skeleton, answer only that stage.",
+        "Only the package stage should emit labeled fenced code blocks.",
+        "Do not edit, write, delete, move, or create files.",
+        "Do not run shell commands.",
+        "Do not run workflows.",
+        "Do not call external APIs.",
+        "Do not request raw secrets, send messages, publish, provision cloud resources, or mutate external systems.",
+        "Structure the response with workflow summary, assumptions, approval gates, test plan, risk review, future runner target, and artifact drafts.",
+        render_required_package_blocks_fragment(),
+        "Use these appv24 schema shapes exactly.",
+        render_schema_reminders_fragment(),
+        render_side_effect_contract_fragment(),
+        "Connector targets may include MCP, direct API, OpenAPI, LangGraph, n8n or Pipedream export, and IaC, but only as design targets.",
+    )
 )
 
 BUILTIN_PROFILES: tuple[AppProfile, ...] = (
