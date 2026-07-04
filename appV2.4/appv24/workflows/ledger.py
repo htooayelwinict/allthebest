@@ -15,6 +15,8 @@ class StepTrace:
     connector_action: str | None = None
     side_effect_class: str | None = None
     approval_id: str | None = None
+    broker_status: str | None = None
+    broker_provider_id: str | None = None
     simulated_outputs: Mapping[str, Any] | None = None
     issues: tuple[str, ...] = ()
 
