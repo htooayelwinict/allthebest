@@ -12,6 +12,11 @@ from appv24.workflows.drafts import (
     save_workflow_draft_blocks,
 )
 from appv24.workflows.errors import WorkflowIssue, WorkflowPackageError, WorkflowValidationResult
+from appv24.workflows.compiler import compile_workflow_documents, compile_workflow_package
+from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
+from appv24.workflows.ledger import SimulationLedger, StepTrace
+from appv24.workflows.policy import PolicyIssue, PolicyReport, PolicySeverity, evaluate_policy
+from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.staging import (
     WorkflowDraftStageConfig,
     WorkflowDraftStageResult,
@@ -34,15 +39,27 @@ __all__ = (
     "WorkflowDraftStageConfig",
     "WorkflowDraftStageResult",
     "WorkflowDraftValidationResult",
+    "WorkflowCompileResult",
+    "WorkflowIR",
     "WorkflowIssue",
     "WorkflowPackageError",
+    "WorkflowStep",
     "WorkflowValidationResult",
+    "PolicyIssue",
+    "PolicyReport",
+    "PolicySeverity",
+    "SimulationLedger",
+    "StepTrace",
     "build_workflow_stage_prompt",
+    "compile_workflow_documents",
+    "compile_workflow_package",
+    "evaluate_policy",
     "extract_workflow_draft_blocks",
     "parse_workflow_draft_blocks",
     "run_workflow_draft_stages",
     "save_workflow_draft_blocks",
     "should_stage_workflow_drafts",
+    "simulate_workflow_fixture",
     "validate_workflow_documents",
     "validate_workflow_draft_text",
     "validate_workflow_package",
