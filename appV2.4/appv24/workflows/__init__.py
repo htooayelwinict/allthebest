@@ -12,10 +12,13 @@ from appv24.workflows.drafts import (
     save_workflow_draft_blocks,
 )
 from appv24.workflows.errors import WorkflowIssue, WorkflowPackageError, WorkflowValidationResult
+from appv24.workflows.broker import BrokerRequest, BrokerResult, LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents, compile_workflow_package
+from appv24.workflows.examples import GoldenWorkflowExample, golden_workflow_examples
 from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import SimulationLedger, StepTrace
 from appv24.workflows.policy import PolicyIssue, PolicyReport, PolicySeverity, evaluate_policy
+from appv24.workflows.reports import WorkflowEnablementReport, build_enablement_report
 from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.staging import (
     WorkflowDraftStageConfig,
@@ -40,6 +43,11 @@ __all__ = (
     "WorkflowDraftStageResult",
     "WorkflowDraftValidationResult",
     "WorkflowCompileResult",
+    "WorkflowEnablementReport",
+    "BrokerRequest",
+    "BrokerResult",
+    "GoldenWorkflowExample",
+    "LocalWorkflowBroker",
     "WorkflowIR",
     "WorkflowIssue",
     "WorkflowPackageError",
@@ -51,11 +59,13 @@ __all__ = (
     "SimulationLedger",
     "StepTrace",
     "build_workflow_stage_prompt",
+    "build_enablement_report",
     "compile_workflow_documents",
     "compile_workflow_package",
     "evaluate_policy",
     "extract_workflow_draft_blocks",
     "parse_workflow_draft_blocks",
+    "golden_workflow_examples",
     "run_workflow_draft_stages",
     "save_workflow_draft_blocks",
     "should_stage_workflow_drafts",
