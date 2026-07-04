@@ -15,6 +15,7 @@ from appv24.workflows.errors import WorkflowIssue, WorkflowPackageError, Workflo
 from appv24.workflows.broker import BrokerRequest, BrokerResult, LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents, compile_workflow_package
 from appv24.workflows.examples import GoldenWorkflowExample, golden_workflow_examples
+from appv24.workflows.fixtures import fixture_names, require_fixture
 from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import SimulationLedger, StepTrace
 from appv24.workflows.policy import PolicyIssue, PolicyReport, PolicySeverity, evaluate_policy
@@ -64,8 +65,10 @@ __all__ = (
     "compile_workflow_package",
     "evaluate_policy",
     "extract_workflow_draft_blocks",
+    "fixture_names",
     "parse_workflow_draft_blocks",
     "golden_workflow_examples",
+    "require_fixture",
     "run_workflow_draft_stages",
     "save_workflow_draft_blocks",
     "should_stage_workflow_drafts",
