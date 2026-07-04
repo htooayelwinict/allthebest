@@ -218,11 +218,11 @@ Staging uses normal `CodingApp.run_turn()` calls. This means stage prompts and a
 
 When `appv24` runs with `--profile workflow-designer-lite`, the CLI and TUI validate the latest assistant workflow draft after each assistant turn.
 
-If the draft fails validation, appv24 sends a compact validator feedback prompt back through the same `CodingApp.run_turn()` path. The repair loop is bounded to two attempts. The repair prompt includes validator issue codes, issue locations, issue messages, required draft section names, and schema reminders for common mistakes.
+If the draft fails validation, appv24 sends a compact validator feedback prompt back through the same `CodingApp.run_turn()` path. Repair attempts are configurable. The default runtime should remain finite and cost-safe, while workflow-specific tests may configure a larger or effectively unbounded loop to prove convergence. The repair prompt includes validator issue codes, issue locations, issue messages, required draft section names, and schema reminders for common mistakes.
 
 The repair loop is passive. It does not execute workflows, call connector APIs, read secrets, run shell commands, provision infrastructure, or write package files. It only asks the model to return a complete corrected draft. The existing `/workflow-save relative/path` command still refuses to save unless the final draft validates.
 
-If both repair attempts fail, appv24 keeps the failed validation report visible and leaves `/workflow-save` blocked for that draft.
+If repair stops because the configured attempt bound, timeout, abort signal, or provider error is reached, appv24 keeps the failed validation report visible and leaves `/workflow-save` blocked for that draft.
 
 ## Passive Boundary
 

@@ -3,8 +3,8 @@
 ```text
         _   _   _   _   _   _   _   _   _
        / \ / \ / \ / \ / \ / \ / \ / \ / \
-      ( a | p | p | v | 2 | 3 | . | t | u )
-       \_/ \_/ \_/ \_/ \_/ \_/ \_/ \_/ \_/
+          ( a | p | p | v | 2 | 4 )
+           \_/ \_/ \_/ \_/ \_/ \_/
 
       a sandbox-first coding-agent TUI
       with explicit subagents, compact memory, and portable npm launch
@@ -372,12 +372,12 @@ python -m pip install ".[browser]"
 
 ## Release image flow
 
-The production image is built from `next/appv23.1` using `Dockerfile.appv24.release`.
+The production image is built from `next/appv24` using `Dockerfile.appv24.release`.
 
 Commit and push runtime changes first:
 
 ```bash
-git push upstream next/appv23.1
+git push upstream next/appv24
 ```
 
 Then build without stale branch cache:
