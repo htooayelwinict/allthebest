@@ -1,6 +1,27 @@
 version: appv24.workflow/v1
 name: dependency-security-review
 description: Review dependency alerts and draft a human-approved tracking issue.
+design:
+  intent: Review dependency alerts and draft a human-approved tracking issue.
+  trigger: Weekly scheduled dependency alert review.
+  inputs:
+    - Repository identifier.
+    - GitHub dependency alert list.
+  outputs:
+    - Human-reviewed issue draft or no mutation when rejected.
+  assumptions:
+    - GitHub credentials are provided by secret reference at execution time.
+    - A human reviewer decides whether the issue should be created.
+  side_effects:
+    - Create a GitHub issue only after explicit human approval.
+  approval_gates:
+    - human-review
+  failure_modes:
+    - GitHub API unavailable.
+    - No qualifying alerts are found.
+    - Human rejects the issue draft.
+  rollback:
+    - Close the drafted issue manually if it was created incorrectly.
 triggers:
   - id: weekly
     type: schedule

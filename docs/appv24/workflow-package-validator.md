@@ -21,16 +21,93 @@ rollback.md
 1. Required package files are present.
 2. YAML files load through `yaml.safe_load`.
 3. `workflow.yaml`, `connectors.yaml`, and `permissions.yaml` match appv24 JSON Schemas.
-4. Workflow step IDs are unique.
-5. Entrypoint and transitions point to existing steps.
-6. `connector.action` references point to declared connectors and actions.
-7. Permissions allow every connector action used by workflow steps.
-8. Mutating steps require `side_effect_class` and an explicit approval gate.
-9. Brokered mutating connector actions require explicit side-effect contract metadata.
-10. Design-only mutating connector actions may be described, but workflow steps must not call them.
-11. Inline secret-looking values are rejected. Use `secretRef` instead.
-12. Mutating workflows require `dry_run_fixtures/happy_path.yaml`, `dry_run_fixtures/rejection_path.yaml`, and `rollback.md`.
-13. `rollback.md` must be manual and non-executable. API, CLI, shell, token, destructive HTTP method, and broad destructive-scope examples are rejected.
+4. `workflow.yaml` includes the workflow design contract metadata.
+5. Workflow step IDs are unique.
+6. Entrypoint and transitions point to existing steps.
+7. `connector.action` references point to declared connectors and actions.
+8. Permissions allow every connector action used by workflow steps.
+9. Mutating steps require `side_effect_class` and an explicit approval gate.
+10. Brokered mutating connector actions require explicit side-effect contract metadata.
+11. Design-only mutating connector actions may be described, but workflow steps must not call them.
+12. Inline secret-looking values are rejected. Use `secretRef` instead.
+13. Mutating workflows require `dry_run_fixtures/happy_path.yaml`, `dry_run_fixtures/rejection_path.yaml`, and `rollback.md`.
+14. `rollback.md` must be manual and non-executable. API, CLI, shell, token, destructive HTTP method, and broad destructive-scope examples are rejected.
+
+## Workflow Design Contract
+
+`workflow.yaml` must include passive design metadata. This metadata gives the validator and repair loop enough context to distinguish an incomplete workflow package from a structurally valid but underspecified one.
+
+```yaml
+design:
+  intent: Review dependency alerts and draft a human-approved issue.
+  trigger: Weekly scheduled dependency alert review.
+  inputs:
+    - GitHub dependency alert list.
+  outputs:
+    - Human-reviewed issue draft.
+  assumptions:
+    - GitHub credentials are provided by secret reference at execution time.
+  side_effects:
+    - Create a GitHub issue only after explicit human approval.
+  approval_gates:
+    - human-review
+  failure_modes:
+    - GitHub API unavailable.
+    - Human rejects the issue draft.
+  rollback:
+    - Close the drafted issue manually if it was created.
+```
+
+Required fields:
+
+```text
+intent
+trigger
+inputs
+outputs
+assumptions
+side_effects
+approval_gates
+failure_modes
+rollback
+```
+
+`intent` and `trigger` must be non-empty strings. The remaining fields must be non-empty lists of strings.
+
+## Issue Metadata
+
+Validation issues include machine-readable repair metadata when appv24 can infer it:
+
+```text
+code
+file
+path
+message
+expected
+repair_hint
+```
+
+Schema issues use more specific codes for repair:
+
+```text
+schema_required
+schema_type
+schema
+```
+
+Semantic issues keep focused domain codes such as:
+
+```text
+missing_design_contract
+unknown_action
+permission_missing_scope
+missing_side_effect_contract
+design_only_action_used
+raw_secret
+unsafe_rollback
+```
+
+The repair prompt includes `expected` and `repair_hint` when present.
 
 ## Python API
 
@@ -146,3 +223,18 @@ If the draft fails validation, appv24 sends a compact validator feedback prompt 
 The repair loop is passive. It does not execute workflows, call connector APIs, read secrets, run shell commands, provision infrastructure, or write package files. It only asks the model to return a complete corrected draft. The existing `/workflow-save relative/path` command still refuses to save unless the final draft validates.
 
 If both repair attempts fail, appv24 keeps the failed validation report visible and leaves `/workflow-save` blocked for that draft.
+
+## Passive Boundary
+
+appv24 workflow design remains passive:
+
+```text
+appv24 designs workflow packages.
+appv24 does not execute workflows.
+appv24 does not call connector APIs.
+appv24 does not read secrets.
+appv24 does not provision cloud resources.
+appv24 does not send email, Telegram, Slack, or other third-party messages.
+```
+
+Future workflow execution must be designed as a separate broker or runner. The validator may describe broker-ready metadata, but it must not execute that metadata.

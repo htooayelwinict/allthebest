@@ -23,6 +23,24 @@ WORKFLOW_YAML = """
 version: appv24.workflow/v1
 name: dependency-security-review
 description: Review dependency alerts and draft a human-approved issue.
+design:
+  intent: Review dependency alerts and draft a human-approved issue.
+  trigger: Weekly scheduled dependency alert review.
+  inputs:
+    - GitHub dependency alert list.
+  outputs:
+    - Human-reviewed issue draft.
+  assumptions:
+    - GitHub credentials are provided by secret reference at execution time.
+  side_effects:
+    - Create a GitHub issue only after explicit human approval.
+  approval_gates:
+    - human-review
+  failure_modes:
+    - GitHub API unavailable.
+    - Human rejects the issue draft.
+  rollback:
+    - Close the drafted issue manually if it was created.
 triggers:
   - id: weekly
     type: schedule
@@ -270,6 +288,33 @@ def test_validate_workflow_draft_text_accepts_valid_draft() -> None:
     assert result.documents is not None
     assert result.blocks.workflow == WORKFLOW_YAML
     assert result.validation.issues == ()
+
+
+def test_validate_workflow_draft_text_accepts_scalar_secret_ref_values() -> None:
+    fixture = FIXTURE_YAML.replace(
+        "input:\n  repo: owner/project",
+        'input:\n  repo: owner/project\n  github_token: "secretRef: GITHUB_TOKEN_REF"',
+    )
+    draft = valid_workflow_draft_text().replace(FIXTURE_YAML, fixture, 1)
+
+    result = validate_workflow_draft_text(draft)
+
+    assert result.ok
+    assert result.documents is not None
+    assert result.validation.issues == ()
+
+
+def test_validate_workflow_draft_text_rejects_raw_secret_ref_values() -> None:
+    fixture = FIXTURE_YAML.replace(
+        "input:\n  repo: owner/project",
+        "input:\n  repo: owner/project\n  github_token:\n    secretRef: sk-or-v1-abc123abc123abc123",
+    )
+    draft = valid_workflow_draft_text().replace(FIXTURE_YAML, fixture, 1)
+
+    result = validate_workflow_draft_text(draft)
+
+    assert not result.ok
+    assert any(issue.code == "raw_secret" for issue in result.validation.issues)
 
 
 def test_validate_workflow_draft_text_reports_semantic_issues() -> None:

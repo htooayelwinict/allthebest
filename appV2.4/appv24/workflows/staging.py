@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from appv24.workflows.live_validation import should_validate_workflow_drafts
+from appv24.workflows.prompt_examples import PACKAGE_STAGE_MICRO_EXAMPLES
 
 
 DEFAULT_WORKFLOW_STAGE_IDS = ("intent", "skeleton", "package")
@@ -64,6 +65,9 @@ def build_workflow_stage_prompt(
             "- Approval gates",
             "- Safety assumptions",
             "",
+            "Identify the workflow design contract fields that the final package must preserve:",
+            "intent, trigger, inputs, outputs, assumptions, side effects, approval gates, failure modes, rollback.",
+            "",
             "Do not return workflow package files in this stage.",
         ]
     elif normalized_stage == "skeleton":
@@ -77,6 +81,7 @@ def build_workflow_stage_prompt(
             "- Permission candidates",
             "- Required dry-run fixtures",
             "- Rollback notes",
+            "- Final design contract values",
             "",
             "Do not return workflow package files in this stage.",
         ]
@@ -95,6 +100,7 @@ def build_workflow_stage_prompt(
             "",
             "Schema reminders:",
             "- workflow.yaml version must be appv24.workflow/v1.",
+            "- workflow.yaml must include design metadata with intent, trigger, inputs, outputs, assumptions, side_effects, approval_gates, failure_modes, and rollback.",
             "- workflow.yaml triggers must be a list.",
             "- Cron-like triggers must use type: schedule and schedule: <cron>.",
             "- workflow.yaml steps must use approval: <approval-id> for mutating side effects.",
@@ -109,7 +115,10 @@ def build_workflow_stage_prompt(
             "- Brokered mutating actions require outputs.allowed with explicit field names and no wildcard.",
             "- Design-only actions must use execution_mode: design_only and must not be called by workflow steps.",
             "- Draft-only outputs must be represented as local artifact drafts, not connector send/publish calls.",
+            "- Notification, email, chat, message, or report drafts stored locally are local artifact drafts with side_effect: false.",
             "- Secret examples must use reference names such as secretRef: CONNECTOR_CREDENTIAL_REF, checksum fields, redacted: true, or non-secret references.",
+            '- Prefer normal input keys with scalar secret reference values, for example github_token: "secretRef: GITHUB_TOKEN_REF".',
+            "- Do not invent keys like github_token_secretRef: GITHUB_TOKEN.",
             "- secretRef values must be reference names only, never raw tokens, passwords, keys, or credentials.",
             "- permissions.yaml version must be appv24.permissions/v1.",
             "- permissions.yaml permissions must be a list.",
@@ -119,6 +128,9 @@ def build_workflow_stage_prompt(
             "- rollback.md must be manual, non-executable rollback guidance.",
             "- Do not include API, CLI, shell, curl, Terraform, kubectl, cloud CLI, or token examples in rollback.md.",
             "- rollback.md must not include ${secrets.*}, Authorization headers, HTTP method examples, or copy-paste commands.",
+            "- appv24 only designs workflow packages; it does not execute workflows.",
+            "",
+            PACKAGE_STAGE_MICRO_EXAMPLES,
         ]
     else:
         body = [

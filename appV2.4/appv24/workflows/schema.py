@@ -217,11 +217,21 @@ def _collect_schema_issues(
 
 def _as_issue(file: str, error: ValidationError) -> WorkflowIssue:
     return WorkflowIssue(
-        code="schema",
+        code=_issue_code(error),
         file=file,
         path=_issue_path(error),
         message=_issue_message(error),
+        expected=_issue_expected(error),
+        repair_hint=_issue_repair_hint(file, error),
     )
+
+
+def _issue_code(error: ValidationError) -> str:
+    if _required_property_name(error) is not None:
+        return "schema_required"
+    if error.validator == "type":
+        return "schema_type"
+    return "schema"
 
 
 def _issue_path(error: ValidationError) -> tuple[str | int, ...]:
@@ -236,6 +246,31 @@ def _issue_message(error: ValidationError) -> str:
     if required_property is None:
         return error.message
     return f"missing required property '{required_property}' ({error.message})"
+
+
+def _issue_expected(error: ValidationError) -> str | None:
+    if _required_property_name(error) is not None:
+        return "required property"
+    if error.validator == "type":
+        expected = error.validator_value
+        if isinstance(expected, list):
+            return " or ".join(str(value) for value in expected)
+        return str(expected)
+    return None
+
+
+def _issue_repair_hint(file: str, error: ValidationError) -> str | None:
+    path = _issue_path(error)
+    if not path:
+        return None
+    rendered_path = ".".join(str(part) for part in path)
+    if _required_property_name(error) is not None:
+        return f"Add {file} {rendered_path}."
+    if error.validator == "type":
+        expected = _issue_expected(error)
+        if expected:
+            return f"Set {file} {rendered_path} to {expected}."
+    return None
 
 
 def _required_property_name(error: ValidationError) -> str | None:

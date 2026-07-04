@@ -1334,6 +1334,7 @@ class InteractiveMode:
                 self._run_workflow_repair_turn,
                 config=WorkflowDraftRepairConfig(max_issues=8),
                 on_attempt=on_attempt,
+                should_abort=lambda: bool(getattr(self.app.session.agent.signal, "aborted", False)),
             )
         except Exception as error:  # noqa: BLE001 - repair should not crash interactive mode
             self.history.add(StatusLine(f"Workflow draft repair failed: {error}", kind="error"))

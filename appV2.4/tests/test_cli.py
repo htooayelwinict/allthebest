@@ -31,6 +31,24 @@ def _valid_workflow_draft_text() -> str:
 version: appv24.workflow/v1
 name: dependency-security-review
 description: Review dependency alerts and draft a human-approved issue.
+design:
+  intent: Review dependency alerts and draft a human-approved issue.
+  trigger: Weekly scheduled dependency alert review.
+  inputs:
+    - GitHub dependency alert list.
+  outputs:
+    - Human-reviewed issue draft.
+  assumptions:
+    - GitHub credentials are provided by secret reference at execution time.
+  side_effects:
+    - Create a GitHub issue only after explicit human approval.
+  approval_gates:
+    - human-review
+  failure_modes:
+    - GitHub API unavailable.
+    - Human rejects the issue draft.
+  rollback:
+    - Close the drafted issue manually if it was created.
 triggers:
   - id: weekly
     type: schedule

@@ -17,6 +17,8 @@ class WorkflowIssue:
     file: str
     path: tuple[str | int, ...]
     message: str
+    expected: str | None = None
+    repair_hint: str | None = None
 
     @property
     def location(self) -> str:

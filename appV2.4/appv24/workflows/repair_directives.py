@@ -70,6 +70,8 @@ def _directive_for_issue(
             rules=(
                 "Use a secret reference field, checksum, redacted marker, or non-secret reference.",
                 "For secret references, use reference names such as secretRef: CONNECTOR_CREDENTIAL_REF, not raw secret values.",
+                'Use normal input keys with scalar values like github_token: "secretRef: GITHUB_TOKEN_REF".',
+                "Do not invent keys like github_token_secretRef: GITHUB_TOKEN.",
                 "Do not preserve or restate the inline secret value.",
                 "Do not move the secret into another workflow package field.",
             ),

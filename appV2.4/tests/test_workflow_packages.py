@@ -27,6 +27,24 @@ def write_minimal_package(root: Path) -> None:
 version: appv24.workflow/v1
 name: dependency-security-review
 description: Review dependency alerts and draft a human-approved issue.
+design:
+  intent: Review dependency alerts and draft a human-approved issue.
+  trigger: Weekly scheduled dependency alert review.
+  inputs:
+    - GitHub dependency alert list.
+  outputs:
+    - Human-reviewed issue draft.
+  assumptions:
+    - GitHub credentials are provided by secret reference at execution time.
+  side_effects:
+    - Create a GitHub issue only after explicit human approval.
+  approval_gates:
+    - human-review
+  failure_modes:
+    - GitHub API unavailable.
+    - Human rejects the issue draft.
+  rollback:
+    - Close the drafted issue manually if it was created.
 triggers:
   - id: weekly
     type: schedule
@@ -216,10 +234,35 @@ def test_schema_validation_rejects_missing_workflow_entrypoint(tmp_path: Path) -
     assert_has_issue(
         issues,
         file="workflow.yaml",
+        code="schema_required",
         path=("entrypoint",),
         location="workflow.yaml:entrypoint",
         message_substring="'entrypoint' is a required property",
     )
+    issue = next(issue for issue in issues if issue.file == "workflow.yaml" and issue.path == ("entrypoint",))
+    assert issue.expected == "required property"
+    assert issue.repair_hint == "Add workflow.yaml entrypoint."
+
+
+def test_schema_validation_reports_expected_shape_and_repair_hint(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow["triggers"] = "weekly"
+
+    issues = validate_schema_documents(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="schema_type",
+        path=("triggers",),
+        message_substring="'weekly' is not of type 'array'",
+    )
+    issue = next(issue for issue in issues if issue.file == "workflow.yaml" and issue.path == ("triggers",))
+    assert issue.expected == "array"
+    assert issue.repair_hint == "Set workflow.yaml triggers to array."
 
 
 @pytest.mark.parametrize(
@@ -257,8 +300,51 @@ def test_schema_validation_rejects_connector_action_missing_id(tmp_path: Path) -
     assert_has_issue(
         issues,
         file="connectors.yaml",
+        code="schema_required",
         path=("connectors", 0, "actions", 0, "id"),
         message_substring="'id' is a required property",
+    )
+
+
+def test_semantic_validation_requires_workflow_design_contract(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow.pop("design")
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="missing_design_contract",
+        path=("design",),
+        message_substring="workflow.yaml requires design metadata",
+    )
+    issue = next(issue for issue in issues if issue.code == "missing_design_contract")
+    assert issue.expected == (
+        "design with intent, trigger, inputs, outputs, assumptions, side_effects, "
+        "approval_gates, failure_modes, and rollback"
+    )
+    assert "Add workflow.yaml design metadata" in issue.repair_hint
+
+
+def test_semantic_validation_requires_workflow_design_contract_fields(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow["design"].pop("failure_modes")
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="missing_design_contract",
+        path=("design", "failure_modes"),
+        message_substring="workflow.yaml design requires failure_modes",
     )
 
 
@@ -416,7 +502,7 @@ def test_schema_validation_rejects_invalid_broker_contract_collection_values(
 
     issues = validate_schema_documents(replace_documents(documents, connectors=connectors))
 
-    assert_has_issue(issues, file="connectors.yaml", path=path)
+    assert_has_issue(issues, file="connectors.yaml", code="schema_type", path=path)
 
 
 def test_schema_validation_returns_issues_in_deterministic_order(tmp_path: Path) -> None:
@@ -878,7 +964,7 @@ def test_validate_workflow_documents_skips_semantics_when_schema_fails(tmp_path:
     result = validate_workflow_documents(broken)
 
     assert not result.ok
-    assert_has_issue(result.issues, file="workflow.yaml", path=("entrypoint",))
+    assert_has_issue(result.issues, file="workflow.yaml", code="schema_required", path=("entrypoint",))
     assert not any(issue.code == "unknown_transition" for issue in result.issues)
 
 
@@ -896,9 +982,9 @@ def test_validate_workflow_package_skips_semantics_when_schema_issues_exist(tmp_
     result = validate_workflow_package(package)
 
     assert result.ok is False
-    assert any(issue.code == "schema" for issue in result.issues)
+    assert any(issue.code == "schema_required" for issue in result.issues)
     assert not any(issue.code == "unknown_action" for issue in result.issues)
-    assert all(issue.code == "schema" for issue in result.issues)
+    assert all(issue.code.startswith("schema") for issue in result.issues)
     assert result.messages() == sorted(result.messages())
 
 
@@ -936,8 +1022,8 @@ connectors: null
 
     assert isinstance(result, WorkflowValidationResult)
     assert result.ok is False
-    assert any(issue.code == "schema" for issue in result.issues)
-    assert all(issue.code == "schema" for issue in result.issues)
+    assert any(issue.code == "schema_type" for issue in result.issues)
+    assert all(issue.code.startswith("schema") for issue in result.issues)
 
 
 def test_validate_workflow_package_load_error_uses_resolved_file_path(

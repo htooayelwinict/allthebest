@@ -29,6 +29,8 @@ def test_build_intent_stage_prompt_is_passive_and_preserves_request() -> None:
     assert "Do not call external APIs" in prompt
     assert "Do not write files" in prompt
     assert "Return only an intent brief" in prompt
+    assert "Identify the workflow design contract fields" in prompt
+    assert "intent, trigger, inputs, outputs, assumptions, side effects, approval gates, failure modes, rollback" in prompt
     assert "workflow.yaml" not in prompt
 
 
@@ -55,6 +57,32 @@ def test_build_package_stage_prompt_requires_full_package_sections() -> None:
     assert "Read, classify, analyze, summarize, draft, format, and local artifact steps must use side_effect: false" in prompt
     assert "Only external create, update, delete, send, publish, or provision actions should be mutating" in prompt
     assert "outputs.allowed" in prompt
+    assert "workflow.yaml must include design metadata" in prompt
+    assert "appv24 only designs workflow packages; it does not execute workflows" in prompt
+
+
+def test_build_package_stage_prompt_includes_schema_micro_examples() -> None:
+    prompt = build_workflow_stage_prompt(
+        "Create a human-approved dependency triage workflow.",
+        stage_id="package",
+        stage_index=3,
+        total_stages=3,
+    )
+
+    assert "Micro examples for exact shape only:" in prompt
+    assert "design:" in prompt
+    assert "side_effects:" in prompt
+    assert "- id: create_ticket" in prompt
+    assert "side_effect_class: create" in prompt
+    assert "approval: approve_create_ticket" in prompt
+    assert "execution_mode: brokered" in prompt
+    assert "approval_required: true" in prompt
+    assert "dry_run_supported: true" in prompt
+    assert "outputs:" in prompt
+    assert "allowed:" in prompt
+    assert "required_for: [create_ticket]" in prompt
+    assert 'api_token: "secretRef: API_TOKEN_REF"' in prompt
+    assert "Manual rollback prose only" in prompt
 
 
 def test_run_workflow_draft_stages_runs_default_stages_in_order() -> None:

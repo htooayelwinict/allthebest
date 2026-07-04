@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Mapping
 
-from appv24.workflows.live_validation import assistant_text_from_messages
+from appv24.workflows.live_validation import assistant_text_from_messages, latest_assistant_stop_reason
+from appv24.workflows.prompt_examples import render_repair_micro_examples
 from appv24.workflows.repair_directives import render_workflow_repair_directives
 from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text
 
@@ -44,14 +45,39 @@ def compact_workflow_validation_issues(result: WorkflowDraftValidationResult, *,
         return "No validation issues."
 
     visible_count = max(0, max_issues)
-    lines = [
-        f"- {issue.code} {issue.location}: {issue.message}"
-        for issue in result.validation.issues[:visible_count]
-    ]
+    lines = [_render_compact_issue(issue) for issue in result.validation.issues[:visible_count]]
     remaining = len(result.validation.issues) - visible_count
     if remaining > 0:
         lines.append(f"- {remaining} more issue(s) were omitted from this repair prompt")
     return "\n".join(lines)
+
+
+def compact_workflow_failed_edit_scope(result: WorkflowDraftValidationResult, *, max_issues: int = 8) -> str:
+    if result.ok:
+        return "No failed edit scope."
+
+    visible_count = max(0, max_issues)
+    lines = [_render_failed_edit_scope(issue) for issue in result.validation.issues[:visible_count]]
+    remaining = len(result.validation.issues) - visible_count
+    if remaining > 0:
+        lines.append(f"- {remaining} more failed path(s) were omitted from this repair prompt")
+    return "\n".join(lines)
+
+
+def _render_compact_issue(issue: object) -> str:
+    line = f"- {issue.code} {issue.location}: {issue.message}"
+    expected = getattr(issue, "expected", None)
+    if expected:
+        line = f"{line} Expected: {expected}."
+    repair_hint = getattr(issue, "repair_hint", None)
+    if repair_hint:
+        line = f"{line} Repair: {repair_hint}"
+    return line
+
+
+def _render_failed_edit_scope(issue: object) -> str:
+    location = getattr(issue, "location", getattr(issue, "file", "<unknown>"))
+    return f"- {location} [{getattr(issue, 'code', 'validation_issue')}]"
 
 
 def compact_workflow_repair_hints(result: WorkflowDraftValidationResult, *, max_hints: int = 8) -> str:
@@ -105,7 +131,9 @@ def build_workflow_repair_prompt(
     repeated_validation_count: int = 1,
 ) -> str:
     issues = compact_workflow_validation_issues(result, max_issues=max_issues)
+    failed_scope = compact_workflow_failed_edit_scope(result, max_issues=max_issues)
     directives = render_workflow_repair_directives(result, max_directives=max_issues)
+    micro_examples = render_repair_micro_examples(result)
     attempt_line = f"Repair attempt {attempt}."
     if max_attempts is not None:
         attempt_line = f"Repair attempt {attempt}/{max_attempts}."
@@ -125,7 +153,8 @@ def build_workflow_repair_prompt(
             [
                 "Loop progress warning:",
                 "The latest repair returned the same validation failure pattern as an earlier attempt.",
-                "Make a different structural repair instead of restating the same package shape.",
+                "Do not redesign the package.",
+                "If your last repair changed unrelated sections, revert those unrelated changes, then fix only the failed paths below.",
                 "",
             ]
         )
@@ -137,8 +166,26 @@ def build_workflow_repair_prompt(
                 "",
             ]
         )
+    if micro_examples:
+        lines.extend(
+            [
+                micro_examples,
+                "",
+            ]
+        )
     lines.extend(
         [
+            "Scoped repair contract:",
+            "- Use the latest workflow package draft already in this conversation as the source document.",
+            "- Edit only the files and paths listed under Failed edit scope and Repair directives.",
+            "- Preserve every unrelated file, field, id, name, step order, approval, fixture, and rollback line exactly.",
+            "- Do not redesign, rename, reorder, add new workflow concepts, or rewrite passing sections.",
+            "- If a listed issue requires a missing artifact or field, add the smallest valid artifact or field.",
+            "- Return the full package as a patched copy for validation; do not output a diff.",
+            "",
+            "Failed edit scope:",
+            failed_scope,
+            "",
             "Return a complete corrected workflow package draft with these labeled fenced sections:",
             "- workflow.yaml",
             "- connectors.yaml",
@@ -150,7 +197,7 @@ def build_workflow_repair_prompt(
             "Rules:",
             "- Preserve the user's intended workflow.",
             "- Fix schema and semantic validation issues only.",
-            "- Output the full package again, not a patch.",
+            "- Return the full package because the validator consumes complete drafts; treat it as a minimal patched copy.",
             "- Do not call tools, APIs, shell commands, or write files.",
             "- For cron-like workflows, use workflow.yaml trigger type schedule.",
             "- workflow.yaml trigger type must be schedule, webhook, manual, or event.",
@@ -162,7 +209,10 @@ def build_workflow_repair_prompt(
             "- Brokered mutating actions require approval_required: true, dry_run_supported: true, idempotency.key_fields, and outputs.allowed.",
             "- Design-only connector actions must not be referenced by workflow steps.",
             "- Draft-only outputs must be represented as local artifact drafts, not connector send/publish calls.",
+            "- Notification, email, chat, message, or report drafts stored locally are local artifact drafts with side_effect: false.",
             "- Secret references may use secretRef: NAME, checksum fields, redacted: true, or non-secret references; never raw secret values.",
+            '- Prefer normal input keys with scalar secret reference values, for example github_token: "secretRef: GITHUB_TOKEN_REF".',
+            "- Do not invent keys like github_token_secretRef: GITHUB_TOKEN.",
             "- secretRef values must be reference names only, never raw tokens, passwords, keys, or credentials.",
             "- Mutating workflow.yaml steps must use approval: <approval-id>; never use approval_gate:.",
             "- permissions.yaml permissions[].actions must be connector action id strings.",
@@ -225,6 +275,7 @@ def repair_workflow_draft_messages(
     *,
     config: WorkflowDraftRepairConfig = WorkflowDraftRepairConfig(),
     on_attempt: Callable[[int, int | None, WorkflowDraftValidationResult], None] | None = None,
+    should_abort: Callable[[], bool] | None = None,
 ) -> WorkflowDraftRepairResult:
     validation = validate_latest_workflow_draft(messages)
     max_attempts = None if config.max_attempts is None else max(0, config.max_attempts)
@@ -238,7 +289,11 @@ def repair_workflow_draft_messages(
             attempts=0,
             repaired=False,
             exhausted=False,
+            stop_reason="aborted" if _repair_aborted(messages, should_abort) else None,
         )
+
+    if _repair_aborted(messages, should_abort):
+        return _aborted_repair_result(validation, attempts=0)
 
     if validation.ok:
         return WorkflowDraftRepairResult(
@@ -254,6 +309,13 @@ def repair_workflow_draft_messages(
         _validation_fingerprint(validation): 1
     }
     while max_attempts is None or attempts < max_attempts:
+        if _repair_aborted(messages, should_abort):
+            return _aborted_repair_result(
+                validation,
+                attempts=attempts,
+                feedback_prompts=tuple(feedback_prompts),
+            )
+
         if deadline is not None and monotonic() >= deadline:
             return WorkflowDraftRepairResult(
                 validation=validation,
@@ -279,6 +341,12 @@ def repair_workflow_draft_messages(
         run_turn(prompt)
         attempts = attempt
         next_validation = validate_latest_workflow_draft(messages)
+        if _repair_aborted(messages, should_abort):
+            return _aborted_repair_result(
+                next_validation or validation,
+                attempts=attempts,
+                feedback_prompts=tuple(feedback_prompts),
+            )
         if next_validation is None:
             return WorkflowDraftRepairResult(
                 validation=validation,
@@ -316,4 +384,26 @@ def repair_workflow_draft_messages(
         exhausted=not validation.ok,
         feedback_prompts=tuple(feedback_prompts),
         stop_reason="max_attempts" if not validation.ok else None,
+    )
+
+
+def _repair_aborted(messages: list[object], should_abort: Callable[[], bool] | None) -> bool:
+    if latest_assistant_stop_reason(messages) == "aborted":
+        return True
+    return bool(should_abort and should_abort())
+
+
+def _aborted_repair_result(
+    validation: WorkflowDraftValidationResult | None,
+    *,
+    attempts: int,
+    feedback_prompts: tuple[str, ...] = (),
+) -> WorkflowDraftRepairResult:
+    return WorkflowDraftRepairResult(
+        validation=validation,
+        attempts=attempts,
+        repaired=False,
+        exhausted=not bool(validation and validation.ok),
+        feedback_prompts=feedback_prompts,
+        stop_reason="aborted",
     )

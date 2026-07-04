@@ -14,6 +14,14 @@ def should_validate_workflow_drafts(profile_id: str | None) -> bool:
     return normalized == WORKFLOW_DESIGNER_PROFILE_ID
 
 
+def latest_assistant_stop_reason(messages: list[object]) -> str | None:
+    for message in reversed(messages):
+        if _field(message, "role") == "assistant":
+            stop_reason = _field(message, "stop_reason")
+            return stop_reason if isinstance(stop_reason, str) else None
+    return None
+
+
 def assistant_text_from_messages(messages: list[object]) -> str:
     for message in reversed(messages):
         if _field(message, "role") != "assistant":

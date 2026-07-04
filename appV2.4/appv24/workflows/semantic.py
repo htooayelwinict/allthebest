@@ -12,6 +12,21 @@ from appv24.workflows.loader import PackageDocuments
 MUTATING_SIDE_EFFECTS = {"create", "update", "delete", "send", "publish", "provision"}
 BROKERED_IDEMPOTENCY_CLASSES = {"create", "send", "publish", "provision"}
 SIDE_EFFECT_CONTRACT_FIELDS = ("side_effect_class", "execution_mode", "approval_required", "dry_run_supported")
+DESIGN_CONTRACT_FIELDS = (
+    "intent",
+    "trigger",
+    "inputs",
+    "outputs",
+    "assumptions",
+    "side_effects",
+    "approval_gates",
+    "failure_modes",
+    "rollback",
+)
+DESIGN_CONTRACT_EXPECTED = (
+    "design with intent, trigger, inputs, outputs, assumptions, side_effects, "
+    "approval_gates, failure_modes, and rollback"
+)
 SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|secret|password|credential)", re.IGNORECASE)
 SECRET_VALUE_RE = re.compile(r"(sk-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+)")
 SECRET_REF_KEY_RE = re.compile(r"^secret[_-]?ref$", re.IGNORECASE)
@@ -39,6 +54,7 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     action_entries = _connector_action_entries(documents.connectors)
     steps_by_action = _steps_by_action_use(steps)
 
+    issues.extend(_design_contract_issues(workflow))
     issues.extend(_duplicate_step_issues(step_ids))
     issues.extend(_entrypoint_issues(workflow, known_steps))
     issues.extend(_transition_issues(steps, known_steps))
@@ -69,6 +85,55 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
                 )
 
     return list(sorted_issues(issues))
+
+
+def _design_contract_issues(workflow: Mapping[str, Any]) -> list[WorkflowIssue]:
+    design = workflow.get("design")
+    if not isinstance(design, dict):
+        return [
+            WorkflowIssue(
+                "missing_design_contract",
+                "workflow.yaml",
+                ("design",),
+                "workflow.yaml requires design metadata",
+                expected=DESIGN_CONTRACT_EXPECTED,
+                repair_hint=(
+                    "Add workflow.yaml design metadata with intent, trigger, inputs, outputs, "
+                    "assumptions, side_effects, approval_gates, failure_modes, and rollback."
+                ),
+            )
+        ]
+
+    issues: list[WorkflowIssue] = []
+    list_fields = {
+        "inputs",
+        "outputs",
+        "assumptions",
+        "side_effects",
+        "approval_gates",
+        "failure_modes",
+        "rollback",
+    }
+    for field in DESIGN_CONTRACT_FIELDS:
+        value = design.get(field)
+        if field in list_fields:
+            valid = isinstance(value, list) and all(isinstance(item, str) and item.strip() for item in value)
+            expected = "non-empty list of strings"
+        else:
+            valid = isinstance(value, str) and bool(value.strip())
+            expected = "non-empty string"
+        if not valid:
+            issues.append(
+                WorkflowIssue(
+                    "missing_design_contract",
+                    "workflow.yaml",
+                    ("design", field),
+                    f"workflow.yaml design requires {field}",
+                    expected=expected,
+                    repair_hint=f"Set workflow.yaml design.{field} to a {expected}.",
+                )
+            )
+    return issues
 
 
 def _steps(workflow: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -432,6 +497,15 @@ def _raw_secret_issues(filename: str, value: Any, path: tuple[str | int, ...] = 
     issues: list[WorkflowIssue] = []
     if isinstance(value, dict):
         if set(value) == {"secretRef"} and isinstance(value.get("secretRef"), str):
+            if SECRET_VALUE_RE.search(value["secretRef"]):
+                return [
+                    WorkflowIssue(
+                        "raw_secret",
+                        filename,
+                        (*path, "secretRef"),
+                        "secretRef must reference a secret name, not contain a raw secret-looking value",
+                    )
+                ]
             return []
         for key, child in value.items():
             child_path = (*path, str(key))
@@ -444,9 +518,11 @@ def _raw_secret_issues(filename: str, value: Any, path: tuple[str | int, ...] = 
                             child_path,
                             "secretRef must reference a secret name, not contain a raw secret-looking value",
                         )
-                    )
+                )
                 continue
             if SECRET_KEY_RE.search(str(key)) and isinstance(child, str) and not _is_url_metadata(key, child):
+                if _is_secret_ref_scalar(child):
+                    continue
                 issues.append(
                     WorkflowIssue(
                         "raw_secret",
@@ -462,6 +538,14 @@ def _raw_secret_issues(filename: str, value: Any, path: tuple[str | int, ...] = 
     elif isinstance(value, str) and SECRET_VALUE_RE.search(value):
         issues.append(WorkflowIssue("raw_secret", filename, path, "inline secret-looking value is not allowed"))
     return issues
+
+
+def _is_secret_ref_scalar(value: str) -> bool:
+    prefix, separator, reference = value.partition(":")
+    if separator != ":" or prefix.strip().lower() != "secretref":
+        return False
+    reference = reference.strip()
+    return bool(reference) and SECRET_VALUE_RE.search(reference) is None
 
 
 def _rollback_safety_issues(text: str) -> list[WorkflowIssue]:

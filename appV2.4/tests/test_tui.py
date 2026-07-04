@@ -147,6 +147,24 @@ def _valid_workflow_draft_text() -> str:
 version: appv24.workflow/v1
 name: dependency-security-review
 description: Review dependency alerts and draft a human-approved issue.
+design:
+  intent: Review dependency alerts and draft a human-approved issue.
+  trigger: Weekly scheduled dependency alert review.
+  inputs:
+    - GitHub dependency alert list.
+  outputs:
+    - Human-reviewed issue draft.
+  assumptions:
+    - GitHub credentials are provided by secret reference at execution time.
+  side_effects:
+    - Create a GitHub issue only after explicit human approval.
+  approval_gates:
+    - human-review
+  failure_modes:
+    - GitHub API unavailable.
+    - Human rejects the issue draft.
+  rollback:
+    - Close the drafted issue manually if it was created.
 triggers:
   - id: weekly
     type: schedule
@@ -1165,7 +1183,7 @@ def test_interactive_mode_workflow_save_writes_last_valid_draft(tmp_path) -> Non
     def input_fn(prompt: str) -> str:
         command = next(inputs)
         if command.startswith("/workflow-save"):
-            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None)
+            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None, timeout=5.0)
         return command
 
     mode = InteractiveMode(app, input_fn=input_fn)
@@ -1208,7 +1226,7 @@ def test_interactive_mode_workflow_save_uses_repaired_valid_draft(tmp_path) -> N
     def input_fn(prompt: str) -> str:
         command = next(inputs)
         if command.startswith("/workflow-save"):
-            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None)
+            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None, timeout=5.0)
         return command
 
     mode = InteractiveMode(app, input_fn=input_fn)
@@ -1245,6 +1263,34 @@ def test_interactive_mode_reports_failed_validation_after_repair_exhaustion(tmp_
     assert "Workflow draft repair: attempt 2/" not in rendered
     assert "Workflow draft validation: failed" in rendered
     assert mode._last_workflow_validation is None
+
+
+def test_interactive_mode_skips_workflow_repair_after_aborted_partial_draft(tmp_path) -> None:
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    app.session.agent.state.messages.append(
+        AssistantMessage(
+            content=[TextContent(text=_invalid_workflow_draft_text())],
+            api="test",
+            provider="test",
+            model="test",
+            usage=empty_usage(),
+            stop_reason="aborted",
+            error_message="Operation aborted",
+            timestamp=now_ms(),
+        )
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    prompts: list[str] = []
+    mode._run_workflow_repair_turn = prompts.append
+
+    result = mode._repair_workflow_draft_if_needed()
+
+    assert result is not None
+    assert result.stop_reason == "aborted"
+    assert result.attempts == 0
+    assert prompts == []
 
 
 def test_interactive_mode_workflow_save_requires_valid_draft(tmp_path) -> None:
@@ -1284,7 +1330,7 @@ def test_interactive_mode_workflow_save_rejects_parent_traversal(tmp_path) -> No
     def input_fn(prompt: str) -> str:
         command = next(inputs)
         if command.startswith("/workflow-save"):
-            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None)
+            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None, timeout=5.0)
         return command
 
     mode = InteractiveMode(app, input_fn=input_fn)
@@ -1338,7 +1384,7 @@ def test_interactive_mode_workflow_save_rejects_while_turn_active(tmp_path) -> N
         if index == 0:
             return "design workflow"
         if index == 1:
-            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None)
+            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None, timeout=5.0)
             return "revise workflow"
         if index == 2:
             assert second_stream_started.wait(timeout=2)
