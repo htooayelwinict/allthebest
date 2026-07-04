@@ -2176,6 +2176,109 @@ def test_cli_plain_workflow_save_rejects_parent_traversal(monkeypatch, tmp_path,
     assert not (tmp_path.parent / outside_name).exists()
 
 
+def test_cli_plain_workflow_save_rejects_absolute_path(monkeypatch, tmp_path, capsys) -> None:
+    assistant_text = _valid_workflow_draft_text()
+    absolute_target = tmp_path.parent / "appv24-absolute-save"
+    prompts = iter(["design workflow", f"/workflow-save {absolute_target}", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            self.messages.append(_assistant_message(assistant_text))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow draft save failed:" in captured.out
+    assert "relative" in captured.out.lower() or "inside" in captured.out.lower()
+    assert not absolute_target.exists()
+
+
+def test_cli_plain_workflow_save_refuses_overwrite(monkeypatch, tmp_path, capsys) -> None:
+    assistant_text = _valid_workflow_draft_text()
+    existing = tmp_path / "saved-workflow"
+    existing.mkdir()
+    prompts = iter(["design workflow", "/workflow-save saved-workflow", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            self.messages.append(_assistant_message(assistant_text))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow draft save failed:" in captured.out
+    assert "already exists" in captured.out
+    assert not existing.joinpath("workflow.yaml").exists()
+
+
+def test_cli_plain_workflow_save_fails_outside_workflow_profile(monkeypatch, tmp_path, capsys) -> None:
+    prompts = iter(["/workflow-save saved-workflow", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError("save command should not call the model")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "coding", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow draft save failed: active profile is not workflow-designer-lite" in captured.out
+    assert not (tmp_path / "saved-workflow").exists()
+
+
 def test_cli_coding_prompt_does_not_print_workflow_validation_report(monkeypatch, tmp_path, capsys) -> None:
     created: dict[str, object] = {}
     assistant_text = _valid_workflow_draft_text()

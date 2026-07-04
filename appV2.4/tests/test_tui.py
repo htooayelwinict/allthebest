@@ -1344,6 +1344,53 @@ def test_interactive_mode_workflow_save_rejects_parent_traversal(tmp_path) -> No
     assert not (tmp_path.parent / outside_name).exists()
 
 
+def test_interactive_mode_workflow_save_refuses_overwrite(tmp_path) -> None:
+    existing = tmp_path / "saved-workflow"
+    existing.mkdir()
+    register_api_provider(
+        create_faux_provider(lambda model, context: text_response_events(model, _valid_workflow_draft_text()))
+    )
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["design workflow", "/workflow-save saved-workflow", "/exit"])
+    holder: dict[str, InteractiveMode] = {}
+
+    def input_fn(prompt: str) -> str:
+        command = next(inputs)
+        if command.startswith("/workflow-save"):
+            assert _wait_until(lambda: holder["mode"]._last_workflow_validation is not None, timeout=5.0)
+        return command
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    holder["mode"] = mode
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow draft save failed:" in rendered
+    assert "already exists" in rendered
+    assert not existing.joinpath("workflow.yaml").exists()
+
+
+def test_interactive_mode_workflow_save_fails_outside_workflow_profile(tmp_path) -> None:
+    register_api_provider(
+        create_faux_provider(lambda model, context: text_response_events(model, "model should not run"))
+    )
+    terminal = FakeTerminal(columns=140, rows=40)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "coding"
+    inputs = iter(["/workflow-save saved-workflow", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(140)))
+    assert "Workflow draft save failed: active profile is not workflow-designer-lite" in rendered
+    assert "model should not run" not in rendered
+    assert not (tmp_path / "saved-workflow").exists()
+
+
 def test_interactive_mode_workflow_save_rejects_while_turn_active(tmp_path) -> None:
     second_stream_started = threading.Event()
     second_stream_released = threading.Event()
