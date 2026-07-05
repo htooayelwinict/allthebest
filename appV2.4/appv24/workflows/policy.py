@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from appv24.workflows.catalog import is_builtin_workflow_action
 from appv24.workflows.ir import WorkflowIR, WorkflowStep
 
 
@@ -40,6 +41,15 @@ def evaluate_policy(ir: WorkflowIR) -> PolicyReport:
     issues: list[PolicyIssue] = []
     for step in ir.steps.values():
         action = _action_for_step(ir, step)
+        if action is not None and action.execution_mode == "brokered" and not is_builtin_workflow_action(action.dotted):
+            issues.append(
+                PolicyIssue(
+                    "policy_unknown_catalog_action",
+                    f"{action.dotted} is not in the built-in workflow capability catalog",
+                    step_id=step.step_id,
+                    source=action.dotted,
+                )
+            )
         if not _is_mutating_step(step, action_side_effect=bool(action and action.side_effect)):
             continue
         if not step.approval:

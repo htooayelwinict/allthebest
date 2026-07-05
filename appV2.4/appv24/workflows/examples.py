@@ -19,7 +19,118 @@ class GoldenWorkflowExample:
 
 
 def golden_workflow_examples() -> dict[str, GoldenWorkflowExample]:
-    return {"telegram_support_ticket": _telegram_support_ticket()}
+    return {
+        "gmail_draft_reply": _gmail_draft_reply(),
+        "telegram_support_ticket": _telegram_support_ticket(),
+    }
+
+
+def _gmail_draft_reply() -> GoldenWorkflowExample:
+    workflow = {
+        "version": "appv24.workflow/v1",
+        "name": "gmail_draft_reply",
+        "description": "Create a human-approved Gmail draft reply for a customer escalation.",
+        "design": {
+            "intent": "Create a Gmail draft reply for a customer escalation without sending it.",
+            "trigger": "Manual review of a customer escalation email.",
+            "inputs": ["source_message_id", "recipient", "case_summary"],
+            "outputs": ["draft_id"],
+            "assumptions": ["Gmail credentials are resolved from secret references outside the package"],
+            "side_effects": ["create Gmail draft"],
+            "approval_gates": ["human_approval"],
+            "failure_modes": ["message no longer exists", "draft creation unavailable", "human rejects draft"],
+            "rollback": ["delete the local draft artifact in dry-run"],
+        },
+        "triggers": [{"id": "manual_review", "type": "manual"}],
+        "entrypoint": "decide_reply_needed",
+        "steps": [
+            {
+                "id": "decide_reply_needed",
+                "type": "decision",
+                "branches": {
+                    "needs_reply": "create_gmail_draft",
+                    "no_reply": "done",
+                },
+            },
+            {
+                "id": "create_gmail_draft",
+                "type": "action",
+                "uses": "gmail.create_draft",
+                "side_effect_class": "create",
+                "approval": "human_approval",
+                "next": "done",
+            },
+            {"id": "done", "type": "terminal"},
+        ],
+    }
+    connectors = {
+        "version": "appv24.connectors/v1",
+        "connectors": [
+            {
+                "id": "gmail",
+                "adapter": "direct_api",
+                "description": "Gmail API draft adapter.",
+                "actions": [
+                    {
+                        "id": "create_draft",
+                        "operationId": "gmail_create_draft",
+                        "execution_mode": "brokered",
+                        "side_effect": True,
+                        "side_effect_class": "create",
+                        "approval_required": True,
+                        "dry_run_supported": True,
+                        "required_scopes": ["gmail.compose"],
+                        "outputs": {"allowed": ["draft_id"]},
+                        "idempotency": {"key_fields": ["source_message_id", "recipient"]},
+                    }
+                ],
+            }
+        ],
+    }
+    permissions = {
+        "version": "appv24.permissions/v1",
+        "permissions": [
+            {"connector": "gmail", "scopes": ["gmail.compose"], "actions": ["create_draft"]},
+        ],
+        "approvals": [
+            {
+                "id": "human_approval",
+                "mode": "explicit",
+                "required_for": ["create_gmail_draft"],
+            }
+        ],
+    }
+    fixtures = {
+        "happy_path.yaml": {
+            "decision": {"decide_reply_needed": "needs_reply"},
+        },
+        "rejection_path.yaml": {
+            "decision": {"decide_reply_needed": "no_reply"},
+        },
+    }
+    broker = LocalWorkflowBroker(
+        {
+            "gmail.create_draft": lambda request: BrokerResult(
+                status="simulated",
+                provider_id="golden_fixture",
+                outputs={"draft_id": "draft-1"},
+            ),
+        }
+    )
+    documents = PackageDocuments(
+        root=Path("golden/gmail_draft_reply"),
+        workflow=workflow,
+        connectors=connectors,
+        permissions=permissions,
+        dry_run_fixtures=fixtures,
+        rollback_text="# Rollback\n\nDelete the local draft artifact in dry-run.\n",
+    )
+    return GoldenWorkflowExample(
+        name="gmail_draft_reply",
+        documents=documents,
+        fixtures=fixtures,
+        broker=broker,
+    )
 
 
 def _telegram_support_ticket() -> GoldenWorkflowExample:

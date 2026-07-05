@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from appv24.workflows.compiler import compile_workflow_documents, compile_workflow_package
-from appv24.workflows.ir import StepKind
+from appv24.workflows.ir import ConnectorRef, StepKind, WorkflowStep
 from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.policy import evaluate_policy
 
@@ -187,3 +187,42 @@ def test_policy_blocks_output_wildcard(tmp_path: Path) -> None:
 
     assert not report.ok
     assert "policy_wildcard_outputs" in policy_codes(report)
+
+
+def test_policy_blocks_unknown_catalog_action_even_when_read_only(tmp_path: Path) -> None:
+    ir = compile_valid_ir(tmp_path)
+    connector = ir.connectors["github"]
+    base_action = connector.actions["list_dependabot_alerts"]
+    actions = dict(connector.actions)
+    actions["invented_read"] = replace(
+        base_action,
+        action_id="invented_read",
+        side_effect=False,
+        side_effect_class=None,
+        execution_mode="brokered",
+        approval_required=False,
+        dry_run_supported=True,
+        idempotency_key_fields=(),
+        allowed_outputs=("items",),
+        required_scopes=(),
+    )
+    connectors = dict(ir.connectors)
+    connectors["github"] = replace(connector, actions=actions)
+    steps = dict(ir.steps)
+    steps["invented_read"] = WorkflowStep(
+        step_id="invented_read",
+        kind=StepKind.ACTION,
+        uses=ConnectorRef("github", "invented_read"),
+        side_effect_class=None,
+        approval=None,
+        next_step="inspect_alerts",
+        branches={},
+        outbound=("inspect_alerts",),
+        raw={"id": "invented_read", "uses": "github.invented_read", "next": "inspect_alerts"},
+    )
+    ir = replace(ir, entrypoint="invented_read", steps=steps, connectors=connectors)
+
+    report = evaluate_policy(ir)
+
+    assert not report.ok
+    assert "policy_unknown_catalog_action" in policy_codes(report)

@@ -20,6 +20,14 @@ from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import SimulationLedger, StepTrace
 from appv24.workflows.policy import PolicyIssue, PolicyReport, PolicySeverity, evaluate_policy
 from appv24.workflows.reports import WorkflowEnablementReport, build_enablement_report
+from appv24.workflows.run_preview import (
+    WorkflowApprovalPreview,
+    WorkflowBrokeredActionPreview,
+    WorkflowLedgerPreviewEvent,
+    WorkflowRunPreview,
+    build_run_preview,
+    build_run_preview_from_path,
+)
 from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.staging import (
     WorkflowDraftStageConfig,
@@ -45,10 +53,14 @@ __all__ = (
     "WorkflowDraftValidationResult",
     "WorkflowCompileResult",
     "WorkflowEnablementReport",
+    "WorkflowApprovalPreview",
+    "WorkflowBrokeredActionPreview",
     "BrokerRequest",
     "BrokerResult",
     "GoldenWorkflowExample",
     "LocalWorkflowBroker",
+    "WorkflowLedgerPreviewEvent",
+    "WorkflowRunPreview",
     "WorkflowIR",
     "WorkflowIssue",
     "WorkflowPackageError",
@@ -61,6 +73,8 @@ __all__ = (
     "StepTrace",
     "build_workflow_stage_prompt",
     "build_enablement_report",
+    "build_run_preview",
+    "build_run_preview_from_path",
     "compile_workflow_documents",
     "compile_workflow_package",
     "evaluate_policy",

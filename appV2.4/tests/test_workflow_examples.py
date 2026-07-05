@@ -17,6 +17,26 @@ def test_golden_examples_compile_and_pass_policy() -> None:
         assert evaluate_policy(result.ir).ok, example.name
 
 
+def test_gmail_draft_qa_example_runs_happy_path() -> None:
+    example = golden_workflow_examples()["gmail_draft_reply"]
+    result = compile_workflow_documents(example.documents)
+    assert result.ok
+    assert result.ir is not None
+
+    ledger = simulate_workflow_fixture(
+        result.ir,
+        "happy_path.yaml",
+        example.fixtures["happy_path.yaml"],
+        broker=example.broker,
+    )
+
+    assert ledger.status == "passed"
+    assert ledger.terminal_step == "done"
+    assert ledger.simulated_side_effects == ("create_gmail_draft",)
+    assert ledger.trace[1].connector_action == "gmail.create_draft"
+    assert ledger.trace[1].simulated_outputs == {"draft_id": "draft-1"}
+
+
 def test_telegram_support_ticket_happy_path_is_deterministic() -> None:
     example = golden_workflow_examples()["telegram_support_ticket"]
     result = compile_workflow_documents(example.documents)
