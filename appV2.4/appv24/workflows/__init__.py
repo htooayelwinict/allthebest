@@ -30,6 +30,7 @@ from appv24.workflows.run_preview import (
     build_run_preview,
     build_run_preview_from_path,
 )
+from appv24.workflows.run_store import WorkflowRunStore
 from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.staging import (
     WorkflowDraftStageConfig,
@@ -61,6 +62,7 @@ __all__ = (
     "WorkflowBrokeredActionPreview",
     "WorkflowRunReport",
     "WorkflowRunRequest",
+    "WorkflowRunStore",
     "BrokerRequest",
     "BrokerResult",
     "GoldenWorkflowExample",
