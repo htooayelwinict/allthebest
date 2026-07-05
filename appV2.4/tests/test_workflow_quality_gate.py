@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 
+from appv24.workflows.broker import LocalWorkflowBroker
 from appv24.workflows.examples import golden_workflow_examples
 from appv24.workflows.quality_gate import check_workflow_quality_documents
 
@@ -123,3 +124,41 @@ def test_quality_gate_allows_cycle_with_terminal_escape() -> None:
     result = check_workflow_quality_documents(documents)
 
     assert "cycle_without_terminal_escape" not in {issue.code for issue in result.issues}
+
+
+def test_quality_gate_passes_valid_golden_example_fixtures() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+
+    result = check_workflow_quality_documents(example.documents, broker=example.broker)
+
+    assert result.ok
+    reports = {report.fixture_name: report for report in result.fixture_reports}
+    assert set(reports) == {"happy_path.yaml", "rejection_path.yaml"}
+    assert reports["happy_path.yaml"].terminal_step == "done"
+    assert reports["rejection_path.yaml"].terminal_step == "rejected"
+
+
+def test_quality_gate_reports_fixture_branch_mismatch() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+    documents = replace(
+        example.documents,
+        dry_run_fixtures={
+            "happy_path.yaml": {},
+            "rejection_path.yaml": example.fixtures["rejection_path.yaml"],
+        },
+    )
+
+    result = check_workflow_quality_documents(documents, broker=example.broker)
+
+    assert not result.ok
+    assert "fixture_branch_unmatched" in {issue.code for issue in result.issues}
+    assert result.fixture_reports[0].fixture_name == "happy_path.yaml"
+
+
+def test_quality_gate_reports_broker_blocked_fixture() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+
+    result = check_workflow_quality_documents(example.documents, broker=LocalWorkflowBroker({}))
+
+    assert not result.ok
+    assert "fixture_broker_blocked" in {issue.code for issue in result.issues}

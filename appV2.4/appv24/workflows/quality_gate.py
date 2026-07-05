@@ -11,6 +11,7 @@ from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.ir import StepKind, WorkflowIR
 from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.policy import evaluate_policy
+from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.validator import validate_workflow_documents
 
 WorkflowQualitySeverity = Literal["error", "warning"]
@@ -70,7 +71,6 @@ def check_workflow_quality_documents(
     *,
     broker: LocalWorkflowBroker | None = None,
 ) -> WorkflowQualityResult:
-    del broker
     validation = validate_workflow_documents(documents)
     if not validation.ok:
         return WorkflowQualityResult(
@@ -128,12 +128,24 @@ def check_workflow_quality_documents(
             ),
         )
 
+    graph_issues = tuple(_check_graph(compiled.ir))
+    if graph_issues:
+        return WorkflowQualityResult(
+            root=documents.root,
+            validation_ok=True,
+            compile_ok=True,
+            policy_ok=True,
+            issues=graph_issues,
+        )
+
+    fixture_issues, fixture_reports = _check_fixtures(compiled.ir, documents, broker)
     return WorkflowQualityResult(
         root=documents.root,
         validation_ok=True,
         compile_ok=True,
         policy_ok=True,
-        issues=tuple(_check_graph(compiled.ir)),
+        issues=tuple(fixture_issues),
+        fixture_reports=tuple(fixture_reports),
     )
 
 
@@ -283,3 +295,49 @@ def _reachable_cycles(ir: WorkflowIR, reachable: set[str]) -> list[set[str]]:
 def _has_self_loop(ir: WorkflowIR, step_id: str) -> bool:
     step = ir.steps.get(step_id)
     return bool(step and step_id in step.outbound)
+
+
+def _check_fixtures(
+    ir: WorkflowIR,
+    documents: PackageDocuments,
+    broker: LocalWorkflowBroker | None,
+) -> tuple[list[WorkflowQualityIssue], list[WorkflowFixtureQualityReport]]:
+    issues: list[WorkflowQualityIssue] = []
+    reports: list[WorkflowFixtureQualityReport] = []
+    for fixture_name, fixture in sorted(documents.dry_run_fixtures.items()):
+        ledger = simulate_workflow_fixture(ir, fixture_name, fixture, broker=broker)
+        reports.append(
+            WorkflowFixtureQualityReport(
+                fixture_name=fixture_name,
+                status=ledger.status,
+                terminal_step=ledger.terminal_step,
+                trace_steps=tuple(step.step_id for step in ledger.trace),
+                issues=ledger.issues,
+            )
+        )
+        if ledger.terminal_step is not None:
+            continue
+        issues.append(_fixture_issue(fixture_name, ledger.issues))
+    return issues, reports
+
+
+def _fixture_issue(fixture_name: str, ledger_issues: tuple[str, ...]) -> WorkflowQualityIssue:
+    code = _fixture_issue_code(ledger_issues)
+    rendered_issues = "; ".join(ledger_issues) if ledger_issues else "simulation stopped without terminal"
+    return WorkflowQualityIssue(
+        code=code,
+        file=f"dry_run_fixtures/{fixture_name}",
+        path=(),
+        message=f"fixture {fixture_name} did not reach a terminal step: {rendered_issues}",
+        repair_hint="Fix workflow transitions, fixture decisions, or broker dry-run support so this fixture reaches terminal.",
+    )
+
+
+def _fixture_issue_code(ledger_issues: tuple[str, ...]) -> str:
+    if any("no branch matched" in issue for issue in ledger_issues):
+        return "fixture_branch_unmatched"
+    if any("transition budget exceeded" in issue for issue in ledger_issues):
+        return "fixture_transition_budget_exceeded"
+    if any("broker" in issue or "dry-run provider" in issue for issue in ledger_issues):
+        return "fixture_broker_blocked"
+    return "fixture_no_terminal"
