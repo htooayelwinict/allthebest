@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import replace
+
 from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.examples import golden_workflow_examples
 from appv24.workflows.errors import WorkflowPackageError
@@ -66,6 +69,24 @@ def test_enablement_report_summarizes_golden_example() -> None:
     assert report.terminal_step == "done"
     assert report.simulated_side_effects == ("create_ticket_draft", "notify_admin")
     assert report.issues == ()
+
+
+def test_enablement_report_blocks_quality_gate_failure() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+    workflow = deepcopy(example.documents.workflow)
+    workflow["steps"][1].pop("next")
+    documents = replace(example.documents, workflow=workflow)
+
+    report = build_enablement_report(
+        documents,
+        "happy_path.yaml",
+        documents.dry_run_fixtures["happy_path.yaml"],
+        broker=example.broker,
+    )
+
+    assert report.simulation_status == "blocked"
+    assert report.terminal_step is None
+    assert any("no next transition" in issue for issue in report.issues)
 
 
 def test_fixture_helpers_return_sorted_names_and_required_fixture() -> None:
