@@ -6,6 +6,7 @@ from collections import Counter
 import re
 from typing import Any, Iterable, Mapping
 
+from appv24.workflows.catalog import built_in_capability_catalog
 from appv24.workflows.errors import WorkflowIssue, sorted_issues
 from appv24.workflows.loader import PackageDocuments
 
@@ -59,6 +60,7 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     issues.extend(_entrypoint_issues(workflow, known_steps))
     issues.extend(_transition_issues(steps, known_steps))
     issues.extend(_connector_reference_issues(steps, connectors, permission_actions, permission_scopes))
+    issues.extend(_catalog_issues(action_entries))
     issues.extend(_side_effect_contract_issues(action_entries, steps_by_action, documents.permissions))
 
     mutating_steps = _mutating_steps(steps, connectors)
@@ -207,6 +209,64 @@ def _connector_action_entries(connectors_document: Mapping[str, Any]) -> dict[tu
             if isinstance(action, dict) and isinstance(action.get("id"), str):
                 entries[(connector_id, str(action["id"]))] = action
     return entries
+
+
+def _catalog_issues(actions: Mapping[tuple[str, str], Mapping[str, Any]]) -> list[WorkflowIssue]:
+    catalog = built_in_capability_catalog()
+    issues: list[WorkflowIssue] = []
+    for (connector_id, action_id), action in sorted(actions.items()):
+        action_ref = f"{connector_id}.{action_id}"
+        if action.get("custom") is True and action.get("execution_mode") == "design_only":
+            continue
+        capability = catalog.get(action_ref)
+        if capability is None:
+            if action.get("side_effect") is True or action.get("execution_mode") in {"brokered", "manual"}:
+                issues.append(
+                    WorkflowIssue(
+                        "unknown_catalog_action",
+                        "connectors.yaml",
+                        (),
+                        f"{action_ref} is not in the built-in capability catalog",
+                        repair_hint=(
+                            "Use a built-in catalog action or mark custom design-only actions "
+                            "with custom: true and execution_mode: design_only."
+                        ),
+                    )
+                )
+            continue
+
+        if not capability.side_effect:
+            if action.get("side_effect") != capability.side_effect:
+                issues.append(
+                    WorkflowIssue(
+                        "catalog_metadata_mismatch",
+                        "connectors.yaml",
+                        (),
+                        f"{action_ref} side_effect must match catalog value {capability.side_effect!r}",
+                    )
+                )
+            continue
+
+        expected = {
+            "side_effect": capability.side_effect,
+            "side_effect_class": capability.side_effect_class,
+            "execution_mode": capability.execution_mode,
+            "approval_required": capability.approval_required,
+            "dry_run_supported": capability.dry_run_supported,
+        }
+        for field, expected_value in expected.items():
+            if field not in action and action.get("side_effect") is not True:
+                continue
+            if action.get(field) != expected_value:
+                issues.append(
+                    WorkflowIssue(
+                        "catalog_metadata_mismatch",
+                        "connectors.yaml",
+                        (),
+                        f"{action_ref} {field} must match catalog value {expected_value!r}",
+                    )
+                )
+    return issues
 
 
 def _steps_by_action_use(steps: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], list[Mapping[str, Any]]]:

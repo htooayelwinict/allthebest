@@ -109,6 +109,32 @@ def _directive_for_issue(
             ),
         )
 
+    if code == "catalog_metadata_mismatch":
+        action_ref = _first_action_ref(message)
+        target = f" for {action_ref}" if action_ref else ""
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction=f"Update only the mismatched catalog metadata fields{target}.",
+            rules=(
+                message,
+                "Keep the workflow step ids, branch names, fixtures, approvals, and rollback text unchanged.",
+                "Use the built-in catalog action metadata exactly; do not invent alternate side-effect classes or execution modes.",
+            ),
+        )
+
+    if code == "unknown_catalog_action":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Replace this action with a built-in catalog action or make it design-only.",
+            rules=(
+                message,
+                "Use a built-in catalog action when the workflow step calls the action.",
+                "For future-only custom actions, set custom: true and execution_mode: design_only, and remove workflow step calls to it.",
+            ),
+        )
+
     if code == "design_only_action_used":
         action_ref = _design_only_action_ref(message)
         action_text = f" to design-only action {action_ref}" if action_ref else " to the design-only action"

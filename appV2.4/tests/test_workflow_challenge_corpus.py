@@ -20,6 +20,8 @@ def test_workflow_repair_challenge_inventory_has_required_cases() -> None:
         "unreachable_terminal",
         "bad_approval_metadata",
         "design_only_action_used",
+        "unknown_catalog_action",
+        "catalog_metadata_mismatch",
     } <= names
 
 

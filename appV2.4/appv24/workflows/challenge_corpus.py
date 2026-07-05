@@ -128,6 +128,32 @@ def _design_only_action_used() -> WorkflowRepairChallenge:
     )
 
 
+def _unknown_catalog_action() -> WorkflowRepairChallenge:
+    base = _base()
+    workflow = deepcopy(base.workflow)
+    connectors = deepcopy(base.connectors)
+    connectors["connectors"][0]["actions"][0]["id"] = "unknown_external_send"
+    workflow["steps"][1]["uses"] = "ticket.unknown_external_send"
+    return WorkflowRepairChallenge(
+        name="unknown_catalog_action",
+        documents=replace(base, workflow=workflow, connectors=connectors),
+        expected_issue_codes=("unknown_catalog_action",),
+        expected_repaired_paths=("connectors.yaml:connectors.0.actions.0.id",),
+    )
+
+
+def _catalog_metadata_mismatch() -> WorkflowRepairChallenge:
+    base = _base()
+    connectors = deepcopy(base.connectors)
+    connectors["connectors"][0]["actions"][0]["side_effect_class"] = "delete"
+    return WorkflowRepairChallenge(
+        name="catalog_metadata_mismatch",
+        documents=replace(base, connectors=connectors),
+        expected_issue_codes=("catalog_metadata_mismatch",),
+        expected_repaired_paths=("connectors.yaml:connectors.0.actions.0.side_effect_class",),
+    )
+
+
 _BUILDERS: dict[str, ChallengeBuilder] = {
     "missing_next": _missing_next,
     "missing_branches": _missing_branches,
@@ -137,4 +163,6 @@ _BUILDERS: dict[str, ChallengeBuilder] = {
     "unreachable_terminal": _unreachable_terminal,
     "bad_approval_metadata": _bad_approval_metadata,
     "design_only_action_used": _design_only_action_used,
+    "unknown_catalog_action": _unknown_catalog_action,
+    "catalog_metadata_mismatch": _catalog_metadata_mismatch,
 }
