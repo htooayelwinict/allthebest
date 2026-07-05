@@ -20,6 +20,7 @@ from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import fixture_names, require_fixture
 from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import SimulationLedger, StepTrace
+from appv24.workflows.local_artifacts import LocalArtifactProviders
 from appv24.workflows.policy import PolicyIssue, PolicyReport, PolicySeverity, evaluate_policy
 from appv24.workflows.reports import WorkflowEnablementReport, build_enablement_report
 from appv24.workflows.run_preview import (
@@ -68,6 +69,7 @@ __all__ = (
     "BrokerResult",
     "GoldenWorkflowExample",
     "LocalWorkflowBroker",
+    "LocalArtifactProviders",
     "WorkflowLedgerPreviewEvent",
     "WorkflowRunPreview",
     "WorkflowIR",
