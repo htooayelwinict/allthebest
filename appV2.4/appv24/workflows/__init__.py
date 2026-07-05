@@ -29,6 +29,7 @@ from appv24.workflows.iac_export import WorkflowDeploymentIntent, export_deploym
 from appv24.workflows.idempotency import IdempotencyStore
 from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import SimulationLedger, StepTrace
+from appv24.workflows.live_broker import LiveWorkflowBroker, LiveWorkflowTransport
 from appv24.workflows.local_artifacts import LocalArtifactProviders
 from appv24.workflows.policy import PolicyIssue, PolicyReport, PolicySeverity, evaluate_policy
 from appv24.workflows.reports import WorkflowEnablementReport, build_enablement_report
@@ -84,6 +85,8 @@ __all__ = (
     "CredentialScope",
     "GoldenWorkflowExample",
     "IdempotencyStore",
+    "LiveWorkflowBroker",
+    "LiveWorkflowTransport",
     "LocalWorkflowBroker",
     "LocalArtifactProviders",
     "WorkflowLedgerPreviewEvent",
