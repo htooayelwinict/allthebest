@@ -25,6 +25,7 @@ from appv24.workflows.execution import WorkflowRunEvent, WorkflowRunMode, Workfl
 from appv24.workflows.examples import GoldenWorkflowExample, golden_workflow_examples
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import fixture_names, require_fixture
+from appv24.workflows.iac_export import WorkflowDeploymentIntent, export_deployment_intent
 from appv24.workflows.idempotency import IdempotencyStore
 from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import SimulationLedger, StepTrace
@@ -67,6 +68,7 @@ __all__ = (
     "WorkflowDraftStageResult",
     "WorkflowDraftValidationResult",
     "WorkflowCompileResult",
+    "WorkflowDeploymentIntent",
     "WorkflowEnablementReport",
     "WorkflowRunEvent",
     "WorkflowRunMode",
@@ -105,6 +107,7 @@ __all__ = (
     "compile_workflow_package",
     "create_approval_request",
     "evaluate_policy",
+    "export_deployment_intent",
     "extract_workflow_draft_blocks",
     "fingerprint_package_documents",
     "fixture_names",
