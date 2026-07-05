@@ -145,6 +145,10 @@ def _invalid_draft() -> str:
     return _valid_draft().replace("side_effect: true", "side_effect: send")
 
 
+def _missing_next_transition_draft() -> str:
+    return _valid_draft().replace("    next: done\n  - id: done", "  - id: done", 1)
+
+
 def _missing_workflow_step_side_effect_class_draft() -> str:
     return _valid_draft().replace(
         "    side_effect_class: create\n    approval: human-review",
@@ -420,6 +424,17 @@ def test_build_workflow_repair_prompt_includes_schema_drift_directives() -> None
     assert "Replace sync, async, automatic, or auto with brokered for real external mutations" in prompt
 
 
+def test_build_workflow_repair_prompt_includes_missing_transition_directive() -> None:
+    result = validate_workflow_draft_text(_missing_next_transition_draft())
+    assert result.ok
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=None, max_issues=8)
+
+    assert "quality gate" in prompt
+    assert "missing_transition workflow.yaml:steps.draft_issue.next" in prompt
+    assert "Add the smallest correct next transition" in prompt
+
+
 def test_repair_noops_when_latest_draft_is_valid() -> None:
     messages = [_assistant_message(_valid_draft())]
 
@@ -433,6 +448,28 @@ def test_repair_noops_when_latest_draft_is_valid() -> None:
     assert result.attempts == 0
     assert not result.repaired
     assert not result.exhausted
+
+
+def test_repair_runs_when_latest_draft_fails_quality_gate() -> None:
+    messages = [_assistant_message(_missing_next_transition_draft())]
+    prompts: list[str] = []
+
+    def run_turn(prompt: str) -> None:
+        prompts.append(prompt)
+        messages.append(_assistant_message(_valid_draft()))
+
+    result = repair_workflow_draft_messages(
+        messages,
+        run_turn,
+        config=WorkflowDraftRepairConfig(max_attempts=2, max_issues=8),
+    )
+
+    assert result.validation is not None
+    assert result.validation.ok
+    assert result.attempts == 1
+    assert result.repaired
+    assert not result.exhausted
+    assert "missing_transition" in prompts[0]
 
 
 def test_repair_runs_once_when_second_draft_is_valid() -> None:

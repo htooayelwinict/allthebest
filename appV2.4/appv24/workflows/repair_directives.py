@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import re
 from typing import Any, Mapping
 
+from appv24.workflows.quality_gate import check_workflow_quality_documents
 from appv24.workflows.validator import WorkflowDraftValidationResult
 
 MUTATING_SIDE_EFFECT_CLASSES = {"create", "update", "delete", "send", "publish", "provision"}
@@ -41,11 +42,8 @@ def build_workflow_repair_directives(
     *,
     max_directives: int = 8,
 ) -> tuple[WorkflowRepairDirective, ...]:
-    if result.ok:
-        return ()
-
     directives: list[WorkflowRepairDirective] = []
-    for issue in result.validation.issues:
+    for issue in _repair_issues(result):
         if len(directives) >= max(0, max_directives):
             break
         directive = _directive_for_issue(result, issue)
@@ -180,7 +178,82 @@ def _directive_for_issue(
             rules=(message,),
         )
 
+    if code == "missing_transition":
+        step_id = _issue_step_id(issue)
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add the smallest correct next transition for this non-terminal step.",
+            rules=(
+                message,
+                "Preserve existing step ids and step order.",
+                "Prefer connecting to the next existing step in the intended flow.",
+                "Do not redesign unrelated connector actions, permissions, fixtures, or rollback notes.",
+                f"Target step: {step_id}." if step_id else "Use the failed path exactly as reported.",
+            ),
+        )
+
+    if code == "missing_branch_transition":
+        step_id = _issue_step_id(issue)
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add explicit branches for this decision step.",
+            rules=(
+                message,
+                "Use existing downstream step ids.",
+                "Do not rename the decision step.",
+                f"Target decision step: {step_id}." if step_id else "Use the failed path exactly as reported.",
+            ),
+        )
+
+    if code == "terminal_unreachable":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Connect the entrypoint path to an existing terminal step.",
+            rules=(
+                message,
+                "Prefer adding the smallest missing next transition or branch.",
+                "Do not invent a new terminal if an existing terminal step can be reached.",
+            ),
+        )
+
+    if code == "cycle_without_terminal_escape":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add an exit branch or transition from the cycle to an existing terminal path.",
+            rules=(
+                message,
+                "Keep the loop only if it is part of the user intent.",
+                "Do not remove approval gates or side-effect metadata.",
+            ),
+        )
+
+    if code in {"fixture_no_terminal", "fixture_branch_unmatched", "fixture_transition_budget_exceeded", "fixture_broker_blocked"}:
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Fix the workflow transitions, fixture decisions, or dry-run support so this fixture reaches terminal.",
+            rules=(
+                message,
+                "For decision failures, add the smallest valid dry_run_fixtures decision mapping.",
+                "For transition failures, fix workflow.yaml next or branches.",
+                "For broker failures, preserve the connector action and make sure the dry-run path uses declared allowed outputs.",
+            ),
+        )
+
     return None
+
+
+def _repair_issues(result: WorkflowDraftValidationResult) -> tuple[object, ...]:
+    if not result.ok:
+        return result.validation.issues
+    if result.documents is None:
+        return ()
+    quality = check_workflow_quality_documents(result.documents)
+    return () if quality.ok else quality.issues
 
 
 def _schema_repair_directive(
