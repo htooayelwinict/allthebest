@@ -123,6 +123,57 @@ def _directive_for_issue(
             ),
         )
 
+    if code == "missing_decision_branches":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Replace the decision step runtime syntax with branches.",
+            rules=(
+                message,
+                "Decision steps must use workflow.yaml steps[].branches with branch-name to target-step mappings.",
+                "Do not use condition plus next/reject_next, true_next, false_next, or else_next as runtime branch syntax.",
+                "Preserve the same outcome targets by moving them under branches.",
+            ),
+        )
+
+    if code == "unsupported_decision_syntax":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Remove the unsupported decision transition key.",
+            rules=(
+                message,
+                "Represent every decision outcome under workflow.yaml steps[].branches.",
+                "After adding branches, make every dry-run fixture select a branch under decision:.",
+            ),
+        )
+
+    if code in {"missing_fixture_decision", "unknown_fixture_decision_branch"}:
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add or correct the dry-run fixture decision map entry.",
+            rules=(
+                message,
+                "Use one of the branch names from workflow.yaml steps[].branches.",
+                "Place the value under decision: <step-id>: <branch-name> in the affected fixture.",
+                "Do not rely on expected_path; it is documentation only and does not drive simulation.",
+            ),
+        )
+
+    if code == "missing_step_transition":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add a runtime transition for this non-terminal workflow step.",
+            rules=(
+                message,
+                "Non-terminal action/manual steps must use next: <target-step>.",
+                "If the step should finish the workflow, add or target a terminal step such as next: done.",
+                "Do not use branches on non-decision steps; branches are only runtime transitions for decision steps.",
+            ),
+        )
+
     if code == "missing_approval":
         step_id = _issue_step_id(issue)
         target = f" {step_id}" if step_id else ""

@@ -200,6 +200,28 @@ def _schema_drift_draft() -> str:
     )
 
 
+def _unsupported_decision_syntax_draft() -> str:
+    return _valid_draft().replace(
+        "entrypoint: inspect_alerts\nsteps:\n  - id: inspect_alerts\n    uses: github.list_dependabot_alerts\n    next: draft_issue",
+        "entrypoint: decide_path\nsteps:\n  - id: decide_path\n    type: decision\n    condition: inspect_alerts.has_alerts == true\n    next: draft_issue\n    reject_next: done",
+    )
+
+
+def _missing_fixture_decision_draft() -> str:
+    return _valid_draft().replace(
+        "entrypoint: inspect_alerts\nsteps:\n  - id: inspect_alerts\n    uses: github.list_dependabot_alerts\n    next: draft_issue",
+        "entrypoint: decide_path\nsteps:\n  - id: decide_path\n    type: decision\n    branches:\n      approved: draft_issue\n      rejected: done",
+    )
+
+
+def _missing_step_transition_draft() -> str:
+    return _valid_draft().replace(
+        "    side_effect_class: create\n    approval: human-review\n    next: done",
+        "    side_effect_class: create\n    approval: human-review",
+        1,
+    )
+
+
 def test_validate_latest_workflow_draft_returns_none_without_assistant_text() -> None:
     assert validate_latest_workflow_draft([]) is None
 
@@ -378,7 +400,43 @@ def test_build_workflow_repair_prompt_includes_targeted_micro_examples() -> None
     assert "Approval wiring shape:" in prompt
     assert "approval: approve_create_ticket" in prompt
     assert "required_for: [create_ticket]" in prompt
+
+
+def test_build_workflow_repair_prompt_includes_decision_branch_directive() -> None:
+    result = validate_workflow_draft_text(_unsupported_decision_syntax_draft())
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=8)
+
+    assert "missing_decision_branches workflow.yaml:steps.decide_path.branches" in prompt
+    assert "unsupported_decision_syntax workflow.yaml:steps.decide_path.reject_next" in prompt
+    assert "Replace the decision step runtime syntax with branches" in prompt
+    assert "Remove the unsupported decision transition key" in prompt
+    assert "Decision branch and fixture shape:" in prompt
+    assert "branches:" in prompt
+    assert "decision:" in prompt
+
+
+def test_build_workflow_repair_prompt_includes_fixture_decision_directive() -> None:
+    result = validate_workflow_draft_text(_missing_fixture_decision_draft())
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=8)
+
+    assert "missing_fixture_decision dry_run_fixtures/happy_path.yaml:decision.decide_path" in prompt
+    assert "missing_fixture_decision dry_run_fixtures/rejection_path.yaml:decision.decide_path" in prompt
+    assert "Add or correct the dry-run fixture decision map entry" in prompt
+    assert "Use one of the branch names from workflow.yaml steps[].branches" in prompt
     assert "Stripe dispute" not in prompt
+
+
+def test_build_workflow_repair_prompt_includes_missing_transition_directive() -> None:
+    result = validate_workflow_draft_text(_missing_step_transition_draft())
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=8)
+
+    assert "missing_step_transition workflow.yaml:steps.draft_issue.next" in prompt
+    assert "Add a runtime transition for this non-terminal workflow step" in prompt
+    assert "Non-terminal action/manual steps must use next: <target-step>" in prompt
+    assert "next: done" in prompt
 
 
 def test_build_workflow_repair_prompt_includes_design_contract_micro_example() -> None:

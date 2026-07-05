@@ -540,6 +540,136 @@ def test_semantic_validation_rejects_unknown_transition_target(tmp_path: Path) -
     )
 
 
+def test_semantic_validation_requires_runtime_transition_for_action_steps(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    draft_issue = next(step for step in workflow["steps"] if step["id"] == "draft_issue")
+    draft_issue.pop("next")
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="missing_step_transition",
+        location="workflow.yaml:steps.draft_issue.next",
+        message_substring="non-terminal step draft_issue requires a runtime transition",
+    )
+
+
+def test_semantic_validation_requires_decision_branches(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow["entrypoint"] = "authorize_decision"
+    workflow["steps"] = [
+        {
+            "id": "authorize_decision",
+            "type": "decision",
+            "condition": "check_allowlist.authorized == true",
+            "next": "draft_issue",
+            "reject_next": "done",
+        },
+        *workflow["steps"][1:],
+    ]
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="missing_decision_branches",
+        location="workflow.yaml:steps.authorize_decision.branches",
+        message_substring="decision step authorize_decision requires branches",
+    )
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="unsupported_decision_syntax",
+        location="workflow.yaml:steps.authorize_decision.reject_next",
+        message_substring="reject_next is not a runtime transition",
+    )
+
+
+def test_semantic_validation_requires_fixture_decision_values_for_branching_steps(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow["entrypoint"] = "decide_path"
+    workflow["steps"] = [
+        {
+            "id": "decide_path",
+            "type": "decision",
+            "branches": {
+                "approved": "draft_issue",
+                "rejected": "done",
+            },
+        },
+        *workflow["steps"][1:],
+    ]
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="dry_run_fixtures/happy_path.yaml",
+        code="missing_fixture_decision",
+        location="dry_run_fixtures/happy_path.yaml:decision.decide_path",
+        message_substring="fixture must select a branch for decision step decide_path",
+    )
+    assert_has_issue(
+        issues,
+        file="dry_run_fixtures/rejection_path.yaml",
+        code="missing_fixture_decision",
+        location="dry_run_fixtures/rejection_path.yaml:decision.decide_path",
+        message_substring="fixture must select a branch for decision step decide_path",
+    )
+
+
+def test_semantic_validation_rejects_unknown_fixture_decision_branch(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    workflow["entrypoint"] = "decide_path"
+    workflow["steps"] = [
+        {
+            "id": "decide_path",
+            "type": "decision",
+            "branches": {
+                "approved": "draft_issue",
+                "rejected": "done",
+            },
+        },
+        *workflow["steps"][1:],
+    ]
+    fixtures = {name: deepcopy(fixture) for name, fixture in documents.dry_run_fixtures.items()}
+    fixtures["happy_path.yaml"]["decision"] = {"decide_path": "maybe"}
+    fixtures["rejection_path.yaml"]["decision"] = {"decide_path": "rejected"}
+
+    branched_documents = PackageDocuments(
+        root=documents.root,
+        workflow=workflow,
+        connectors=documents.connectors,
+        permissions=documents.permissions,
+        dry_run_fixtures=fixtures,
+        rollback_text=documents.rollback_text,
+    )
+    issues = validate_semantics(branched_documents)
+
+    assert_has_issue(
+        issues,
+        file="dry_run_fixtures/happy_path.yaml",
+        code="unknown_fixture_decision_branch",
+        location="dry_run_fixtures/happy_path.yaml:decision.decide_path",
+        message_substring="maybe is not a branch for decision step decide_path",
+    )
+
+
 def test_semantic_validation_rejects_unknown_connector_action(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)

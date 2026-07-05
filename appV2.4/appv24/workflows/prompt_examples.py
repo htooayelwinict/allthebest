@@ -36,6 +36,9 @@ steps:
     uses: ticketing.create_ticket
     side_effect_class: create
     approval: approve_create_ticket
+    next: done
+  - id: done
+    type: terminal
 ```
 
 ```yaml
@@ -60,6 +63,21 @@ approvals:
     required_for: [create_ticket]
 inputs:
   api_token: "secretRef: API_TOKEN_REF"
+```
+
+Decision branch and fixture shape:
+```yaml
+steps:
+  - id: decide_path
+    type: decision
+    branches:
+      approved: create_ticket
+      rejected: done
+```
+
+```yaml
+decision:
+  decide_path: approved
 ```
 """.strip()
 
@@ -114,6 +132,9 @@ steps:
     uses: ticketing.create_ticket
     side_effect_class: create
     approval: approve_create_ticket
+    next: done
+  - id: done
+    type: terminal
 approvals:
   - id: approve_create_ticket
     mode: explicit
@@ -138,6 +159,39 @@ Rollback prose shape:
 
 Manual rollback prose only. Review the created record, annotate the audit trail,
 and close or correct the record according to operator policy.
+```
+""".strip()
+
+
+DECISION_BRANCH_MICRO_EXAMPLE = """
+Decision branch and fixture shape:
+```yaml
+steps:
+  - id: decide_path
+    type: decision
+    branches:
+      approved: create_ticket
+      rejected: done
+```
+
+```yaml
+decision:
+  decide_path: approved
+```
+""".strip()
+
+
+RUNTIME_TRANSITION_MICRO_EXAMPLE = """
+Runtime transition shape:
+```yaml
+steps:
+  - id: create_ticket
+    uses: ticketing.create_ticket
+    side_effect_class: create
+    approval: approve_create_ticket
+    next: done
+  - id: done
+    type: terminal
 ```
 """.strip()
 
@@ -174,6 +228,15 @@ def render_repair_micro_examples(result: WorkflowDraftValidationResult) -> str:
             add("secret", SECRET_REFERENCE_MICRO_EXAMPLE)
         if code in {"unsafe_rollback", "missing_rollback"}:
             add("rollback", ROLLBACK_MICRO_EXAMPLE)
+        if code in {
+            "missing_decision_branches",
+            "unsupported_decision_syntax",
+            "missing_fixture_decision",
+            "unknown_fixture_decision_branch",
+        }:
+            add("decision", DECISION_BRANCH_MICRO_EXAMPLE)
+        if code == "missing_step_transition":
+            add("runtime-transition", RUNTIME_TRANSITION_MICRO_EXAMPLE)
 
     if not examples:
         return ""

@@ -37,6 +37,10 @@ def test_prompt_fragments_render_schema_reminders() -> None:
     assert "connectors.yaml connectors must be a list" in fragment
     assert "permissions.yaml permissions must be a list" in fragment
     assert "permissions.yaml approvals[].required_for must be workflow step id strings" in fragment
+    assert "Non-terminal action and manual approval steps must set next:" in fragment
+    assert "Decision steps must use branches:" in fragment
+    assert "Do not use condition plus next/reject_next as runtime branch syntax" in fragment
+    assert "dry_run_fixtures/*.yaml must include decision:" in fragment
 
 
 def test_build_intent_stage_prompt_is_passive_and_preserves_request() -> None:
@@ -111,12 +115,16 @@ def test_build_package_stage_prompt_includes_schema_micro_examples() -> None:
     assert "- id: create_ticket" in prompt
     assert "side_effect_class: create" in prompt
     assert "approval: approve_create_ticket" in prompt
+    assert "next: done" in prompt
     assert "execution_mode: brokered" in prompt
     assert "approval_required: true" in prompt
     assert "dry_run_supported: true" in prompt
     assert "outputs:" in prompt
     assert "allowed:" in prompt
     assert "required_for: [create_ticket]" in prompt
+    assert "branches:" in prompt
+    assert "decision:" in prompt
+    assert "decide_path: approved" in prompt
     assert 'api_token: "secretRef: API_TOKEN_REF"' in prompt
     assert "Manual rollback prose only" in prompt
 

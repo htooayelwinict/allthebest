@@ -42,9 +42,7 @@ _SIGNAL_GLASS_FOOTER_COLOR = "38;2;120;255;208"
 
 
 def _tui_color_enabled() -> bool:
-    if os.environ.get("NO_COLOR"):
-        return False
-    return os.environ.get("TERM", "").lower() != "dumb"
+    return not bool(os.environ.get("NO_COLOR"))
 
 
 def _ansi_color(text: str, color: str | None) -> str:

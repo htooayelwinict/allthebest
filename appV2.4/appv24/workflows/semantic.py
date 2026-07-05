@@ -38,6 +38,7 @@ ROLLBACK_SECRET_PLACEHOLDER_RE = re.compile(r"\$\{\s*secrets\.[^}]+\}", re.IGNOR
 ROLLBACK_AUTH_HEADER_RE = re.compile(r"\bauthorization\s*:\s*bearer\b", re.IGNORECASE)
 ROLLBACK_HTTP_DELETE_RE = re.compile(r"\b(?:-X\s+)?DELETE\b")
 URL_METADATA_KEYS = {"token_url"}
+UNSUPPORTED_DECISION_TRANSITION_KEYS = ("reject_next", "true_next", "false_next", "else_next")
 
 
 def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
@@ -57,6 +58,8 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     issues.extend(_design_contract_issues(workflow))
     issues.extend(_duplicate_step_issues(step_ids))
     issues.extend(_entrypoint_issues(workflow, known_steps))
+    issues.extend(_decision_contract_issues(steps, documents.dry_run_fixtures))
+    issues.extend(_runtime_transition_issues(steps))
     issues.extend(_transition_issues(steps, known_steps))
     issues.extend(_connector_reference_issues(steps, connectors, permission_actions, permission_scopes))
     issues.extend(_side_effect_contract_issues(action_entries, steps_by_action, documents.permissions))
@@ -179,6 +182,113 @@ def _transition_issues(steps: Iterable[Mapping[str, Any]], known_steps: set[str]
                     )
                 )
     return issues
+
+
+def _runtime_transition_issues(steps: Iterable[Mapping[str, Any]]) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    for index, step in enumerate(steps):
+        step_id = str(step.get("id", f"steps[{index}]"))
+        step_type = step.get("type")
+        if step_type in {"terminal", "decision"}:
+            continue
+        next_step = step.get("next")
+        if not isinstance(next_step, str) or not next_step.strip():
+            issues.append(
+                WorkflowIssue(
+                    "missing_step_transition",
+                    "workflow.yaml",
+                    ("steps", step_id, "next"),
+                    f"non-terminal step {step_id} requires a runtime transition",
+                    expected="next: <target-step>",
+                    repair_hint=(
+                        "Add next: <target-step> to action/manual steps, or set type: terminal "
+                        "if the step intentionally ends the workflow."
+                    ),
+                )
+            )
+    return issues
+
+
+def _decision_contract_issues(
+    steps: Iterable[Mapping[str, Any]],
+    dry_run_fixtures: Mapping[str, Mapping[str, Any]],
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    branching_decisions: dict[str, set[str]] = {}
+    for step in steps:
+        if step.get("type") != "decision":
+            continue
+        step_id = str(step.get("id", "unknown"))
+        branches = _decision_branches(step)
+        if not branches:
+            issues.append(
+                WorkflowIssue(
+                    "missing_decision_branches",
+                    "workflow.yaml",
+                    ("steps", step_id, "branches"),
+                    f"decision step {step_id} requires branches for runtime simulation",
+                    expected="branches mapping such as branches: {approved: next_step, rejected: rejected_step}",
+                    repair_hint="Replace condition/next/reject_next decision syntax with workflow.yaml steps[].branches.",
+                )
+            )
+        if len(branches) > 1:
+            branching_decisions[step_id] = set(branches)
+        for key in UNSUPPORTED_DECISION_TRANSITION_KEYS:
+            if key in step:
+                issues.append(
+                    WorkflowIssue(
+                        "unsupported_decision_syntax",
+                        "workflow.yaml",
+                        ("steps", step_id, key),
+                        f"{key} is not a runtime transition; decision step {step_id} must use branches",
+                        expected="branches mapping",
+                        repair_hint="Move every decision outcome into workflow.yaml steps[].branches and fixture decision maps.",
+                    )
+                )
+
+    if not branching_decisions:
+        return issues
+
+    for fixture_name, fixture in sorted(dry_run_fixtures.items()):
+        decisions = fixture.get("decision") if isinstance(fixture, Mapping) else None
+        decision_map = decisions if isinstance(decisions, Mapping) else {}
+        for step_id, branch_names in sorted(branching_decisions.items()):
+            selected = decision_map.get(step_id)
+            if selected is None:
+                issues.append(
+                    WorkflowIssue(
+                        "missing_fixture_decision",
+                        f"dry_run_fixtures/{fixture_name}",
+                        ("decision", step_id),
+                        f"fixture must select a branch for decision step {step_id}",
+                        expected=f"one of: {', '.join(sorted(branch_names))}",
+                        repair_hint=f"Add decision: {{{step_id}: <branch-name>}} to dry_run_fixtures/{fixture_name}.",
+                    )
+                )
+            elif not isinstance(selected, str) or selected not in branch_names:
+                rendered = str(selected)
+                issues.append(
+                    WorkflowIssue(
+                        "unknown_fixture_decision_branch",
+                        f"dry_run_fixtures/{fixture_name}",
+                        ("decision", step_id),
+                        f"{rendered} is not a branch for decision step {step_id}",
+                        expected=f"one of: {', '.join(sorted(branch_names))}",
+                        repair_hint=f"Set decision.{step_id} to one of the workflow.yaml branches.",
+                    )
+                )
+    return issues
+
+
+def _decision_branches(step: Mapping[str, Any]) -> dict[str, str]:
+    branches = step.get("branches")
+    if not isinstance(branches, Mapping):
+        return {}
+    return {
+        branch: target
+        for branch, target in branches.items()
+        if isinstance(branch, str) and branch and isinstance(target, str) and target
+    }
 
 
 def _connector_actions(connectors_document: Mapping[str, Any]) -> dict[str, dict[str, Mapping[str, Any]]]:
