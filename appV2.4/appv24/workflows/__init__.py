@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from appv24.workflows.approval_gate import ApprovalDecision, ApprovalRequest, create_approval_request, resume_approval
+from appv24.workflows.credential_refs import (
+    CredentialPreflightReport,
+    CredentialRefResolver,
+    CredentialScope,
+    preflight_credential_refs,
+)
 from appv24.workflows.drafts import (
     WorkflowDraftBlocks,
     WorkflowDraftExtraction,
@@ -70,6 +76,9 @@ __all__ = (
     "WorkflowRunStore",
     "BrokerRequest",
     "BrokerResult",
+    "CredentialPreflightReport",
+    "CredentialRefResolver",
+    "CredentialScope",
     "GoldenWorkflowExample",
     "LocalWorkflowBroker",
     "LocalArtifactProviders",
@@ -98,6 +107,7 @@ __all__ = (
     "fingerprint_package_documents",
     "fixture_names",
     "parse_workflow_draft_blocks",
+    "preflight_credential_refs",
     "golden_workflow_examples",
     "require_fixture",
     "resume_approval",
