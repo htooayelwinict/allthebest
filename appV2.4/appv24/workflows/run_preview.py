@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from appv24.workflows.broker import LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents
+from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import require_fixture
 from appv24.workflows.ir import ActionCapability, WorkflowIR
 from appv24.workflows.ledger import StepTrace
@@ -53,6 +54,7 @@ class WorkflowLedgerPreviewEvent:
 class WorkflowRunPreview:
     workflow_name: str
     fixture_name: str
+    package_fingerprint: str
     status: str
     validation_ok: bool
     compile_ok: bool
@@ -84,11 +86,13 @@ def build_run_preview(
     broker: LocalWorkflowBroker | None = None,
 ) -> WorkflowRunPreview:
     workflow_name = str(documents.workflow.get("name", ""))
+    package_fingerprint = fingerprint_package_documents(documents)
     validation = validate_workflow_documents(documents)
     if not validation.ok:
         return _blocked_preview(
             workflow_name,
             fixture_name,
+            package_fingerprint=package_fingerprint,
             validation_ok=False,
             compile_ok=False,
             policy_ok=False,
@@ -100,6 +104,7 @@ def build_run_preview(
         return _blocked_preview(
             workflow_name,
             fixture_name,
+            package_fingerprint=package_fingerprint,
             validation_ok=True,
             compile_ok=False,
             policy_ok=False,
@@ -111,6 +116,7 @@ def build_run_preview(
         return _blocked_preview(
             workflow_name,
             fixture_name,
+            package_fingerprint=package_fingerprint,
             validation_ok=True,
             compile_ok=True,
             policy_ok=False,
@@ -123,6 +129,7 @@ def build_run_preview(
     return WorkflowRunPreview(
         workflow_name=workflow_name,
         fixture_name=fixture_name,
+        package_fingerprint=package_fingerprint,
         status=ledger.status,
         validation_ok=True,
         compile_ok=True,
@@ -140,6 +147,7 @@ def _blocked_preview(
     workflow_name: str,
     fixture_name: str,
     *,
+    package_fingerprint: str,
     validation_ok: bool,
     compile_ok: bool,
     policy_ok: bool,
@@ -148,6 +156,7 @@ def _blocked_preview(
     return WorkflowRunPreview(
         workflow_name=workflow_name,
         fixture_name=fixture_name,
+        package_fingerprint=package_fingerprint,
         status="blocked",
         validation_ok=validation_ok,
         compile_ok=compile_ok,

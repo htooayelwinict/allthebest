@@ -14,7 +14,9 @@ from appv24.workflows.drafts import (
 from appv24.workflows.errors import WorkflowIssue, WorkflowPackageError, WorkflowValidationResult
 from appv24.workflows.broker import BrokerRequest, BrokerResult, LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents, compile_workflow_package
+from appv24.workflows.execution import WorkflowRunEvent, WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
 from appv24.workflows.examples import GoldenWorkflowExample, golden_workflow_examples
+from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import fixture_names, require_fixture
 from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import SimulationLedger, StepTrace
@@ -53,8 +55,12 @@ __all__ = (
     "WorkflowDraftValidationResult",
     "WorkflowCompileResult",
     "WorkflowEnablementReport",
+    "WorkflowRunEvent",
+    "WorkflowRunMode",
     "WorkflowApprovalPreview",
     "WorkflowBrokeredActionPreview",
+    "WorkflowRunReport",
+    "WorkflowRunRequest",
     "BrokerRequest",
     "BrokerResult",
     "GoldenWorkflowExample",
@@ -79,6 +85,7 @@ __all__ = (
     "compile_workflow_package",
     "evaluate_policy",
     "extract_workflow_draft_blocks",
+    "fingerprint_package_documents",
     "fixture_names",
     "parse_workflow_draft_blocks",
     "golden_workflow_examples",

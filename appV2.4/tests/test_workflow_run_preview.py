@@ -95,3 +95,11 @@ def test_run_preview_loads_saved_package_from_path(tmp_path: Path) -> None:
         "github.list_dependabot_alerts",
         "github.create_issue",
     ]
+
+
+def test_run_preview_includes_package_fingerprint() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+
+    preview = build_run_preview(example.documents, "happy_path.yaml", broker=example.broker)
+
+    assert preview.package_fingerprint.startswith("sha256:")
