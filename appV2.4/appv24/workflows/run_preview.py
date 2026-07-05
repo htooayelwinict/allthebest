@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from appv24.workflows.broker import LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents
+from appv24.workflows.execution import WorkflowRunEvent
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import require_fixture
 from appv24.workflows.ir import ActionCapability, WorkflowIR
 from appv24.workflows.ledger import StepTrace
 from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.policy import evaluate_policy
+from appv24.workflows.run_store import WorkflowRunStore
 from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.validator import validate_workflow_documents
 
@@ -141,6 +144,42 @@ def build_run_preview(
         ledger_preview=_ledger_preview(brokered_actions),
         issues=ledger.issues,
     )
+
+
+def persist_run_preview(store: WorkflowRunStore, preview: WorkflowRunPreview) -> str:
+    run_id = store.create_run(preview.workflow_name, preview.package_fingerprint)
+    preview_path = store.root / run_id / "preview.json"
+    preview_path.write_text(json.dumps(preview.to_dict(), sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    store.append_event(
+        WorkflowRunEvent(
+            event_id="event-1",
+            run_id=run_id,
+            event_type="preview_created",
+            package_fingerprint=preview.package_fingerprint,
+            step_id=None,
+            connector_action=None,
+            status=preview.status,
+            details={"fixture_name": preview.fixture_name},
+        )
+    )
+    for index, event in enumerate(preview.ledger_preview, start=2):
+        store.append_event(
+            WorkflowRunEvent(
+                event_id=f"event-{index}",
+                run_id=run_id,
+                event_type=event.event_type,
+                package_fingerprint=preview.package_fingerprint,
+                step_id=event.step_id,
+                connector_action=event.connector_action,
+                status=event.status,
+                details={
+                    "approval_id": event.approval_id,
+                    "broker_provider_id": event.broker_provider_id,
+                    "outputs": dict(event.outputs or {}),
+                },
+            )
+        )
+    return run_id
 
 
 def _blocked_preview(

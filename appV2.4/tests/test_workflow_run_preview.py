@@ -4,7 +4,8 @@ from pathlib import Path
 
 from appv24.workflows.broker import BrokerResult, LocalWorkflowBroker
 from appv24.workflows.examples import golden_workflow_examples
-from appv24.workflows.run_preview import build_run_preview, build_run_preview_from_path
+from appv24.workflows.run_preview import build_run_preview, build_run_preview_from_path, persist_run_preview
+from appv24.workflows.run_store import WorkflowRunStore
 
 
 def test_run_preview_reports_trace_actions_approvals_idempotency_and_outputs() -> None:
@@ -103,3 +104,16 @@ def test_run_preview_includes_package_fingerprint() -> None:
     preview = build_run_preview(example.documents, "happy_path.yaml", broker=example.broker)
 
     assert preview.package_fingerprint.startswith("sha256:")
+
+
+def test_persist_run_preview_writes_preview_and_events(tmp_path: Path) -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+    preview = build_run_preview(example.documents, "happy_path.yaml", broker=example.broker)
+    store = WorkflowRunStore(tmp_path)
+
+    run_id = persist_run_preview(store, preview)
+
+    assert (tmp_path / run_id / "preview.json").is_file()
+    events = store.read_events(run_id)
+    assert events[0].event_type == "preview_created"
+    assert events[0].package_fingerprint == preview.package_fingerprint

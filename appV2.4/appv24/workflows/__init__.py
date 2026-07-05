@@ -29,6 +29,7 @@ from appv24.workflows.run_preview import (
     WorkflowRunPreview,
     build_run_preview,
     build_run_preview_from_path,
+    persist_run_preview,
 )
 from appv24.workflows.run_store import WorkflowRunStore
 from appv24.workflows.simulator import simulate_workflow_fixture
@@ -83,6 +84,7 @@ __all__ = (
     "build_enablement_report",
     "build_run_preview",
     "build_run_preview_from_path",
+    "persist_run_preview",
     "compile_workflow_documents",
     "compile_workflow_package",
     "evaluate_policy",
