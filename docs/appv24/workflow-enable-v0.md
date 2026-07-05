@@ -40,3 +40,7 @@ report = build_enablement_report(
 - unknown connector actions block simulation
 - real connector execution is out of scope
 - CLI/TUI commands are deferred
+
+## Next Path
+
+The staged execution roadmap is documented in `docs/appv24/workflow-run-live-path.md`.
