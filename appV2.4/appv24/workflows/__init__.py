@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from appv24.workflows.approval_gate import ApprovalDecision, ApprovalRequest, create_approval_request, resume_approval
 from appv24.workflows.drafts import (
     WorkflowDraftBlocks,
     WorkflowDraftExtraction,
@@ -50,6 +51,8 @@ from appv24.workflows.validator import (
 
 __all__ = (
     "WorkflowDraftBlocks",
+    "ApprovalDecision",
+    "ApprovalRequest",
     "WorkflowDraftExtraction",
     "WorkflowDraftParseResult",
     "WorkflowDraftSaveError",
@@ -89,6 +92,7 @@ __all__ = (
     "persist_run_preview",
     "compile_workflow_documents",
     "compile_workflow_package",
+    "create_approval_request",
     "evaluate_policy",
     "extract_workflow_draft_blocks",
     "fingerprint_package_documents",
@@ -96,6 +100,7 @@ __all__ = (
     "parse_workflow_draft_blocks",
     "golden_workflow_examples",
     "require_fixture",
+    "resume_approval",
     "run_workflow_draft_stages",
     "save_workflow_draft_blocks",
     "should_stage_workflow_drafts",
