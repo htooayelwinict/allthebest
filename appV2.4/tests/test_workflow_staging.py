@@ -97,6 +97,19 @@ def test_package_stage_prompt_includes_shared_fragments() -> None:
     assert render_schema_reminders_fragment() in prompt
 
 
+def test_package_stage_prompt_mentions_terminal_traversal_contract() -> None:
+    prompt = build_workflow_stage_prompt(
+        "design a workflow",
+        stage_id="package",
+        stage_index=3,
+        total_stages=3,
+    )
+
+    assert "Every non-terminal action step must include next" in prompt
+    assert "every decision step must include branches" in prompt
+    assert "every dry-run fixture must traverse from entrypoint to a terminal step" in prompt
+
+
 def test_build_package_stage_prompt_includes_schema_micro_examples() -> None:
     prompt = build_workflow_stage_prompt(
         "Create a human-approved dependency triage workflow.",
