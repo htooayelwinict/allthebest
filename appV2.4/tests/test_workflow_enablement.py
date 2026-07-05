@@ -48,3 +48,14 @@ def test_enablement_v1_public_api_exports() -> None:
     assert hasattr(workflows, "CapabilityPlanItem")
     assert hasattr(workflows, "WorkflowEnablementV1Report")
     assert hasattr(workflows, "build_workflow_enablement_report")
+
+
+def test_enablement_v1_report_includes_approval_plan() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+
+    report = build_workflow_enablement_report(example.documents, broker=example.broker)
+
+    assert tuple(item.step_id for item in report.approval_plan.items) == (
+        "create_ticket_draft",
+        "notify_admin",
+    )

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from appv24.workflows.approval_ledger import ApprovalPlan, build_approval_plan
 from appv24.workflows.broker import LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.ir import StepKind, WorkflowIR
@@ -34,6 +35,7 @@ class WorkflowEnablementV1Report:
     policy_ok: bool
     quality_ok: bool
     capability_plan: tuple[CapabilityPlanItem, ...]
+    approval_plan: ApprovalPlan
     fixtures: tuple[WorkflowFixtureQualityReport, ...]
     issues: tuple[str, ...]
 
@@ -53,11 +55,13 @@ def build_workflow_enablement_report(
     workflow_name = str(documents.workflow.get("name", ""))
     quality = check_workflow_quality_documents(documents, broker=broker)
     capability_plan: tuple[CapabilityPlanItem, ...] = ()
+    approval_plan = ApprovalPlan(workflow_name=workflow_name, items=())
 
     compiled = compile_workflow_documents(documents)
     if compiled.ir is not None:
         workflow_name = compiled.ir.name
         capability_plan = tuple(_capability_plan(compiled.ir))
+        approval_plan = build_approval_plan(compiled.ir)
 
     return WorkflowEnablementV1Report(
         workflow_name=workflow_name,
@@ -66,6 +70,7 @@ def build_workflow_enablement_report(
         policy_ok=quality.policy_ok,
         quality_ok=quality.ok,
         capability_plan=capability_plan,
+        approval_plan=approval_plan,
         fixtures=quality.fixture_reports,
         issues=tuple(issue.message for issue in quality.issues),
     )
