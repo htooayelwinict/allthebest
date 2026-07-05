@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from appv24.workflows.quality_gate import WorkflowQualityResult, check_workflow_quality_documents
 from appv24.workflows.validator import WorkflowDraftValidationResult
 
 WORKFLOW_DESIGNER_PROFILE_ID = "workflow-designer-lite"
@@ -54,6 +55,33 @@ def format_workflow_validation_report(result: WorkflowDraftValidationResult, max
     lines.extend(f"- {issue.code} {issue.location}: {issue.message}" for issue in issues[:visible_count])
 
     remaining = len(issues) - visible_count
+    if remaining > 0:
+        lines.append(f"- ... {remaining} more issue(s)")
+    return "\n".join(lines)
+
+
+def workflow_quality_result_for_draft(
+    result: WorkflowDraftValidationResult,
+) -> WorkflowQualityResult | None:
+    if not result.ok or result.documents is None:
+        return None
+    return check_workflow_quality_documents(result.documents)
+
+
+def format_workflow_quality_report(
+    result: WorkflowQualityResult,
+    *,
+    label: str = "Workflow draft quality gate",
+    max_issues: int = 12,
+) -> str:
+    if result.ok:
+        return f"{label}: passed"
+
+    visible_count = max(0, max_issues)
+    lines = [f"{label}: failed"]
+    lines.extend(f"- {issue.code} {issue.location}: {issue.message}" for issue in result.issues[:visible_count])
+
+    remaining = len(result.issues) - visible_count
     if remaining > 0:
         lines.append(f"- ... {remaining} more issue(s)")
     return "\n".join(lines)

@@ -260,6 +260,33 @@ def _invalid_workflow_draft_text() -> str:
     return _valid_workflow_draft_text().replace("side_effect: true", "side_effect: send")
 
 
+def _quality_failing_workflow_draft_text() -> str:
+    return (
+        _valid_workflow_draft_text()
+        .replace(
+            "    next: draft_issue\n  - id: draft_issue",
+            "    next: decide_path\n"
+            "  - id: decide_path\n"
+            "    type: decision\n"
+            "    branches:\n"
+            "      approved: draft_issue\n"
+            "      rejected: done\n"
+            "  - id: draft_issue",
+            1,
+        )
+        .replace(
+            "input:\n  repo: owner/project",
+            "decisions:\n  decide_path: draft_issue",
+            1,
+        )
+        .replace(
+            "approval:\n  human-review: rejected",
+            "decisions:\n  decide_path: done",
+            1,
+        )
+    )
+
+
 def test_visible_width_strips_ansi() -> None:
     assert visible_width("\x1b[31mred\x1b[0m") == 3
     assert visible_width("plain") == 5
@@ -1199,6 +1226,36 @@ def test_interactive_mode_workflow_save_writes_last_valid_draft(tmp_path) -> Non
     assert "Workflow draft saved:" in rendered
     assert f"Workflow draft saved: {saved_path.resolve()}" in history
     assert "Workflow draft validation: passed" in rendered
+
+
+def test_interactive_mode_workflow_save_rejects_quality_gate_failure(tmp_path) -> None:
+    register_api_provider(
+        create_faux_provider(
+            lambda model, context: text_response_events(model, _quality_failing_workflow_draft_text())
+        )
+    )
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["design workflow", "/workflow-save saved-workflow", "/exit"])
+    holder: dict[str, InteractiveMode] = {}
+
+    def input_fn(prompt: str) -> str:
+        command = next(inputs)
+        if command.startswith("/workflow-save"):
+            assert _wait_until(lambda: holder["mode"]._last_workflow_quality is not None, timeout=15.0)
+        return command
+
+    mode = InteractiveMode(app, input_fn=input_fn)
+    holder["mode"] = mode
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert not (tmp_path / "saved-workflow").exists()
+    assert "Workflow draft quality gate: failed" in rendered
+    assert "fixture_branch_unmatched" in rendered
+    assert "Workflow draft save failed: last workflow draft does not pass quality gate" in rendered
 
 
 def test_interactive_mode_workflow_save_uses_repaired_valid_draft(tmp_path) -> None:

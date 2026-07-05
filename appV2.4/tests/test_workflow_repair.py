@@ -149,6 +149,60 @@ def _missing_next_transition_draft() -> str:
     return _valid_draft().replace("    next: done\n  - id: done", "  - id: done", 1)
 
 
+def _target_step_fixture_decision_draft() -> str:
+    return (
+        _valid_draft()
+        .replace(
+            "    next: draft_issue\n  - id: draft_issue",
+            "    next: decide_path\n"
+            "  - id: decide_path\n"
+            "    type: decision\n"
+            "    branches:\n"
+            "      approved: draft_issue\n"
+            "      rejected: done\n"
+            "  - id: draft_issue",
+            1,
+        )
+        .replace(
+            "input:\n  repo: owner/project",
+            "decisions:\n  decide_path: draft_issue",
+            1,
+        )
+        .replace(
+            "approval:\n  human-review: rejected",
+            "decisions:\n  decide_path: done",
+            1,
+        )
+    )
+
+
+def _wrong_fixture_decision_key_draft() -> str:
+    return (
+        _valid_draft()
+        .replace(
+            "    next: draft_issue\n  - id: draft_issue",
+            "    next: check_eligibility\n"
+            "  - id: check_eligibility\n"
+            "    type: decision\n"
+            "    branches:\n"
+            "      eligible: draft_issue\n"
+            "      rejected: done\n"
+            "  - id: draft_issue",
+            1,
+        )
+        .replace(
+            "input:\n  repo: owner/project",
+            "decision:\n  check_path: eligible",
+            1,
+        )
+        .replace(
+            "approval:\n  human-review: rejected",
+            "decision:\n  check_path: rejected",
+            1,
+        )
+    )
+
+
 def _missing_workflow_step_side_effect_class_draft() -> str:
     return _valid_draft().replace(
         "    side_effect_class: create\n    approval: human-review",
@@ -433,6 +487,32 @@ def test_build_workflow_repair_prompt_includes_missing_transition_directive() ->
     assert "quality gate" in prompt
     assert "missing_transition workflow.yaml:steps.draft_issue.next" in prompt
     assert "Add the smallest correct next transition" in prompt
+
+
+def test_build_workflow_repair_prompt_explains_fixture_decisions_use_branch_keys() -> None:
+    result = validate_workflow_draft_text(_target_step_fixture_decision_draft())
+    assert result.ok
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=None, max_issues=8)
+
+    assert "fixture_branch_unmatched" in prompt
+    assert "Use top-level `decision:` in the fixture, not `decisions:`" in prompt
+    assert "Use branch keys as values, not target step ids" in prompt
+    assert "`decide_path: approved`" in prompt
+    assert "not `decide_path: draft_issue`" in prompt
+
+
+def test_build_workflow_repair_prompt_replaces_wrong_fixture_decision_key() -> None:
+    result = validate_workflow_draft_text(_wrong_fixture_decision_key_draft())
+    assert result.ok
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=None, max_issues=8)
+
+    assert "fixture_branch_unmatched" in prompt
+    assert "Decision mapping key must be exactly `check_eligibility`." in prompt
+    assert "Replace `check_path: eligible` with `check_eligibility: eligible`." in prompt
+    assert "Replace `check_path: rejected` with `check_eligibility: rejected`." in prompt
+    assert "decision: {check_path:" not in prompt
 
 
 def test_repair_noops_when_latest_draft_is_valid() -> None:

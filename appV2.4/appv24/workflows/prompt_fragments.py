@@ -72,6 +72,10 @@ def render_schema_reminders_fragment() -> str:
             "- permissions[].scopes must include every required_scopes value for the granted connector actions, or use '*' only when intentionally granting all scopes.",
             "- For example, if github.create_issue requires issues and github.get_dependabot_alerts requires security_events, the github permission must include scopes: [issues, security_events].",
             "- permissions.yaml approvals[].required_for must be workflow step id strings.",
+            "- dry_run_fixtures must use top-level decision: to choose decision branches.",
+            "- dry_run_fixtures must not use decisions: for branch choices.",
+            "- dry_run_fixtures decision values must be branch keys, not target step ids.",
+            "- Example: if workflow.yaml decision step approve_path has branches {approved: create_ticket, rejected: done}, use decision: {approve_path: approved}, not decision: {approve_path: create_ticket}.",
         ]
     )
 

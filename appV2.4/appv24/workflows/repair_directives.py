@@ -13,6 +13,7 @@ MUTATING_SIDE_EFFECT_CLASSES = {"create", "update", "delete", "send", "publish",
 ACTION_REF_RE = re.compile(r"\b[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+\b")
 DESIGN_ONLY_ACTION_RE = re.compile(r"design-only action (?P<action>[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+)")
 QUOTED_VALUE_RE = re.compile(r"'(?P<value>[^']+)'")
+NO_BRANCH_MATCH_RE = re.compile(r"no branch matched for (?P<step>[A-Za-z0-9_.-]+)")
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,7 @@ def _directive_for_issue(
         )
 
     if code in {"fixture_no_terminal", "fixture_branch_unmatched", "fixture_transition_budget_exceeded", "fixture_broker_blocked"}:
+        decision_rules = _fixture_decision_rules(result, issue, message)
         return WorkflowRepairDirective(
             code=code,
             location=location,
@@ -239,6 +241,7 @@ def _directive_for_issue(
             rules=(
                 message,
                 "For decision failures, add the smallest valid dry_run_fixtures decision mapping.",
+                *decision_rules,
                 "For transition failures, fix workflow.yaml next or branches.",
                 "For broker failures, preserve the connector action and make sure the dry-run path uses declared allowed outputs.",
             ),
@@ -412,6 +415,109 @@ def _issue_step_id(issue: object) -> str | None:
         return None
     step_id = path[1]
     return step_id if isinstance(step_id, str) and step_id else None
+
+
+def _fixture_decision_rules(result: WorkflowDraftValidationResult, issue: object, message: str) -> tuple[str, ...]:
+    step_id = _decision_step_id_from_message(message)
+    base_rules = [
+        "Use top-level `decision:` in the fixture, not `decisions:`.",
+        "Use branch keys as values, not target step ids.",
+    ]
+    if result.documents is None or step_id is None:
+        return tuple(base_rules)
+
+    branches = _workflow_decision_branches(result.documents.workflow, step_id)
+    if not branches:
+        return tuple(base_rules)
+
+    branch_text = ", ".join(f"`{key}` -> `{target}`" for key, target in branches.items())
+    first_key, first_target = next(iter(branches.items()))
+    base_rules.extend(
+        [
+            f"Decision mapping key must be exactly `{step_id}`.",
+            f"Decision step `{step_id}` branch map: {branch_text}.",
+            f"Use `{step_id}: {first_key}`, not `{step_id}: {first_target}`.",
+        ]
+    )
+    base_rules.extend(_current_fixture_decision_replacements(result, issue, step_id, branches))
+    return tuple(base_rules)
+
+
+def _decision_step_id_from_message(message: str) -> str | None:
+    match = NO_BRANCH_MATCH_RE.search(message)
+    if match is None:
+        return None
+    return match.group("step")
+
+
+def _workflow_decision_branches(workflow: Mapping[str, Any], step_id: str) -> Mapping[str, str]:
+    step = _workflow_steps_by_id(workflow).get(step_id)
+    if step is None:
+        return {}
+    branches = step.get("branches")
+    if not isinstance(branches, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in branches.items() if isinstance(value, str)}
+
+
+def _current_fixture_decision_replacements(
+    result: WorkflowDraftValidationResult,
+    issue: object,
+    step_id: str,
+    branches: Mapping[str, str],
+) -> tuple[str, ...]:
+    if result.documents is None:
+        return ()
+
+    fixture_name = _issue_fixture_name(issue)
+    if fixture_name is None:
+        return ()
+    fixture = result.documents.dry_run_fixtures.get(fixture_name)
+    if fixture is None:
+        return ()
+
+    decisions = _fixture_decisions(fixture)
+    if not decisions:
+        first_key = next(iter(branches))
+        return (f"Add `decision: {{{step_id}: {first_key}}}` to {fixture_name}.",)
+
+    target_to_branch = {target: key for key, target in branches.items()}
+    rules: list[str] = []
+    for current_key, current_value in decisions.items():
+        replacement_value = current_value
+        if current_value in target_to_branch:
+            replacement_value = target_to_branch[current_value]
+        if current_key != step_id or replacement_value != current_value:
+            rules.append(f"Replace `{current_key}: {current_value}` with `{step_id}: {replacement_value}`.")
+    if not rules:
+        return ()
+    rules.append(f"Remove any fixture decision keys that are not `{step_id}`.")
+    return tuple(rules)
+
+
+def _issue_fixture_name(issue: object) -> str | None:
+    file = str(getattr(issue, "file", ""))
+    prefix = "dry_run_fixtures/"
+    if file.startswith(prefix):
+        return file.removeprefix(prefix)
+    location = str(getattr(issue, "location", ""))
+    if location.startswith(prefix):
+        return location.removeprefix(prefix).partition(":")[0]
+    return None
+
+
+def _fixture_decisions(fixture: Mapping[str, Any]) -> Mapping[str, str]:
+    for key in ("decision", "decisions"):
+        value = fixture.get(key)
+        if isinstance(value, Mapping):
+            return {str(decision_key): str(decision_value) for decision_key, decision_value in value.items()}
+    nested = fixture.get("fixture")
+    if isinstance(nested, Mapping):
+        for key in ("decision", "decisions"):
+            value = nested.get(key)
+            if isinstance(value, Mapping):
+                return {str(decision_key): str(decision_value) for decision_key, decision_value in value.items()}
+    return {}
 
 
 def _first_action_ref(message: str) -> str | None:
