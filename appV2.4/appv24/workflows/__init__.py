@@ -19,6 +19,13 @@ from appv24.workflows.fixtures import fixture_names, require_fixture
 from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import SimulationLedger, StepTrace
 from appv24.workflows.policy import PolicyIssue, PolicyReport, PolicySeverity, evaluate_policy
+from appv24.workflows.quality_gate import (
+    WorkflowFixtureQualityReport,
+    WorkflowQualityIssue,
+    WorkflowQualityResult,
+    check_workflow_quality_documents,
+    check_workflow_quality_package,
+)
 from appv24.workflows.reports import WorkflowEnablementReport, build_enablement_report
 from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.staging import (
@@ -45,6 +52,9 @@ __all__ = (
     "WorkflowDraftValidationResult",
     "WorkflowCompileResult",
     "WorkflowEnablementReport",
+    "WorkflowFixtureQualityReport",
+    "WorkflowQualityIssue",
+    "WorkflowQualityResult",
     "BrokerRequest",
     "BrokerResult",
     "GoldenWorkflowExample",
@@ -61,6 +71,8 @@ __all__ = (
     "StepTrace",
     "build_workflow_stage_prompt",
     "build_enablement_report",
+    "check_workflow_quality_documents",
+    "check_workflow_quality_package",
     "compile_workflow_documents",
     "compile_workflow_package",
     "evaluate_policy",
