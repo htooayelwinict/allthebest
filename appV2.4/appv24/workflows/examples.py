@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Mapping
 
 from appv24.workflows.broker import BrokerResult, LocalWorkflowBroker
+from appv24.workflows.connectors.draft_gmail import gmail_create_draft_provider
 from appv24.workflows.loader import PackageDocuments
 
 
@@ -19,7 +20,10 @@ class GoldenWorkflowExample:
 
 
 def golden_workflow_examples() -> dict[str, GoldenWorkflowExample]:
-    return {"telegram_support_ticket": _telegram_support_ticket()}
+    return {
+        "telegram_support_ticket": _telegram_support_ticket(),
+        "gmail_draft_triage": _gmail_draft_triage(),
+    }
 
 
 def _telegram_support_ticket() -> GoldenWorkflowExample:
@@ -161,4 +165,101 @@ def _telegram_support_ticket() -> GoldenWorkflowExample:
         documents=documents,
         fixtures=fixtures,
         broker=broker,
+    )
+
+
+def _gmail_draft_triage() -> GoldenWorkflowExample:
+    workflow = {
+        "version": "appv24.workflow/v1",
+        "name": "gmail_draft_triage",
+        "description": "Classify inbound email and create a human-approved Gmail draft reply.",
+        "design": {
+            "intent": "Classify inbound email and create a human-approved Gmail draft reply.",
+            "trigger": "Inbound email event.",
+            "inputs": ["from", "subject", "body"],
+            "outputs": ["draft_id", "thread_id"],
+            "assumptions": ["Gmail credentials are provided by secret reference at execution time"],
+            "side_effects": ["create Gmail draft only"],
+            "approval_gates": ["human_approval"],
+            "failure_modes": ["email ignored", "draft creation failure", "human rejects draft"],
+            "rollback": ["delete the draft manually if it was created"],
+        },
+        "triggers": [{"id": "incoming_email", "type": "event"}],
+        "entrypoint": "classify_email",
+        "steps": [
+            {
+                "id": "classify_email",
+                "type": "decision",
+                "branches": {"needs_reply": "draft_reply", "ignore": "ignored"},
+            },
+            {
+                "id": "draft_reply",
+                "type": "action",
+                "uses": "gmail.create_draft",
+                "side_effect_class": "create",
+                "approval": "human_approval",
+                "next": "done",
+            },
+            {"id": "ignored", "type": "terminal"},
+            {"id": "done", "type": "terminal"},
+        ],
+    }
+    connectors = {
+        "version": "appv24.connectors/v1",
+        "connectors": [
+            {
+                "id": "gmail",
+                "adapter": "direct_api",
+                "description": "Gmail draft API.",
+                "actions": [
+                    {
+                        "id": "create_draft",
+                        "operationId": "gmail_create_draft",
+                        "execution_mode": "brokered",
+                        "side_effect": True,
+                        "side_effect_class": "create",
+                        "approval_required": True,
+                        "dry_run_supported": True,
+                        "required_scopes": ["gmail:draft"],
+                        "outputs": {"allowed": ["draft_id", "thread_id"]},
+                        "idempotency": {"key_fields": ["to", "subject", "body_hash"]},
+                    }
+                ],
+            }
+        ],
+    }
+    permissions = {
+        "version": "appv24.permissions/v1",
+        "permissions": [
+            {"connector": "gmail", "scopes": ["gmail:draft"], "actions": ["create_draft"]},
+        ],
+        "approvals": [
+            {
+                "id": "human_approval",
+                "mode": "explicit",
+                "required_for": ["draft_reply"],
+            }
+        ],
+    }
+    fixtures = {
+        "happy_path.yaml": {
+            "decision": {"classify_email": "needs_reply"},
+        },
+        "rejection_path.yaml": {
+            "decision": {"classify_email": "ignore"},
+        },
+    }
+    documents = PackageDocuments(
+        root=Path("golden/gmail_draft_triage"),
+        workflow=workflow,
+        connectors=connectors,
+        permissions=permissions,
+        dry_run_fixtures=fixtures,
+        rollback_text="# Rollback\n\nDelete the Gmail draft manually if it was created.\n",
+    )
+    return GoldenWorkflowExample(
+        name="gmail_draft_triage",
+        documents=documents,
+        fixtures=fixtures,
+        broker=LocalWorkflowBroker({"gmail.create_draft": gmail_create_draft_provider}),
     )

@@ -105,3 +105,10 @@ def test_require_fixture_reports_available_names() -> None:
         assert str(error) == "missing dry-run fixture: missing.yaml; available: happy_path.yaml, rejection_path.yaml"
     else:
         raise AssertionError("expected missing fixture to raise")
+
+
+def test_golden_examples_include_gmail_draft_triage() -> None:
+    examples = golden_workflow_examples()
+
+    assert "gmail_draft_triage" in examples
+    assert examples["gmail_draft_triage"].documents.workflow["name"] == "gmail_draft_triage"
