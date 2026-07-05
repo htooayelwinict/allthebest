@@ -139,8 +139,32 @@ def check_workflow_quality_documents(
 
 def _check_graph(ir: WorkflowIR) -> list[WorkflowQualityIssue]:
     issues: list[WorkflowQualityIssue] = []
+    reachable = _reachable_steps(ir)
+    terminals = _terminal_steps(ir)
     for step in ir.steps.values():
-        if step.kind is StepKind.TERMINAL or step.kind is StepKind.DECISION:
+        if step.step_id not in reachable and step.kind is not StepKind.TERMINAL:
+            issues.append(
+                WorkflowQualityIssue(
+                    code="unreachable_step",
+                    file="workflow.yaml",
+                    path=("steps", step.step_id),
+                    message=f"step {step.step_id} is not reachable from entrypoint",
+                    repair_hint=f"Connect or remove workflow.yaml step {step.step_id}.",
+                )
+            )
+        if step.kind is StepKind.TERMINAL:
+            continue
+        if step.kind is StepKind.DECISION:
+            if not step.branches:
+                issues.append(
+                    WorkflowQualityIssue(
+                        code="missing_branch_transition",
+                        file="workflow.yaml",
+                        path=("steps", step.step_id, "branches"),
+                        message=f"decision step {step.step_id} has no branches",
+                        repair_hint=f"Add branches to workflow.yaml decision step {step.step_id}.",
+                    )
+                )
             continue
         if step.next_step is not None:
             continue
@@ -153,4 +177,109 @@ def _check_graph(ir: WorkflowIR) -> list[WorkflowQualityIssue]:
                 repair_hint=f"Add next to workflow.yaml step {step.step_id}.",
             )
         )
+    if reachable and not any(_can_reach_terminal(ir, step_id, terminals) for step_id in reachable):
+        issues.append(
+            WorkflowQualityIssue(
+                code="terminal_unreachable",
+                file="workflow.yaml",
+                path=("entrypoint",),
+                message="no terminal step is reachable from entrypoint",
+                repair_hint="Connect the entrypoint path to an existing terminal step.",
+            )
+        )
+    for cycle in _reachable_cycles(ir, reachable):
+        if not any(_can_reach_terminal(ir, step_id, terminals) for step_id in cycle):
+            issues.append(
+                WorkflowQualityIssue(
+                    code="cycle_without_terminal_escape",
+                    file="workflow.yaml",
+                    path=("steps", ",".join(sorted(cycle))),
+                    message=f"cycle has no outbound path to terminal: {', '.join(sorted(cycle))}",
+                    repair_hint="Add a branch or transition from the cycle to an existing terminal path.",
+                )
+            )
     return issues
+
+
+def _reachable_steps(ir: WorkflowIR) -> set[str]:
+    reachable: set[str] = set()
+    stack = [ir.entrypoint]
+    while stack:
+        step_id = stack.pop()
+        if step_id in reachable:
+            continue
+        step = ir.steps.get(step_id)
+        if step is None:
+            continue
+        reachable.add(step_id)
+        stack.extend(target for target in step.outbound if target not in reachable)
+    return reachable
+
+
+def _terminal_steps(ir: WorkflowIR) -> set[str]:
+    return {step.step_id for step in ir.steps.values() if step.kind is StepKind.TERMINAL}
+
+
+def _can_reach_terminal(ir: WorkflowIR, start: str, terminals: set[str]) -> bool:
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        step_id = stack.pop()
+        if step_id in terminals:
+            return True
+        if step_id in seen:
+            continue
+        seen.add(step_id)
+        step = ir.steps.get(step_id)
+        if step is not None:
+            stack.extend(step.outbound)
+    return False
+
+
+def _reachable_cycles(ir: WorkflowIR, reachable: set[str]) -> list[set[str]]:
+    index = 0
+    indices: dict[str, int] = {}
+    lowlinks: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    cycles: list[set[str]] = []
+
+    def strongconnect(step_id: str) -> None:
+        nonlocal index
+        indices[step_id] = index
+        lowlinks[step_id] = index
+        index += 1
+        stack.append(step_id)
+        on_stack.add(step_id)
+
+        step = ir.steps.get(step_id)
+        targets = tuple(target for target in (step.outbound if step else ()) if target in reachable)
+        for target in targets:
+            if target not in indices:
+                strongconnect(target)
+                lowlinks[step_id] = min(lowlinks[step_id], lowlinks[target])
+            elif target in on_stack:
+                lowlinks[step_id] = min(lowlinks[step_id], indices[target])
+
+        if lowlinks[step_id] != indices[step_id]:
+            return
+
+        component: set[str] = set()
+        while True:
+            member = stack.pop()
+            on_stack.remove(member)
+            component.add(member)
+            if member == step_id:
+                break
+        if len(component) > 1 or _has_self_loop(ir, step_id):
+            cycles.append(component)
+
+    for step_id in sorted(reachable):
+        if step_id not in indices:
+            strongconnect(step_id)
+    return cycles
+
+
+def _has_self_loop(ir: WorkflowIR, step_id: str) -> bool:
+    step = ir.steps.get(step_id)
+    return bool(step and step_id in step.outbound)
