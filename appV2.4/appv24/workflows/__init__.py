@@ -14,6 +14,11 @@ from appv24.workflows.drafts import (
 from appv24.workflows.errors import WorkflowIssue, WorkflowPackageError, WorkflowValidationResult
 from appv24.workflows.broker import BrokerRequest, BrokerResult, LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents, compile_workflow_package
+from appv24.workflows.enablement import (
+    CapabilityPlanItem,
+    WorkflowEnablementV1Report,
+    build_workflow_enablement_report,
+)
 from appv24.workflows.examples import GoldenWorkflowExample, golden_workflow_examples
 from appv24.workflows.fixtures import fixture_names, require_fixture
 from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
@@ -51,6 +56,7 @@ __all__ = (
     "WorkflowDraftStageResult",
     "WorkflowDraftValidationResult",
     "WorkflowCompileResult",
+    "WorkflowEnablementV1Report",
     "WorkflowEnablementReport",
     "WorkflowFixtureQualityReport",
     "WorkflowQualityIssue",
@@ -64,12 +70,14 @@ __all__ = (
     "WorkflowPackageError",
     "WorkflowStep",
     "WorkflowValidationResult",
+    "CapabilityPlanItem",
     "PolicyIssue",
     "PolicyReport",
     "PolicySeverity",
     "SimulationLedger",
     "StepTrace",
     "build_workflow_stage_prompt",
+    "build_workflow_enablement_report",
     "build_enablement_report",
     "check_workflow_quality_documents",
     "check_workflow_quality_package",
