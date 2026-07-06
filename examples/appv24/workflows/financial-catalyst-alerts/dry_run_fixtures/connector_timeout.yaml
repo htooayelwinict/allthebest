@@ -1,0 +1,7 @@
+input:
+  alert_key: NVDA-2026-07-06-timeout
+connector_sandbox:
+  failures:
+    fetch_news:
+      status: timeout
+      message: news connector timed out after 30s

@@ -1,6 +1,7 @@
 # appv24 Workflow Package Validator
 
-The appv24 workflow validator checks workflow-as-code packages before appv24 has any runner or cloud executor.
+The appv24 workflow validator checks workflow-as-code packages before any
+runner or deployment path is allowed to trust them.
 
 The validator is offline only. It does not run workflows, call APIs, send messages, provision cloud resources, or read secrets.
 
@@ -224,17 +225,20 @@ The repair loop is passive. It does not execute workflows, call connector APIs, 
 
 If repair stops because the configured attempt bound, timeout, abort signal, or provider error is reached, appv24 keeps the failed validation report visible and leaves `/workflow-save` blocked for that draft.
 
-## Passive Boundary
+## Validator Passive Boundary
 
-appv24 workflow design remains passive:
+The validator, staged drafting, and repair loop remain passive:
 
 ```text
-appv24 designs workflow packages.
-appv24 does not execute workflows.
-appv24 does not call connector APIs.
-appv24 does not read secrets.
-appv24 does not provision cloud resources.
-appv24 does not send email, Telegram, Slack, or other third-party messages.
+validator/staging/repair inspect workflow packages.
+validator/staging/repair do not execute workflows.
+validator/staging/repair do not call connector APIs.
+validator/staging/repair do not read secrets.
+validator/staging/repair do not provision cloud resources.
+validator/staging/repair do not send email, Telegram, Slack, or other third-party messages.
 ```
 
-Future workflow execution must be designed as a separate broker or runner. The validator may describe broker-ready metadata, but it must not execute that metadata.
+Local run, sandbox run, live-read, live-draft preflight, and deployment-intent
+export are separate workflow layers documented in their own files. They must
+still pass validation before they can operate, and live production remains
+disabled by default.

@@ -1,0 +1,63 @@
+version: appv24.connectors/v1
+connectors:
+  - id: source
+    adapter: direct_api
+    description: Public source reader.
+    actions:
+      - id: fetch_items
+        side_effect: false
+        side_effect_class: read
+        execution_mode: brokered
+        dry_run_supported: true
+        outputs:
+          allowed:
+            - items
+            - source_count
+        required_scopes:
+          - source:read
+  - id: llm
+    adapter: llm
+    description: Typed LLM transform.
+    actions:
+      - id: extract_structured
+        side_effect: false
+        side_effect_class: read
+        execution_mode: brokered
+        dry_run_supported: true
+        outputs:
+          allowed:
+            - alerts
+            - confidence_score
+            - raw_response
+  - id: policy
+    adapter: manual
+    description: Deterministic policy gate.
+    actions:
+      - id: check
+        side_effect: false
+        side_effect_class: read
+        execution_mode: brokered
+        dry_run_supported: true
+        outputs:
+          allowed:
+            - approved
+            - reason
+  - id: notification
+    adapter: manual
+    description: Reviewable notification draft.
+    actions:
+      - id: create_draft
+        side_effect: true
+        side_effect_class: create
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        idempotency:
+          key_fields:
+            - alert_key
+        outputs:
+          allowed:
+            - draft_id
+            - artifact_path
+        required_scopes:
+          - notification:draft

@@ -1,0 +1,62 @@
+version: appv24.workflow/v1
+name: public-news-digest
+description: Fetch a public news document, summarize it, and draft a reviewable digest.
+design:
+  intent: Create a reviewable informational digest from a public news document.
+  trigger: Scheduled public news scan.
+  inputs:
+    - Public news source URL or feed item.
+  outputs:
+    - Reviewable digest draft with source link.
+  assumptions:
+    - Sources are public and safe to read.
+    - The digest is informational only.
+  side_effects:
+    - Create a local notification draft only after explicit approval.
+  approval_gates:
+    - digest-review
+  failure_modes:
+    - Public source fetch times out.
+    - Source output shape is incompatible with declared outputs.
+    - Policy rejects the summary.
+  rollback:
+    - Delete the local digest draft if it was created by mistake.
+triggers:
+  - id: scheduled_public_news_scan
+    type: schedule
+    schedule: "0 * * * *"
+entrypoint: fetch_public_news
+steps:
+  - id: fetch_public_news
+    uses: source.fetch_document
+    with:
+      source_url: https://example.test/news/public-topic
+    side_effect_class: read
+    next: summarize_news
+  - id: summarize_news
+    uses: llm.summarize
+    with:
+      input_ref: fetch_public_news.document
+      output_contract: summary_v1
+      model:
+        temperature: 0
+        max_tokens: 1200
+    side_effect_class: read
+    next: check_policy
+  - id: check_policy
+    uses: policy.check
+    with:
+      input_ref: summarize_news.summary
+      checks:
+        require_source_urls: true
+        disallow_personalized_advice: true
+        require_informational_tone: true
+    side_effect_class: read
+    next: create_digest_draft
+  - id: create_digest_draft
+    uses: notification.create_draft
+    side_effect_class: create
+    approval: digest-review
+    next: done
+  - id: done
+    type: terminal

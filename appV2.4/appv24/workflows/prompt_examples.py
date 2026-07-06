@@ -10,6 +10,9 @@ Micro examples for exact shape only:
 
 Design contract shape:
 ```yaml
+version: appv24.workflow/v1
+name: example-workflow
+description: Passive workflow description.
 design:
   intent: Describe the passive workflow goal.
   trigger: Describe the trigger in prose.
@@ -27,6 +30,13 @@ design:
     - External API unavailable.
   rollback:
     - Manual rollback prose only.
+triggers:
+  - id: manual
+    type: manual
+entrypoint: first_step
+steps:
+  - id: first_step
+    type: terminal
 ```
 
 Mutating step and action shape:
@@ -85,6 +95,9 @@ decision:
 DESIGN_CONTRACT_MICRO_EXAMPLE = """
 Design contract shape:
 ```yaml
+version: appv24.workflow/v1
+name: example-workflow
+description: Passive workflow description.
 design:
   intent: Describe the passive workflow goal.
   trigger: Describe the trigger in prose.
@@ -102,6 +115,13 @@ design:
     - External API unavailable.
   rollback:
     - Manual rollback prose only.
+triggers:
+  - id: manual
+    type: manual
+entrypoint: first_step
+steps:
+  - id: first_step
+    type: terminal
 ```
 """.strip()
 
@@ -181,6 +201,26 @@ decision:
 """.strip()
 
 
+POLICY_CHECK_MICRO_EXAMPLE = """
+Policy check shape:
+```yaml
+steps:
+  - id: check_policy
+    uses: policy.check
+    with:
+      input_ref: previous_step.outputs
+      checks:
+        stable_snake_case_check: true
+        threshold_check:
+          field_ref: previous_step.amount
+          operator: lte
+          value_ref: inputs.max_amount
+    side_effect_class: read
+    next: next_step
+```
+""".strip()
+
+
 RUNTIME_TRANSITION_MICRO_EXAMPLE = """
 Runtime transition shape:
 ```yaml
@@ -235,6 +275,8 @@ def render_repair_micro_examples(result: WorkflowDraftValidationResult) -> str:
             "unknown_fixture_decision_branch",
         }:
             add("decision", DECISION_BRANCH_MICRO_EXAMPLE)
+        if code == "missing_policy_checks":
+            add("policy-check", POLICY_CHECK_MICRO_EXAMPLE)
         if code == "missing_step_transition":
             add("runtime-transition", RUNTIME_TRANSITION_MICRO_EXAMPLE)
 

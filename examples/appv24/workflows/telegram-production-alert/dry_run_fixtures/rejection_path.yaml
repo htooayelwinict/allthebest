@@ -1,0 +1,7 @@
+input:
+  admin_chat_id: "123456789"
+  message_text: "operator rejects production alert"
+expected:
+  status: blocked
+  blocked_step: notify_admin
+  reason: approval denied or missing

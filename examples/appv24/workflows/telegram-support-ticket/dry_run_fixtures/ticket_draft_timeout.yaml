@@ -1,0 +1,13 @@
+input:
+  telegram_user_id: authorized-customer-101
+  message_text: My deployment is failing.
+decision:
+  check_authorized_customer: authorized
+connector_sandbox:
+  failures:
+    create_ticket_draft:
+      status: timeout
+      message: ticket draft connector timed out after 30s
+expected:
+  status: blocked
+  blocked_step: create_ticket_draft

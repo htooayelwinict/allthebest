@@ -499,8 +499,10 @@ class CombinedAutocompleteProvider:
                     if description:
                         item["description"] = description
                     command_items.append(item)
+                prefix_matches = [item for item in command_items if str(item["name"]).lower().startswith(prefix.lower())]
+                candidate_items = prefix_matches or fuzzy_filter(command_items, prefix, lambda value: value["name"])
                 filtered = []
-                for item in fuzzy_filter(command_items, prefix, lambda value: value["name"]):
+                for item in candidate_items:
                     result = {"value": item["name"], "label": item["label"]}
                     if item.get("description"):
                         result["description"] = item["description"]

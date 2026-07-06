@@ -41,7 +41,7 @@ def evaluate_policy(ir: WorkflowIR) -> PolicyReport:
     issues: list[PolicyIssue] = []
     for step in ir.steps.values():
         action = _action_for_step(ir, step)
-        if action is not None and action.execution_mode == "brokered" and not is_builtin_workflow_action(action.dotted):
+        if action is not None and not is_builtin_workflow_action(action.dotted):
             issues.append(
                 PolicyIssue(
                     "policy_unknown_catalog_action",

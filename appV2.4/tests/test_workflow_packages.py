@@ -121,6 +121,206 @@ permissions:
     (root / "rollback.md").write_text("# Rollback\n\nClose the drafted issue if it was created.\n", encoding="utf-8")
 
 
+def write_intelligence_package(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "workflow.yaml").write_text(
+        """
+version: appv24.workflow/v1
+name: financial-catalyst-alerts
+description: Extract informational financial catalysts and draft reviewable alerts.
+design:
+  intent: Watch public sources, extract catalysts, block trading advice, and draft an alert.
+  trigger: Scheduled public-source scan.
+  inputs:
+    - Public company news and filing items.
+  outputs:
+    - Reviewable informational alert draft with source links.
+  assumptions:
+    - Sources are public and timestamped.
+    - Alerts are informational and not financial advice.
+  side_effects:
+    - Create a local notification draft only after explicit approval.
+  approval_gates:
+    - alert-draft-review
+  failure_modes:
+    - Source fetch fails.
+    - LLM output violates the compact contract.
+    - Policy rejects advice-like content.
+  rollback:
+    - Delete the local draft manually if it was created by mistake.
+triggers:
+  - id: market_watch
+    type: schedule
+    schedule: "*/30 * * * *"
+entrypoint: fetch_news
+steps:
+  - id: fetch_news
+    uses: source.fetch_items
+    with:
+      query: public company catalysts
+      tickers:
+        - NVDA
+        - MSFT
+    next: extract_catalysts
+  - id: extract_catalysts
+    uses: llm.extract_structured
+    with:
+      task: extract_financial_catalysts
+      input_ref: fetch_news.items
+      output_contract: event_alerts_v1
+      safety:
+        disallow:
+          - personalized_financial_advice
+          - buy_sell_hold_recommendation
+          - price_target
+      model:
+        temperature: 0
+        max_tokens: 2000
+    side_effect_class: read
+    next: check_policy
+  - id: check_policy
+    uses: policy.check
+    with:
+      input_ref: extract_catalysts.alerts
+      checks:
+        require_source_urls: true
+        require_source_timestamps: true
+        disallow_financial_advice: true
+        min_confidence: medium
+    side_effect_class: read
+    next: create_alert_draft
+  - id: create_alert_draft
+    uses: notification.create_draft
+    side_effect_class: create
+    approval: alert-draft-review
+    next: done
+  - id: done
+    type: terminal
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (root / "connectors.yaml").write_text(
+        """
+version: appv24.connectors/v1
+connectors:
+  - id: source
+    adapter: direct_api
+    description: Public source reader.
+    actions:
+      - id: fetch_items
+        side_effect: false
+        side_effect_class: read
+        execution_mode: brokered
+        dry_run_supported: true
+        outputs:
+          allowed:
+            - items
+            - source_count
+        required_scopes:
+          - source:read
+  - id: llm
+    adapter: llm
+    description: Typed LLM transform.
+    actions:
+      - id: extract_structured
+        side_effect: false
+        side_effect_class: read
+        execution_mode: brokered
+        dry_run_supported: true
+        outputs:
+          allowed:
+            - alerts
+            - confidence_score
+            - raw_response
+  - id: policy
+    adapter: manual
+    description: Deterministic policy gate.
+    actions:
+      - id: check
+        side_effect: false
+        side_effect_class: read
+        execution_mode: brokered
+        dry_run_supported: true
+        outputs:
+          allowed:
+            - approved
+            - reason
+  - id: notification
+    adapter: manual
+    description: Reviewable notification draft.
+    actions:
+      - id: create_draft
+        side_effect: true
+        side_effect_class: create
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        idempotency:
+          key_fields:
+            - alert_key
+        outputs:
+          allowed:
+            - draft_id
+            - artifact_path
+        required_scopes:
+          - notification:draft
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (root / "permissions.yaml").write_text(
+        """
+version: appv24.permissions/v1
+approvals:
+  - id: alert-draft-review
+    mode: explicit
+    required_for:
+      - create_alert_draft
+permissions:
+  - connector: source
+    actions:
+      - fetch_items
+    scopes:
+      - source:read
+  - connector: llm
+    actions:
+      - extract_structured
+  - connector: policy
+    actions:
+      - check
+  - connector: notification
+    actions:
+      - create_draft
+    scopes:
+      - notification:draft
+""".lstrip(),
+        encoding="utf-8",
+    )
+    fixtures = root / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text(
+        """
+input:
+  alert_key: NVDA-2026-07-06-guidance
+policy:
+  check_policy: approved
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (fixtures / "rejection_path.yaml").write_text(
+        """
+input:
+  alert_key: NVDA-2026-07-06-rumor
+policy:
+  check_policy: rejected
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (root / "rollback.md").write_text(
+        "# Rollback\n\nDelete the locally created notification draft if it was created by mistake.\n",
+        encoding="utf-8",
+    )
+
+
 def replace_documents(
     documents: PackageDocuments,
     *,
@@ -480,6 +680,22 @@ def test_schema_validation_rejects_invalid_action_side_effect_class(tmp_path: Pa
     issues = validate_schema_documents(replace_documents(documents, connectors=connectors))
 
     assert_has_issue(issues, file="connectors.yaml", path=("connectors", 0, "actions", 1, "side_effect_class"))
+
+
+def test_schema_validation_allows_read_only_action_side_effect_class(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][0]["side_effect_class"] = "read"
+
+    issues = validate_schema_documents(replace_documents(documents, connectors=connectors))
+
+    assert not [
+        issue
+        for issue in issues
+        if issue.file == "connectors.yaml" and issue.path == ("connectors", 0, "actions", 0, "side_effect_class")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -868,6 +1084,24 @@ def test_semantic_validation_rejects_design_only_action_used_by_workflow_step(tm
     )
 
 
+def test_semantic_validation_rejects_read_only_design_only_action_used_by_workflow_step(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][0]["execution_mode"] = "design_only"
+    connectors["connectors"][0]["actions"][0]["side_effect_class"] = "read"
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="design_only_action_used",
+        message_substring="inspect_alerts must not call design-only action github.list_dependabot_alerts",
+    )
+
+
 def test_semantic_validation_allows_design_only_action_in_permissions_when_unused(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
@@ -902,6 +1136,23 @@ def test_semantic_validation_allows_design_only_action_in_permissions_when_unuse
     issues = validate_semantics(replace_documents(documents, connectors=connectors, permissions=permissions))
 
     assert not any(issue.code in {"missing_side_effect_contract", "invalid_side_effect_contract", "design_only_action_used"} for issue in issues)
+
+
+def test_semantic_validation_rejects_mutating_read_side_effect_class(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    connectors["connectors"][0]["actions"][1]["side_effect_class"] = "read"
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="connectors.yaml",
+        code="invalid_side_effect_contract",
+        message_substring="github.create_issue mutating actions require side_effect_class create, update, delete, send, publish, or provision",
+    )
 
 
 def test_semantic_validation_requires_design_only_permission_marker(tmp_path: Path) -> None:
@@ -1134,6 +1385,219 @@ def test_validate_workflow_package_collects_semantic_issues_for_schema_valid_pac
     assert result.messages() == sorted(result.messages())
 
 
+def test_validate_workflow_package_rejects_declared_action_outside_builtin_catalog(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_minimal_package(package)
+    for filename in ("workflow.yaml", "connectors.yaml", "permissions.yaml"):
+        path = package / filename
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("list_dependabot_alerts", "invented_read"),
+            encoding="utf-8",
+        )
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is False
+    assert_has_issue(
+        result.issues,
+        file="workflow.yaml",
+        code="unknown_catalog_action",
+        path=("steps", 0, "uses"),
+        message_substring="github.invented_read is not in the built-in workflow capability catalog",
+    )
+
+
+def test_validate_workflow_package_accepts_intelligence_nodes_with_compact_contract(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is True, result.messages()
+
+
+def test_semantic_validation_requires_llm_output_contract_or_schema(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    llm_step = next(step for step in workflow["steps"] if step["id"] == "extract_catalysts")
+    llm_step["with"].pop("output_contract")
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="missing_llm_output_contract",
+        path=("steps", "extract_catalysts", "with"),
+        message_substring="extract_catalysts requires output_contract or output_schema",
+    )
+
+
+def test_semantic_validation_rejects_unknown_llm_output_contract(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    llm_step = next(step for step in workflow["steps"] if step["id"] == "extract_catalysts")
+    llm_step["with"]["output_contract"] = "invented_contract_v1"
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="unknown_llm_output_contract",
+        path=("steps", "extract_catalysts", "with", "output_contract"),
+        message_substring="unknown LLM output contract: invented_contract_v1",
+    )
+
+
+def test_semantic_validation_rejects_llm_output_contract_and_schema_together(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    llm_step = next(step for step in workflow["steps"] if step["id"] == "extract_catalysts")
+    llm_step["with"]["output_schema"] = {"type": "object", "required": ["items"]}
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="ambiguous_llm_output_contract",
+        path=("steps", "extract_catalysts", "with"),
+        message_substring="extract_catalysts must set only one of output_contract or output_schema",
+    )
+
+
+def test_semantic_validation_rejects_llm_contract_output_allowlist_mismatch(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    llm_action = connectors["connectors"][1]["actions"][0]
+    llm_action["outputs"]["allowed"] = ["items", "confidence"]
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="connectors.yaml",
+        code="llm_output_contract_mismatch",
+        path=("connectors", "llm", "actions", "extract_structured", "outputs", "allowed"),
+        message_substring="llm.extract_structured outputs.allowed must include event_alerts_v1 fields",
+    )
+
+
+def test_semantic_validation_rejects_source_fetch_items_output_allowlist_mismatch(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    documents = load_package_documents(package)
+    connectors = deepcopy(documents.connectors)
+    source_action = connectors["connectors"][0]["actions"][0]
+    source_action["outputs"]["allowed"] = ["sender_email", "subject", "body", "timestamp"]
+
+    issues = validate_semantics(replace_documents(documents, connectors=connectors))
+
+    assert_has_issue(
+        issues,
+        file="connectors.yaml",
+        code="builtin_output_contract_mismatch",
+        path=("connectors", "source", "actions", "fetch_items", "outputs", "allowed"),
+        message_substring=(
+            "source.fetch_items outputs.allowed must include at least one supported top-level field: "
+            "artifact_path, items, source_count"
+        ),
+    )
+
+
+def test_semantic_validation_rejects_mutating_llm_node(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    llm_step = next(step for step in workflow["steps"] if step["id"] == "extract_catalysts")
+    llm_step["side_effect_class"] = "send"
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="invalid_llm_side_effect",
+        path=("steps", "extract_catalysts", "side_effect_class"),
+        message_substring="LLM step extract_catalysts must be read-only",
+    )
+
+
+def test_semantic_validation_requires_policy_check_contract(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    documents = load_package_documents(package)
+    workflow = deepcopy(documents.workflow)
+    policy_step = next(step for step in workflow["steps"] if step["id"] == "check_policy")
+    policy_step["with"].pop("checks")
+
+    issues = validate_semantics(replace_documents(documents, workflow=workflow))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="missing_policy_checks",
+        path=("steps", "check_policy", "with", "checks"),
+        message_substring="policy.check step check_policy requires with.checks",
+    )
+
+
+def test_semantic_validation_rejects_domain_specific_finance_action(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    for filename in ("workflow.yaml", "connectors.yaml", "permissions.yaml"):
+        path = package / filename
+        path.write_text(
+            path.read_text(encoding="utf-8")
+            .replace("source.fetch_items", "finance.find_catalysts")
+            .replace("id: source", "id: finance")
+            .replace("connector: source", "connector: finance")
+            .replace("fetch_items", "find_catalysts"),
+            encoding="utf-8",
+        )
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is False
+    assert_has_issue(
+        result.issues,
+        file="workflow.yaml",
+        code="unknown_catalog_action",
+        message_substring="finance.find_catalysts is not in the built-in workflow capability catalog",
+    )
+
+
+def test_semantic_validation_rejects_unbounded_llm_action(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    for filename in ("workflow.yaml", "connectors.yaml", "permissions.yaml"):
+        path = package / filename
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("extract_structured", "do_anything"),
+            encoding="utf-8",
+        )
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is False
+    assert_has_issue(
+        result.issues,
+        file="workflow.yaml",
+        code="unknown_catalog_action",
+        message_substring="llm.do_anything is not in the built-in workflow capability catalog",
+    )
+
+
 def test_validate_workflow_package_returns_schema_issue_for_structurally_invalid_package(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
@@ -1173,6 +1637,33 @@ def test_validate_workflow_package_load_error_uses_resolved_file_path(
 def test_example_dependency_security_review_package_is_valid() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     package = repo_root / "examples/appv24/workflows/dependency-security-review"
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is True, result.messages()
+
+
+def test_example_financial_catalyst_alerts_package_is_valid() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    package = repo_root / "examples/appv24/workflows/financial-catalyst-alerts"
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is True, result.messages()
+
+
+def test_example_public_news_digest_package_is_valid() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    package = repo_root / "examples/appv24/workflows/public-news-digest"
+
+    result = validate_workflow_package(package)
+
+    assert result.ok is True, result.messages()
+
+
+def test_example_telegram_support_ticket_package_is_valid() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    package = repo_root / "examples/appv24/workflows/telegram-support-ticket"
 
     result = validate_workflow_package(package)
 

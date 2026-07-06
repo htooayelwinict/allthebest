@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from appv24.workflows.live_validation import should_validate_workflow_drafts
 from appv24.workflows.prompt_examples import PACKAGE_STAGE_MICRO_EXAMPLES
 from appv24.workflows.prompt_fragments import (
+    render_capability_catalog_fragment,
     render_passive_safety_fragment,
     render_required_package_blocks_fragment,
     render_rollback_safety_fragment,
@@ -98,6 +99,7 @@ def build_workflow_stage_prompt(
             "",
             "Schema reminders:",
             render_schema_reminders_fragment(),
+            render_capability_catalog_fragment(),
             render_side_effect_contract_fragment(),
             render_secret_reference_fragment(),
             render_rollback_safety_fragment(),

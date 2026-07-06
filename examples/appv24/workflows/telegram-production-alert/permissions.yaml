@@ -1,0 +1,12 @@
+version: appv24.permissions/v1
+approvals:
+  - id: operator-approval
+    mode: explicit
+    required_for:
+      - notify_admin
+permissions:
+  - connector: telegram
+    actions:
+      - send_message
+    scopes:
+      - telegram:send

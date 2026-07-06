@@ -39,12 +39,57 @@ from appv24.workflows.live_validation import (
     format_workflow_validation_report,
     should_validate_workflow_drafts,
 )
+from appv24.workflows.live_env_template import build_workflow_live_env_template, format_workflow_live_env_template
+from appv24.workflows.live_preflight import (
+    credential_resolver_for_package_env,
+    format_live_draft_preflight_report,
+    format_live_production_preflight_report,
+    format_live_read_preflight_report,
+    preflight_live_draft_workflow,
+    preflight_live_production_workflow,
+    preflight_live_read_workflow,
+)
+from appv24.workflows.live_broker import LiveWorkflowBroker
+from appv24.workflows.live_readiness import format_workflow_live_readiness_report, inspect_workflow_live_readiness
+from appv24.workflows.live_runner import run_live_draft_workflow, run_live_production_workflow, run_live_read_workflow
+from appv24.workflows.live_transports import (
+    build_live_draft_transports_from_env,
+    build_live_production_transports_from_env,
+    build_live_read_transports_from_env,
+)
 from appv24.workflows.repair import (
     WorkflowDraftRepairConfig,
     WorkflowDraftRepairResult,
+    format_workflow_repair_stop_report,
     repair_workflow_draft_messages,
 )
+from appv24.workflows.activation import WorkflowActivationStore, format_workflow_activation_list
+from appv24.workflows.approval_commands import (
+    format_workflow_approval_command_result,
+    format_workflow_approval_list,
+    list_workflow_approval_requests,
+    record_workflow_approval_command,
+)
 from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
+from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
+from appv24.workflows.bundle_export import (
+    check_workflow_bundle,
+    format_workflow_bundle_check,
+    format_workflow_bundle_export,
+    write_workflow_bundle,
+)
+from appv24.workflows.connector_registry import inspect_workflow_connector_registry
+from appv24.workflows.explain import (
+    explain_workflow_activation_run,
+    explain_workflow_package,
+    explain_workflow_run,
+    format_workflow_package_explanation,
+    format_workflow_run_explanation,
+)
+from appv24.workflows.iac_export import export_deployment_intent_from_path, format_deployment_intent
+from appv24.workflows.live_plan import build_workflow_live_plan_from_path, format_workflow_live_plan
+from appv24.workflows.phase_runner import run_workflow_approved_live_production
+from appv24.workflows.runner import format_workflow_run_report, run_workflow
 from appv24.workflows.staging import run_workflow_draft_stages, should_stage_workflow_drafts
 from appv24.workflows.validator import validate_workflow_draft_text, validate_workflow_package
 
@@ -509,6 +554,44 @@ def main(argv: list[str] | None = None) -> int:
 
     prompt = " ".join(args.prompt).strip()
     if prompt:
+        if _handle_workflow_explain_command(app, prompt):
+            return 0
+        if _handle_workflow_export_bundle_command(app, prompt):
+            return 0
+        if _handle_workflow_bundle_check_command(app, prompt):
+            return 0
+        if _handle_workflow_export_intent_command(app, prompt):
+            return 0
+        if _handle_workflow_connectors_command(app, prompt):
+            return 0
+        if _handle_workflow_live_plan_command(app, prompt):
+            return 0
+        if _handle_workflow_run_approval_command(app, prompt):
+            return 0
+        if _handle_workflow_run_local_command(app, prompt):
+            return 0
+        if _handle_workflow_approvals_command(app, prompt):
+            return 0
+        if _handle_workflow_approval_command(app, prompt):
+            return 0
+        if _handle_workflow_live_env_template_command(app, prompt):
+            return 0
+        if _handle_workflow_live_ready_command(app, prompt):
+            return 0
+        if _handle_workflow_live_draft_preflight_command(app, prompt):
+            return 0
+        if _handle_workflow_live_read_preflight_command(app, prompt):
+            return 0
+        if _handle_workflow_live_production_preflight_command(app, prompt):
+            return 0
+        if _handle_workflow_run_live_read_command(app, prompt):
+            return 0
+        if _handle_workflow_run_live_draft_command(app, prompt):
+            return 0
+        if _handle_workflow_run_live_production_command(app, prompt):
+            return 0
+        if _handle_workflow_activation_command(app, prompt):
+            return 0
         _run_prompt_for_profile(app, selected_profile.id, prompt)
         repair_result = _repair_workflow_draft_if_needed(app, selected_profile.id)
         _print_last_assistant(app)
@@ -530,6 +613,44 @@ def main(argv: list[str] | None = None) -> int:
         if prompt in {"/exit", "/quit", "exit", "quit"}:
             return 0
         if not prompt:
+            continue
+        if _handle_workflow_explain_command(app, prompt):
+            continue
+        if _handle_workflow_export_bundle_command(app, prompt):
+            continue
+        if _handle_workflow_bundle_check_command(app, prompt):
+            continue
+        if _handle_workflow_export_intent_command(app, prompt):
+            continue
+        if _handle_workflow_connectors_command(app, prompt):
+            continue
+        if _handle_workflow_live_plan_command(app, prompt):
+            continue
+        if _handle_workflow_run_approval_command(app, prompt):
+            continue
+        if _handle_workflow_run_local_command(app, prompt):
+            continue
+        if _handle_workflow_approvals_command(app, prompt):
+            continue
+        if _handle_workflow_approval_command(app, prompt):
+            continue
+        if _handle_workflow_live_env_template_command(app, prompt):
+            continue
+        if _handle_workflow_live_ready_command(app, prompt):
+            continue
+        if _handle_workflow_live_draft_preflight_command(app, prompt):
+            continue
+        if _handle_workflow_live_read_preflight_command(app, prompt):
+            continue
+        if _handle_workflow_live_production_preflight_command(app, prompt):
+            continue
+        if _handle_workflow_run_live_read_command(app, prompt):
+            continue
+        if _handle_workflow_run_live_draft_command(app, prompt):
+            continue
+        if _handle_workflow_run_live_production_command(app, prompt):
+            continue
+        if _handle_workflow_activation_command(app, prompt):
             continue
         if _handle_workflow_save_command(app, selected_profile.id, prompt):
             continue
@@ -682,7 +803,889 @@ def _print_workflow_validation_if_needed(
     if result is None:
         return
 
+    if repair_result is not None:
+        repair_stop_report = format_workflow_repair_stop_report(repair_result)
+        if repair_stop_report:
+            print(repair_stop_report)
+
     print(format_workflow_validation_report(result))
+
+
+def _handle_workflow_activation_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_activation_command(prompt):
+        return False
+
+    args = prompt.split()
+    command = args[0] if args else ""
+    try:
+        store = WorkflowActivationStore(_workflow_activation_root(app.cwd))
+        if command == "/workflow-activation-list":
+            if len(args) != 1:
+                raise ValueError("expected /workflow-activation-list")
+            print(format_workflow_activation_list(store.list_statuses()))
+        elif command in {"/workflow-activation-enable", "/workflow-activation-disable"}:
+            if len(args) != 2:
+                raise ValueError(f"expected {command} <id>")
+            activation_id = _resolve_workflow_activation_id(args[1])
+            activation = store.set_enabled(activation_id, command == "/workflow-activation-enable")
+            state = "enabled" if activation.enabled else "disabled"
+            print(f"Workflow activation {state}: {activation.activation_id}")
+        elif command == "/workflow-activate":
+            if len(args) not in {2, 3}:
+                raise ValueError("expected /workflow-activate <path> [fixture]")
+            package_path = _resolve_workflow_package_path(app.cwd, args[1])
+            activation = store.create_activation(
+                package_path,
+                trigger_type="manual",
+                fixture_name=args[2] if len(args) == 3 else "happy_path.yaml",
+                mode=WorkflowRunMode.LOCAL,
+                approve_all=True,
+            )
+            print(
+                "\n".join(
+                    [
+                        f"Workflow activation created: {activation.activation_id}",
+                        f"workflow: {activation.workflow_name}",
+                        f"trigger: {activation.trigger_type}",
+                        f"fixture: {activation.fixture_name}",
+                        f"mode: {activation.mode.value}",
+                    ]
+                )
+            )
+        elif command == "/workflow-activation-run":
+            if len(args) != 2:
+                raise ValueError("expected /workflow-activation-run <id>")
+            activation_id = _resolve_workflow_activation_id(args[1])
+            report = store.run_activation(activation_id)
+            rendered = format_workflow_run_report(report).replace("Workflow local run:", "Workflow activation run:", 1)
+            print(f"{rendered}\nactivation: {activation_id}")
+        elif command == "/workflow-activation-run-explain":
+            if len(args) not in {2, 3}:
+                raise ValueError("expected /workflow-activation-run-explain <id> [run-id]")
+            activation_id = _resolve_workflow_activation_id(args[1])
+            explanation = explain_workflow_activation_run(store, activation_id, args[2] if len(args) == 3 else None)
+            print(format_workflow_run_explanation(explanation))
+        elif command == "/workflow-activation-status":
+            if len(args) != 2:
+                raise ValueError("expected /workflow-activation-status <id>")
+            status = store.status(_resolve_workflow_activation_id(args[1]))
+            print(
+                "\n".join(
+                    [
+                        "Workflow activation status:",
+                        f"activation: {status['activation_id']}",
+                        f"workflow: {status['workflow_name']}",
+                        f"trigger: {status['trigger_type']}",
+                        f"enabled: {status['enabled']}",
+                        f"package: {status['package_status']}",
+                        f"last run: {status['last_run_id'] or 'none'}",
+                        f"last status: {status['last_status'] or 'none'}",
+                        f"runs: {status['runs']}",
+                    ]
+                )
+            )
+        elif command == "/workflow-activation-history":
+            if len(args) != 2:
+                raise ValueError("expected /workflow-activation-history <id>")
+            activation_id = _resolve_workflow_activation_id(args[1])
+            runs = store.history(activation_id)
+            lines = [f"Workflow activation history: {activation_id}"]
+            if runs:
+                lines.extend(f"run-{index}: {run_id}" for index, run_id in enumerate(runs, start=1))
+            else:
+                lines.append("none")
+            print("\n".join(lines))
+        else:
+            raise ValueError("unknown workflow activation command")
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow activation failed: {error}")
+    return True
+
+
+def _handle_workflow_export_intent_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_export_intent_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) != 2:
+            raise ValueError("expected /workflow-export-intent <path>")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        print(format_deployment_intent(export_deployment_intent_from_path(package_path)))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow deployment intent export failed: {error}")
+    return True
+
+
+def _handle_workflow_export_bundle_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_export_bundle_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) not in {2, 3}:
+            raise ValueError("expected /workflow-export-bundle <path> [output-dir]")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        output_dir = _resolve_workflow_package_path(app.cwd, args[2]) if len(args) == 3 else None
+        bundle = write_workflow_bundle(package_path, output_dir=output_dir, env=os.environ)
+        print(format_workflow_bundle_export(bundle))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow bundle export failed: {error}")
+    return True
+
+
+def _handle_workflow_bundle_check_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_bundle_check_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) != 2:
+            raise ValueError("expected /workflow-bundle-check <bundle-dir>")
+        bundle_dir = _resolve_workflow_package_path(app.cwd, args[1])
+        print(format_workflow_bundle_check(check_workflow_bundle(bundle_dir)))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow bundle check failed: {error}")
+    return True
+
+
+def _handle_workflow_connectors_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_connectors_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) != 2:
+            raise ValueError("expected /workflow-connectors <path>")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        print(inspect_workflow_connector_registry(package_path, env=os.environ).to_text())
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow connector registry failed: {error}")
+    return True
+
+
+def _handle_workflow_live_plan_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_live_plan_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) not in {2, 3}:
+            raise ValueError("expected /workflow-live-plan <path> [fixture]")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        fixture_name = args[2] if len(args) == 3 else "happy_path.yaml"
+        print(format_workflow_live_plan(build_workflow_live_plan_from_path(package_path, fixture_name)))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live plan failed: {error}")
+    return True
+
+
+def _handle_workflow_explain_command(app: CodingApp, prompt: str) -> bool:
+    if not (_is_workflow_explain_command(prompt) or _is_workflow_run_explain_command(prompt)):
+        return False
+
+    args = prompt.split()
+    try:
+        if _is_workflow_explain_command(prompt):
+            if len(args) != 2:
+                raise ValueError("expected /workflow-explain <path>")
+            package_path = _resolve_workflow_package_path(app.cwd, args[1])
+            print(format_workflow_package_explanation(explain_workflow_package(package_path)))
+            return True
+
+        if len(args) not in {2, 3}:
+            raise ValueError("expected /workflow-run-explain <path> [run-id]")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        print(format_workflow_run_explanation(explain_workflow_run(package_path, args[2] if len(args) == 3 else None)))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow explain failed: {error}")
+    return True
+
+
+def _handle_workflow_run_local_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_run_command(prompt):
+        return False
+
+    parsed = _parse_workflow_run_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        report = run_workflow(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=parsed.fixture_name,
+                mode=WorkflowRunMode.LOCAL,
+                approve_all=parsed.approve_all,
+            )
+        )
+        rendered = format_workflow_run_report(report)
+        if parsed.label == "sandbox":
+            rendered = rendered.replace("Workflow local run:", "Workflow sandbox run:", 1)
+        print(rendered)
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow local run failed: {error}")
+    return True
+
+
+def _handle_workflow_run_approval_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_run_approval_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) not in {2, 3}:
+            raise ValueError("expected /workflow-run-approval <path> [fixture]")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        report = run_workflow(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=args[2] if len(args) == 3 else None,
+                mode=WorkflowRunMode.LOCAL,
+                approve_all=False,
+            )
+        )
+        print(format_workflow_run_report(report).replace("Workflow local run:", "Workflow approval prep run:", 1))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow approval prep run failed: {error}")
+    return True
+
+
+def _handle_workflow_approval_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_approval_command(prompt):
+        return False
+
+    args = prompt.split()
+    command = args[0] if args else ""
+    try:
+        if len(args) != 4:
+            raise ValueError(f"expected {command} <path> <run-id> <approval-request-id>")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        result = record_workflow_approval_command(
+            package_path,
+            args[2],
+            args[3],
+            approved=command == "/workflow-approve",
+            decided_by="cli",
+        )
+        print(format_workflow_approval_command_result(result))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow approval failed: {error}")
+    return True
+
+
+def _handle_workflow_approvals_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_approvals_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) != 3:
+            raise ValueError("expected /workflow-approvals <path> <run-id>")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        result = list_workflow_approval_requests(package_path, args[2])
+        print(format_workflow_approval_list(result))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow approvals failed: {error}")
+    return True
+
+
+def _handle_workflow_live_ready_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_live_ready_command(prompt):
+        return False
+
+    parsed = _parse_workflow_live_ready_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        report = inspect_workflow_live_readiness(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=parsed.fixture_name,
+                mode=parsed.mode,
+                approval_run_id=parsed.approval_run_id,
+                connector_allowlist=parsed.connector_allowlist,
+            ),
+            env=os.environ,
+        )
+        print(format_workflow_live_readiness_report(report))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live readiness failed: {error}")
+    return True
+
+
+def _handle_workflow_live_env_template_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_live_env_template_command(prompt):
+        return False
+
+    parsed = _parse_workflow_live_env_template_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        template = build_workflow_live_env_template(
+            WorkflowRunRequest(
+                package_path=package_path,
+                mode=parsed.mode,
+                connector_allowlist=parsed.connector_allowlist,
+            )
+        )
+        print(format_workflow_live_env_template(template))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live env template failed: {error}")
+    return True
+
+
+def _is_workflow_export_intent_command(prompt: str) -> bool:
+    return prompt == "/workflow-export-intent" or prompt.startswith("/workflow-export-intent ")
+
+
+def _is_workflow_export_bundle_command(prompt: str) -> bool:
+    return prompt == "/workflow-export-bundle" or prompt.startswith("/workflow-export-bundle ")
+
+
+def _is_workflow_bundle_check_command(prompt: str) -> bool:
+    return prompt == "/workflow-bundle-check" or prompt.startswith("/workflow-bundle-check ")
+
+
+def _is_workflow_connectors_command(prompt: str) -> bool:
+    return prompt == "/workflow-connectors" or prompt.startswith("/workflow-connectors ")
+
+
+def _is_workflow_live_plan_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-plan" or prompt.startswith("/workflow-live-plan ")
+
+
+def _is_workflow_explain_command(prompt: str) -> bool:
+    return prompt == "/workflow-explain" or prompt.startswith("/workflow-explain ")
+
+
+def _is_workflow_run_explain_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-explain" or prompt.startswith("/workflow-run-explain ")
+
+
+def _is_workflow_run_local_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-local" or prompt.startswith("/workflow-run-local ")
+
+
+def _is_workflow_run_sandbox_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-sandbox" or prompt.startswith("/workflow-run-sandbox ")
+
+
+def _is_workflow_run_approval_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-approval" or prompt.startswith("/workflow-run-approval ")
+
+
+def _is_workflow_run_command(prompt: str) -> bool:
+    return (
+        _is_workflow_run_local_command(prompt)
+        or _is_workflow_run_sandbox_command(prompt)
+        or prompt == "/workflow-run"
+        or prompt.startswith("/workflow-run ")
+    )
+
+
+@dataclass(frozen=True)
+class _WorkflowRunCommand:
+    package_path: str = ""
+    fixture_name: str | None = None
+    approve_all: bool = False
+    label: str = "local"
+    error: str | None = None
+
+
+def _parse_workflow_run_command(prompt: str) -> _WorkflowRunCommand:
+    args = prompt.split()
+    command = args[0] if args else ""
+    if command == "/workflow-run-local":
+        if len(args) < 2:
+            return _WorkflowRunCommand(error="missing package path")
+        if len(args) > 3:
+            return _WorkflowRunCommand(error="expected /workflow-run-local <path> [fixture]")
+        return _WorkflowRunCommand(package_path=args[1], fixture_name=args[2] if len(args) == 3 else None, approve_all=True)
+
+    if command == "/workflow-run-sandbox":
+        if len(args) < 2:
+            return _WorkflowRunCommand(error="missing package path")
+        if len(args) > 3:
+            return _WorkflowRunCommand(error="expected /workflow-run-sandbox <path> [fixture]")
+        return _WorkflowRunCommand(
+            package_path=args[1],
+            fixture_name=args[2] if len(args) == 3 else None,
+            approve_all=True,
+            label="sandbox",
+        )
+
+    if command != "/workflow-run":
+        return _WorkflowRunCommand(error="unknown workflow run command")
+    if len(args) < 5:
+        return _WorkflowRunCommand(error="expected /workflow-run <path> <fixture> --mode local --approve-all")
+    package_path = args[1]
+    fixture_name = args[2]
+    flags = args[3:]
+    if "--mode" not in flags:
+        return _WorkflowRunCommand(error="missing --mode local")
+    mode_index = flags.index("--mode")
+    if mode_index + 1 >= len(flags) or flags[mode_index + 1] != "local":
+        return _WorkflowRunCommand(error="only --mode local is supported")
+    if "--approve-all" not in flags:
+        return _WorkflowRunCommand(error="missing --approve-all")
+    extra = list(flags)
+    del extra[mode_index : mode_index + 2]
+    extra.remove("--approve-all")
+    if extra:
+        return _WorkflowRunCommand(error=f"unsupported workflow-run flags: {' '.join(extra)}")
+    return _WorkflowRunCommand(package_path=package_path, fixture_name=fixture_name, approve_all=True)
+
+
+def _handle_workflow_live_draft_preflight_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_live_draft_preflight_command(prompt):
+        return False
+
+    parsed = _parse_workflow_live_draft_preflight_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        report = preflight_live_draft_workflow(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=parsed.fixture_name,
+                mode=WorkflowRunMode.LIVE_DRAFT,
+                approval_run_id=parsed.approval_run_id,
+                connector_allowlist=parsed.connector_allowlist,
+            ),
+            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            available_transports=build_live_draft_transports_from_env(os.environ).keys(),
+        )
+        print(format_live_draft_preflight_report(report))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live-draft preflight failed: {error}")
+    return True
+
+
+def _handle_workflow_live_read_preflight_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_live_read_preflight_command(prompt):
+        return False
+
+    parsed = _parse_workflow_live_read_preflight_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        report = preflight_live_read_workflow(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=parsed.fixture_name,
+                mode=WorkflowRunMode.LIVE_READ,
+                connector_allowlist=parsed.connector_allowlist,
+            ),
+            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            available_transports=build_live_read_transports_from_env(os.environ).keys(),
+        )
+        print(format_live_read_preflight_report(report))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live-read preflight failed: {error}")
+    return True
+
+
+def _handle_workflow_live_production_preflight_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_live_production_preflight_command(prompt):
+        return False
+
+    parsed = _parse_workflow_live_production_preflight_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        report = preflight_live_production_workflow(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=parsed.fixture_name,
+                mode=WorkflowRunMode.LIVE_PRODUCTION,
+                approval_run_id=parsed.approval_run_id,
+                connector_allowlist=parsed.connector_allowlist,
+            ),
+            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            available_transports=build_live_production_transports_from_env(os.environ).keys(),
+        )
+        print(format_live_production_preflight_report(report))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live-production preflight failed: {error}")
+    return True
+
+
+def _handle_workflow_run_live_draft_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_run_live_draft_command(prompt):
+        return False
+
+    parsed = _parse_workflow_run_live_draft_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        report = run_live_draft_workflow(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=parsed.fixture_name,
+                mode=WorkflowRunMode.LIVE_DRAFT,
+                approval_run_id=parsed.approval_run_id,
+                connector_allowlist=parsed.connector_allowlist,
+            ),
+            broker=LiveWorkflowBroker(build_live_draft_transports_from_env(os.environ), mode="live-draft"),
+            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+        )
+        print(format_workflow_run_report(report).replace("Workflow local run:", "Workflow live-draft run:", 1))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live-draft run failed: {error}")
+    return True
+
+
+def _handle_workflow_run_live_production_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_run_live_production_command(prompt):
+        return False
+
+    parsed = _parse_workflow_run_live_production_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        phase_report = run_workflow_approved_live_production(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=parsed.fixture_name,
+                mode=WorkflowRunMode.LIVE_PRODUCTION,
+                connector_allowlist=parsed.connector_allowlist,
+            ),
+            approval_run_id=parsed.approval_run_id,
+            live_production_broker=LiveWorkflowBroker(
+                build_live_production_transports_from_env(os.environ),
+                mode="live-production",
+                production_enabled=True,
+            ),
+            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+        )
+        report = phase_report.live_production_report
+        if report is None:
+            raise RuntimeError("live-production phase did not produce a run report")
+        print(format_workflow_run_report(report).replace("Workflow local run:", "Workflow live-production run:", 1))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live-production run failed: {error}")
+    return True
+
+
+def _handle_workflow_run_live_read_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_run_live_read_command(prompt):
+        return False
+
+    parsed = _parse_workflow_run_live_read_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        report = run_live_read_workflow(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=parsed.fixture_name,
+                mode=WorkflowRunMode.LIVE_READ,
+                connector_allowlist=parsed.connector_allowlist,
+            ),
+            broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
+            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+        )
+        print(format_workflow_run_report(report).replace("Workflow local run:", "Workflow live-read run:", 1))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live-read run failed: {error}")
+    return True
+
+
+def _is_workflow_approval_command(prompt: str) -> bool:
+    return (
+        prompt == "/workflow-approve"
+        or prompt.startswith("/workflow-approve ")
+        or prompt == "/workflow-deny"
+        or prompt.startswith("/workflow-deny ")
+    )
+
+
+def _is_workflow_approvals_command(prompt: str) -> bool:
+    return prompt == "/workflow-approvals" or prompt.startswith("/workflow-approvals ")
+
+
+def _is_workflow_live_draft_preflight_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-draft-preflight" or prompt.startswith("/workflow-live-draft-preflight ")
+
+
+def _is_workflow_live_read_preflight_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-read-preflight" or prompt.startswith("/workflow-live-read-preflight ")
+
+
+def _is_workflow_live_production_preflight_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-production-preflight" or prompt.startswith("/workflow-live-production-preflight ")
+
+
+def _is_workflow_live_ready_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-ready" or prompt.startswith("/workflow-live-ready ")
+
+
+def _is_workflow_live_env_template_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-env-template" or prompt.startswith("/workflow-live-env-template ")
+
+
+def _is_workflow_run_live_draft_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-live-draft" or prompt.startswith("/workflow-run-live-draft ")
+
+
+def _is_workflow_run_live_read_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-live-read" or prompt.startswith("/workflow-run-live-read ")
+
+
+def _is_workflow_run_live_production_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-live-production" or prompt.startswith("/workflow-run-live-production ")
+
+
+@dataclass(frozen=True)
+class _WorkflowLiveDraftPreflightCommand:
+    package_path: str = ""
+    fixture_name: str = ""
+    approval_run_id: str = ""
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _parse_workflow_live_draft_preflight_command(prompt: str) -> _WorkflowLiveDraftPreflightCommand:
+    args = prompt.split()
+    expected = "expected /workflow-live-draft-preflight <path> <fixture> <approval-run-id> --allow <action>[,<action>]"
+    if len(args) != 6 or args[0] != "/workflow-live-draft-preflight" or args[4] != "--allow":
+        return _WorkflowLiveDraftPreflightCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[5].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowLiveDraftPreflightCommand(error=expected)
+    return _WorkflowLiveDraftPreflightCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        approval_run_id=args[3],
+        connector_allowlist=allowlist,
+    )
+
+
+@dataclass(frozen=True)
+class _WorkflowLiveReadPreflightCommand:
+    package_path: str = ""
+    fixture_name: str = ""
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _parse_workflow_live_read_preflight_command(prompt: str) -> _WorkflowLiveReadPreflightCommand:
+    args = prompt.split()
+    expected = "expected /workflow-live-read-preflight <path> <fixture> --allow <action>[,<action>]"
+    if len(args) != 5 or args[0] != "/workflow-live-read-preflight" or args[3] != "--allow":
+        return _WorkflowLiveReadPreflightCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[4].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowLiveReadPreflightCommand(error=expected)
+    return _WorkflowLiveReadPreflightCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        connector_allowlist=allowlist,
+    )
+
+
+def _parse_workflow_live_production_preflight_command(prompt: str) -> _WorkflowLiveDraftPreflightCommand:
+    args = prompt.split()
+    expected = "expected /workflow-live-production-preflight <path> <fixture> <approval-run-id> --allow <action>[,<action>]"
+    if len(args) != 6 or args[0] != "/workflow-live-production-preflight" or args[4] != "--allow":
+        return _WorkflowLiveDraftPreflightCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[5].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowLiveDraftPreflightCommand(error=expected)
+    return _WorkflowLiveDraftPreflightCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        approval_run_id=args[3],
+        connector_allowlist=allowlist,
+    )
+
+
+@dataclass(frozen=True)
+class _WorkflowLiveReadyCommand:
+    mode: WorkflowRunMode = WorkflowRunMode.LIVE_READ
+    package_path: str = ""
+    fixture_name: str = ""
+    approval_run_id: str | None = None
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _parse_workflow_live_ready_command(prompt: str) -> _WorkflowLiveReadyCommand:
+    args = prompt.split()
+    expected = (
+        "expected /workflow-live-ready <live-read|live-draft|live-production> "
+        "<path> <fixture> [approval-run-id] --allow <action>[,<action>]"
+    )
+    if len(args) < 6 or args[0] != "/workflow-live-ready":
+        return _WorkflowLiveReadyCommand(error=expected)
+    mode = _workflow_live_ready_mode(args[1])
+    if mode is None:
+        return _WorkflowLiveReadyCommand(error=expected)
+    if mode is WorkflowRunMode.LIVE_READ:
+        if len(args) != 6 or args[4] != "--allow":
+            return _WorkflowLiveReadyCommand(error=expected)
+        allowlist = _parse_allowlist(args[5])
+        if not allowlist:
+            return _WorkflowLiveReadyCommand(error=expected)
+        return _WorkflowLiveReadyCommand(mode=mode, package_path=args[2], fixture_name=args[3], connector_allowlist=allowlist)
+    if len(args) != 7 or args[5] != "--allow":
+        return _WorkflowLiveReadyCommand(error=expected)
+    allowlist = _parse_allowlist(args[6])
+    if not allowlist:
+        return _WorkflowLiveReadyCommand(error=expected)
+    return _WorkflowLiveReadyCommand(
+        mode=mode,
+        package_path=args[2],
+        fixture_name=args[3],
+        approval_run_id=args[4],
+        connector_allowlist=allowlist,
+    )
+
+
+def _parse_workflow_live_env_template_command(prompt: str) -> _WorkflowLiveReadyCommand:
+    args = prompt.split()
+    expected = "expected /workflow-live-env-template <live-read|live-draft|live-production> <path> --allow <action>[,<action>]"
+    if len(args) != 5 or args[0] != "/workflow-live-env-template" or args[3] != "--allow":
+        return _WorkflowLiveReadyCommand(error=expected)
+    mode = _workflow_live_ready_mode(args[1])
+    if mode is None:
+        return _WorkflowLiveReadyCommand(error=expected)
+    allowlist = _parse_allowlist(args[4])
+    if not allowlist:
+        return _WorkflowLiveReadyCommand(error=expected)
+    return _WorkflowLiveReadyCommand(mode=mode, package_path=args[2], connector_allowlist=allowlist)
+
+
+def _workflow_live_ready_mode(value: str) -> WorkflowRunMode | None:
+    return {
+        "live-read": WorkflowRunMode.LIVE_READ,
+        "live-draft": WorkflowRunMode.LIVE_DRAFT,
+        "live-production": WorkflowRunMode.LIVE_PRODUCTION,
+    }.get(value)
+
+
+def _parse_allowlist(value: str) -> tuple[str, ...]:
+    return tuple(action.strip() for action in value.split(",") if action.strip())
+
+
+@dataclass(frozen=True)
+class _WorkflowRunLiveDraftCommand:
+    package_path: str = ""
+    fixture_name: str = ""
+    approval_run_id: str = ""
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _parse_workflow_run_live_draft_command(prompt: str) -> _WorkflowRunLiveDraftCommand:
+    args = prompt.split()
+    expected = "expected /workflow-run-live-draft <path> <fixture> <approval-run-id> --allow <action>[,<action>]"
+    if len(args) != 6 or args[0] != "/workflow-run-live-draft" or args[4] != "--allow":
+        return _WorkflowRunLiveDraftCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[5].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowRunLiveDraftCommand(error=expected)
+    return _WorkflowRunLiveDraftCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        approval_run_id=args[3],
+        connector_allowlist=allowlist,
+    )
+
+
+@dataclass(frozen=True)
+class _WorkflowRunLiveReadCommand:
+    package_path: str = ""
+    fixture_name: str = ""
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _parse_workflow_run_live_read_command(prompt: str) -> _WorkflowRunLiveReadCommand:
+    args = prompt.split()
+    expected = "expected /workflow-run-live-read <path> <fixture> --allow <action>[,<action>]"
+    if len(args) != 5 or args[0] != "/workflow-run-live-read" or args[3] != "--allow":
+        return _WorkflowRunLiveReadCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[4].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowRunLiveReadCommand(error=expected)
+    return _WorkflowRunLiveReadCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        connector_allowlist=allowlist,
+    )
+
+
+def _parse_workflow_run_live_production_command(prompt: str) -> _WorkflowRunLiveDraftCommand:
+    args = prompt.split()
+    expected = "expected /workflow-run-live-production <path> <fixture> <approval-run-id> --allow <action>[,<action>]"
+    if len(args) != 6 or args[0] != "/workflow-run-live-production" or args[4] != "--allow":
+        return _WorkflowRunLiveDraftCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[5].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowRunLiveDraftCommand(error=expected)
+    return _WorkflowRunLiveDraftCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        approval_run_id=args[3],
+        connector_allowlist=allowlist,
+    )
+
+
+def _is_workflow_activation_command(prompt: str) -> bool:
+    return (
+        prompt == "/workflow-activate"
+        or prompt.startswith("/workflow-activate ")
+        or prompt == "/workflow-activation-enable"
+        or prompt.startswith("/workflow-activation-enable ")
+        or prompt == "/workflow-activation-disable"
+        or prompt.startswith("/workflow-activation-disable ")
+        or prompt == "/workflow-activation-list"
+        or prompt.startswith("/workflow-activation-list ")
+        or prompt == "/workflow-activation-run"
+        or prompt.startswith("/workflow-activation-run ")
+        or prompt == "/workflow-activation-run-explain"
+        or prompt.startswith("/workflow-activation-run-explain ")
+        or prompt == "/workflow-activation-status"
+        or prompt.startswith("/workflow-activation-status ")
+        or prompt == "/workflow-activation-history"
+        or prompt.startswith("/workflow-activation-history ")
+    )
+
+
+def _workflow_activation_root(cwd: str | Path) -> Path:
+    return Path(cwd).resolve() / ".appv24" / "workflow-activations"
+
+
+def _resolve_workflow_package_path(cwd: str | Path, path_text: str) -> Path:
+    base = Path(cwd).resolve()
+    raw_path = Path(path_text).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (base / raw_path).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as error:
+        raise ValueError("package path must stay inside the current working directory") from error
+    return candidate
+
+
+def _resolve_workflow_activation_id(value: str) -> str:
+    activation_id = value.strip()
+    if not activation_id:
+        raise ValueError("missing activation id")
+    if "/" in activation_id or "\\" in activation_id or activation_id in {".", ".."} or ".." in activation_id:
+        raise ValueError("activation id must not contain path traversal")
+    if not activation_id.startswith("activation-"):
+        raise ValueError("activation id must start with activation-")
+    return activation_id
 
 
 def _handle_workflow_save_command(app: CodingApp, profile_id: str, prompt: str) -> bool:

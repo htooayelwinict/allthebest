@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import re
 from typing import Any, Mapping
 
+from appv24.workflows.catalog import BUILTIN_WORKFLOW_ACTIONS
+from appv24.workflows.contracts import BUILTIN_LLM_OUTPUT_CONTRACTS
 from appv24.workflows.validator import WorkflowDraftValidationResult
 
 MUTATING_SIDE_EFFECT_CLASSES = {"create", "update", "delete", "send", "publish", "provision"}
@@ -123,6 +125,47 @@ def _directive_for_issue(
             ),
         )
 
+    if code == "missing_design_contract":
+        field = _missing_design_field(issue)
+        if field is not None:
+            rules = [
+                message,
+                "Preserve every existing workflow.yaml design field and add only the missing field.",
+                "workflow.yaml design must include intent, trigger, inputs, outputs, assumptions, side_effects, approval_gates, failure_modes, and rollback.",
+                "workflow.yaml design must be a top-level mapping, sibling to version, name, description, triggers, entrypoint, and steps.",
+                "Put design before triggers and indent every design list item under design.",
+            ]
+            if field in {"inputs", "outputs", "assumptions", "side_effects", "approval_gates", "failure_modes"}:
+                rules.extend(
+                    [
+                        "Use concise non-placeholder strings derived from the current workflow intent.",
+                        "Do not leave examples such as Input needed by the workflow or Output produced by the workflow in the final package.",
+                    ]
+                )
+            if field == "rollback":
+                rules.extend(
+                    [
+                        "design.rollback must be a YAML list of manual rollback note strings.",
+                        "Do not confuse design.rollback with rollback.md; both are required.",
+                    ]
+                )
+            return WorkflowRepairDirective(
+                code=code,
+                location=location,
+                instruction=f"Add the missing workflow.yaml design.{field} field.",
+                rules=tuple(rules),
+            )
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add the missing workflow.yaml design metadata.",
+            rules=(
+                message,
+                "workflow.yaml design must include intent, trigger, inputs, outputs, assumptions, side_effects, approval_gates, failure_modes, and rollback.",
+                "Preserve the workflow intent and existing package files.",
+            ),
+        )
+
     if code == "missing_decision_branches":
         return WorkflowRepairDirective(
             code=code,
@@ -158,6 +201,80 @@ def _directive_for_issue(
                 "Use one of the branch names from workflow.yaml steps[].branches.",
                 "Place the value under decision: <step-id>: <branch-name> in the affected fixture.",
                 "Do not rely on expected_path; it is documentation only and does not drive simulation.",
+            ),
+        )
+
+    if code == "unknown_catalog_action":
+        catalog = ", ".join(sorted(BUILTIN_WORKFLOW_ACTIONS))
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Use only built-in workflow capability catalog actions for executable connector steps.",
+            rules=(
+                message,
+                f"Built-in action choices: {catalog}.",
+                "Do not invent connector action names, even for read-only actions.",
+                "If the non-catalog action represents an incoming trigger or fixture input, remove that connector step and model the data as trigger metadata, fixture input, or a decision branch.",
+                "If the workflow needs a local artifact or draft, use an existing catalog action that matches the intent or represent the artifact in design.outputs and rollback.md.",
+            ),
+        )
+
+    if code in {
+        "missing_llm_output_contract",
+        "ambiguous_llm_output_contract",
+        "unknown_llm_output_contract",
+    }:
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Fix the LLM step output contract without redesigning the workflow.",
+            rules=(
+                message,
+                "LLM nodes are typed transforms, not autonomous agents.",
+                "Prefer compact with.output_contract names over inline with.output_schema to avoid token bloat.",
+                f"Built-in output_contract choices: {', '.join(sorted(BUILTIN_LLM_OUTPUT_CONTRACTS))}.",
+                "Set exactly one of with.output_contract or with.output_schema.",
+            ),
+        )
+
+    if code == "builtin_output_contract_mismatch":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Fix connectors.yaml outputs.allowed to use supported top-level provider output fields.",
+            rules=(
+                message,
+                "Do not put nested item fields directly in outputs.allowed.",
+                "For source.fetch_items, use top-level outputs such as items, source_count, or artifact_path.",
+                "Put sender, subject, body, timestamp, url, and similar item fields inside dry-run fixture item records or downstream input refs.",
+            ),
+        )
+
+    if code in {"invalid_llm_side_effect", "invalid_llm_approval", "invalid_llm_idempotency"}:
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Keep the LLM node as a read-only typed transform.",
+            rules=(
+                message,
+                "Do not put approval, idempotency, send, create, update, delete, publish, or provision behavior on llm.* actions.",
+                "Move external effects into separate cataloged notification, ticket, email, or send steps.",
+                "Use side_effect_class: read on workflow.yaml llm.* steps when a side_effect_class is present.",
+            ),
+        )
+
+    if code == "missing_policy_checks":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add deterministic policy checks to the policy.check step.",
+            rules=(
+                message,
+                "policy.check must use with.checks.",
+                "Do not rely on LLM judgment as the policy gate.",
+                "Each check key must be a stable snake_case policy name.",
+                "Each check value must be deterministic data: booleans, thresholds, refs, lists, or small mappings.",
+                "Keep policy.check read-only; approvals belong on downstream mutating create/send/publish steps.",
             ),
         )
 
@@ -298,6 +415,14 @@ def _path_matches(path: tuple[str | int, ...], *tail: str) -> bool:
     if len(text_parts) < len(tail):
         return False
     return text_parts[0] == tail[0] and text_parts[-1] == tail[-1]
+
+
+def _missing_design_field(issue: object) -> str | None:
+    path = getattr(issue, "path", ())
+    if not isinstance(path, tuple) or len(path) < 2 or path[0] != "design":
+        return None
+    field = path[1]
+    return field if isinstance(field, str) and field else None
 
 
 def _missing_side_effect_class_directive(

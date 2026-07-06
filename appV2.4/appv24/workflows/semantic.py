@@ -6,6 +6,13 @@ from collections import Counter
 import re
 from typing import Any, Iterable, Mapping
 
+from appv24.workflows.catalog import BUILTIN_WORKFLOW_ACTIONS, is_builtin_workflow_action
+from appv24.workflows.contracts import (
+    BUILTIN_LLM_OUTPUT_CONTRACTS,
+    builtin_action_output_fields,
+    is_builtin_llm_output_contract,
+    llm_output_contract_fields,
+)
 from appv24.workflows.errors import WorkflowIssue, sorted_issues
 from appv24.workflows.loader import PackageDocuments
 
@@ -62,6 +69,8 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     issues.extend(_runtime_transition_issues(steps))
     issues.extend(_transition_issues(steps, known_steps))
     issues.extend(_connector_reference_issues(steps, connectors, permission_actions, permission_scopes))
+    issues.extend(_intelligence_node_contract_issues(steps, connectors))
+    issues.extend(_builtin_action_output_contract_issues(action_entries))
     issues.extend(_side_effect_contract_issues(action_entries, steps_by_action, documents.permissions))
 
     mutating_steps = _mutating_steps(steps, connectors)
@@ -136,6 +145,171 @@ def _design_contract_issues(workflow: Mapping[str, Any]) -> list[WorkflowIssue]:
                     repair_hint=f"Set workflow.yaml design.{field} to a {expected}.",
                 )
             )
+    return issues
+
+
+def _intelligence_node_contract_issues(
+    steps: Iterable[Mapping[str, Any]],
+    connectors: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    for step in steps:
+        uses = step.get("uses")
+        if not isinstance(uses, str):
+            continue
+        connector_id, _, action_id = uses.partition(".")
+        action = connectors.get(connector_id, {}).get(action_id, {})
+        if connector_id == "llm":
+            issues.extend(_llm_node_contract_issues(step, action))
+        if uses == "policy.check":
+            issues.extend(_policy_check_contract_issues(step))
+    return issues
+
+
+def _llm_node_contract_issues(step: Mapping[str, Any], action: Mapping[str, Any]) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    step_id = str(step.get("id", "unknown"))
+    step_with = step.get("with")
+    with_map = step_with if isinstance(step_with, Mapping) else {}
+    contract = with_map.get("output_contract")
+    schema = with_map.get("output_schema")
+    has_contract = isinstance(contract, str) and bool(contract.strip())
+    has_schema = isinstance(schema, Mapping)
+
+    if has_contract and has_schema:
+        issues.append(
+            WorkflowIssue(
+                "ambiguous_llm_output_contract",
+                "workflow.yaml",
+                ("steps", step_id, "with"),
+                f"{step_id} must set only one of output_contract or output_schema",
+                expected="exactly one of output_contract or output_schema",
+                repair_hint="Prefer compact output_contract for built-in shapes; use output_schema only for custom shapes.",
+            )
+        )
+    elif not has_contract and not has_schema:
+        issues.append(
+            WorkflowIssue(
+                "missing_llm_output_contract",
+                "workflow.yaml",
+                ("steps", step_id, "with"),
+                f"{step_id} requires output_contract or output_schema",
+                expected="output_contract: <known-contract> or output_schema: <json-schema>",
+                repair_hint="Use compact output_contract such as event_alerts_v1 instead of embedding repeated schemas.",
+            )
+        )
+    elif has_contract and not is_builtin_llm_output_contract(contract):
+        issues.append(
+            WorkflowIssue(
+                "unknown_llm_output_contract",
+                "workflow.yaml",
+                ("steps", step_id, "with", "output_contract"),
+                f"unknown LLM output contract: {contract}",
+                expected=", ".join(sorted(BUILTIN_LLM_OUTPUT_CONTRACTS)),
+                repair_hint="Use a built-in compact output_contract name or replace it with a single inline output_schema.",
+            )
+        )
+    elif has_contract:
+        contract_fields = set(llm_output_contract_fields(contract))
+        allowed_outputs = set(_allowed_outputs(action))
+        if contract_fields and not contract_fields.issubset(allowed_outputs):
+            action_id = str(action.get("id", "unknown"))
+            issues.append(
+                WorkflowIssue(
+                    "llm_output_contract_mismatch",
+                    "connectors.yaml",
+                    ("connectors", "llm", "actions", action_id, "outputs", "allowed"),
+                    f"llm.{action_id} outputs.allowed must include {contract} fields: {', '.join(sorted(contract_fields))}",
+                    expected=", ".join(sorted(contract_fields)),
+                    repair_hint="Keep compact output_contract and update connectors.yaml outputs.allowed to the contract's canonical fields.",
+                )
+            )
+
+    step_side_effect_class = step.get("side_effect_class")
+    action_side_effect_class = action.get("side_effect_class")
+    if (
+        step_side_effect_class in MUTATING_SIDE_EFFECTS
+        or action.get("side_effect") is True
+        or action_side_effect_class in MUTATING_SIDE_EFFECTS
+    ):
+        issues.append(
+            WorkflowIssue(
+                "invalid_llm_side_effect",
+                "workflow.yaml",
+                ("steps", step_id, "side_effect_class"),
+                f"LLM step {step_id} must be read-only",
+                expected="side_effect_class: read",
+                repair_hint="Keep LLM nodes as typed transforms; move external actions into separate cataloged steps.",
+            )
+        )
+
+    if isinstance(step.get("approval"), str) or action.get("approval_required") is True:
+        issues.append(
+            WorkflowIssue(
+                "invalid_llm_approval",
+                "workflow.yaml",
+                ("steps", step_id, "approval"),
+                f"LLM step {step_id} must not require approval",
+                expected="no approval on llm.* steps",
+                repair_hint="Put approvals on downstream mutating notification, ticket, or send steps.",
+            )
+        )
+
+    if _idempotency_key_fields(action):
+        issues.append(
+            WorkflowIssue(
+                "invalid_llm_idempotency",
+                "connectors.yaml",
+                (),
+                f"LLM action llm.{action.get('id', 'unknown')} must not declare idempotency keys",
+                expected="no idempotency on llm.* actions",
+                repair_hint="Idempotency belongs on downstream mutating actions, not read-only LLM transforms.",
+            )
+        )
+    return issues
+
+
+def _policy_check_contract_issues(step: Mapping[str, Any]) -> list[WorkflowIssue]:
+    step_id = str(step.get("id", "unknown"))
+    step_with = step.get("with")
+    with_map = step_with if isinstance(step_with, Mapping) else {}
+    checks = with_map.get("checks")
+    if isinstance(checks, Mapping) and checks:
+        return []
+    return [
+        WorkflowIssue(
+            "missing_policy_checks",
+            "workflow.yaml",
+            ("steps", step_id, "with", "checks"),
+            f"policy.check step {step_id} requires with.checks",
+            expected="non-empty checks mapping",
+            repair_hint="Add deterministic with.checks instead of relying on LLM judgment for policy decisions.",
+        )
+    ]
+
+
+def _builtin_action_output_contract_issues(actions: Mapping[tuple[str, str], Mapping[str, Any]]) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    for (connector_id, action_id), action in sorted(actions.items()):
+        action_ref = f"{connector_id}.{action_id}"
+        supported_outputs = set(builtin_action_output_fields(action_ref))
+        allowed_outputs = set(_allowed_outputs(action))
+        if not supported_outputs or not allowed_outputs or supported_outputs.intersection(allowed_outputs):
+            continue
+        expected = ", ".join(sorted(supported_outputs))
+        issues.append(
+            WorkflowIssue(
+                "builtin_output_contract_mismatch",
+                "connectors.yaml",
+                ("connectors", connector_id, "actions", action_id, "outputs", "allowed"),
+                f"{action_ref} outputs.allowed must include at least one supported top-level field: {expected}",
+                expected=expected,
+                repair_hint=(
+                    "Use top-level provider output fields in connectors.yaml outputs.allowed; "
+                    "nested item fields belong inside fixture data or downstream input refs."
+                ),
+            )
+        )
     return issues
 
 
@@ -350,6 +524,20 @@ def _connector_reference_issues(
         if action_id not in connectors[connector_id]:
             issues.append(WorkflowIssue("unknown_action", "workflow.yaml", ("steps", index, "uses"), f"unknown action: {uses}"))
             continue
+        if not is_builtin_workflow_action(uses):
+            issues.append(
+                WorkflowIssue(
+                    "unknown_catalog_action",
+                    "workflow.yaml",
+                    ("steps", index, "uses"),
+                    f"{uses} is not in the built-in workflow capability catalog",
+                    expected=", ".join(sorted(BUILTIN_WORKFLOW_ACTIONS)),
+                    repair_hint=(
+                        "Use a built-in workflow capability catalog action, or model non-executed "
+                        "inputs as triggers, fixture data, decisions, or local artifacts instead of connector actions."
+                    ),
+                )
+            )
         allowed_actions = permission_actions.get(connector_id, set())
         if action_id not in allowed_actions and "*" not in allowed_actions:
             issues.append(
@@ -384,22 +572,8 @@ def _side_effect_contract_issues(
     design_only_actions: set[tuple[str, str]] = set()
 
     for action_key, action in sorted(actions.items()):
-        if action.get("side_effect") is not True:
-            continue
-
         connector_id, action_id = action_key
         action_ref = f"{connector_id}.{action_id}"
-        for field in SIDE_EFFECT_CONTRACT_FIELDS:
-            if field not in action:
-                issues.append(
-                    WorkflowIssue(
-                        "missing_side_effect_contract",
-                        "connectors.yaml",
-                        (),
-                        f"{action_ref} requires {field}",
-                    )
-                )
-
         execution_mode = action.get("execution_mode")
         side_effect_class = action.get("side_effect_class")
         if execution_mode == "design_only":
@@ -414,6 +588,31 @@ def _side_effect_contract_issues(
                         f"{step_id} must not call design-only action {action_ref}",
                     )
                 )
+
+        if action.get("side_effect") is not True:
+            continue
+
+        for field in SIDE_EFFECT_CONTRACT_FIELDS:
+            if field not in action:
+                issues.append(
+                    WorkflowIssue(
+                        "missing_side_effect_contract",
+                        "connectors.yaml",
+                        (),
+                        f"{action_ref} requires {field}",
+                    )
+                )
+
+        if side_effect_class is not None and side_effect_class not in MUTATING_SIDE_EFFECTS:
+            issues.append(
+                WorkflowIssue(
+                    "invalid_side_effect_contract",
+                    "connectors.yaml",
+                    (),
+                    f"{action_ref} mutating actions require side_effect_class create, update, delete, send, publish, or provision",
+                )
+            )
+        if execution_mode == "design_only":
             continue
 
         if execution_mode != "brokered":

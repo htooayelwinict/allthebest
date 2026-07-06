@@ -1,0 +1,6 @@
+input:
+  alert_key: NVDA-2026-07-06-missing-field
+connector_sandbox:
+  missing_fields:
+    fetch_news:
+      - items

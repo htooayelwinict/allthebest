@@ -1,0 +1,6 @@
+input:
+  digest_key: public-news-2026-07-06-bad-source
+connector_sandbox:
+  outputs:
+    fetch_public_news:
+      unexpected: source output does not match declared fields

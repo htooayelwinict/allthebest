@@ -1,0 +1,50 @@
+version: appv24.workflow/v1
+name: telegram-support-ticket
+description: Create a support ticket draft from an authorized Telegram customer message and notify an admin.
+design:
+  intent: Create a support ticket draft from an authorized Telegram customer message and notify an admin.
+  trigger: Telegram inbound message webhook.
+  inputs:
+    - Telegram user id.
+    - Customer message text.
+  outputs:
+    - Local ticket draft.
+    - Admin Telegram notification simulation.
+  assumptions:
+    - Authorized customer ids are configured outside the workflow package.
+    - Telegram send is simulated only in local sandbox mode.
+  side_effects:
+    - Create a local ticket draft after explicit approval.
+    - Simulate an admin Telegram notification after explicit approval.
+  approval_gates:
+    - admin-approval
+  failure_modes:
+    - Unauthorized sender.
+    - Ticket draft connector timeout.
+    - Admin notification connector failure.
+  rollback:
+    - Delete local draft artifacts only.
+triggers:
+  - id: telegram_message
+    type: webhook
+entrypoint: check_authorized_customer
+steps:
+  - id: check_authorized_customer
+    type: decision
+    branches:
+      authorized: create_ticket_draft
+      rejected: rejected
+  - id: create_ticket_draft
+    uses: ticket.create_draft
+    side_effect_class: create
+    approval: admin-approval
+    next: notify_admin
+  - id: notify_admin
+    uses: telegram.send_message
+    side_effect_class: send
+    approval: admin-approval
+    next: done
+  - id: rejected
+    type: terminal
+  - id: done
+    type: terminal

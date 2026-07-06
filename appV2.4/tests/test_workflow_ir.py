@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from appv24.workflows.compiler import compile_workflow_documents, compile_workflow_package
+from appv24.workflows.catalog import is_builtin_workflow_action
+from appv24.workflows.contracts import BUILTIN_LLM_OUTPUT_CONTRACTS, llm_output_contract_fields
 from appv24.workflows.ir import ConnectorRef, StepKind, WorkflowStep
 from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.policy import evaluate_policy
@@ -35,6 +37,25 @@ def replace_documents(
 
 def issue_codes(result) -> set[str]:
     return {issue.code for issue in result.issues}
+
+
+def test_policy_accepts_generic_intelligence_catalog_actions(tmp_path: Path) -> None:
+    assert is_builtin_workflow_action("source.fetch_items")
+    assert is_builtin_workflow_action("llm.extract_structured")
+    assert is_builtin_workflow_action("policy.check")
+    assert is_builtin_workflow_action("notification.create_draft")
+    assert not is_builtin_workflow_action("finance.find_catalysts")
+    assert not is_builtin_workflow_action("llm.do_anything")
+
+
+def test_llm_output_contract_catalog_is_generic_and_canonical() -> None:
+    assert "event_alerts_v1" in BUILTIN_LLM_OUTPUT_CONTRACTS
+    assert "catalyst_alerts_v1" not in BUILTIN_LLM_OUTPUT_CONTRACTS
+    assert llm_output_contract_fields("event_alerts_v1") == (
+        "alerts",
+        "confidence_score",
+        "raw_response",
+    )
 
 
 def test_compile_workflow_package_builds_ir_for_valid_package(tmp_path: Path) -> None:
@@ -221,6 +242,45 @@ def test_policy_blocks_unknown_catalog_action_even_when_read_only(tmp_path: Path
         raw={"id": "invented_read", "uses": "github.invented_read", "next": "inspect_alerts"},
     )
     ir = replace(ir, entrypoint="invented_read", steps=steps, connectors=connectors)
+
+    report = evaluate_policy(ir)
+
+    assert not report.ok
+    assert "policy_unknown_catalog_action" in policy_codes(report)
+
+
+def test_policy_blocks_unknown_catalog_action_without_brokered_mode(tmp_path: Path) -> None:
+    ir = compile_valid_ir(tmp_path)
+    connector = ir.connectors["github"]
+    base_action = connector.actions["list_dependabot_alerts"]
+    actions = dict(connector.actions)
+    actions["invented_direct_read"] = replace(
+        base_action,
+        action_id="invented_direct_read",
+        side_effect=False,
+        side_effect_class=None,
+        execution_mode=None,
+        approval_required=False,
+        dry_run_supported=None,
+        idempotency_key_fields=(),
+        allowed_outputs=("items",),
+        required_scopes=(),
+    )
+    connectors = dict(ir.connectors)
+    connectors["github"] = replace(connector, actions=actions)
+    steps = dict(ir.steps)
+    steps["invented_direct_read"] = WorkflowStep(
+        step_id="invented_direct_read",
+        kind=StepKind.ACTION,
+        uses=ConnectorRef("github", "invented_direct_read"),
+        side_effect_class=None,
+        approval=None,
+        next_step="inspect_alerts",
+        branches={},
+        outbound=("inspect_alerts",),
+        raw={"id": "invented_direct_read", "uses": "github.invented_direct_read", "next": "inspect_alerts"},
+    )
+    ir = replace(ir, entrypoint="invented_direct_read", steps=steps, connectors=connectors)
 
     report = evaluate_policy(ir)
 

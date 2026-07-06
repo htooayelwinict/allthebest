@@ -3,29 +3,48 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
+from types import SimpleNamespace
 from time import monotonic
 from typing import Any, Mapping
 
+import yaml
+
+from appv24.ai.types import AssistantMessage, TextContent, empty_usage
 from appv24.workflows.live_validation import assistant_text_from_messages, latest_assistant_stop_reason
 from appv24.workflows.prompt_examples import render_repair_micro_examples
 from appv24.workflows.prompt_fragments import (
+    render_capability_catalog_fragment,
     render_rollback_safety_fragment,
     render_schema_reminders_fragment,
     render_secret_reference_fragment,
     render_side_effect_contract_fragment,
 )
 from appv24.workflows.repair_directives import render_workflow_repair_directives
+from appv24.workflows.repair_report import WorkflowRepairAttemptSummary, WorkflowRepairReport
+from appv24.workflows.repair_scope import workflow_validation_fingerprint
 from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text
 
 MUTATING_SIDE_EFFECT_CLASSES = {"create", "update", "delete", "send", "publish", "provision"}
+DESIGN_STRING_FIELDS = ("intent", "trigger")
+DESIGN_LIST_FIELDS = (
+    "inputs",
+    "outputs",
+    "assumptions",
+    "side_effects",
+    "approval_gates",
+    "failure_modes",
+    "rollback",
+)
+DESIGN_CONTRACT_FIELDS = (*DESIGN_STRING_FIELDS, *DESIGN_LIST_FIELDS)
 
 
 @dataclass(frozen=True)
 class WorkflowDraftRepairConfig:
     max_issues: int = 8
     max_attempts: int | None = None
-    max_repeated_validation_results: int = 3
+    max_repeated_validation_results: int | None = None
     max_seconds: float | None = None
 
 
@@ -37,6 +56,17 @@ class WorkflowDraftRepairResult:
     exhausted: bool
     feedback_prompts: tuple[str, ...] = ()
     stop_reason: str | None = None
+    repair_report: WorkflowRepairReport | None = None
+
+
+def format_workflow_repair_stop_report(result: WorkflowDraftRepairResult) -> str:
+    if result.validation is not None and result.validation.ok:
+        return ""
+    if not result.stop_reason:
+        return ""
+    if result.stop_reason == "aborted":
+        return "Workflow draft repair stopped: aborted"
+    return f"Workflow draft repair stopped: {result.stop_reason} after {result.attempts} attempt(s)"
 
 
 def validate_latest_workflow_draft(messages: list[object]) -> WorkflowDraftValidationResult | None:
@@ -206,6 +236,7 @@ def build_workflow_repair_prompt(
             "- Return the full package because the validator consumes complete drafts; treat it as a minimal patched copy.",
             "- Do not call tools, APIs, shell commands, or write files.",
             render_schema_reminders_fragment(),
+            render_capability_catalog_fragment(),
             render_side_effect_contract_fragment(),
             render_secret_reference_fragment(),
             render_rollback_safety_fragment(),
@@ -251,11 +282,8 @@ def _issue_step_id(issue: object) -> str | None:
     return step_id if isinstance(step_id, str) and step_id else None
 
 
-def _validation_fingerprint(result: WorkflowDraftValidationResult) -> tuple[tuple[str, str, str], ...]:
-    return tuple(
-        (issue.code, issue.location, issue.message)
-        for issue in result.validation.issues
-    )
+def _validation_fingerprint(result: WorkflowDraftValidationResult) -> tuple[str, ...]:
+    return workflow_validation_fingerprint(result.validation)
 
 
 def repair_workflow_draft_messages(
@@ -269,7 +297,11 @@ def repair_workflow_draft_messages(
     validation = validate_latest_workflow_draft(messages)
     max_attempts = None if config.max_attempts is None else max(0, config.max_attempts)
     max_issues = max(0, config.max_issues)
-    max_repeated_validation_results = max(1, config.max_repeated_validation_results)
+    max_repeated_validation_results = (
+        None
+        if config.max_repeated_validation_results is None
+        else max(1, config.max_repeated_validation_results)
+    )
     deadline = None if config.max_seconds is None else monotonic() + max(0.0, config.max_seconds)
 
     if validation is None:
@@ -293,16 +325,34 @@ def repair_workflow_draft_messages(
         )
 
     feedback_prompts: list[str] = []
+    repair_attempts: list[WorkflowRepairAttemptSummary] = []
     attempts = 0
-    validation_fingerprint_counts: dict[tuple[tuple[str, str, str], ...], int] = {
+    validation_fingerprint_counts: dict[tuple[str, ...], int] = {
         _validation_fingerprint(validation): 1
     }
     while max_attempts is None or attempts < max_attempts:
+        deterministic_validation = _apply_deterministic_workflow_repair(messages, validation)
+        if deterministic_validation is not None:
+            validation = deterministic_validation
+            fingerprint = _validation_fingerprint(validation)
+            validation_fingerprint_counts[fingerprint] = validation_fingerprint_counts.get(fingerprint, 0) + 1
+            if validation.ok:
+                repair_attempts.append(WorkflowRepairAttemptSummary(attempt=attempts, status="passed", issue_fingerprints=()))
+                return WorkflowDraftRepairResult(
+                    validation=validation,
+                    attempts=attempts,
+                    repaired=True,
+                    exhausted=False,
+                    feedback_prompts=tuple(feedback_prompts),
+                    repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
+                )
+
         if _repair_aborted(messages, should_abort):
             return _aborted_repair_result(
                 validation,
                 attempts=attempts,
                 feedback_prompts=tuple(feedback_prompts),
+                repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
             )
 
         if deadline is not None and monotonic() >= deadline:
@@ -313,10 +363,19 @@ def repair_workflow_draft_messages(
                 exhausted=not validation.ok,
                 feedback_prompts=tuple(feedback_prompts),
                 stop_reason="timeout",
+                repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
             )
 
         attempt = attempts + 1
         fingerprint = _validation_fingerprint(validation)
+        repair_attempts.append(
+            WorkflowRepairAttemptSummary(
+                attempt=attempt,
+                status="failed",
+                issue_fingerprints=fingerprint,
+                repeated_count=max(0, validation_fingerprint_counts.get(fingerprint, 1) - 1),
+            )
+        )
         prompt = build_workflow_repair_prompt(
             validation,
             attempt=attempt,
@@ -335,6 +394,7 @@ def repair_workflow_draft_messages(
                 next_validation or validation,
                 attempts=attempts,
                 feedback_prompts=tuple(feedback_prompts),
+                repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
             )
         if next_validation is None:
             return WorkflowDraftRepairResult(
@@ -344,19 +404,25 @@ def repair_workflow_draft_messages(
                 exhausted=not validation.ok,
                 feedback_prompts=tuple(feedback_prompts),
                 stop_reason="missing_repair_draft",
+                repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
             )
         validation = next_validation
         if validation.ok:
+            repair_attempts.append(WorkflowRepairAttemptSummary(attempt=attempts, status="passed", issue_fingerprints=()))
             return WorkflowDraftRepairResult(
                 validation=validation,
                 attempts=attempts,
                 repaired=True,
                 exhausted=False,
                 feedback_prompts=tuple(feedback_prompts),
+                repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
             )
         fingerprint = _validation_fingerprint(validation)
         validation_fingerprint_counts[fingerprint] = validation_fingerprint_counts.get(fingerprint, 0) + 1
-        if validation_fingerprint_counts[fingerprint] >= max_repeated_validation_results:
+        if (
+            max_repeated_validation_results is not None
+            and validation_fingerprint_counts[fingerprint] >= max_repeated_validation_results
+        ):
             return WorkflowDraftRepairResult(
                 validation=validation,
                 attempts=attempts,
@@ -364,6 +430,7 @@ def repair_workflow_draft_messages(
                 exhausted=True,
                 feedback_prompts=tuple(feedback_prompts),
                 stop_reason="repeated_validation",
+                repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
             )
 
     return WorkflowDraftRepairResult(
@@ -373,7 +440,245 @@ def repair_workflow_draft_messages(
         exhausted=not validation.ok,
         feedback_prompts=tuple(feedback_prompts),
         stop_reason="max_attempts" if not validation.ok else None,
+        repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
     )
+
+
+def _apply_deterministic_workflow_repair(
+    messages: list[object],
+    validation: WorkflowDraftValidationResult,
+) -> WorkflowDraftValidationResult | None:
+    patched_text = _patched_missing_design_contract_text(validation)
+    if patched_text is None:
+        return None
+
+    patched_validation = validate_workflow_draft_text(patched_text)
+    if not patched_validation.ok and _validation_fingerprint(patched_validation) == _validation_fingerprint(validation):
+        return None
+
+    _append_deterministic_repair_message(messages, patched_text)
+    return patched_validation
+
+
+def _patched_missing_design_contract_text(result: WorkflowDraftValidationResult) -> str | None:
+    if result.documents is None:
+        return None
+
+    missing_fields = _missing_design_contract_fields(result)
+    if not missing_fields:
+        return None
+
+    workflow = deepcopy(dict(result.documents.workflow))
+    raw_design = workflow.get("design")
+    design = deepcopy(raw_design) if isinstance(raw_design, dict) else {}
+    changed = not isinstance(raw_design, dict)
+
+    for field in DESIGN_CONTRACT_FIELDS if "design" in missing_fields else missing_fields:
+        if field == "design":
+            continue
+        replacement = _default_design_value(field, workflow, result.documents.connectors, result.documents.permissions)
+        if replacement is None:
+            continue
+        if design.get(field) != replacement:
+            design[field] = replacement
+            changed = True
+
+    if not changed:
+        return None
+
+    workflow = _workflow_with_design(workflow, design)
+    return _render_workflow_draft_text(
+        workflow=workflow,
+        connectors=result.documents.connectors,
+        permissions=result.documents.permissions,
+        dry_run_fixtures=result.documents.dry_run_fixtures,
+        rollback_text=result.documents.rollback_text,
+    )
+
+
+def _missing_design_contract_fields(result: WorkflowDraftValidationResult) -> list[str]:
+    fields: list[str] = []
+    for issue in result.validation.issues:
+        if issue.code != "missing_design_contract" or issue.file != "workflow.yaml":
+            continue
+        if issue.path == ("design",):
+            fields.append("design")
+            continue
+        if len(issue.path) == 2 and issue.path[0] == "design" and isinstance(issue.path[1], str):
+            fields.append(issue.path[1])
+    return fields
+
+
+def _workflow_with_design(workflow: dict[str, Any], design: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(workflow.get("design"), dict):
+        workflow["design"] = design
+        return workflow
+
+    reordered: dict[str, Any] = {}
+    inserted = False
+    for key, value in workflow.items():
+        if key == "design":
+            continue
+        if key == "triggers" and not inserted:
+            reordered["design"] = design
+            inserted = True
+        reordered[key] = value
+    if not inserted:
+        reordered["design"] = design
+    return reordered
+
+
+def _default_design_value(
+    field: str,
+    workflow: Mapping[str, Any],
+    connectors: Mapping[str, Any],
+    permissions: Mapping[str, Any],
+) -> str | list[str] | None:
+    name = _workflow_name(workflow)
+    if field == "intent":
+        description = workflow.get("description")
+        return description.strip() if isinstance(description, str) and description.strip() else f"Run {name}."
+    if field == "trigger":
+        return _trigger_summary(workflow)
+    if field == "inputs":
+        return [f"Approved trigger payload and dry-run fixture data for {name}."]
+    if field == "outputs":
+        return [f"Validated workflow trace, local draft artifacts, and allowed outputs for {name}."]
+    if field == "assumptions":
+        return [f"Runtime inputs, fixtures, and credential references for {name} are supplied by approved configuration."]
+    if field == "side_effects":
+        return [_side_effect_summary(workflow, connectors)]
+    if field == "approval_gates":
+        return _approval_gate_summaries(permissions)
+    if field == "failure_modes":
+        return ["Required input, fixture data, connector output, or approval decision may be unavailable during execution."]
+    if field == "rollback":
+        return ["Review generated artifacts and manually reverse any approved external mutation if one was executed."]
+    return None
+
+
+def _workflow_name(workflow: Mapping[str, Any]) -> str:
+    name = workflow.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return "the workflow"
+
+
+def _trigger_summary(workflow: Mapping[str, Any]) -> str:
+    triggers = workflow.get("triggers")
+    if not isinstance(triggers, list) or not triggers:
+        return "Workflow starts from the configured trigger payload."
+
+    first = triggers[0]
+    if not isinstance(first, Mapping):
+        return "Workflow starts from the configured trigger payload."
+    trigger_type = first.get("type")
+    trigger_id = first.get("id")
+    if isinstance(trigger_type, str) and isinstance(trigger_id, str):
+        return f"Workflow starts from the {trigger_type} trigger {trigger_id}."
+    if isinstance(trigger_type, str):
+        return f"Workflow starts from the {trigger_type} trigger."
+    return "Workflow starts from the configured trigger payload."
+
+
+def _side_effect_summary(workflow: Mapping[str, Any], connectors: Mapping[str, Any]) -> str:
+    mutating_steps = _mutating_workflow_step_ids(workflow)
+    if mutating_steps:
+        joined = ", ".join(mutating_steps[:4])
+        return f"Mutating steps run only after their explicit approval gates: {joined}."
+
+    connector_actions = _connector_actions(connectors)
+    if any(action.get("side_effect") is True for action in connector_actions.values()):
+        return "Declared mutating connector actions are not executed unless a workflow step reaches an explicit approval gate."
+    return "Workflow execution is read-only or local-draft-only and does not mutate external systems."
+
+
+def _mutating_workflow_step_ids(workflow: Mapping[str, Any]) -> list[str]:
+    steps = workflow.get("steps")
+    if not isinstance(steps, list):
+        return []
+    ids: list[str] = []
+    for step in steps:
+        if not isinstance(step, Mapping):
+            continue
+        if step.get("side_effect_class") not in MUTATING_SIDE_EFFECT_CLASSES:
+            continue
+        step_id = step.get("id")
+        ids.append(str(step_id) if step_id else "unnamed_step")
+    return ids
+
+
+def _approval_gate_summaries(permissions: Mapping[str, Any]) -> list[str]:
+    approvals = permissions.get("approvals")
+    if not isinstance(approvals, list):
+        return ["No approval gate is required for read-only or local-draft-only execution."]
+
+    summaries: list[str] = []
+    for approval in approvals:
+        if not isinstance(approval, Mapping):
+            continue
+        approval_id = approval.get("id")
+        if isinstance(approval_id, str) and approval_id.strip():
+            summaries.append(f"{approval_id.strip()} explicit approval is required before its listed step runs.")
+    return summaries or ["No approval gate is required for read-only or local-draft-only execution."]
+
+
+def _render_workflow_draft_text(
+    *,
+    workflow: Mapping[str, Any],
+    connectors: Mapping[str, Any],
+    permissions: Mapping[str, Any],
+    dry_run_fixtures: Mapping[str, Mapping[str, Any]],
+    rollback_text: str | None,
+) -> str:
+    sections = [
+        ("yaml", "workflow.yaml", _dump_yaml(workflow)),
+        ("yaml", "connectors.yaml", _dump_yaml(connectors)),
+        ("yaml", "permissions.yaml", _dump_yaml(permissions)),
+    ]
+    sections.extend(
+        ("yaml", f"dry_run_fixtures/{filename}", _dump_yaml(document))
+        for filename, document in dry_run_fixtures.items()
+    )
+    if rollback_text is not None:
+        sections.append(("markdown", "rollback.md", rollback_text.rstrip("\r\n")))
+
+    lines = ["Here is the workflow package draft.", ""]
+    for language, filename, body in sections:
+        lines.append(f"```{language} {filename}")
+        lines.append(body)
+        lines.append("```")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _dump_yaml(value: Mapping[str, Any]) -> str:
+    return yaml.safe_dump(value, sort_keys=False, allow_unicode=False).rstrip()
+
+
+def _append_deterministic_repair_message(messages: list[object], text: str) -> None:
+    latest_assistant = _latest_typed_assistant_message(messages)
+    if latest_assistant is not None:
+        messages.append(
+            AssistantMessage(
+                content=[TextContent(text=text)],
+                api=latest_assistant.api,
+                provider=latest_assistant.provider,
+                model=latest_assistant.model,
+                usage=empty_usage(),
+                stop_reason="stop",
+            )
+        )
+        return
+
+    messages.append(SimpleNamespace(role="assistant", content=[SimpleNamespace(type="text", text=text)]))
+
+
+def _latest_typed_assistant_message(messages: list[object]) -> AssistantMessage | None:
+    for message in reversed(messages):
+        if isinstance(message, AssistantMessage):
+            return message
+    return None
 
 
 def _repair_aborted(messages: list[object], should_abort: Callable[[], bool] | None) -> bool:
@@ -387,6 +692,7 @@ def _aborted_repair_result(
     *,
     attempts: int,
     feedback_prompts: tuple[str, ...] = (),
+    repair_report: WorkflowRepairReport | None = None,
 ) -> WorkflowDraftRepairResult:
     return WorkflowDraftRepairResult(
         validation=validation,
@@ -395,4 +701,5 @@ def _aborted_repair_result(
         exhausted=not bool(validation and validation.ok),
         feedback_prompts=feedback_prompts,
         stop_reason="aborted",
+        repair_report=repair_report,
     )

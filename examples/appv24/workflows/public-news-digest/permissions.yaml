@@ -1,0 +1,23 @@
+version: appv24.permissions/v1
+approvals:
+  - id: digest-review
+    mode: explicit
+    required_for:
+      - create_digest_draft
+permissions:
+  - connector: source
+    actions:
+      - fetch_document
+    scopes:
+      - source:read
+  - connector: llm
+    actions:
+      - summarize
+  - connector: policy
+    actions:
+      - check
+  - connector: notification
+    actions:
+      - create_draft
+    scopes:
+      - notification:draft

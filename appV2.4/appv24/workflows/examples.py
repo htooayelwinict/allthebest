@@ -107,6 +107,18 @@ def _gmail_draft_reply() -> GoldenWorkflowExample:
         "rejection_path.yaml": {
             "decision": {"decide_reply_needed": "no_reply"},
         },
+        "missing_recipient.yaml": {
+            "decision": {"decide_reply_needed": "needs_reply"},
+            "connector_sandbox": {
+                "missing_fields": {
+                    "create_gmail_draft": ["recipient"],
+                }
+            },
+            "expected": {
+                "status": "blocked",
+                "brokered_actions": ["create_gmail_draft"],
+            },
+        },
     }
     broker = LocalWorkflowBroker(
         {
@@ -243,6 +255,32 @@ def _telegram_support_ticket() -> GoldenWorkflowExample:
         },
         "rejection_path.yaml": {
             "decision": {"check_authorized_customer": "rejected"},
+        },
+        "unauthorized_user.yaml": {
+            "input": {
+                "telegram_user_id": "unauthorized-customer-404",
+                "message_text": "Please create a ticket for me.",
+            },
+            "decision": {"check_authorized_customer": "rejected"},
+            "expected": {
+                "terminal_step": "rejected",
+                "brokered_actions": [],
+            },
+        },
+        "ticket_draft_timeout.yaml": {
+            "decision": {"check_authorized_customer": "authorized"},
+            "connector_sandbox": {
+                "failures": {
+                    "create_ticket_draft": {
+                        "status": "timeout",
+                        "message": "ticket draft connector timed out after 30s",
+                    }
+                }
+            },
+            "expected": {
+                "status": "blocked",
+                "blocked_step": "create_ticket_draft",
+            },
         },
     }
     broker = LocalWorkflowBroker(

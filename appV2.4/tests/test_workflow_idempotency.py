@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from appv24.workflows.idempotency import IdempotencyStore
+from appv24.workflows.idempotency import build_idempotency_key
 
 
 def test_idempotency_store_returns_existing_result_for_same_payload() -> None:
@@ -23,3 +24,35 @@ def test_idempotency_store_blocks_conflicting_payload() -> None:
         assert str(error) == "idempotency key conflict for key-1"
     else:
         raise AssertionError("expected idempotency conflict")
+
+
+def test_idempotency_key_resolves_input_refs_from_selected_fixture() -> None:
+    raw_step = {
+        "with": {
+            "chat_id": {"inputRef": "chat_id"},
+            "text": {"inputRef": "text"},
+        }
+    }
+
+    first = build_idempotency_key(
+        package_fingerprint="pkg-1",
+        step_id="notify_admin",
+        connector_action="telegram.send_message",
+        key_fields=("chat_id", "text"),
+        input_ref=raw_step,
+        fixture={"input": {"chat_id": "admin-a", "text": "Production alert A."}},
+    )
+    second = build_idempotency_key(
+        package_fingerprint="pkg-1",
+        step_id="notify_admin",
+        connector_action="telegram.send_message",
+        key_fields=("chat_id", "text"),
+        input_ref=raw_step,
+        fixture={"input": {"chat_id": "admin-b", "text": "Production alert B."}},
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.startswith("idemp:")
+    assert second.startswith("idemp:")
+    assert first != second

@@ -1,0 +1,8 @@
+input:
+  admin_chat_id: "123456789"
+  message_text: "appv24 production workflow smoke alert"
+expected:
+  status: passed
+  terminal_step: done
+  brokered_actions:
+    - notify_admin

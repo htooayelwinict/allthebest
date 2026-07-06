@@ -12,6 +12,7 @@ from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.execution import WorkflowRunEvent
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import require_fixture
+from appv24.workflows.idempotency import build_idempotency_key
 from appv24.workflows.ir import ActionCapability, WorkflowIR
 from appv24.workflows.ledger import StepTrace
 from appv24.workflows.loader import PackageDocuments, load_package_documents
@@ -29,6 +30,7 @@ class WorkflowBrokeredActionPreview:
     side_effect_class: str | None
     allowed_outputs: tuple[str, ...]
     idempotency_key_fields: tuple[str, ...]
+    idempotency_key: str | None
     broker_status: str | None
     broker_provider_id: str | None
     simulated_outputs: Mapping[str, Any]
@@ -128,7 +130,7 @@ def build_run_preview(
 
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
     ledger = simulate_workflow_fixture(compiled.ir, fixture_name, fixture, broker=broker)
-    brokered_actions = _brokered_actions(compiled.ir, ledger.trace)
+    brokered_actions = _brokered_actions(compiled.ir, ledger.trace, package_fingerprint=package_fingerprint, fixture=fixture)
     return WorkflowRunPreview(
         workflow_name=workflow_name,
         fixture_name=fixture_name,
@@ -147,7 +149,18 @@ def build_run_preview(
 
 
 def persist_run_preview(store: WorkflowRunStore, preview: WorkflowRunPreview) -> str:
-    run_id = store.create_run(preview.workflow_name, preview.package_fingerprint)
+    run_id = store.create_run(
+        preview.workflow_name,
+        preview.package_fingerprint,
+        metadata={
+            "mode": "preview",
+            "fixture_name": preview.fixture_name,
+            "approve_all": False,
+            "approval_mode": "preview",
+            "activation_id": None,
+            "activation_trigger_type": None,
+        },
+    )
     preview_path = store.root / run_id / "preview.json"
     preview_path.write_text(json.dumps(preview.to_dict(), sort_keys=True, indent=2) + "\n", encoding="utf-8")
     store.append_event(
@@ -212,12 +225,17 @@ def _blocked_preview(
 def _brokered_actions(
     ir: WorkflowIR,
     trace: tuple[StepTrace, ...],
+    *,
+    package_fingerprint: str,
+    fixture: Mapping[str, Any],
 ) -> tuple[WorkflowBrokeredActionPreview, ...]:
     previews: list[WorkflowBrokeredActionPreview] = []
     for step_trace in trace:
         if step_trace.connector_action is None:
             continue
         action = _action_for_step(ir, step_trace.step_id)
+        step = ir.steps.get(step_trace.step_id)
+        idempotency_key_fields = action.idempotency_key_fields if action is not None else ()
         previews.append(
             WorkflowBrokeredActionPreview(
                 step_id=step_trace.step_id,
@@ -225,7 +243,15 @@ def _brokered_actions(
                 approval_id=step_trace.approval_id,
                 side_effect_class=step_trace.side_effect_class,
                 allowed_outputs=action.allowed_outputs if action is not None else (),
-                idempotency_key_fields=action.idempotency_key_fields if action is not None else (),
+                idempotency_key_fields=idempotency_key_fields,
+                idempotency_key=build_idempotency_key(
+                    package_fingerprint=package_fingerprint,
+                    step_id=step_trace.step_id,
+                    connector_action=step_trace.connector_action,
+                    key_fields=idempotency_key_fields,
+                    input_ref=step.raw if step is not None else {},
+                    fixture=fixture,
+                ),
                 broker_status=step_trace.broker_status,
                 broker_provider_id=step_trace.broker_provider_id,
                 simulated_outputs=dict(step_trace.simulated_outputs or {}),

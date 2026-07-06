@@ -1,0 +1,8 @@
+input:
+  telegram_user_id: unauthorized-customer-404
+  message_text: Please create a ticket for me.
+decision:
+  check_authorized_customer: rejected
+expected:
+  terminal_step: rejected
+  brokered_actions: []

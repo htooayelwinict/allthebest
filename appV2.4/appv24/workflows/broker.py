@@ -51,11 +51,43 @@ class LocalWorkflowBroker:
                 issues=(f"no dry-run provider registered for {request.connector_action}",),
             )
         result = provider(request)
-        allowed = set(request.allowed_outputs)
-        filtered = {key: value for key, value in result.outputs.items() if key in allowed}
+        return filter_broker_outputs(request, result)
+
+
+def filter_broker_outputs(request: BrokerRequest, result: BrokerResult) -> BrokerResult:
+    """Apply the declared output allowlist and block full output mismatches."""
+
+    allowed = set(request.allowed_outputs)
+    filtered = {key: value for key, value in result.outputs.items() if key in allowed}
+    if result.status != "blocked" and result.outputs and request.allowed_outputs and not filtered:
         return BrokerResult(
-            status=result.status,
+            status="blocked",
             provider_id=result.provider_id,
-            outputs=filtered,
-            issues=result.issues,
+            outputs={},
+            issues=(
+                *result.issues,
+                _output_mismatch_issue(
+                    request.connector_action,
+                    produced=result.outputs.keys(),
+                    allowed=request.allowed_outputs,
+                ),
+            ),
         )
+    return BrokerResult(
+        status=result.status,
+        provider_id=result.provider_id,
+        outputs=filtered,
+        issues=result.issues,
+    )
+
+
+def _output_mismatch_issue(connector_action: str, *, produced: object, allowed: object) -> str:
+    return (
+        f"provider outputs for {connector_action} do not match declared allowed_outputs: "
+        f"produced {_format_items(produced)}; allowed {_format_items(allowed)}"
+    )
+
+
+def _format_items(items: object) -> str:
+    values = sorted(str(item) for item in items)
+    return ", ".join(values) if values else "(none)"

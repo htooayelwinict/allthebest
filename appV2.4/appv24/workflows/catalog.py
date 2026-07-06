@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-BUILTIN_WORKFLOW_ACTIONS = frozenset(
-    {
-        "github.create_issue",
-        "github.list_dependabot_alerts",
-        "gmail.create_draft",
-        "telegram.send_message",
-        "ticket.create_draft",
-    }
-)
+from appv24.workflows.connector_packs import builtin_connector_catalog
+
+
+BUILTIN_WORKFLOW_ACTIONS = frozenset(builtin_connector_catalog().action_refs)
 
 
 def is_builtin_workflow_action(action_ref: str) -> bool:

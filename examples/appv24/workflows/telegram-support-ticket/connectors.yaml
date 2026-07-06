@@ -1,0 +1,44 @@
+version: appv24.connectors/v1
+connectors:
+  - id: ticket
+    adapter: manual
+    description: Local ticket draft adapter.
+    actions:
+      - id: create_draft
+        operationId: ticket_create_draft
+        execution_mode: brokered
+        side_effect: true
+        side_effect_class: create
+        approval_required: true
+        dry_run_supported: true
+        required_scopes:
+          - ticket:draft
+        outputs:
+          allowed:
+            - ticket_id
+            - artifact_path
+        idempotency:
+          key_fields:
+            - telegram_user_id
+            - message_text
+  - id: telegram
+    adapter: direct_api
+    description: Telegram Bot API design target.
+    actions:
+      - id: send_message
+        operationId: telegram_send_message
+        execution_mode: brokered
+        side_effect: true
+        side_effect_class: send
+        approval_required: true
+        dry_run_supported: true
+        required_scopes:
+          - telegram:send
+        outputs:
+          allowed:
+            - message_id
+            - artifact_path
+        idempotency:
+          key_fields:
+            - ticket_id
+            - admin_chat_id

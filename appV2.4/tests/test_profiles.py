@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from appv24.coding_agent.tools import allToolNames
-from appv24.workflows.prompt_fragments import render_required_package_blocks_fragment
+from appv24.workflows.prompt_fragments import render_capability_catalog_fragment, render_required_package_blocks_fragment
 from appv24.profiles import (
     DEFAULT_PROFILE_ID,
     ProfileError,
@@ -139,6 +139,15 @@ def test_workflow_profile_uses_shared_required_block_fragment() -> None:
     ):
         assert label in fragment
         assert label in prompt
+
+
+def test_workflow_profile_includes_builtin_capability_catalog() -> None:
+    prompt = profile_coding_app_kwargs(get_profile("workflow-designer-lite"))["append_system_prompt"]
+
+    assert render_capability_catalog_fragment() in prompt
+    assert "github.create_issue" in prompt
+    assert "telegram.send_message" in prompt
+    assert "Do not invent connector action names" in prompt
 
 
 def test_profile_lookup_normalizes_case_and_underscores() -> None:

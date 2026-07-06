@@ -1,0 +1,4 @@
+input:
+  digest_key: public-news-2026-07-06-rejected
+policy:
+  check_policy: rejected

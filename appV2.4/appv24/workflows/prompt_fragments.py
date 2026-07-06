@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from appv24.workflows.catalog import BUILTIN_WORKFLOW_ACTIONS
+from appv24.workflows.contracts import BUILTIN_LLM_OUTPUT_CONTRACTS
+
 
 REQUIRED_PACKAGE_BLOCK_LABELS = (
     "```yaml workflow.yaml",
@@ -35,7 +38,7 @@ def render_passive_safety_fragment() -> str:
 def render_schema_reminders_fragment() -> str:
     return "\n".join(
         [
-            "- workflow.yaml top-level shape: version: appv24.workflow/v1, name:, triggers:, entrypoint:, steps:.",
+            "- workflow.yaml top-level shape: version: appv24.workflow/v1, name:, description:, design:, triggers:, entrypoint:, steps:.",
             "- workflow.yaml version must be appv24.workflow/v1.",
             "- workflow.yaml must include design metadata with intent, trigger, inputs, outputs, assumptions, side_effects, approval_gates, failure_modes, and rollback.",
             "- workflow.yaml triggers must be a list.",
@@ -60,7 +63,7 @@ def render_schema_reminders_fragment() -> str:
             "- connectors must be a YAML list, not a mapping keyed by connector name.",
             "- connectors.yaml actions must be objects with id and side_effect boolean.",
             "- Each connector item needs id, adapter, and actions.",
-            "- adapter must be one of mcp, openapi, asyncapi, webhook, direct_api, iac, manual, or platform_export.",
+            "- adapter must be one of mcp, openapi, asyncapi, webhook, direct_api, iac, llm, manual, or platform_export.",
             "- actions must be a YAML list of objects, not strings.",
             "- Each action item must be a YAML object with id:, plus optional operationId:, tool:, side_effect:, and required_scopes:.",
             "- side_effect must be boolean true or false.",
@@ -81,6 +84,29 @@ def render_schema_reminders_fragment() -> str:
             "- permissions.yaml approvals[].required_for must be workflow step id strings.",
         ]
     )
+
+
+def render_capability_catalog_fragment() -> str:
+    lines = [
+        "Built-in executable workflow capability catalog:",
+        *[f"- {action}" for action in sorted(BUILTIN_WORKFLOW_ACTIONS)],
+        "- workflow.yaml steps[].uses values must match one of these actions exactly.",
+        "- Prefer draft actions for user-visible messages: telegram.create_message_draft, gmail.create_draft, notification.create_draft.",
+        "- Do not invent connector action names, even for read-only actions.",
+        "- Do not invent receive_webhook, send_live, close_ticket, post_chat, or cloud mutation actions.",
+        "- Incoming events, webhooks, and fixture inputs are triggers or input data, not executable connector action steps unless the action is listed above.",
+        "- If no catalog action matches, model the need as trigger metadata, fixture input, a decision branch, or a local artifact design output.",
+        "- connectors.yaml outputs.allowed must name top-level provider outputs, not nested fields inside items.",
+        "- For source.fetch_items, use top-level outputs such as items, source_count, or artifact_path; put sender, subject, body, timestamp, url, and similar item fields inside dry-run fixture item records or downstream input refs.",
+        "- LLM actions are typed transforms, not autonomous agents or tool-calling loops.",
+        "- For llm.* steps, prefer compact with.output_contract over inline with.output_schema to avoid token bloat.",
+        f"- Built-in LLM output_contract values: {', '.join(sorted(BUILTIN_LLM_OUTPUT_CONTRACTS))}.",
+        "- LLM steps must set exactly one of with.output_contract or with.output_schema.",
+        "- Do not use llm.do_anything, agent.run, http.request, finance.*, trading.*, or broker.place_order as executable actions.",
+        "- Financial catalyst workflows must be informational alerts only; do not emit trading advice, buy/sell/hold recommendations, or price targets.",
+        "- policy.check steps must use deterministic with.checks; do not rely on LLM judgment as the policy gate.",
+    ]
+    return "\n".join(lines)
 
 
 def render_side_effect_contract_fragment() -> str:

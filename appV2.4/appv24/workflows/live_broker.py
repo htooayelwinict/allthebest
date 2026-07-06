@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from appv24.workflows.broker import BrokerRequest, BrokerResult
+from appv24.workflows.broker import BrokerRequest, BrokerResult, filter_broker_outputs
+
+LIVE_WORKFLOW_BROKER_MODES = frozenset(("live-read", "live-draft", "live-production"))
 
 
 class LiveWorkflowTransport(Protocol):
@@ -16,12 +18,21 @@ class LiveWorkflowTransport(Protocol):
 
 
 class LiveWorkflowBroker:
-    def __init__(self, transports: dict[str, LiveWorkflowTransport], *, mode: str):
+    def __init__(self, transports: dict[str, LiveWorkflowTransport], *, mode: str, production_enabled: bool = False):
+        if mode not in LIVE_WORKFLOW_BROKER_MODES:
+            raise ValueError(f"unknown live workflow broker mode: {mode}")
+        if production_enabled and mode != "live-production":
+            raise ValueError("production_enabled is only valid for live-production broker mode")
         self._transports = dict(transports)
         self._mode = mode
+        self._production_enabled = production_enabled
+
+    @property
+    def mode(self) -> str:
+        return self._mode
 
     def invoke(self, request: BrokerRequest) -> BrokerResult:
-        if self._mode == "live-production":
+        if self._mode == "live-production" and not self._production_enabled:
             return BrokerResult(
                 status="blocked",
                 provider_id="live",
@@ -34,13 +45,24 @@ class LiveWorkflowBroker:
                 status="blocked",
                 provider_id="live",
                 outputs={},
-                issues=(f"live action is not allowlisted: {request.connector_action}",),
+                issues=(f"live transport is not configured for {request.connector_action}",),
             )
         result = transport.invoke(request)
-        allowed = set(request.allowed_outputs)
-        return BrokerResult(
-            status=result.status,
-            provider_id=result.provider_id,
-            outputs={key: value for key, value in result.outputs.items() if key in allowed},
-            issues=result.issues,
-        )
+        if result.status == "blocked":
+            return BrokerResult(
+                status="blocked",
+                provider_id=result.provider_id,
+                outputs={},
+                issues=result.issues,
+            )
+        if result.status != "blocked" and result.status != self._mode:
+            return BrokerResult(
+                status="blocked",
+                provider_id=result.provider_id,
+                outputs={},
+                issues=(
+                    *result.issues,
+                    f"live transport for {request.connector_action} returned status {result.status}; expected {self._mode}",
+                ),
+            )
+        return filter_broker_outputs(request, result)

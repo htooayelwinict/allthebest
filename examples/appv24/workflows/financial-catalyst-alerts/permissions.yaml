@@ -1,0 +1,23 @@
+version: appv24.permissions/v1
+approvals:
+  - id: alert-draft-review
+    mode: explicit
+    required_for:
+      - create_alert_draft
+permissions:
+  - connector: source
+    actions:
+      - fetch_items
+    scopes:
+      - source:read
+  - connector: llm
+    actions:
+      - extract_structured
+  - connector: policy
+    actions:
+      - check
+  - connector: notification
+    actions:
+      - create_draft
+    scopes:
+      - notification:draft

@@ -1,0 +1,7 @@
+input:
+  digest_key: public-news-2026-07-06-timeout
+connector_sandbox:
+  failures:
+    fetch_public_news:
+      status: timeout
+      message: public news source timed out after 30s

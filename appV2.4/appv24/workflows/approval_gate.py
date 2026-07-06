@@ -16,6 +16,7 @@ class ApprovalRequest:
     approval_id: str
     allowed_outputs: tuple[str, ...]
     idempotency_key_fields: tuple[str, ...]
+    idempotency_key: str | None = None
     status: str = "pending"
 
 
@@ -35,6 +36,7 @@ def create_approval_request(
     approval_id: str,
     allowed_outputs: tuple[str, ...],
     idempotency_key_fields: tuple[str, ...],
+    idempotency_key: str | None = None,
 ) -> ApprovalRequest:
     return ApprovalRequest(
         approval_request_id=f"approval-{uuid4().hex}",
@@ -45,6 +47,7 @@ def create_approval_request(
         approval_id=approval_id,
         allowed_outputs=allowed_outputs,
         idempotency_key_fields=idempotency_key_fields,
+        idempotency_key=idempotency_key,
     )
 
 

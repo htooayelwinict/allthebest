@@ -28,6 +28,9 @@ class WorkflowRunRequest:
     run_root: Path | None = None
     approval_run_id: str | None = None
     connector_allowlist: tuple[str, ...] = ()
+    approve_all: bool = False
+    activation_id: str | None = None
+    activation_trigger_type: str | None = None
 
 
 @dataclass(frozen=True)

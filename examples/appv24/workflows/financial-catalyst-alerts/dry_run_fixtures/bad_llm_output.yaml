@@ -1,0 +1,6 @@
+input:
+  alert_key: NVDA-2026-07-06-bad-llm-output
+connector_sandbox:
+  outputs:
+    extract_catalysts:
+      unexpected: not allowed by declared output contract

@@ -1,0 +1,23 @@
+version: appv24.connectors/v1
+connectors:
+  - id: telegram
+    adapter: direct_api
+    description: Telegram Bot API send-message adapter.
+    actions:
+      - id: send_message
+        operationId: telegram_send_message
+        execution_mode: brokered
+        side_effect: true
+        side_effect_class: send
+        approval_required: true
+        dry_run_supported: true
+        required_scopes:
+          - telegram:send
+        outputs:
+          allowed:
+            - message_id
+            - chat_id
+        idempotency:
+          key_fields:
+            - chat_id
+            - text

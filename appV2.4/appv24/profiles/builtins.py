@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from appv24.profiles.types import AppProfile
 from appv24.workflows.prompt_fragments import (
+    render_capability_catalog_fragment,
     render_required_package_blocks_fragment,
     render_schema_reminders_fragment,
     render_side_effect_contract_fragment,
@@ -70,6 +71,7 @@ _WORKFLOW_DESIGNER_LITE_APPEND = " ".join(
         render_required_package_blocks_fragment(),
         "Use these appv24 schema shapes exactly.",
         render_schema_reminders_fragment(),
+        render_capability_catalog_fragment(),
         render_side_effect_contract_fragment(),
         "Connector targets may include MCP, direct API, OpenAPI, LangGraph, n8n or Pipedream export, and IaC, but only as design targets.",
     )

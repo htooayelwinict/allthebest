@@ -1,0 +1,4 @@
+input:
+  alert_key: NVDA-2026-07-06-rumor
+policy:
+  check_policy: rejected

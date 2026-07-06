@@ -9,6 +9,8 @@ import threading
 import time
 import urllib.error
 
+import yaml
+
 import appv24.tui.interactive_mode as interactive_mode
 from appv24.ai.providers import model_catalog
 from appv24.ai.providers.model_catalog import openrouter_live_catalog_item_to_model
@@ -91,6 +93,7 @@ from appv24.ai.providers.capabilities import ProviderParamWarning
 from appv24.ai.providers.faux import create_faux_provider, faux_model, text_response_events, tool_call_response_events
 from appv24.ai.providers.params import GenerationParams
 from appv24.ai.models import get_api_key_for_provider, get_provider_auth_status, register_model, reset_models
+from appv24.workflows.broker import BrokerResult
 from appv24.ai.stream import register_api_provider, reset_api_providers
 from appv24.ai.types import (
     AssistantMessage,
@@ -120,6 +123,11 @@ from appv24.coding_agent.tools.read import create_read_tool_definition
 from appv24.coding_agent.tools.types import ToolDefinition
 from appv24.ai.event_stream import create_assistant_message_event_stream
 from appv24.ai.stream import ApiProvider
+from appv24.workflows import WorkflowActivationStore, WorkflowPhaseRunReport, WorkflowRunStore
+from appv24.workflows.approval_gate import ApprovalDecision
+from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
+from appv24.workflows.examples import golden_workflow_examples
+from appv24.workflows.runner import run_workflow
 
 
 def setup_function() -> None:
@@ -258,6 +266,195 @@ Close the drafted issue if it was created.
 
 def _invalid_workflow_draft_text() -> str:
     return _valid_workflow_draft_text().replace("side_effect: true", "side_effect: send")
+
+
+def _write_golden_workflow_package(root, example_name: str):
+    example = golden_workflow_examples()[example_name]
+    package = root / example_name
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(dict(example.documents.workflow), sort_keys=False),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(dict(example.documents.connectors), sort_keys=False),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(dict(example.documents.permissions), sort_keys=False),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    for name, fixture in example.documents.dry_run_fixtures.items():
+        (fixtures / name).write_text(yaml.safe_dump(dict(fixture), sort_keys=False), encoding="utf-8")
+    if example.documents.rollback_text is not None:
+        (package / "rollback.md").write_text(example.documents.rollback_text, encoding="utf-8")
+    return package
+
+
+def _write_live_read_workflow_package(root):
+    package = root / "dependency-alert-read"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "dependency-alert-read",
+                "description": "Read GitHub dependency alerts through a live-read connector gate.",
+                "design": {
+                    "intent": "Read dependency alerts for operator review.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["repo"],
+                    "outputs": ["alerts"],
+                    "assumptions": ["GitHub credentials are resolved outside the package."],
+                    "side_effects": [],
+                    "approval_gates": [],
+                    "failure_modes": ["GitHub API unavailable."],
+                    "rollback": ["No external mutation occurs."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "inspect_alerts",
+                "steps": [
+                    {"id": "inspect_alerts", "uses": "github.list_dependabot_alerts", "next": "done"},
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "github",
+                        "adapter": "openapi",
+                        "actions": [
+                            {
+                                "id": "list_dependabot_alerts",
+                                "operationId": "dependabot_list_alerts",
+                                "side_effect": False,
+                                "outputs": {"allowed": ["alerts"]},
+                                "required_scopes": ["dependabot:read"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [
+                    {
+                        "connector": "github",
+                        "actions": ["list_dependabot_alerts"],
+                        "scopes": ["dependabot:read"],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text("input:\n  repo: owner/project\n", encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
+    return package
+
+
+def _write_live_production_workflow_package(root):
+    package = root / "telegram-production-alert"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "telegram-production-alert",
+                "description": "Send one approved Telegram alert.",
+                "design": {
+                    "intent": "Send one approved Telegram alert to an admin chat.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["chat_id", "text"],
+                    "outputs": ["message_id"],
+                    "assumptions": ["Telegram bot token is resolved outside the package."],
+                    "side_effects": ["send Telegram message"],
+                    "approval_gates": ["admin_approval"],
+                    "failure_modes": ["Telegram API unavailable."],
+                    "rollback": ["Delete the Telegram message manually if required."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "notify_admin",
+                "steps": [
+                    {
+                        "id": "notify_admin",
+                        "uses": "telegram.send_message",
+                        "side_effect_class": "send",
+                        "approval": "admin_approval",
+                        "with": {"chat_id": {"inputRef": "chat_id"}, "text": {"inputRef": "text"}},
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "telegram",
+                        "adapter": "direct_api",
+                        "actions": [
+                            {
+                                "id": "send_message",
+                                "operationId": "telegram_send_message",
+                                "execution_mode": "brokered",
+                                "side_effect": True,
+                                "side_effect_class": "send",
+                                "approval_required": True,
+                                "dry_run_supported": True,
+                                "required_scopes": ["telegram:send"],
+                                "outputs": {"allowed": ["message_id", "chat_id"]},
+                                "idempotency": {"key_fields": ["chat_id", "text"]},
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [{"connector": "telegram", "actions": ["send_message"], "scopes": ["telegram:send"]}],
+                "approvals": [{"id": "admin_approval", "mode": "explicit", "required_for": ["notify_admin"]}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text("input:\n  chat_id: admin-chat\n  text: Production alert.\n", encoding="utf-8")
+    (fixtures / "rejection_path.yaml").write_text("expected:\n  status: rejected\n", encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nDelete the Telegram message manually if required.\n", encoding="utf-8")
+    return package
 
 
 def test_visible_width_strips_ansi() -> None:
@@ -447,6 +644,23 @@ def test_simple_autocomplete_provider_ports_pi_fuzzy_command_filtering() -> None
     item_result = provider.get_suggestions(["/cm"], 0, len("/cm"))
     assert item_result is not None
     assert item_result["items"][0]["value"] == "commit"
+
+
+def test_combined_autocomplete_provider_prefers_prefix_command_matches(tmp_path: Path) -> None:
+    provider = CombinedAutocompleteProvider(
+        [
+            {"name": "review", "description": "Review files"},
+            {"name": "workflow-live-env-template", "description": "Render env template"},
+        ],
+        str(tmp_path),
+    )
+
+    suggestions = provider.getSuggestions(["/rev"], 0, len("/rev"), {"signal": None, "force": False})
+
+    assert suggestions == {
+        "prefix": "/rev",
+        "items": [{"value": "review", "label": "review", "description": "Review files"}],
+    }
 
 
 def test_combined_autocomplete_provider_ports_pi_commands_files_and_attachments(tmp_path: Path) -> None:
@@ -1116,7 +1330,7 @@ def test_interactive_mode_workflow_profile_stages_prompt_before_validation(tmp_p
         return text_response_events(model, text)
 
     register_api_provider(create_faux_provider(script))
-    terminal = FakeTerminal(columns=160, rows=80)
+    terminal = FakeTerminal(columns=260, rows=80)
     app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
     app.profile_id = "workflow-designer-lite"
     inputs = iter(["design workflow", "/exit"])
@@ -1124,7 +1338,7 @@ def test_interactive_mode_workflow_profile_stages_prompt_before_validation(tmp_p
 
     assert mode.run() == 0
 
-    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    rendered = strip_ansi("\n".join(app.tui.render(260)))
     assert calls["n"] == 3
     assert "Workflow draft staging 1/3: intent" in prompts[0]
     assert "Workflow draft staging 2/3: skeleton" in prompts[1]
@@ -1152,7 +1366,7 @@ def test_interactive_mode_repairs_invalid_workflow_draft_before_validation_repor
         return text_response_events(model, text)
 
     register_api_provider(create_faux_provider(script))
-    terminal = FakeTerminal(columns=160, rows=80)
+    terminal = FakeTerminal(columns=260, rows=80)
     app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
     app.profile_id = "workflow-designer-lite"
     inputs = iter(["design workflow", "/exit"])
@@ -1160,7 +1374,7 @@ def test_interactive_mode_repairs_invalid_workflow_draft_before_validation_repor
 
     assert mode.run() == 0
 
-    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    rendered = strip_ansi("\n".join(app.tui.render(260)))
     assert calls["n"] == 4
     assert "Workflow draft stage: intent 1/3" in rendered
     assert "Workflow draft stage: skeleton 2/3" in rendered
@@ -1244,10 +1458,22 @@ def test_interactive_mode_workflow_save_uses_repaired_valid_draft(tmp_path) -> N
     assert "Workflow draft saved:" in rendered
 
 
-def test_interactive_mode_reports_failed_validation_after_repair_exhaustion(tmp_path) -> None:
-    register_api_provider(
-        create_faux_provider(lambda model, context: text_response_events(model, _invalid_workflow_draft_text()))
-    )
+def test_interactive_mode_keeps_repairing_repeated_validation_failures_until_valid(tmp_path) -> None:
+    calls = {"n": 0}
+
+    def script(model, context):
+        calls["n"] += 1
+        user_messages = [message for message in context.messages if getattr(message, "role", None) == "user"]
+        prompt = user_messages[-1].content[0].text
+        if "Repair attempt 3." in prompt:
+            text = _valid_workflow_draft_text()
+        elif "Repair attempt" in prompt or "staging 3/3: package" in prompt:
+            text = _invalid_workflow_draft_text()
+        else:
+            text = "stage note"
+        return text_response_events(model, text)
+
+    register_api_provider(create_faux_provider(script))
     terminal = FakeTerminal(columns=160, rows=80)
     app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
     app.profile_id = "workflow-designer-lite"
@@ -1257,12 +1483,15 @@ def test_interactive_mode_reports_failed_validation_after_repair_exhaustion(tmp_
     assert mode.run() == 0
 
     rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert calls["n"] == 6
     assert "Workflow draft repair: attempt 1" in rendered
     assert "Workflow draft repair: attempt 2" in rendered
+    assert "Workflow draft repair: attempt 3" in rendered
     assert "Workflow draft repair: attempt 1/" not in rendered
     assert "Workflow draft repair: attempt 2/" not in rendered
-    assert "Workflow draft validation: failed" in rendered
-    assert mode._last_workflow_validation is None
+    assert "Workflow draft repair: attempt 3/" not in rendered
+    assert "Workflow draft validation: passed" in rendered
+    assert mode._last_workflow_validation is not None
 
 
 def test_interactive_mode_skips_workflow_repair_after_aborted_partial_draft(tmp_path) -> None:
@@ -1291,6 +1520,62 @@ def test_interactive_mode_skips_workflow_repair_after_aborted_partial_draft(tmp_
     assert result.stop_reason == "aborted"
     assert result.attempts == 0
     assert prompts == []
+
+
+def test_interactive_mode_validation_report_includes_repair_stop_reason(tmp_path) -> None:
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/exit")
+    validation = interactive_mode.validate_workflow_draft_text(_invalid_workflow_draft_text())
+    repair_result = interactive_mode.WorkflowDraftRepairResult(
+        validation=validation,
+        attempts=2,
+        repaired=False,
+        exhausted=True,
+        stop_reason="repeated_validation",
+    )
+
+    mode._render_workflow_validation_if_needed(repair_result)
+
+    rendered = strip_ansi("\n".join(mode.history.render(1000)))
+    assert "Workflow draft repair stopped: repeated_validation after 2 attempt(s)" in rendered
+    assert "Workflow draft validation: failed" in rendered
+
+
+def test_interactive_mode_workflow_repair_report_command_renders_latest_report(tmp_path) -> None:
+    register_api_provider(
+        create_faux_provider(lambda model, context: text_response_events(model, _valid_workflow_draft_text()))
+    )
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    mode = InteractiveMode(app, input_fn=lambda prompt: "/workflow-repair-report")
+
+    def assistant_message(text: str) -> AssistantMessage:
+        return AssistantMessage(
+            content=[TextContent(text=text)],
+            api="test",
+            provider="test",
+            model="test",
+            usage=empty_usage(),
+            stop_reason="stop",
+        )
+
+    messages = [assistant_message(_invalid_workflow_draft_text())]
+
+    def run_turn(_prompt: str) -> None:
+        messages.append(assistant_message(_valid_workflow_draft_text()))
+
+    result = interactive_mode.repair_workflow_draft_messages(messages, run_turn)
+    mode._last_workflow_repair_report = result.repair_report
+
+    assert mode._run_workflow_repair_report_command("/workflow-repair-report")
+
+    rendered = strip_ansi("\n".join(mode.history.render(1000)))
+    assert "Workflow repair report:" in rendered
+    assert "Attempt 1: failed" in rendered
+    assert "Attempt 1: passed" in rendered
 
 
 def test_interactive_mode_workflow_save_requires_valid_draft(tmp_path) -> None:
@@ -1391,6 +1676,894 @@ def test_interactive_mode_workflow_save_fails_outside_workflow_profile(tmp_path)
     assert not (tmp_path / "saved-workflow").exists()
 
 
+def test_interactive_mode_workflow_run_local_runs_saved_package(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run-local {package.name} happy_path.yaml", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    history = strip_ansi("\n".join(mode.history.render(1000)))
+    run_root = package / ".workflow-runs"
+    assert "Workflow local run: passed" in rendered
+    assert "terminal: done" in rendered
+    assert "brokered actions: 2" in rendered
+    assert "create_ticket_draft: ticket.create_draft -> simulated" in history
+    assert "notify_admin: telegram.send_message -> simulated" in history
+    assert len(list(run_root.glob("run-*"))) == 1
+
+
+def test_interactive_mode_workflow_run_sandbox_runs_named_fixture(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run-sandbox {package.name} happy_path.yaml", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow sandbox run: passed" in rendered
+    assert "terminal: done" in rendered
+    assert len(list((package / ".workflow-runs").glob("run-*"))) == 1
+
+
+def test_interactive_mode_workflow_run_live_read_creates_blocked_run_without_transport(tmp_path, monkeypatch) -> None:
+    package = _write_live_read_workflow_package(tmp_path)
+    monkeypatch.setenv("APPV24_GITHUB_CREDENTIAL_REF", "github-prod")
+    monkeypatch.setenv("APPV24_GITHUB_SCOPES", "dependabot:read")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-run-live-read {package.name} happy_path.yaml --allow github.list_dependabot_alerts",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
+    assert "Workflow live-read run: blocked" in rendered
+    assert "live transport is not configured for github.list_dependabot_alerts" in rendered
+    assert "model should not run" not in rendered
+    assert len(run_dirs) == 1
+
+
+def test_interactive_mode_workflow_run_live_read_uses_env_transport_registry(tmp_path, monkeypatch) -> None:
+    package = _write_live_read_workflow_package(tmp_path)
+    monkeypatch.setenv("APPV24_GITHUB_CREDENTIAL_REF", "github-prod")
+    monkeypatch.setenv("APPV24_GITHUB_SCOPES", "dependabot:read")
+
+    class FakeTransport:
+        def invoke(self, request):
+            return BrokerResult(
+                status="live-read",
+                provider_id="fake-live",
+                outputs={"alerts": [{"number": 1}], "count": 1},
+            )
+
+    monkeypatch.setattr(
+        interactive_mode,
+        "build_live_read_transports_from_env",
+        lambda env: {"github.list_dependabot_alerts": FakeTransport()},
+        raising=False,
+    )
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-run-live-read {package.name} happy_path.yaml --allow github.list_dependabot_alerts",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
+    assert "Workflow live-read run: passed" in rendered
+    assert "inspect_alerts: github.list_dependabot_alerts -> live-read" in rendered
+    assert "model should not run" not in rendered
+    assert len(run_dirs) == 1
+
+
+def test_interactive_mode_workflow_run_accepts_planned_local_command_shape(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run {package.name} happy_path.yaml --mode local --approve-all", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow local run: passed" in rendered
+    assert "terminal: done" in rendered
+    assert len(list((package / ".workflow-runs").glob("run-*"))) == 1
+
+
+def test_interactive_mode_workflow_explain_summarizes_saved_package(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-explain {package.name}", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Package: telegram_support_ticket" in rendered
+    assert "Validation: passed" in rendered
+    assert "ticket.create_draft" in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_interactive_mode_workflow_export_intent_renders_checklist_without_run(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-export-intent {package.name}", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Deployment intent: telegram_support_ticket" in rendered
+    assert "- APPV24_TICKET_CREDENTIAL_REF" in rendered
+    assert "- webhook: telegram_message" in rendered
+    assert "- admin_approval: create_ticket_draft(ticket.create_draft), notify_admin(telegram.send_message)" in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_interactive_mode_workflow_live_plan_renders_phases_without_run(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-live-plan {package.name} happy_path.yaml", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow live plan: partial-live" in rendered
+    assert "create_ticket_draft: ticket.create_draft" in rendered
+    assert "notify_admin: telegram.send_message" in rendered
+    assert "phase sequence:" in rendered
+    assert "1 local: check_authorized_customer: decision -> authorized" in rendered
+    assert "2 live-draft: create_ticket_draft: ticket.create_draft (transport gap)" in rendered
+    assert "3 live-production: notify_admin: telegram.send_message" in rendered
+    assert "/workflow-run-approval" in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_interactive_mode_workflow_run_explain_summarizes_saved_run(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=True,
+        )
+    )
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run-explain {package.name} {report.run_id}", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow run: passed" in rendered
+    assert "terminal: done" in rendered
+    assert "notify_admin: telegram.send_message -> simulated" in rendered
+    assert len(list((package / ".workflow-runs").glob("run-*"))) == 1
+
+
+def test_interactive_mode_workflow_run_approval_creates_pending_request(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "gmail_draft_reply")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run-approval {package.name} happy_path.yaml", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
+    store = WorkflowRunStore(package / ".workflow-runs")
+    requests = store.read_approval_requests(run_dirs[0].name)
+    assert "Workflow approval prep run: blocked" in rendered
+    assert "approval required for create_gmail_draft" in rendered
+    assert len(requests) == 1
+    assert requests[0].status == "pending"
+    assert requests[0].connector_action == "gmail.create_draft"
+
+
+def test_interactive_mode_workflow_approve_records_approval_decision(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    store = WorkflowRunStore(package / ".workflow-runs")
+    request = store.read_approval_requests(report.run_id)[0]
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-approve {package.name} {report.run_id} {request.approval_request_id}", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    decisions = store.read_approval_decisions(report.run_id)
+    assert "Workflow approval recorded: approved" in rendered
+    assert f"request: {request.approval_request_id}" in rendered
+    assert "action: ticket.create_draft" in rendered
+    assert decisions[0]["approved"] is True
+    assert decisions[0]["status"] == "approved"
+
+
+def test_interactive_mode_workflow_approvals_lists_request_ids(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "gmail_draft_reply")
+    report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    store = WorkflowRunStore(package / ".workflow-runs")
+    request = store.read_approval_requests(report.run_id)[0]
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-approvals {package.name} {report.run_id}", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert f"Workflow approvals: {report.run_id}" in rendered
+    assert request.approval_request_id in rendered
+    assert "pending create_gmail_draft gmail.create_draft" in rendered
+
+
+def test_interactive_mode_workflow_live_draft_preflight_passes_with_env_credentials(tmp_path, monkeypatch) -> None:
+    package = _write_golden_workflow_package(tmp_path, "gmail_draft_reply")
+    report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    store = WorkflowRunStore(package / ".workflow-runs")
+    request = store.read_approval_requests(report.run_id)[0]
+    store.record_approval_decision(
+        report.run_id,
+        request.approval_request_id,
+        ApprovalDecision(approved=True, package_fingerprint=report.package_fingerprint, decided_by="test"),
+    )
+    monkeypatch.setenv("APPV24_GMAIL_CREDENTIAL_REF", "gmail-prod")
+    monkeypatch.setenv("APPV24_GMAIL_SCOPES", "gmail.compose")
+    monkeypatch.setenv("APPV24_WORKFLOW_LIVE_DRAFT_ENABLED", "true")
+    monkeypatch.setenv("APPV24_GMAIL_ACCESS_TOKEN", "gmail-token")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-live-draft-preflight {package.name} happy_path.yaml {report.run_id} --allow gmail.create_draft", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Live-draft preflight: passed" in rendered
+    assert "workflow: gmail_draft_reply" in rendered
+    assert "- gmail.create_draft" in rendered
+    assert len(list((package / ".workflow-runs").glob("run-*"))) == 1
+
+
+def test_interactive_mode_workflow_live_draft_preflight_blocks_without_transport_registry(tmp_path, monkeypatch) -> None:
+    package = _write_golden_workflow_package(tmp_path, "gmail_draft_reply")
+    report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    store = WorkflowRunStore(package / ".workflow-runs")
+    request = store.read_approval_requests(report.run_id)[0]
+    store.record_approval_decision(
+        report.run_id,
+        request.approval_request_id,
+        ApprovalDecision(approved=True, package_fingerprint=report.package_fingerprint, decided_by="test"),
+    )
+    monkeypatch.setenv("APPV24_GMAIL_CREDENTIAL_REF", "gmail-prod")
+    monkeypatch.setenv("APPV24_GMAIL_SCOPES", "gmail.compose")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-live-draft-preflight {package.name} happy_path.yaml {report.run_id} --allow gmail.create_draft", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Live-draft preflight: blocked" in rendered
+    assert "live-draft transport is not configured for gmail.create_draft" in rendered
+
+
+def test_interactive_mode_workflow_live_read_preflight_passes_without_run(tmp_path, monkeypatch) -> None:
+    package = _write_live_read_workflow_package(tmp_path)
+    monkeypatch.setenv("APPV24_GITHUB_CREDENTIAL_REF", "github-prod")
+    monkeypatch.setenv("APPV24_GITHUB_SCOPES", "dependabot:read")
+    monkeypatch.setenv("APPV24_WORKFLOW_LIVE_READ_ENABLED", "true")
+    monkeypatch.setenv("APPV24_GITHUB_TOKEN", "github-token")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-live-read-preflight {package.name} happy_path.yaml --allow github.list_dependabot_alerts",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Live-read preflight: passed" in rendered
+    assert "workflow: dependency-alert-read" in rendered
+    assert "- github.list_dependabot_alerts" in rendered
+    assert "model should not run" not in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_interactive_mode_workflow_live_read_preflight_blocks_without_transport_registry(tmp_path, monkeypatch) -> None:
+    package = _write_live_read_workflow_package(tmp_path)
+    monkeypatch.setenv("APPV24_GITHUB_CREDENTIAL_REF", "github-prod")
+    monkeypatch.setenv("APPV24_GITHUB_SCOPES", "dependabot:read")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-live-read-preflight {package.name} happy_path.yaml --allow github.list_dependabot_alerts",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Live-read preflight: blocked" in rendered
+    assert "live-read transport is not configured for github.list_dependabot_alerts" in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_interactive_mode_workflow_live_ready_reports_setup_without_run(tmp_path) -> None:
+    package = _write_live_read_workflow_package(tmp_path)
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-live-ready live-read {package.name} happy_path.yaml --allow github.list_dependabot_alerts",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow live readiness: blocked" in rendered
+    assert "mode: live-read" in rendered
+    assert "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_GITHUB_TOKEN" in rendered
+    assert "model should not run" not in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_interactive_mode_workflow_live_env_template_reports_setup_without_run(tmp_path) -> None:
+    package = _write_live_read_workflow_package(tmp_path)
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-live-env-template live-read {package.name} --allow github.list_dependabot_alerts",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow live env template: live-read" in rendered
+    assert "APPV24_GITHUB_CREDENTIAL_REF=<credential-ref>" in rendered
+    assert "APPV24_GITHUB_TOKEN=<github-token>" in rendered
+    assert "model should not run" not in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_interactive_mode_workflow_live_production_preflight_passes_without_run(tmp_path, monkeypatch) -> None:
+    package = _write_live_production_workflow_package(tmp_path)
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    store = WorkflowRunStore(package / ".workflow-runs")
+    request = store.read_approval_requests(approval_report.run_id)[0]
+    store.record_approval_decision(
+        approval_report.run_id,
+        request.approval_request_id,
+        ApprovalDecision(approved=True, package_fingerprint=approval_report.package_fingerprint, decided_by="test"),
+    )
+    monkeypatch.setenv("APPV24_TELEGRAM_CREDENTIAL_REF", "telegram-prod")
+    monkeypatch.setenv("APPV24_TELEGRAM_SCOPES", "telegram:send")
+    monkeypatch.setenv("APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED", "true")
+    monkeypatch.setenv("APPV24_TELEGRAM_BOT_TOKEN", "telegram-token")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-live-production-preflight {package.name} happy_path.yaml {approval_report.run_id} --allow telegram.send_message",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Live-production preflight: passed" in rendered
+    assert "workflow: telegram-production-alert" in rendered
+    assert "- telegram.send_message" in rendered
+    assert "model should not run" not in rendered
+    assert len(list((package / ".workflow-runs").glob("run-*"))) == 1
+
+
+def test_interactive_mode_workflow_run_live_draft_creates_blocked_run_without_transport(tmp_path, monkeypatch) -> None:
+    package = _write_golden_workflow_package(tmp_path, "gmail_draft_reply")
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    store = WorkflowRunStore(package / ".workflow-runs")
+    request = store.read_approval_requests(approval_report.run_id)[0]
+    store.record_approval_decision(
+        approval_report.run_id,
+        request.approval_request_id,
+        ApprovalDecision(approved=True, package_fingerprint=approval_report.package_fingerprint, decided_by="test"),
+    )
+    monkeypatch.setenv("APPV24_GMAIL_CREDENTIAL_REF", "gmail-prod")
+    monkeypatch.setenv("APPV24_GMAIL_SCOPES", "gmail.compose")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run-live-draft {package.name} happy_path.yaml {approval_report.run_id} --allow gmail.create_draft", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
+    assert "Workflow live-draft run: blocked" in rendered
+    assert "live transport is not configured for gmail.create_draft" in rendered
+    assert len(run_dirs) == 2
+
+
+def test_interactive_mode_workflow_run_live_draft_uses_env_transport_registry(tmp_path, monkeypatch) -> None:
+    package = _write_golden_workflow_package(tmp_path, "gmail_draft_reply")
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    store = WorkflowRunStore(package / ".workflow-runs")
+    request = store.read_approval_requests(approval_report.run_id)[0]
+    store.record_approval_decision(
+        approval_report.run_id,
+        request.approval_request_id,
+        ApprovalDecision(approved=True, package_fingerprint=approval_report.package_fingerprint, decided_by="test"),
+    )
+    monkeypatch.setenv("APPV24_GMAIL_CREDENTIAL_REF", "gmail-prod")
+    monkeypatch.setenv("APPV24_GMAIL_SCOPES", "gmail.compose")
+
+    class FakeTransport:
+        def invoke(self, request):
+            return BrokerResult(
+                status="live-draft",
+                provider_id="fake-live",
+                outputs={"draft_id": "draft-1", "thread_id": "thread-1"},
+            )
+
+    monkeypatch.setattr(
+        interactive_mode,
+        "build_live_draft_transports_from_env",
+        lambda env: {"gmail.create_draft": FakeTransport()},
+        raising=False,
+    )
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run-live-draft {package.name} happy_path.yaml {approval_report.run_id} --allow gmail.create_draft", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
+    assert "Workflow live-draft run: passed" in rendered
+    assert "create_gmail_draft: gmail.create_draft -> live-draft" in rendered
+    assert len(run_dirs) == 2
+
+
+def test_interactive_mode_workflow_run_live_production_uses_env_transport_registry(tmp_path, monkeypatch) -> None:
+    package = _write_live_production_workflow_package(tmp_path)
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    store = WorkflowRunStore(package / ".workflow-runs")
+    request = store.read_approval_requests(approval_report.run_id)[0]
+    store.record_approval_decision(
+        approval_report.run_id,
+        request.approval_request_id,
+        ApprovalDecision(approved=True, package_fingerprint=approval_report.package_fingerprint, decided_by="test"),
+    )
+    monkeypatch.setenv("APPV24_TELEGRAM_CREDENTIAL_REF", "telegram-prod")
+    monkeypatch.setenv("APPV24_TELEGRAM_SCOPES", "telegram:send")
+
+    class FakeTransport:
+        def invoke(self, request):
+            return BrokerResult(
+                status="live-production",
+                provider_id="fake-live",
+                outputs={"message_id": "msg-1", "chat_id": "admin-chat"},
+            )
+
+    called: dict[str, object] = {}
+
+    def fake_phase_runner(request, *, approval_run_id, live_production_broker, credential_resolver):
+        called["approval_run_id"] = approval_run_id
+        live_report = interactive_mode.run_live_production_workflow(
+            WorkflowRunRequest(
+                package_path=request.package_path,
+                fixture_name=request.fixture_name,
+                mode=WorkflowRunMode.LIVE_PRODUCTION,
+                run_root=request.run_root,
+                approval_run_id=approval_run_id,
+                connector_allowlist=request.connector_allowlist,
+            ),
+            broker=live_production_broker,
+            credential_resolver=credential_resolver,
+        )
+        return WorkflowPhaseRunReport(
+            status=live_report.status,
+            live_read_run_id="",
+            local_run_id="",
+            approval_run_id=approval_run_id,
+            phase_statuses=(f"live-production: {live_report.status}",),
+            next_commands=(),
+            live_production_run_id=live_report.run_id,
+            live_production_report=live_report,
+            issues=live_report.issues,
+        )
+
+    monkeypatch.setattr(
+        interactive_mode,
+        "build_live_production_transports_from_env",
+        lambda env: {"telegram.send_message": FakeTransport()},
+        raising=False,
+    )
+    monkeypatch.setattr(interactive_mode, "run_workflow_approved_live_production", fake_phase_runner, raising=False)
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run-live-production {package.name} happy_path.yaml {approval_report.run_id} --allow telegram.send_message", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
+    assert called["approval_run_id"] == approval_report.run_id
+    assert "Workflow live-production run: passed" in rendered
+    assert "notify_admin: telegram.send_message -> live-production" in rendered
+    assert len(run_dirs) == 2
+
+
+def test_interactive_mode_workflow_connectors_renders_safe_registry(tmp_path, monkeypatch) -> None:
+    package = _write_live_production_workflow_package(tmp_path)
+    monkeypatch.setenv("APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED", "true")
+    monkeypatch.setenv("APPV24_TELEGRAM_BOT_TOKEN", "telegram-secret-token")
+    monkeypatch.setenv("APPV24_TELEGRAM_CREDENTIAL_REF", "telegram-prod")
+    monkeypatch.setenv("APPV24_TELEGRAM_SCOPES", "telegram:send")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-connectors {package.name}", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow connector registry:" in rendered
+    assert "- telegram.send_message: cataloged" in rendered
+    assert "live modes: live-production" in rendered
+    assert "configured: live-production" in rendered
+    assert "APPV24_TELEGRAM_CREDENTIAL_REF, APPV24_TELEGRAM_SCOPES=telegram:send" in rendered
+    assert "telegram-secret-token" not in rendered
+
+
+def test_interactive_mode_workflow_export_bundle_writes_bundle_without_run(tmp_path, monkeypatch) -> None:
+    package = _write_live_production_workflow_package(tmp_path)
+    monkeypatch.setenv("APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED", "true")
+    monkeypatch.setenv("APPV24_TELEGRAM_BOT_TOKEN", "telegram-secret-token")
+    monkeypatch.setenv("APPV24_TELEGRAM_CREDENTIAL_REF", "telegram-prod")
+    monkeypatch.setenv("APPV24_TELEGRAM_SCOPES", "telegram:send")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-export-bundle {package.name}", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    bundle_dir = package / ".workflow-bundle"
+    assert "Workflow bundle exported:" in rendered
+    assert "workflow: telegram-production-alert" in rendered
+    assert "runtime mode: export-only" in rendered
+    assert (bundle_dir / "workflow.ir.json").is_file()
+    assert (bundle_dir / "connectors.manifest.json").is_file()
+    assert (bundle_dir / "runtime.json").is_file()
+    assert "telegram-secret-token" not in rendered
+    assert "telegram-secret-token" not in (bundle_dir / "secrets.required.json").read_text(encoding="utf-8")
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_interactive_mode_workflow_bundle_check_verifies_export_without_run(tmp_path, monkeypatch) -> None:
+    package = _write_live_production_workflow_package(tmp_path)
+    bundle_dir = package / ".workflow-bundle"
+    terminal = FakeTerminal(columns=260, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-export-bundle {package.name}", f"/workflow-bundle-check {package.name}/.workflow-bundle", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(260)))
+    assert "Workflow bundle check: passed" in rendered
+    assert f"bundle: {bundle_dir.resolve()}" in rendered
+    assert "files checked:" in rendered
+    assert "runtime.json" in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_interactive_mode_workflow_run_local_rejects_parent_traversal(tmp_path) -> None:
+    outside_name = f"{tmp_path.name}-outside-workflow-run"
+    terminal = FakeTerminal(columns=140, rows=40)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run-local ../{outside_name} happy_path.yaml", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(140)))
+    assert "Workflow local run failed:" in rendered
+    assert "must stay inside" in rendered
+
+
+def test_interactive_mode_workflow_activate_creates_activation(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-activate {package.name} happy_path.yaml", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    activation_root = tmp_path / ".appv24" / "workflow-activations"
+    activations = list(activation_root.glob("activation-*"))
+    assert "Workflow activation created:" in rendered
+    assert "workflow: telegram_support_ticket" in rendered
+    assert "trigger: manual" in rendered
+    assert len(activations) == 1
+    assert (activations[0] / "activation.json").is_file()
+
+
+def test_interactive_mode_workflow_activation_run_status_and_history(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    store = WorkflowActivationStore(tmp_path / ".appv24" / "workflow-activations")
+    activation = store.create_activation(package, fixture_name="happy_path.yaml", approve_all=True)
+    terminal = FakeTerminal(columns=180, rows=90)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-activation-run {activation.activation_id}",
+            f"/workflow-activation-status {activation.activation_id}",
+            f"/workflow-activation-history {activation.activation_id}",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(180)))
+    history = strip_ansi("\n".join(mode.history.render(1000)))
+    assert "Workflow activation run: passed" in rendered
+    assert f"activation: {activation.activation_id}" in rendered
+    assert "terminal: done" in rendered
+    assert "Workflow activation status:" in rendered
+    assert "last status: passed" in rendered
+    assert "Workflow activation history:" in history
+    assert "run-1:" in history
+    assert len(list((store.root / activation.activation_id / "runs").glob("run-*"))) == 1
+
+
+def test_interactive_mode_workflow_activation_run_explain(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    store = WorkflowActivationStore(tmp_path / ".appv24" / "workflow-activations")
+    activation = store.create_activation(package, fixture_name="happy_path.yaml", approve_all=True)
+    report = store.run_activation(activation.activation_id)
+    terminal = FakeTerminal(columns=180, rows=90)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-activation-run-explain {activation.activation_id} {report.run_id}", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(180)))
+    assert "Workflow run: passed" in rendered
+    assert f"run id: {report.run_id}" in rendered
+    assert "terminal: done" in rendered
+    assert "notify_admin: telegram.send_message -> simulated" in rendered
+
+
+def test_interactive_mode_workflow_activation_rejects_path_like_id(tmp_path) -> None:
+    terminal = FakeTerminal(columns=140, rows=40)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["/workflow-activation-status ../activation-bad", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(140)))
+    assert "Workflow activation failed:" in rendered
+    assert "activation id must not contain path traversal" in rendered
+
+
+def test_interactive_mode_workflow_activation_list(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    store = WorkflowActivationStore(tmp_path / ".appv24" / "workflow-activations")
+    activation = store.create_activation(package, fixture_name="happy_path.yaml", approve_all=True)
+    terminal = FakeTerminal(columns=180, rows=90)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["/workflow-activation-list", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(180)))
+    assert "Workflow activations:" in rendered
+    assert activation.activation_id in rendered
+    assert "telegram_support_ticket" in rendered
+    assert "manual" in rendered
+
+
+def test_interactive_mode_workflow_activation_status_and_list_show_package_drift(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    store = WorkflowActivationStore(tmp_path / ".appv24" / "workflow-activations")
+    activation = store.create_activation(package, fixture_name="happy_path.yaml", approve_all=True)
+    workflow_path = package / "workflow.yaml"
+    workflow_path.write_text(
+        workflow_path.read_text(encoding="utf-8").replace("telegram_support_ticket", "changed_ticket_workflow"),
+        encoding="utf-8",
+    )
+    terminal = FakeTerminal(columns=180, rows=90)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-activation-status {activation.activation_id}",
+            "/workflow-activation-list",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(180)))
+    assert "package: changed" in rendered
+    assert "package=changed" in rendered
+
+
+def test_interactive_mode_workflow_activation_disable_and_enable(tmp_path) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    store = WorkflowActivationStore(tmp_path / ".appv24" / "workflow-activations")
+    activation = store.create_activation(package, fixture_name="happy_path.yaml", approve_all=True)
+    terminal = FakeTerminal(columns=180, rows=90)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            f"/workflow-activation-disable {activation.activation_id}",
+            f"/workflow-activation-run {activation.activation_id}",
+            f"/workflow-activation-enable {activation.activation_id}",
+            f"/workflow-activation-run {activation.activation_id}",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(180)))
+    assert "Workflow activation disabled:" in rendered
+    assert "Workflow activation failed: workflow activation is disabled" in rendered
+    assert "Workflow activation enabled:" in rendered
+    assert "Workflow activation run: passed" in rendered
+    assert store.get_activation(activation.activation_id).enabled is True
+
+
 def test_interactive_mode_workflow_save_rejects_while_turn_active(tmp_path) -> None:
     second_stream_started = threading.Event()
     second_stream_released = threading.Event()
@@ -1400,7 +2573,11 @@ def test_interactive_mode_workflow_save_rejects_while_turn_active(tmp_path) -> N
 
     def stream_fn(model, context, options):
         stream_calls["n"] += 1
-        if stream_calls["n"] <= 3:
+        if stream_calls["n"] in {1, 2, 5}:
+            events = text_response_events(model, "stage note")
+            provider = create_faux_provider(lambda m, c: events)
+            return provider.stream_simple(model, context, options)
+        if stream_calls["n"] in {3, 6}:
             events = text_response_events(model, _valid_workflow_draft_text())
             provider = create_faux_provider(lambda m, c: events)
             return provider.stream_simple(model, context, options)

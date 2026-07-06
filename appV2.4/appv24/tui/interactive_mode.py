@@ -59,12 +59,58 @@ from appv24.workflows.live_validation import (
     format_workflow_validation_report,
     should_validate_workflow_drafts,
 )
+from appv24.workflows.live_env_template import build_workflow_live_env_template, format_workflow_live_env_template
+from appv24.workflows.live_preflight import (
+    credential_resolver_for_package_env,
+    format_live_draft_preflight_report,
+    format_live_production_preflight_report,
+    format_live_read_preflight_report,
+    preflight_live_draft_workflow,
+    preflight_live_production_workflow,
+    preflight_live_read_workflow,
+)
+from appv24.workflows.live_broker import LiveWorkflowBroker
+from appv24.workflows.live_readiness import format_workflow_live_readiness_report, inspect_workflow_live_readiness
+from appv24.workflows.live_runner import run_live_draft_workflow, run_live_production_workflow, run_live_read_workflow
+from appv24.workflows.live_transports import (
+    build_live_draft_transports_from_env,
+    build_live_production_transports_from_env,
+    build_live_read_transports_from_env,
+)
 from appv24.workflows.repair import (
     WorkflowDraftRepairConfig,
     WorkflowDraftRepairResult,
+    format_workflow_repair_stop_report,
     repair_workflow_draft_messages,
 )
+from appv24.workflows.repair_report import WorkflowRepairReport, format_workflow_repair_report
+from appv24.workflows.activation import WorkflowActivationStore, format_workflow_activation_list
+from appv24.workflows.approval_commands import (
+    format_workflow_approval_command_result,
+    format_workflow_approval_list,
+    list_workflow_approval_requests,
+    record_workflow_approval_command,
+)
 from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
+from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
+from appv24.workflows.bundle_export import (
+    check_workflow_bundle,
+    format_workflow_bundle_check,
+    format_workflow_bundle_export,
+    write_workflow_bundle,
+)
+from appv24.workflows.connector_registry import inspect_workflow_connector_registry
+from appv24.workflows.explain import (
+    explain_workflow_package,
+    explain_workflow_activation_run,
+    explain_workflow_run,
+    format_workflow_package_explanation,
+    format_workflow_run_explanation,
+)
+from appv24.workflows.iac_export import export_deployment_intent_from_path, format_deployment_intent
+from appv24.workflows.live_plan import build_workflow_live_plan_from_path, format_workflow_live_plan
+from appv24.workflows.phase_runner import run_workflow_approved_live_production
+from appv24.workflows.runner import format_workflow_run_report, run_workflow
 from appv24.workflows.staging import run_workflow_draft_stages, should_stage_workflow_drafts
 from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text, validate_workflow_package
 
@@ -195,6 +241,7 @@ class InteractiveMode:
         self._openrouter_model_cache: tuple[float, list[object]] | None = None
         self._last_openrouter_model_fetch_error: Exception | None = None
         self._last_workflow_validation: WorkflowDraftValidationResult | None = None
+        self._last_workflow_repair_report: WorkflowRepairReport | None = None
         self._last_turn_finished_at = 0.0
         self._last_idle_ctrl_c_at = 0.0
         self.setup_autocomplete_provider()
@@ -263,6 +310,37 @@ class InteractiveMode:
             {"name": "models", "description": "List available models"},
             {"name": "params", "description": "Show active provider generation parameters"},
             {"name": "quit", "description": "Exit the interactive session"},
+            {"name": "workflow-activate", "description": "Create a local activation for a saved workflow package"},
+            {"name": "workflow-activation-disable", "description": "Disable a local workflow activation"},
+            {"name": "workflow-activation-enable", "description": "Enable a local workflow activation"},
+            {"name": "workflow-activation-history", "description": "Show activation run history"},
+            {"name": "workflow-activation-list", "description": "List local workflow activations"},
+            {"name": "workflow-activation-run", "description": "Run a local workflow activation"},
+            {"name": "workflow-activation-run-explain", "description": "Explain a local workflow activation run"},
+            {"name": "workflow-activation-status", "description": "Show activation status"},
+            {"name": "workflow-approvals", "description": "List workflow approval request ids"},
+            {"name": "workflow-approve", "description": "Approve a pending workflow run approval request"},
+            {"name": "workflow-deny", "description": "Deny a pending workflow run approval request"},
+            {"name": "workflow-bundle-check", "description": "Verify an exported workflow bundle manifest and file checksums"},
+            {"name": "workflow-connectors", "description": "Inspect declared connector actions and live transport readiness"},
+            {"name": "workflow-explain", "description": "Explain a saved workflow package without running it"},
+            {"name": "workflow-export-bundle", "description": "Export a validated workflow package into runtime bundle artifacts"},
+            {"name": "workflow-export-intent", "description": "Export passive deployment intent for a saved workflow package"},
+            {"name": "workflow-live-plan", "description": "Plan live/local workflow execution phases without running connectors"},
+            {"name": "workflow-live-env-template", "description": "Render safe env placeholders for a live workflow run"},
+            {"name": "workflow-live-draft-preflight", "description": "Check live-draft readiness without running connectors"},
+            {"name": "workflow-live-production-preflight", "description": "Check live-production readiness without running connectors"},
+            {"name": "workflow-live-ready", "description": "Show live workflow setup checklist without running connectors"},
+            {"name": "workflow-live-read-preflight", "description": "Check live-read readiness without running connectors"},
+            {"name": "workflow-repair-report", "description": "Show the latest workflow repair report"},
+            {"name": "workflow-run", "description": "Run a saved workflow package with explicit local flags"},
+            {"name": "workflow-run-explain", "description": "Explain a saved workflow run artifact"},
+            {"name": "workflow-run-live-draft", "description": "Run approved live-draft gates with env-gated live transports"},
+            {"name": "workflow-run-live-production", "description": "Run approved live-production gates with env-gated live transports"},
+            {"name": "workflow-run-live-read", "description": "Run live-read gates with disabled live transports"},
+            {"name": "workflow-run-approval", "description": "Create pending workflow approval requests locally"},
+            {"name": "workflow-run-local", "description": "Run a saved workflow package in local artifact mode"},
+            {"name": "workflow-run-sandbox", "description": "Run a saved workflow package with fixture-backed connector simulation"},
             {"name": "workflow-save", "description": "Save the last valid workflow draft"},
         ]
         runner = getattr(self.app.session, "extension_runner", None)
@@ -409,6 +487,48 @@ class InteractiveMode:
                     self._run_params_command(params_query)
                     continue
                 if self._run_workflow_save_command(prompt):
+                    continue
+                if self._run_workflow_explain_command(prompt):
+                    continue
+                if self._run_workflow_repair_report_command(prompt):
+                    continue
+                if self._run_workflow_run_explain_command(prompt):
+                    continue
+                if self._run_workflow_export_bundle_command(prompt):
+                    continue
+                if self._run_workflow_bundle_check_command(prompt):
+                    continue
+                if self._run_workflow_export_intent_command(prompt):
+                    continue
+                if self._run_workflow_connectors_command(prompt):
+                    continue
+                if self._run_workflow_live_plan_command(prompt):
+                    continue
+                if self._run_workflow_approvals_command(prompt):
+                    continue
+                if self._run_workflow_approval_command(prompt):
+                    continue
+                if self._run_workflow_live_env_template_command(prompt):
+                    continue
+                if self._run_workflow_live_ready_command(prompt):
+                    continue
+                if self._run_workflow_live_draft_preflight_command(prompt):
+                    continue
+                if self._run_workflow_live_read_preflight_command(prompt):
+                    continue
+                if self._run_workflow_live_production_preflight_command(prompt):
+                    continue
+                if self._run_workflow_run_live_read_command(prompt):
+                    continue
+                if self._run_workflow_run_live_draft_command(prompt):
+                    continue
+                if self._run_workflow_run_live_production_command(prompt):
+                    continue
+                if self._run_workflow_activation_command(prompt):
+                    continue
+                if self._run_workflow_run_approval_command(prompt):
+                    continue
+                if self._run_workflow_run_local_command(prompt):
                     continue
                 if self._dispatch_extension_command(prompt):
                     self._refresh_footer()
@@ -870,6 +990,37 @@ class InteractiveMode:
             "/login - Configure provider authentication.",
             "/logout - Remove provider authentication.",
             "/workflow-save <path> - Save the last valid workflow draft under the current working directory.",
+            "/workflow-explain <path> - Explain a saved workflow package without running it.",
+            "/workflow-export-bundle <path> [output-dir] - Export runtime bundle artifacts for a saved workflow package.",
+            "/workflow-bundle-check <bundle-dir> - Verify an exported workflow bundle manifest and checksums.",
+            "/workflow-export-intent <path> - Export passive deployment intent for a saved workflow package.",
+            "/workflow-connectors <path> - Inspect declared connector actions and live transport readiness.",
+            "/workflow-live-plan <path> [fixture] - Plan live/local workflow execution phases.",
+            "/workflow-repair-report - Show the latest workflow repair report.",
+            "/workflow-run-explain <path> [run-id] - Explain a saved workflow run artifact.",
+            "/workflow-approvals <path> <run-id> - List workflow approval request ids.",
+            "/workflow-approve <path> <run-id> <approval-request-id> - Approve a pending workflow approval request.",
+            "/workflow-deny <path> <run-id> <approval-request-id> - Deny a pending workflow approval request.",
+            "/workflow-live-env-template <mode> <path> --allow <action>[,<action>] - Render safe live env placeholders.",
+            "/workflow-live-read-preflight <path> <fixture> --allow <action>[,<action>] - Check live-read readiness.",
+            "/workflow-live-draft-preflight <path> <fixture> <approval-run-id> --allow <action>[,<action>] - Check live-draft readiness.",
+            "/workflow-live-production-preflight <path> <fixture> <approval-run-id> --allow <action>[,<action>] - Check live-production readiness.",
+            "/workflow-live-ready <mode> <path> <fixture> [approval-run-id] --allow <action>[,<action>] - Show live setup checklist.",
+            "/workflow-run-live-read <path> <fixture> --allow <action>[,<action>] - Run live-read gates with disabled live transports.",
+            "/workflow-run-live-draft <path> <fixture> <approval-run-id> --allow <action>[,<action>] - Run approved live-draft gates with env-gated live transports.",
+            "/workflow-run-live-production <path> <fixture> <approval-run-id> --allow <action>[,<action>] - Run approved live-production gates with env-gated live transports.",
+            "/workflow-run <path> <fixture> --mode local --approve-all - Run a saved workflow package locally.",
+            "/workflow-run-approval <path> [fixture] - Create pending approval requests locally.",
+            "/workflow-run-local <path> [fixture] - Run a saved workflow package with local artifacts only.",
+            "/workflow-run-sandbox <path> [fixture] - Run with fixture-backed connector simulation.",
+            "/workflow-activate <path> [fixture] - Create a local activation for a saved workflow package.",
+            "/workflow-activation-disable <id> - Disable a local workflow activation.",
+            "/workflow-activation-enable <id> - Enable a local workflow activation.",
+            "/workflow-activation-list - List local workflow activations.",
+            "/workflow-activation-run <id> - Run a local workflow activation.",
+            "/workflow-activation-run-explain <id> [run-id] - Explain a local workflow activation run.",
+            "/workflow-activation-status <id> - Show activation status.",
+            "/workflow-activation-history <id> - Show activation run history.",
             "/compact or /compress - Safely compress conversation context.",
             "/compact deep [focus] - Run bounded multi-pass compaction toward a fresh-session baseline.",
             "/agents - List delegated subagents.",
@@ -922,6 +1073,873 @@ class InteractiveMode:
 
     def _render_workflow_save_error(self, message: str) -> None:
         self.history.add(StatusLine(f"Workflow draft save failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_explain_command(self, prompt: str) -> bool:
+        if not _is_workflow_explain_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_explain_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) != 2:
+            self._render_workflow_explain_error("expected /workflow-explain <path>")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            explanation = explain_workflow_package(package_path)
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_explain_error(str(error))
+            return True
+
+        kind = "info" if not explanation.issues else "error"
+        self.history.add(StatusLine(format_workflow_package_explanation(explanation), kind=kind))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_run_explain_command(self, prompt: str) -> bool:
+        if not _is_workflow_run_explain_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_explain_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) not in {2, 3}:
+            self._render_workflow_explain_error("expected /workflow-run-explain <path> [run-id]")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            explanation = explain_workflow_run(package_path, args[2] if len(args) == 3 else None)
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_explain_error(str(error))
+            return True
+
+        kind = "info" if explanation.status == "passed" and not explanation.issues else "error"
+        self.history.add(StatusLine(format_workflow_run_explanation(explanation), kind=kind))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_explain_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow explain failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_export_intent_command(self, prompt: str) -> bool:
+        if not _is_workflow_export_intent_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_export_intent_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) != 2:
+            self._render_workflow_export_intent_error("expected /workflow-export-intent <path>")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            rendered = format_deployment_intent(export_deployment_intent_from_path(package_path))
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_export_intent_error(str(error))
+            return True
+
+        self.history.add(StatusLine("Workflow deployment intent exported", kind="info"))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_export_intent_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow deployment intent export failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_export_bundle_command(self, prompt: str) -> bool:
+        if not _is_workflow_export_bundle_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_export_bundle_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) not in {2, 3}:
+            self._render_workflow_export_bundle_error("expected /workflow-export-bundle <path> [output-dir]")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            output_dir = _resolve_workflow_run_package_path(self.app.cwd, args[2]) if len(args) == 3 else None
+            bundle = write_workflow_bundle(package_path, output_dir=output_dir, env=os.environ)
+            rendered = format_workflow_bundle_export(bundle)
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_export_bundle_error(str(error))
+            return True
+
+        self.history.add(StatusLine("Workflow bundle exported", kind="info"))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_export_bundle_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow bundle export failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_bundle_check_command(self, prompt: str) -> bool:
+        if not _is_workflow_bundle_check_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_bundle_check_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) != 2:
+            self._render_workflow_bundle_check_error("expected /workflow-bundle-check <bundle-dir>")
+            return True
+
+        try:
+            bundle_dir = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            report = check_workflow_bundle(bundle_dir)
+            rendered = format_workflow_bundle_check(report)
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_bundle_check_error(str(error))
+            return True
+
+        self.history.add(StatusLine("Workflow bundle check", kind="info" if report.ok else "error"))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_bundle_check_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow bundle check failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_connectors_command(self, prompt: str) -> bool:
+        if not _is_workflow_connectors_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_connectors_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) != 2:
+            self._render_workflow_connectors_error("expected /workflow-connectors <path>")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            report = inspect_workflow_connector_registry(package_path, env=os.environ)
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_connectors_error(str(error))
+            return True
+
+        kind = "info" if not report.issues else "error"
+        self.history.add(StatusLine("Workflow connector registry", kind=kind))
+        self.history.add(Text(report.to_text()))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_connectors_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow connector registry failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_live_plan_command(self, prompt: str) -> bool:
+        if not _is_workflow_live_plan_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_live_plan_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) not in {2, 3}:
+            self._render_workflow_live_plan_error("expected /workflow-live-plan <path> [fixture]")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            fixture_name = args[2] if len(args) == 3 else "happy_path.yaml"
+            rendered = format_workflow_live_plan(build_workflow_live_plan_from_path(package_path, fixture_name))
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_live_plan_error(str(error))
+            return True
+
+        self.history.add(StatusLine("Workflow live plan rendered", kind="info"))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_live_plan_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live plan failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_repair_report_command(self, prompt: str) -> bool:
+        if not _is_workflow_repair_report_command(prompt):
+            return False
+
+        if prompt.strip() != "/workflow-repair-report":
+            self.history.add(StatusLine("Workflow repair report failed: expected /workflow-repair-report", kind="error"))
+            self.status.set_message("Idle")
+            self._refresh_footer()
+            self.tui.request_render()
+            return True
+
+        report = self._last_workflow_repair_report
+        if report is None:
+            self.history.add(
+                StatusLine(
+                    "Workflow repair report unavailable: no repair has run in this session",
+                    kind="error",
+                )
+            )
+        else:
+            self.history.add(StatusLine(format_workflow_repair_report(report), kind="info"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_approval_command(self, prompt: str) -> bool:
+        if not _is_workflow_approval_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_approval_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        command = args[0] if args else ""
+        if len(args) != 4:
+            self._render_workflow_approval_error(f"expected {command} <path> <run-id> <approval-request-id>")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            result = record_workflow_approval_command(
+                package_path,
+                args[2],
+                args[3],
+                approved=command == "/workflow-approve",
+                decided_by="tui",
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_approval_error(str(error))
+            return True
+
+        self.history.add(StatusLine(format_workflow_approval_command_result(result), kind="info"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_approvals_command(self, prompt: str) -> bool:
+        if not _is_workflow_approvals_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_approvals_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) != 3:
+            self._render_workflow_approvals_error("expected /workflow-approvals <path> <run-id>")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            result = list_workflow_approval_requests(package_path, args[2])
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_approvals_error(str(error))
+            return True
+
+        self.history.add(StatusLine(format_workflow_approval_list(result), kind="info"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_approvals_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow approvals failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _render_workflow_approval_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow approval failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_live_env_template_command(self, prompt: str) -> bool:
+        if not _is_workflow_live_env_template_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_live_env_template_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_live_env_template_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_live_env_template_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            template = build_workflow_live_env_template(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    mode=parsed.mode,
+                    connector_allowlist=parsed.connector_allowlist,
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_live_env_template_error(str(error))
+            return True
+
+        self.history.add(StatusLine("Workflow live env template rendered", kind="info"))
+        self.history.add(Text(format_workflow_live_env_template(template)))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_live_env_template_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live env template failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_live_ready_command(self, prompt: str) -> bool:
+        if not _is_workflow_live_ready_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_live_ready_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_live_ready_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_live_ready_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            report = inspect_workflow_live_readiness(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=parsed.fixture_name,
+                    mode=parsed.mode,
+                    approval_run_id=parsed.approval_run_id,
+                    connector_allowlist=parsed.connector_allowlist,
+                ),
+                env=os.environ,
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_live_ready_error(str(error))
+            return True
+
+        kind = "info" if report.status == "ready" else "error"
+        self.history.add(StatusLine(f"Workflow live readiness {report.status}", kind=kind))
+        self.history.add(Text(format_workflow_live_readiness_report(report)))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_live_ready_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live readiness failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_live_draft_preflight_command(self, prompt: str) -> bool:
+        if not _is_workflow_live_draft_preflight_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_live_draft_preflight_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_live_draft_preflight_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_live_draft_preflight_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            report = preflight_live_draft_workflow(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=parsed.fixture_name,
+                    mode=WorkflowRunMode.LIVE_DRAFT,
+                    approval_run_id=parsed.approval_run_id,
+                    connector_allowlist=parsed.connector_allowlist,
+                ),
+                credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+                available_transports=build_live_draft_transports_from_env(os.environ).keys(),
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_live_draft_preflight_error(str(error))
+            return True
+
+        kind = "info" if report.status == "passed" else "error"
+        self.history.add(StatusLine(f"Workflow live-draft preflight {report.status}", kind=kind))
+        self.history.add(Text(format_live_draft_preflight_report(report)))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_live_draft_preflight_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live-draft preflight failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_live_read_preflight_command(self, prompt: str) -> bool:
+        if not _is_workflow_live_read_preflight_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_live_read_preflight_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_live_read_preflight_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_live_read_preflight_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            report = preflight_live_read_workflow(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=parsed.fixture_name,
+                    mode=WorkflowRunMode.LIVE_READ,
+                    connector_allowlist=parsed.connector_allowlist,
+                ),
+                credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+                available_transports=build_live_read_transports_from_env(os.environ).keys(),
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_live_read_preflight_error(str(error))
+            return True
+
+        kind = "info" if report.status == "passed" else "error"
+        self.history.add(StatusLine(f"Workflow live-read preflight {report.status}", kind=kind))
+        self.history.add(Text(format_live_read_preflight_report(report)))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_live_read_preflight_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live-read preflight failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_live_production_preflight_command(self, prompt: str) -> bool:
+        if not _is_workflow_live_production_preflight_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_live_production_preflight_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_live_production_preflight_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_live_production_preflight_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            report = preflight_live_production_workflow(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=parsed.fixture_name,
+                    mode=WorkflowRunMode.LIVE_PRODUCTION,
+                    approval_run_id=parsed.approval_run_id,
+                    connector_allowlist=parsed.connector_allowlist,
+                ),
+                credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+                available_transports=build_live_production_transports_from_env(os.environ).keys(),
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_live_production_preflight_error(str(error))
+            return True
+
+        kind = "info" if report.status == "passed" else "error"
+        self.history.add(StatusLine(f"Workflow live-production preflight {report.status}", kind=kind))
+        self.history.add(Text(format_live_production_preflight_report(report)))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_live_production_preflight_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live-production preflight failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_run_live_read_command(self, prompt: str) -> bool:
+        if not _is_workflow_run_live_read_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_run_live_read_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_run_live_read_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_run_live_read_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            report = run_live_read_workflow(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=parsed.fixture_name,
+                    mode=WorkflowRunMode.LIVE_READ,
+                    connector_allowlist=parsed.connector_allowlist,
+                ),
+                broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
+                credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_run_live_read_error(str(error))
+            return True
+
+        kind = "info" if report.status == "passed" else "error"
+        rendered = format_workflow_run_report(report).replace("Workflow local run:", "Workflow live-read run:", 1)
+        self.history.add(StatusLine(f"Workflow live-read run {report.status}", kind=kind))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_run_live_read_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live-read run failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_run_live_draft_command(self, prompt: str) -> bool:
+        if not _is_workflow_run_live_draft_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_run_live_draft_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_run_live_draft_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_run_live_draft_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            report = run_live_draft_workflow(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=parsed.fixture_name,
+                    mode=WorkflowRunMode.LIVE_DRAFT,
+                    approval_run_id=parsed.approval_run_id,
+                    connector_allowlist=parsed.connector_allowlist,
+                ),
+                broker=LiveWorkflowBroker(build_live_draft_transports_from_env(os.environ), mode="live-draft"),
+                credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_run_live_draft_error(str(error))
+            return True
+
+        kind = "info" if report.status == "passed" else "error"
+        rendered = format_workflow_run_report(report).replace("Workflow local run:", "Workflow live-draft run:", 1)
+        self.history.add(StatusLine(f"Workflow live-draft run {report.status}", kind=kind))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_run_live_draft_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live-draft run failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_run_live_production_command(self, prompt: str) -> bool:
+        if not _is_workflow_run_live_production_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_run_live_production_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_run_live_production_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_run_live_production_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            phase_report = run_workflow_approved_live_production(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=parsed.fixture_name,
+                    mode=WorkflowRunMode.LIVE_PRODUCTION,
+                    connector_allowlist=parsed.connector_allowlist,
+                ),
+                approval_run_id=parsed.approval_run_id,
+                live_production_broker=LiveWorkflowBroker(
+                    build_live_production_transports_from_env(os.environ),
+                    mode="live-production",
+                    production_enabled=True,
+                ),
+                credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            )
+            report = phase_report.live_production_report
+            if report is None:
+                raise RuntimeError("live-production phase did not produce a run report")
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_run_live_production_error(str(error))
+            return True
+
+        kind = "info" if report.status == "passed" else "error"
+        rendered = format_workflow_run_report(report).replace("Workflow local run:", "Workflow live-production run:", 1)
+        self.history.add(StatusLine(f"Workflow live-production run {report.status}", kind=kind))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_run_live_production_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live-production run failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_activation_command(self, prompt: str) -> bool:
+        if not _is_workflow_activation_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_activation_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        command = args[0] if args else ""
+        try:
+            store = WorkflowActivationStore(_workflow_activation_root(self.app.cwd))
+            if command == "/workflow-activation-list":
+                if len(args) != 1:
+                    raise ValueError("expected /workflow-activation-list")
+                rendered = format_workflow_activation_list(store.list_statuses())
+            elif command in {"/workflow-activation-enable", "/workflow-activation-disable"}:
+                if len(args) != 2:
+                    raise ValueError(f"expected {command} <id>")
+                activation_id = _resolve_workflow_activation_id(args[1])
+                activation = store.set_enabled(activation_id, command == "/workflow-activation-enable")
+                state = "enabled" if activation.enabled else "disabled"
+                rendered = f"Workflow activation {state}: {activation.activation_id}"
+            elif command == "/workflow-activate":
+                if len(args) not in {2, 3}:
+                    raise ValueError("expected /workflow-activate <path> [fixture]")
+                package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+                activation = store.create_activation(
+                    package_path,
+                    trigger_type="manual",
+                    fixture_name=args[2] if len(args) == 3 else "happy_path.yaml",
+                    mode=WorkflowRunMode.LOCAL,
+                    approve_all=True,
+                )
+                rendered = "\n".join(
+                    [
+                        f"Workflow activation created: {activation.activation_id}",
+                        f"workflow: {activation.workflow_name}",
+                        f"trigger: {activation.trigger_type}",
+                        f"fixture: {activation.fixture_name}",
+                        f"mode: {activation.mode.value}",
+                    ]
+                )
+            elif command == "/workflow-activation-run":
+                if len(args) != 2:
+                    raise ValueError("expected /workflow-activation-run <id>")
+                activation_id = _resolve_workflow_activation_id(args[1])
+                report = store.run_activation(activation_id)
+                rendered = format_workflow_run_report(report).replace("Workflow local run:", "Workflow activation run:", 1)
+                rendered = f"{rendered}\nactivation: {activation_id}"
+            elif command == "/workflow-activation-run-explain":
+                if len(args) not in {2, 3}:
+                    raise ValueError("expected /workflow-activation-run-explain <id> [run-id]")
+                activation_id = _resolve_workflow_activation_id(args[1])
+                explanation = explain_workflow_activation_run(store, activation_id, args[2] if len(args) == 3 else None)
+                rendered = format_workflow_run_explanation(explanation)
+            elif command == "/workflow-activation-status":
+                if len(args) != 2:
+                    raise ValueError("expected /workflow-activation-status <id>")
+                status = store.status(_resolve_workflow_activation_id(args[1]))
+                rendered = "\n".join(
+                    [
+                        "Workflow activation status:",
+                        f"activation: {status['activation_id']}",
+                        f"workflow: {status['workflow_name']}",
+                        f"trigger: {status['trigger_type']}",
+                        f"enabled: {status['enabled']}",
+                        f"package: {status['package_status']}",
+                        f"last run: {status['last_run_id'] or 'none'}",
+                        f"last status: {status['last_status'] or 'none'}",
+                        f"runs: {status['runs']}",
+                    ]
+                )
+            elif command == "/workflow-activation-history":
+                if len(args) != 2:
+                    raise ValueError("expected /workflow-activation-history <id>")
+                activation_id = _resolve_workflow_activation_id(args[1])
+                runs = store.history(activation_id)
+                lines = [f"Workflow activation history: {activation_id}"]
+                if runs:
+                    lines.extend(f"run-{index}: {run_id}" for index, run_id in enumerate(runs, start=1))
+                else:
+                    lines.append("none")
+                rendered = "\n".join(lines)
+            else:
+                raise ValueError("unknown workflow activation command")
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_activation_error(str(error))
+            return True
+
+        self.history.add(StatusLine(rendered, kind="info"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_activation_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow activation failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_run_approval_command(self, prompt: str) -> bool:
+        if not _is_workflow_run_approval_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_run_approval_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) not in {2, 3}:
+            self._render_workflow_run_approval_error("expected /workflow-run-approval <path> [fixture]")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            report = run_workflow(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=args[2] if len(args) == 3 else None,
+                    mode=WorkflowRunMode.LOCAL,
+                    approve_all=False,
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_run_approval_error(str(error))
+            return True
+
+        kind = "info" if report.status == "passed" else "error"
+        rendered = format_workflow_run_report(report).replace("Workflow local run:", "Workflow approval prep run:", 1)
+        self.history.add(StatusLine(rendered, kind=kind))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_run_approval_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow approval prep run failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_run_local_command(self, prompt: str) -> bool:
+        if not _is_workflow_run_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_run_local_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_run_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_run_local_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            report = run_workflow(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=parsed.fixture_name,
+                    mode=WorkflowRunMode.LOCAL,
+                    approve_all=parsed.approve_all,
+                )
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_run_local_error(str(error))
+            return True
+
+        kind = "info" if report.status == "passed" else "error"
+        rendered = format_workflow_run_report(report)
+        if parsed.label == "sandbox":
+            rendered = rendered.replace("Workflow local run:", "Workflow sandbox run:", 1)
+        self.history.add(StatusLine(rendered, kind=kind))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_run_local_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow local run failed: {message}", kind="error"))
         self.status.set_message("Idle")
         self._refresh_footer()
         self.tui.request_render()
@@ -1329,13 +2347,15 @@ class InteractiveMode:
             self.tui.request_render()
 
         try:
-            return repair_workflow_draft_messages(
+            result = repair_workflow_draft_messages(
                 self.app.messages,
                 self._run_workflow_repair_turn,
                 config=WorkflowDraftRepairConfig(max_issues=8),
                 on_attempt=on_attempt,
                 should_abort=lambda: bool(getattr(self.app.session.agent.signal, "aborted", False)),
             )
+            self._last_workflow_repair_report = result.repair_report
+            return result
         except Exception as error:  # noqa: BLE001 - repair should not crash interactive mode
             self.history.add(StatusLine(f"Workflow draft repair failed: {error}", kind="error"))
             return None
@@ -1358,6 +2378,11 @@ class InteractiveMode:
 
         if result is None:
             return
+
+        if repair_result is not None:
+            repair_stop_report = format_workflow_repair_stop_report(repair_result)
+            if repair_stop_report:
+                self.history.add(StatusLine(repair_stop_report, kind="error"))
 
         self._last_workflow_validation = result if result.validation.ok else None
         kind = "info" if result.validation.ok else "error"
@@ -1880,6 +2905,400 @@ def _is_help_command(prompt: str) -> bool:
 
 def _is_workflow_save_command(prompt: str) -> bool:
     return prompt == "/workflow-save" or prompt.startswith("/workflow-save ")
+
+
+def _is_workflow_explain_command(prompt: str) -> bool:
+    return prompt == "/workflow-explain" or prompt.startswith("/workflow-explain ")
+
+
+def _is_workflow_export_intent_command(prompt: str) -> bool:
+    return prompt == "/workflow-export-intent" or prompt.startswith("/workflow-export-intent ")
+
+
+def _is_workflow_export_bundle_command(prompt: str) -> bool:
+    return prompt == "/workflow-export-bundle" or prompt.startswith("/workflow-export-bundle ")
+
+
+def _is_workflow_bundle_check_command(prompt: str) -> bool:
+    return prompt == "/workflow-bundle-check" or prompt.startswith("/workflow-bundle-check ")
+
+
+def _is_workflow_connectors_command(prompt: str) -> bool:
+    return prompt == "/workflow-connectors" or prompt.startswith("/workflow-connectors ")
+
+
+def _is_workflow_live_plan_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-plan" or prompt.startswith("/workflow-live-plan ")
+
+
+def _is_workflow_repair_report_command(prompt: str) -> bool:
+    return prompt == "/workflow-repair-report" or prompt.startswith("/workflow-repair-report ")
+
+
+def _is_workflow_run_explain_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-explain" or prompt.startswith("/workflow-run-explain ")
+
+
+def _is_workflow_approval_command(prompt: str) -> bool:
+    return (
+        prompt == "/workflow-approve"
+        or prompt.startswith("/workflow-approve ")
+        or prompt == "/workflow-deny"
+        or prompt.startswith("/workflow-deny ")
+    )
+
+
+def _is_workflow_approvals_command(prompt: str) -> bool:
+    return prompt == "/workflow-approvals" or prompt.startswith("/workflow-approvals ")
+
+
+def _is_workflow_live_draft_preflight_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-draft-preflight" or prompt.startswith("/workflow-live-draft-preflight ")
+
+
+def _is_workflow_live_read_preflight_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-read-preflight" or prompt.startswith("/workflow-live-read-preflight ")
+
+
+def _is_workflow_live_production_preflight_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-production-preflight" or prompt.startswith("/workflow-live-production-preflight ")
+
+
+def _is_workflow_live_ready_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-ready" or prompt.startswith("/workflow-live-ready ")
+
+
+def _is_workflow_live_env_template_command(prompt: str) -> bool:
+    return prompt == "/workflow-live-env-template" or prompt.startswith("/workflow-live-env-template ")
+
+
+def _is_workflow_run_live_draft_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-live-draft" or prompt.startswith("/workflow-run-live-draft ")
+
+
+def _is_workflow_run_live_read_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-live-read" or prompt.startswith("/workflow-run-live-read ")
+
+
+def _is_workflow_run_live_production_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-live-production" or prompt.startswith("/workflow-run-live-production ")
+
+
+def _is_workflow_run_local_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-local" or prompt.startswith("/workflow-run-local ")
+
+
+def _is_workflow_run_sandbox_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-sandbox" or prompt.startswith("/workflow-run-sandbox ")
+
+
+def _is_workflow_run_approval_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-approval" or prompt.startswith("/workflow-run-approval ")
+
+
+def _is_workflow_activation_command(prompt: str) -> bool:
+    return (
+        prompt == "/workflow-activate"
+        or prompt.startswith("/workflow-activate ")
+        or prompt == "/workflow-activation-enable"
+        or prompt.startswith("/workflow-activation-enable ")
+        or prompt == "/workflow-activation-disable"
+        or prompt.startswith("/workflow-activation-disable ")
+        or prompt == "/workflow-activation-list"
+        or prompt.startswith("/workflow-activation-list ")
+        or prompt == "/workflow-activation-run"
+        or prompt.startswith("/workflow-activation-run ")
+        or prompt == "/workflow-activation-run-explain"
+        or prompt.startswith("/workflow-activation-run-explain ")
+        or prompt == "/workflow-activation-status"
+        or prompt.startswith("/workflow-activation-status ")
+        or prompt == "/workflow-activation-history"
+        or prompt.startswith("/workflow-activation-history ")
+    )
+
+
+def _is_workflow_run_command(prompt: str) -> bool:
+    return (
+        _is_workflow_run_local_command(prompt)
+        or _is_workflow_run_sandbox_command(prompt)
+        or prompt == "/workflow-run"
+        or prompt.startswith("/workflow-run ")
+    )
+
+
+@dataclass(frozen=True)
+class _WorkflowRunCommand:
+    package_path: str = ""
+    fixture_name: str | None = None
+    approve_all: bool = False
+    label: str = "local"
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class _WorkflowLiveDraftPreflightCommand:
+    package_path: str = ""
+    fixture_name: str = ""
+    approval_run_id: str = ""
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class _WorkflowLiveReadyCommand:
+    mode: WorkflowRunMode = WorkflowRunMode.LIVE_READ
+    package_path: str = ""
+    fixture_name: str = ""
+    approval_run_id: str | None = None
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _parse_workflow_live_ready_command(prompt: str) -> _WorkflowLiveReadyCommand:
+    args = prompt.split()
+    expected = (
+        "expected /workflow-live-ready <live-read|live-draft|live-production> "
+        "<path> <fixture> [approval-run-id] --allow <action>[,<action>]"
+    )
+    if len(args) < 6 or args[0] != "/workflow-live-ready":
+        return _WorkflowLiveReadyCommand(error=expected)
+    mode = _workflow_live_ready_mode(args[1])
+    if mode is None:
+        return _WorkflowLiveReadyCommand(error=expected)
+    if mode is WorkflowRunMode.LIVE_READ:
+        if len(args) != 6 or args[4] != "--allow":
+            return _WorkflowLiveReadyCommand(error=expected)
+        allowlist = _parse_allowlist(args[5])
+        if not allowlist:
+            return _WorkflowLiveReadyCommand(error=expected)
+        return _WorkflowLiveReadyCommand(mode=mode, package_path=args[2], fixture_name=args[3], connector_allowlist=allowlist)
+    if len(args) != 7 or args[5] != "--allow":
+        return _WorkflowLiveReadyCommand(error=expected)
+    allowlist = _parse_allowlist(args[6])
+    if not allowlist:
+        return _WorkflowLiveReadyCommand(error=expected)
+    return _WorkflowLiveReadyCommand(
+        mode=mode,
+        package_path=args[2],
+        fixture_name=args[3],
+        approval_run_id=args[4],
+        connector_allowlist=allowlist,
+    )
+
+
+def _parse_workflow_live_env_template_command(prompt: str) -> _WorkflowLiveReadyCommand:
+    args = prompt.split()
+    expected = "expected /workflow-live-env-template <live-read|live-draft|live-production> <path> --allow <action>[,<action>]"
+    if len(args) != 5 or args[0] != "/workflow-live-env-template" or args[3] != "--allow":
+        return _WorkflowLiveReadyCommand(error=expected)
+    mode = _workflow_live_ready_mode(args[1])
+    if mode is None:
+        return _WorkflowLiveReadyCommand(error=expected)
+    allowlist = _parse_allowlist(args[4])
+    if not allowlist:
+        return _WorkflowLiveReadyCommand(error=expected)
+    return _WorkflowLiveReadyCommand(mode=mode, package_path=args[2], connector_allowlist=allowlist)
+
+
+def _workflow_live_ready_mode(value: str) -> WorkflowRunMode | None:
+    return {
+        "live-read": WorkflowRunMode.LIVE_READ,
+        "live-draft": WorkflowRunMode.LIVE_DRAFT,
+        "live-production": WorkflowRunMode.LIVE_PRODUCTION,
+    }.get(value)
+
+
+def _parse_allowlist(value: str) -> tuple[str, ...]:
+    return tuple(action.strip() for action in value.split(",") if action.strip())
+
+
+def _parse_workflow_live_draft_preflight_command(prompt: str) -> _WorkflowLiveDraftPreflightCommand:
+    args = prompt.split()
+    expected = "expected /workflow-live-draft-preflight <path> <fixture> <approval-run-id> --allow <action>[,<action>]"
+    if len(args) != 6 or args[0] != "/workflow-live-draft-preflight" or args[4] != "--allow":
+        return _WorkflowLiveDraftPreflightCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[5].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowLiveDraftPreflightCommand(error=expected)
+    return _WorkflowLiveDraftPreflightCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        approval_run_id=args[3],
+        connector_allowlist=allowlist,
+    )
+
+
+@dataclass(frozen=True)
+class _WorkflowLiveReadPreflightCommand:
+    package_path: str = ""
+    fixture_name: str = ""
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _parse_workflow_live_read_preflight_command(prompt: str) -> _WorkflowLiveReadPreflightCommand:
+    args = prompt.split()
+    expected = "expected /workflow-live-read-preflight <path> <fixture> --allow <action>[,<action>]"
+    if len(args) != 5 or args[0] != "/workflow-live-read-preflight" or args[3] != "--allow":
+        return _WorkflowLiveReadPreflightCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[4].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowLiveReadPreflightCommand(error=expected)
+    return _WorkflowLiveReadPreflightCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        connector_allowlist=allowlist,
+    )
+
+
+def _parse_workflow_live_production_preflight_command(prompt: str) -> _WorkflowLiveDraftPreflightCommand:
+    args = prompt.split()
+    expected = "expected /workflow-live-production-preflight <path> <fixture> <approval-run-id> --allow <action>[,<action>]"
+    if len(args) != 6 or args[0] != "/workflow-live-production-preflight" or args[4] != "--allow":
+        return _WorkflowLiveDraftPreflightCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[5].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowLiveDraftPreflightCommand(error=expected)
+    return _WorkflowLiveDraftPreflightCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        approval_run_id=args[3],
+        connector_allowlist=allowlist,
+    )
+
+
+@dataclass(frozen=True)
+class _WorkflowRunLiveDraftCommand:
+    package_path: str = ""
+    fixture_name: str = ""
+    approval_run_id: str = ""
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _parse_workflow_run_live_draft_command(prompt: str) -> _WorkflowRunLiveDraftCommand:
+    args = prompt.split()
+    expected = "expected /workflow-run-live-draft <path> <fixture> <approval-run-id> --allow <action>[,<action>]"
+    if len(args) != 6 or args[0] != "/workflow-run-live-draft" or args[4] != "--allow":
+        return _WorkflowRunLiveDraftCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[5].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowRunLiveDraftCommand(error=expected)
+    return _WorkflowRunLiveDraftCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        approval_run_id=args[3],
+        connector_allowlist=allowlist,
+    )
+
+
+@dataclass(frozen=True)
+class _WorkflowRunLiveReadCommand:
+    package_path: str = ""
+    fixture_name: str = ""
+    connector_allowlist: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _parse_workflow_run_live_read_command(prompt: str) -> _WorkflowRunLiveReadCommand:
+    args = prompt.split()
+    expected = "expected /workflow-run-live-read <path> <fixture> --allow <action>[,<action>]"
+    if len(args) != 5 or args[0] != "/workflow-run-live-read" or args[3] != "--allow":
+        return _WorkflowRunLiveReadCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[4].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowRunLiveReadCommand(error=expected)
+    return _WorkflowRunLiveReadCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        connector_allowlist=allowlist,
+    )
+
+
+def _parse_workflow_run_live_production_command(prompt: str) -> _WorkflowRunLiveDraftCommand:
+    args = prompt.split()
+    expected = "expected /workflow-run-live-production <path> <fixture> <approval-run-id> --allow <action>[,<action>]"
+    if len(args) != 6 or args[0] != "/workflow-run-live-production" or args[4] != "--allow":
+        return _WorkflowRunLiveDraftCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[5].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowRunLiveDraftCommand(error=expected)
+    return _WorkflowRunLiveDraftCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        approval_run_id=args[3],
+        connector_allowlist=allowlist,
+    )
+
+
+def _parse_workflow_run_command(prompt: str) -> _WorkflowRunCommand:
+    args = prompt.split()
+    command = args[0] if args else ""
+    if command == "/workflow-run-local":
+        if len(args) < 2:
+            return _WorkflowRunCommand(error="missing package path")
+        if len(args) > 3:
+            return _WorkflowRunCommand(error="expected /workflow-run-local <path> [fixture]")
+        return _WorkflowRunCommand(package_path=args[1], fixture_name=args[2] if len(args) == 3 else None, approve_all=True)
+
+    if command == "/workflow-run-sandbox":
+        if len(args) < 2:
+            return _WorkflowRunCommand(error="missing package path")
+        if len(args) > 3:
+            return _WorkflowRunCommand(error="expected /workflow-run-sandbox <path> [fixture]")
+        return _WorkflowRunCommand(
+            package_path=args[1],
+            fixture_name=args[2] if len(args) == 3 else None,
+            approve_all=True,
+            label="sandbox",
+        )
+
+    if command != "/workflow-run":
+        return _WorkflowRunCommand(error="unknown workflow run command")
+    if len(args) < 5:
+        return _WorkflowRunCommand(error="expected /workflow-run <path> <fixture> --mode local --approve-all")
+    package_path = args[1]
+    fixture_name = args[2]
+    flags = args[3:]
+    if "--mode" not in flags:
+        return _WorkflowRunCommand(error="missing --mode local")
+    mode_index = flags.index("--mode")
+    if mode_index + 1 >= len(flags) or flags[mode_index + 1] != "local":
+        return _WorkflowRunCommand(error="only --mode local is supported")
+    if "--approve-all" not in flags:
+        return _WorkflowRunCommand(error="missing --approve-all")
+    extra = list(flags)
+    del extra[mode_index : mode_index + 2]
+    extra.remove("--approve-all")
+    if extra:
+        return _WorkflowRunCommand(error=f"unsupported workflow-run flags: {' '.join(extra)}")
+    return _WorkflowRunCommand(package_path=package_path, fixture_name=fixture_name, approve_all=True)
+
+
+def _resolve_workflow_run_package_path(cwd: Path, path_text: str) -> Path:
+    base = Path(cwd).resolve()
+    raw_path = Path(path_text).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (base / raw_path).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as error:
+        raise ValueError("package path must stay inside the current working directory") from error
+    return candidate
+
+
+def _workflow_activation_root(cwd: Path) -> Path:
+    return Path(cwd).resolve() / ".appv24" / "workflow-activations"
+
+
+def _resolve_workflow_activation_id(value: str) -> str:
+    activation_id = value.strip()
+    if not activation_id:
+        raise ValueError("missing activation id")
+    if "/" in activation_id or "\\" in activation_id or activation_id in {".", ".."} or ".." in activation_id:
+        raise ValueError("activation id must not contain path traversal")
+    if not activation_id.startswith("activation-"):
+        raise ValueError("activation id must start with activation-")
+    return activation_id
 
 
 def _format_workflow_package_validation_report(result, max_issues: int = 12) -> str:

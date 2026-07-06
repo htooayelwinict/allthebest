@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from appv24.workflows.prompt_fragments import (
+    render_capability_catalog_fragment,
     render_required_package_blocks_fragment,
     render_schema_reminders_fragment,
 )
@@ -41,6 +42,27 @@ def test_prompt_fragments_render_schema_reminders() -> None:
     assert "Decision steps must use branches:" in fragment
     assert "Do not use condition plus next/reject_next as runtime branch syntax" in fragment
     assert "dry_run_fixtures/*.yaml must include decision:" in fragment
+    assert "adapter must be one of mcp, openapi, asyncapi, webhook, direct_api, iac, llm, manual" in fragment
+
+
+def test_prompt_fragments_render_builtin_capability_catalog() -> None:
+    fragment = render_capability_catalog_fragment()
+
+    assert "Built-in executable workflow capability catalog:" in fragment
+    assert "github.create_issue" in fragment
+    assert "source.fetch_items" in fragment
+    assert "llm.extract_structured" in fragment
+    assert "policy.check" in fragment
+    assert "notification.create_draft" in fragment
+    assert "telegram.send_message" in fragment
+    assert "ticket.create_draft" in fragment
+    assert "Incoming events, webhooks, and fixture inputs are triggers or input data" in fragment
+    assert "Do not invent connector action names" in fragment
+    assert "prefer compact with.output_contract over inline with.output_schema" in fragment
+    assert "event_alerts_v1" in fragment
+    assert "Do not use llm.do_anything, agent.run, http.request, finance.*, trading.*" in fragment
+    assert "informational alerts only" in fragment
+    assert "policy.check steps must use deterministic with.checks" in fragment
 
 
 def test_build_intent_stage_prompt_is_passive_and_preserves_request() -> None:
@@ -84,9 +106,12 @@ def test_build_package_stage_prompt_requires_full_package_sections() -> None:
     assert "Design-only actions must use execution_mode: design_only and must not be called by workflow steps" in prompt
     assert "Read, classify, analyze, summarize, draft, format, and local artifact steps must use side_effect: false" in prompt
     assert "Only external create, update, delete, send, publish, or provision actions should be mutating" in prompt
+    assert "prefer compact with.output_contract over inline with.output_schema" in prompt
+    assert "Financial catalyst workflows must be informational alerts only" in prompt
     assert "outputs.allowed" in prompt
     assert "workflow.yaml must include design metadata" in prompt
     assert "appv24 only designs workflow packages; it does not execute workflows" in prompt
+    assert render_capability_catalog_fragment() in prompt
 
 
 def test_package_stage_prompt_includes_shared_fragments() -> None:
@@ -99,6 +124,7 @@ def test_package_stage_prompt_includes_shared_fragments() -> None:
 
     assert render_required_package_blocks_fragment() in prompt
     assert render_schema_reminders_fragment() in prompt
+    assert render_capability_catalog_fragment() in prompt
 
 
 def test_build_package_stage_prompt_includes_schema_micro_examples() -> None:

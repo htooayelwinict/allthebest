@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from appv24.workflows.prompt_fragments import (
+    render_capability_catalog_fragment,
     render_passive_safety_fragment,
     render_secret_reference_fragment,
+    render_schema_reminders_fragment,
     render_side_effect_contract_fragment,
 )
 from appv24.workflows.repair import (
@@ -25,12 +28,17 @@ def test_prompt_fragments_render_repair_safety_rules() -> None:
     safety = render_passive_safety_fragment()
     side_effects = render_side_effect_contract_fragment()
     secrets = render_secret_reference_fragment()
+    schema = render_schema_reminders_fragment()
 
     assert "Do not call tools" in safety
     assert "Do not run shell commands" in safety
     assert "Brokered mutating actions require approval_required: true" in side_effects
     assert "Design-only actions must use execution_mode: design_only" in side_effects
     assert "secretRef values must be reference names only" in secrets
+    assert (
+        "workflow.yaml top-level shape: version: appv24.workflow/v1, name:, "
+        "description:, design:, triggers:, entrypoint:, steps:."
+    ) in schema
 
 
 def _valid_draft() -> str:
@@ -145,6 +153,78 @@ def _invalid_draft() -> str:
     return _valid_draft().replace("side_effect: true", "side_effect: send")
 
 
+def _missing_design_rollback_draft() -> str:
+    return _valid_draft().replace(
+        "  rollback:\n    - Close the drafted issue manually if it was created.\n",
+        "",
+        1,
+    )
+
+
+def _missing_design_core_lists_draft() -> str:
+    draft = _valid_draft()
+    for block in (
+        "  inputs:\n    - GitHub dependency alert list.\n",
+        "  outputs:\n    - Human-reviewed issue draft.\n",
+        "  failure_modes:\n    - GitHub API unavailable.\n    - Human rejects the issue draft.\n",
+    ):
+        draft = draft.replace(block, "", 1)
+    return draft
+
+
+def _missing_design_assumptions_side_effects_draft() -> str:
+    draft = _valid_draft()
+    for block in (
+        "  assumptions:\n    - GitHub credentials are provided by secret reference at execution time.\n",
+        "  side_effects:\n    - Create a GitHub issue only after explicit human approval.\n",
+    ):
+        draft = draft.replace(block, "", 1)
+    return draft
+
+
+def _missing_policy_checks_draft() -> str:
+    return (
+        _valid_draft()
+        .replace(
+            "    uses: github.list_dependabot_alerts\n    next: draft_issue",
+            "    uses: github.list_dependabot_alerts\n    next: check_policy"
+            "\n  - id: check_policy\n"
+            "    uses: policy.check\n"
+            "    with:\n"
+            "      input_ref: inspect_alerts.alerts\n"
+            "    side_effect_class: read\n"
+            "    next: draft_issue",
+            1,
+        )
+        .replace(
+            "connectors:\n  - id: github",
+            "connectors:\n"
+            "  - id: policy\n"
+            "    adapter: manual\n"
+            "    description: Deterministic policy checks.\n"
+            "    actions:\n"
+            "      - id: check\n"
+            "        side_effect: false\n"
+            "        outputs:\n"
+            "          allowed:\n"
+            "            - approved\n"
+            "            - reason\n"
+            "  - id: github",
+            1,
+        )
+        .replace(
+            "permissions:\n  - connector: github",
+            "permissions:\n"
+            "  - connector: policy\n"
+            "    actions:\n"
+            "      - check\n"
+            "    scopes: []\n"
+            "  - connector: github",
+            1,
+        )
+    )
+
+
 def _missing_workflow_step_side_effect_class_draft() -> str:
     return _valid_draft().replace(
         "    side_effect_class: create\n    approval: human-review",
@@ -222,6 +302,28 @@ def _missing_step_transition_draft() -> str:
     )
 
 
+def _unknown_catalog_action_draft() -> str:
+    return _valid_draft().replace("list_dependabot_alerts", "invented_read")
+
+
+def _package_draft(package: Path) -> str:
+    sections = [
+        ("yaml", "workflow.yaml", package / "workflow.yaml"),
+        ("yaml", "connectors.yaml", package / "connectors.yaml"),
+        ("yaml", "permissions.yaml", package / "permissions.yaml"),
+        ("yaml", "dry_run_fixtures/happy_path.yaml", package / "dry_run_fixtures" / "happy_path.yaml"),
+        ("yaml", "dry_run_fixtures/rejection_path.yaml", package / "dry_run_fixtures" / "rejection_path.yaml"),
+        ("markdown", "rollback.md", package / "rollback.md"),
+    ]
+    rendered = ["Here is the workflow package draft."]
+    for language, label, path in sections:
+        rendered.append(f"```{language} {label}")
+        rendered.append(path.read_text(encoding="utf-8").rstrip())
+        rendered.append("```")
+        rendered.append("")
+    return "\n".join(rendered)
+
+
 def test_validate_latest_workflow_draft_returns_none_without_assistant_text() -> None:
     assert validate_latest_workflow_draft([]) is None
 
@@ -291,6 +393,9 @@ def test_repair_prompt_includes_shared_contract_fragments() -> None:
 
     assert render_side_effect_contract_fragment() in prompt
     assert render_secret_reference_fragment() in prompt
+    assert render_capability_catalog_fragment() in prompt
+    assert "prefer compact with.output_contract over inline with.output_schema" in prompt
+    assert "Financial catalyst workflows must be informational alerts only" in prompt
 
 
 def test_repeated_repair_prompt_tells_model_to_revert_unrelated_drift() -> None:
@@ -439,6 +544,36 @@ def test_build_workflow_repair_prompt_includes_missing_transition_directive() ->
     assert "next: done" in prompt
 
 
+def test_build_workflow_repair_prompt_includes_catalog_action_directive() -> None:
+    result = validate_workflow_draft_text(_unknown_catalog_action_draft())
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=8)
+
+    assert "unknown_catalog_action workflow.yaml:steps.0.uses" in prompt
+    assert "github.invented_read is not in the built-in workflow capability catalog" in prompt
+    assert "Use only built-in workflow capability catalog actions" in prompt
+    assert "github.list_dependabot_alerts" in prompt
+    assert "telegram.send_message" in prompt
+    assert "If the non-catalog action represents an incoming trigger or fixture input" in prompt
+
+
+def test_build_workflow_repair_prompt_includes_llm_contract_directive(tmp_path: Path) -> None:
+    from test_workflow_packages import write_intelligence_package
+
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    draft = _package_draft(package).replace("      output_contract: event_alerts_v1\n", "")
+    result = validate_workflow_draft_text(draft)
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=8)
+
+    assert "missing_llm_output_contract workflow.yaml:steps.extract_catalysts.with" in prompt
+    assert "Fix the LLM step output contract without redesigning the workflow" in prompt
+    assert "Prefer compact with.output_contract names over inline with.output_schema" in prompt
+    assert "event_alerts_v1" in prompt
+    assert "Set exactly one of with.output_contract or with.output_schema" in prompt
+
+
 def test_build_workflow_repair_prompt_includes_design_contract_micro_example() -> None:
     result = validate_workflow_draft_text(_valid_draft().replace("design:", "design_missing:", 1))
 
@@ -451,6 +586,49 @@ def test_build_workflow_repair_prompt_includes_design_contract_micro_example() -
     assert "approval_gates:" in prompt
     assert "failure_modes:" in prompt
     assert "rollback:" in prompt
+
+
+def test_build_workflow_repair_prompt_includes_missing_design_field_directive() -> None:
+    result = validate_workflow_draft_text(_missing_design_rollback_draft())
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=4)
+
+    assert "missing_design_contract workflow.yaml:design.rollback" in prompt
+    assert "Add the missing workflow.yaml design.rollback field" in prompt
+    assert "workflow.yaml design must be a top-level mapping" in prompt
+    assert "Put design before triggers and indent every design list item under design" in prompt
+    assert "design.rollback must be a YAML list of manual rollback note strings" in prompt
+    assert "Do not confuse design.rollback with rollback.md; both are required" in prompt
+
+
+def test_build_workflow_repair_prompt_repairs_missing_design_lists_without_redesign() -> None:
+    result = validate_workflow_draft_text(_missing_design_core_lists_draft())
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=8)
+
+    assert "missing_design_contract workflow.yaml:design.inputs" in prompt
+    assert "missing_design_contract workflow.yaml:design.outputs" in prompt
+    assert "missing_design_contract workflow.yaml:design.failure_modes" in prompt
+    assert "Add the missing workflow.yaml design.inputs field" in prompt
+    assert "Add the missing workflow.yaml design.outputs field" in prompt
+    assert "Add the missing workflow.yaml design.failure_modes field" in prompt
+    assert "Use concise non-placeholder strings derived from the current workflow intent" in prompt
+    assert "Preserve every existing workflow.yaml design field" in prompt
+
+
+def test_build_workflow_repair_prompt_includes_generic_policy_check_shape() -> None:
+    result = validate_workflow_draft_text(_missing_policy_checks_draft())
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=8)
+
+    assert "missing_policy_checks workflow.yaml:steps.check_policy.with.checks" in prompt
+    assert "Add deterministic policy checks to the policy.check step" in prompt
+    assert "Policy check shape:" in prompt
+    assert "checks:" in prompt
+    assert "stable_snake_case_check" in prompt
+    assert "Each check key must be a stable snake_case policy name" in prompt
+    assert "Each check value must be deterministic data" in prompt
+    assert "source URLs, timestamps, no trading advice" not in prompt
 
 
 def test_build_workflow_repair_prompt_includes_unsafe_rollback_directive() -> None:
@@ -516,6 +694,25 @@ def test_repair_runs_once_when_second_draft_is_valid() -> None:
     assert prompts == list(result.feedback_prompts)
 
 
+def test_repair_result_carries_attempt_report_data() -> None:
+    messages = [_assistant_message(_invalid_draft())]
+
+    def run_turn(_prompt: str) -> None:
+        messages.append(_assistant_message(_valid_draft()))
+
+    result = repair_workflow_draft_messages(
+        messages,
+        run_turn,
+        config=WorkflowDraftRepairConfig(max_attempts=2, max_issues=6),
+    )
+
+    assert result.repair_report is not None
+    assert result.repair_report.attempts
+    assert result.repair_report.attempts[0].status == "failed"
+    assert result.repair_report.attempts[-1].status == "passed"
+    assert any("connectors.yaml" in fingerprint for fingerprint in result.repair_report.attempts[0].issue_fingerprints)
+
+
 def test_repair_stops_after_max_attempts_when_invalid_persists() -> None:
     messages = [_assistant_message(_invalid_draft())]
     prompts: list[str] = []
@@ -572,6 +769,50 @@ def test_repair_config_unbounded_attempts_can_converge() -> None:
     assert result.repaired is True
     assert result.validation is not None
     assert result.validation.ok is True
+
+
+def test_repair_autofixes_missing_design_lists_without_reprompting() -> None:
+    messages = [_assistant_message(_missing_design_core_lists_draft())]
+
+    def fail_run_turn(prompt: str) -> None:
+        raise AssertionError(f"repair turn should not run: {prompt}")
+
+    result = repair_workflow_draft_messages(messages, fail_run_turn)
+
+    assert result.validation is not None
+    assert result.validation.ok
+    assert result.attempts == 0
+    assert result.repaired
+    assert result.stop_reason is None
+    assert not result.feedback_prompts
+    latest_result = validate_workflow_draft_text(messages[-1].content[0].text)
+    assert latest_result.ok
+    assert latest_result.documents is not None
+    design = latest_result.documents.workflow["design"]
+    assert design["inputs"]
+    assert design["outputs"]
+    assert design["failure_modes"]
+
+
+def test_repair_autofixes_missing_design_metadata_without_model_turn() -> None:
+    messages = [_assistant_message(_missing_design_assumptions_side_effects_draft())]
+
+    def fail_run_turn(prompt: str) -> None:
+        raise AssertionError(f"repair turn should not run: {prompt}")
+
+    result = repair_workflow_draft_messages(messages, fail_run_turn)
+
+    assert result.validation is not None
+    assert result.validation.ok
+    assert result.attempts == 0
+    assert result.repaired
+    assert not result.exhausted
+    latest_result = validate_workflow_draft_text(messages[-1].content[0].text)
+    assert latest_result.ok
+    assert latest_result.documents is not None
+    design = latest_result.documents.workflow["design"]
+    assert design["assumptions"]
+    assert design["side_effects"]
 
 
 def test_repair_stops_when_repair_turn_aborts_with_partial_draft() -> None:

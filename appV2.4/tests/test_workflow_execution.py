@@ -50,3 +50,14 @@ def test_workflow_run_report_serializes_core_fields() -> None:
 
     assert report.to_dict()["mode"] == "preview"
     assert report.to_dict()["package_fingerprint"] == "sha256:abc"
+
+
+def test_workflow_run_request_can_carry_local_approval_policy() -> None:
+    request = WorkflowRunRequest(
+        package_path=Path("pkg"),
+        fixture_name="happy_path.yaml",
+        mode=WorkflowRunMode.LOCAL,
+        approve_all=True,
+    )
+
+    assert request.approve_all is True

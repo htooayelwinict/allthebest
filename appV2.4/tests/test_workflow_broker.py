@@ -42,6 +42,61 @@ def test_local_broker_filters_outputs_to_allowed_fields() -> None:
     assert result.issues == ()
 
 
+def test_local_broker_blocks_when_outputs_do_not_match_allowed_fields() -> None:
+    broker = LocalWorkflowBroker(
+        {
+            "ticket.create_draft": lambda request: BrokerResult(
+                status="simulated",
+                provider_id="fixture",
+                outputs={"ticket_id": "t-1"},
+            )
+        }
+    )
+
+    result = broker.invoke(
+        BrokerRequest(
+            step_id="create_ticket_draft",
+            connector_action="ticket.create_draft",
+            input_ref={},
+            fixture={},
+            allowed_outputs=("draft_id",),
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == (
+        "provider outputs for ticket.create_draft do not match declared allowed_outputs: "
+        "produced ticket_id; allowed draft_id",
+    )
+
+
+def test_local_broker_allows_provider_without_outputs() -> None:
+    broker = LocalWorkflowBroker(
+        {
+            "noop.inspect": lambda request: BrokerResult(
+                status="simulated",
+                provider_id="fixture",
+                outputs={},
+            )
+        }
+    )
+
+    result = broker.invoke(
+        BrokerRequest(
+            step_id="inspect",
+            connector_action="noop.inspect",
+            input_ref={},
+            fixture={},
+            allowed_outputs=("result",),
+        )
+    )
+
+    assert result.status == "simulated"
+    assert result.outputs == {}
+    assert result.issues == ()
+
+
 def test_local_broker_blocks_unknown_connector_action() -> None:
     broker = LocalWorkflowBroker({})
 

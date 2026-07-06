@@ -13,7 +13,7 @@ from appv24.workflows.loader import PackageDocuments
 
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 REQUIRED_PROPERTY_PATTERN = re.compile(r"'(?P<name>[^']+)' is a required property")
-SIDE_EFFECT_CLASS_VALUES = ["create", "update", "delete", "send", "publish", "provision"]
+SIDE_EFFECT_CLASS_VALUES = ["read", "create", "update", "delete", "send", "publish", "provision"]
 EXECUTION_MODE_VALUES = ["brokered", "manual", "design_only"]
 
 WORKFLOW_SCHEMA = {
@@ -91,6 +91,7 @@ CONNECTORS_SCHEMA = {
                             "webhook",
                             "direct_api",
                             "iac",
+                            "llm",
                             "manual",
                             "platform_export",
                         ]

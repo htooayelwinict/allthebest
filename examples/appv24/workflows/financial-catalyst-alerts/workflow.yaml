@@ -1,0 +1,71 @@
+version: appv24.workflow/v1
+name: financial-catalyst-alerts
+description: Extract informational financial catalysts and draft reviewable alerts.
+design:
+  intent: Watch public sources, extract catalysts, block trading advice, and draft an alert.
+  trigger: Scheduled public-source scan.
+  inputs:
+    - Public company news and filing items.
+  outputs:
+    - Reviewable informational alert draft with source links.
+  assumptions:
+    - Sources are public and timestamped.
+    - Alerts are informational and not financial advice.
+  side_effects:
+    - Create a local notification draft only after explicit approval.
+  approval_gates:
+    - alert-draft-review
+  failure_modes:
+    - Source fetch fails.
+    - LLM output violates the compact contract.
+    - Policy rejects advice-like content.
+  rollback:
+    - Delete the local draft manually if it was created by mistake.
+triggers:
+  - id: market_watch
+    type: schedule
+    schedule: "*/30 * * * *"
+entrypoint: fetch_news
+steps:
+  - id: fetch_news
+    uses: source.fetch_items
+    with:
+      query: public company catalysts
+      tickers:
+        - NVDA
+        - MSFT
+    next: extract_catalysts
+  - id: extract_catalysts
+    uses: llm.extract_structured
+    with:
+      task: extract_financial_catalysts
+      input_ref: fetch_news.items
+      output_contract: event_alerts_v1
+      safety:
+        disallow:
+          - personalized_financial_advice
+          - buy_sell_hold_recommendation
+          - price_target
+      model:
+        temperature: 0
+        max_tokens: 2000
+    side_effect_class: read
+    next: check_policy
+  - id: check_policy
+    uses: policy.check
+    with:
+      input_ref: extract_catalysts.alerts
+      checks:
+        require_source_urls: true
+        require_source_timestamps: true
+        disallow_financial_advice: true
+        min_confidence: medium
+    side_effect_class: read
+    next: create_alert_draft
+  - id: create_alert_draft
+    uses: notification.create_draft
+    side_effect_class: create
+    approval: alert-draft-review
+    next: done
+  - id: done
+    type: terminal

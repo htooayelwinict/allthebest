@@ -1,0 +1,44 @@
+version: appv24.workflow/v1
+name: telegram-production-alert
+description: Send one approval-gated Telegram production alert to an admin chat.
+design:
+  intent: Send one approved Telegram message through the live-production broker.
+  trigger: Manual operator request after local dry-run approval.
+  inputs:
+    - Admin Telegram chat id.
+    - Alert text.
+  outputs:
+    - Telegram message id.
+    - Telegram chat id.
+  assumptions:
+    - The operator owns the Telegram bot token outside the package.
+    - The operator has replaced the sample chat id before a real production run.
+    - Live-production mode is enabled only by explicit environment variables and command allowlist.
+  side_effects:
+    - Send one Telegram message.
+  approval_gates:
+    - operator-approval
+  failure_modes:
+    - Missing Telegram credential.
+    - Missing or denied approval run.
+    - Telegram API request failure.
+    - Operator allowlist omits telegram.send_message.
+  rollback:
+    - Send a corrective Telegram message if the alert was sent to the wrong audience.
+triggers:
+  - id: manual_operator
+    type: manual
+entrypoint: notify_admin
+steps:
+  - id: notify_admin
+    uses: telegram.send_message
+    side_effect_class: send
+    approval: operator-approval
+    with:
+      chat_id: "123456789"
+      text: "appv24 production workflow smoke alert"
+      disable_notification: true
+      protect_content: true
+    next: done
+  - id: done
+    type: terminal

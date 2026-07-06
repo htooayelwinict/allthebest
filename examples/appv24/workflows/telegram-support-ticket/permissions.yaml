@@ -1,0 +1,18 @@
+version: appv24.permissions/v1
+approvals:
+  - id: admin-approval
+    mode: explicit
+    required_for:
+      - create_ticket_draft
+      - notify_admin
+permissions:
+  - connector: ticket
+    actions:
+      - create_draft
+    scopes:
+      - ticket:draft
+  - connector: telegram
+    actions:
+      - send_message
+    scopes:
+      - telegram:send
