@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.connector_registry import inspect_workflow_connector_registry
 from appv24.workflows.fingerprints import fingerprint_package_documents
+from appv24.workflows.deployment_intent import deployment_intent_to_dict
 from appv24.workflows.iac_export import export_deployment_intent
 from appv24.workflows.ir import WorkflowIR
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
@@ -82,16 +83,7 @@ def build_workflow_bundle(
         package_fingerprint=package_fingerprint,
         registry=registry,
         live_plan=live_plan,
-        deployment_intent={
-            "env_requirements": list(intent.env_requirements),
-            "secret_refs": list(intent.secret_refs),
-            "webhook_triggers": list(intent.webhook_triggers),
-            "scheduler_triggers": list(intent.scheduler_triggers),
-            "connector_scopes": {connector: list(scopes) for connector, scopes in sorted(intent.connector_scopes.items())},
-            "approval_ids": list(intent.approval_ids),
-            "approval_policy": list(intent.approval_policy),
-            "rollback_required": intent.rollback_required,
-        },
+        deployment_intent=deployment_intent_to_dict(intent),
     )
     return WorkflowBundleExport(
         bundle_id=bundle_id,

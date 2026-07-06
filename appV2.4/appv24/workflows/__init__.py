@@ -25,6 +25,7 @@ from appv24.workflows.drafts import (
     parse_workflow_draft_blocks,
     save_workflow_draft_blocks,
 )
+from appv24.workflows.deployment_intent import deployment_intent_to_dict, deployment_intent_to_json
 from appv24.workflows.errors import WorkflowIssue, WorkflowPackageError, WorkflowValidationResult
 from appv24.workflows.broker import BrokerRequest, BrokerResult, LocalWorkflowBroker
 from appv24.workflows.bundle_export import (
@@ -265,6 +266,8 @@ __all__ = (
     "explain_workflow_run_artifacts",
     "export_deployment_intent",
     "export_deployment_intent_from_path",
+    "deployment_intent_to_dict",
+    "deployment_intent_to_json",
     "format_deployment_intent",
     "extract_workflow_draft_blocks",
     "fingerprint_package_documents",

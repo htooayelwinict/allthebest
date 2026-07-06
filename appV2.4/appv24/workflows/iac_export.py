@@ -2,29 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 from appv24.workflows.compiler import compile_workflow_documents
+from appv24.workflows.connector_contracts import builtin_connector_contract_catalog
 from appv24.workflows.credential_refs import credential_env_name
+from appv24.workflows.deployment_intent import WorkflowDeploymentIntent
+from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.ir import WorkflowIR
 from appv24.workflows.loader import PackageDocuments
 from appv24.workflows.loader import load_package_documents
 from appv24.workflows.policy import evaluate_policy
 from appv24.workflows.validator import validate_workflow_documents
-
-
-@dataclass(frozen=True)
-class WorkflowDeploymentIntent:
-    workflow_name: str
-    env_requirements: tuple[str, ...]
-    secret_refs: tuple[str, ...]
-    webhook_triggers: tuple[str, ...]
-    scheduler_triggers: tuple[str, ...]
-    connector_scopes: dict[str, tuple[str, ...]]
-    approval_ids: tuple[str, ...]
-    approval_policy: tuple[str, ...]
-    rollback_required: bool
 
 
 def export_deployment_intent(ir: WorkflowIR, documents: PackageDocuments) -> WorkflowDeploymentIntent:
@@ -35,20 +24,49 @@ def export_deployment_intent(ir: WorkflowIR, documents: PackageDocuments) -> Wor
         connector_scopes[str(permission["connector"])] = tuple(
             str(scope) for scope in permission.get("scopes", []) if isinstance(scope, str)
         )
+    contracts = builtin_connector_contract_catalog()
+    step_actions = tuple(step.uses.dotted for step in ir.steps.values() if step.uses is not None)
     env_requirements: list[str] = []
+    secret_refs: list[str] = []
     for connector in sorted(connector_scopes):
         env_name = credential_env_name(connector)
         env_requirements.append(f"APPV24_{env_name}_CREDENTIAL_REF")
         env_requirements.append(f"APPV24_{env_name}_SCOPES")
+        secret_refs.append(f"{connector}.credential")
+    connector_targets: dict[str, tuple[str, ...]] = {}
+    for action_ref in step_actions:
+        contract = contracts.get(action_ref)
+        if contract is None:
+            continue
+        for secret in contract.secrets:
+            env_requirements.append(secret.env_name)
+            secret_refs.append(secret.env_name)
+        targets = tuple(
+            value
+            for value in (
+                contract.target_policy.allow_env,
+                contract.target_policy.allowed_chat_ids_env,
+            )
+            if value
+        )
+        if targets:
+            env_requirements.extend(targets)
+            connector_targets[action_ref] = targets
     return WorkflowDeploymentIntent(
         workflow_name=ir.name,
-        env_requirements=tuple(env_requirements),
-        secret_refs=tuple(f"{connector}.credential" for connector in sorted(connector_scopes)),
+        package_fingerprint=fingerprint_package_documents(documents),
+        runtime_modes=_runtime_modes(step_actions),
+        env_requirements=_unique(env_requirements),
+        secret_refs=_unique(secret_refs),
         webhook_triggers=tuple(trigger.trigger_id for trigger in ir.triggers if trigger.trigger_type == "webhook"),
         scheduler_triggers=tuple(trigger.trigger_id for trigger in ir.triggers if trigger.trigger_type == "schedule"),
         connector_scopes=connector_scopes,
+        connector_targets=connector_targets,
         approval_ids=tuple(sorted(ir.approvals)),
         approval_policy=_approval_policy_lines(ir),
+        idempotency_required_for=_idempotency_required_for(ir),
+        state_requirements=_state_requirements(ir),
+        audit_requirements=("events.jsonl", "report.json", "trace.json", "approvals.json"),
         rollback_required=bool(documents.rollback_text and documents.rollback_text.strip()),
     )
 
@@ -72,6 +90,8 @@ def export_deployment_intent_from_path(package_path: str | Path) -> WorkflowDepl
 
 def format_deployment_intent(intent: WorkflowDeploymentIntent) -> str:
     lines = [f"Deployment intent: {intent.workflow_name}"]
+    lines.append(f"package fingerprint: {intent.package_fingerprint}")
+    _append_section(lines, "runtime modes", intent.runtime_modes)
     _append_section(lines, "env requirements", intent.env_requirements)
     _append_section(lines, "secret refs", intent.secret_refs)
     _append_section(lines, "webhook ingress", tuple(f"webhook: {trigger}" for trigger in intent.webhook_triggers))
@@ -81,7 +101,15 @@ def format_deployment_intent(intent: WorkflowDeploymentIntent) -> str:
         "connector scopes",
         tuple(f"{connector}: {', '.join(scopes) if scopes else '<none>'}" for connector, scopes in sorted(intent.connector_scopes.items())),
     )
+    _append_section(
+        lines,
+        "connector targets",
+        tuple(f"{action}: {', '.join(targets)}" for action, targets in sorted(intent.connector_targets.items())),
+    )
     _append_section(lines, "approval policy", intent.approval_policy)
+    _append_section(lines, "idempotency required for", intent.idempotency_required_for)
+    _append_section(lines, "state requirements", intent.state_requirements)
+    _append_section(lines, "audit requirements", intent.audit_requirements)
     lines.append(f"rollback required: {'yes' if intent.rollback_required else 'no'}")
     return "\n".join(lines)
 
@@ -102,3 +130,47 @@ def _append_section(lines: list[str], title: str, values: tuple[str, ...]) -> No
         lines.extend(f"- {value}" for value in values)
     else:
         lines.append("- none")
+
+
+def _runtime_modes(step_actions: tuple[str, ...]) -> tuple[str, ...]:
+    contracts = builtin_connector_contract_catalog()
+    modes = {"local"}
+    for action_ref in step_actions:
+        contract = contracts.get(action_ref)
+        if contract is None:
+            continue
+        modes.update(mode.value for mode in contract.live_modes)
+    order = ("local", "live-read", "live-draft", "live-production")
+    return tuple(mode for mode in order if mode in modes)
+
+
+def _idempotency_required_for(ir: WorkflowIR) -> tuple[str, ...]:
+    values: list[str] = []
+    for step in ir.steps.values():
+        if step.uses is None:
+            continue
+        connector = ir.connectors.get(step.uses.connector_id)
+        action = connector.actions.get(step.uses.action_id) if connector is not None else None
+        if action is not None and action.idempotency_key_fields:
+            values.append(f"{step.step_id}:{step.uses.dotted}")
+    return tuple(values)
+
+
+def _state_requirements(ir: WorkflowIR) -> tuple[str, ...]:
+    requirements = ["workflow_run_store"]
+    if ir.approvals:
+        requirements.append("approval_ledger")
+    if _idempotency_required_for(ir):
+        requirements.append("idempotency_ledger")
+    trigger_types = {trigger.trigger_type for trigger in ir.triggers}
+    if trigger_types.intersection({"schedule", "poll", "webhook"}):
+        requirements.append("activation_state")
+    if "webhook" in trigger_types:
+        requirements.append("webhook_replay_store")
+    if "poll" in trigger_types:
+        requirements.append("cursor_store")
+    return tuple(requirements)
+
+
+def _unique(values: list[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(sorted(value for value in values if value)))
