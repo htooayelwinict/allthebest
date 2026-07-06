@@ -109,7 +109,11 @@ from appv24.workflows.explain import (
 )
 from appv24.workflows.iac_export import export_deployment_intent_from_path, format_deployment_intent
 from appv24.workflows.live_plan import build_workflow_live_plan_from_path, format_workflow_live_plan
-from appv24.workflows.phase_runner import run_workflow_approved_live_production
+from appv24.workflows.phase_runner import (
+    format_workflow_phase_run_report,
+    run_workflow_approved_live_production,
+    run_workflow_live_read_to_approval,
+)
 from appv24.workflows.runner import format_workflow_run_report, run_workflow
 from appv24.workflows.staging import run_workflow_draft_stages, should_stage_workflow_drafts
 from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text, validate_workflow_package
@@ -338,6 +342,7 @@ class InteractiveMode:
             {"name": "workflow-run-live-draft", "description": "Run approved live-draft gates with env-gated live transports"},
             {"name": "workflow-run-live-production", "description": "Run approved live-production gates with env-gated live transports"},
             {"name": "workflow-run-live-read", "description": "Run live-read gates with disabled live transports"},
+            {"name": "workflow-run-live-read-to-approval", "description": "Run live-read prefix, local resume, and stop at approval"},
             {"name": "workflow-run-approval", "description": "Create pending workflow approval requests locally"},
             {"name": "workflow-run-local", "description": "Run a saved workflow package in local artifact mode"},
             {"name": "workflow-run-sandbox", "description": "Run a saved workflow package with fixture-backed connector simulation"},
@@ -519,6 +524,8 @@ class InteractiveMode:
                 if self._run_workflow_live_production_preflight_command(prompt):
                     continue
                 if self._run_workflow_run_live_read_command(prompt):
+                    continue
+                if self._run_workflow_run_live_read_to_approval_command(prompt):
                     continue
                 if self._run_workflow_run_live_draft_command(prompt):
                     continue
@@ -1007,6 +1014,7 @@ class InteractiveMode:
             "/workflow-live-production-preflight <path> <fixture> <approval-run-id> --allow <action>[,<action>] - Check live-production readiness.",
             "/workflow-live-ready <mode> <path> <fixture> [approval-run-id] --allow <action>[,<action>] - Show live setup checklist.",
             "/workflow-run-live-read <path> <fixture> --allow <action>[,<action>] - Run live-read gates with disabled live transports.",
+            "/workflow-run-live-read-to-approval <path> <fixture> --allow <action>[,<action>] - Run live-read prefix, local resume, and stop at approval.",
             "/workflow-run-live-draft <path> <fixture> <approval-run-id> --allow <action>[,<action>] - Run approved live-draft gates with env-gated live transports.",
             "/workflow-run-live-production <path> <fixture> <approval-run-id> --allow <action>[,<action>] - Run approved live-production gates with env-gated live transports.",
             "/workflow-run <path> <fixture> --mode local --approve-all - Run a saved workflow package locally.",
@@ -1657,6 +1665,50 @@ class InteractiveMode:
 
     def _render_workflow_run_live_read_error(self, message: str) -> None:
         self.history.add(StatusLine(f"Workflow live-read run failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_run_live_read_to_approval_command(self, prompt: str) -> bool:
+        if not _is_workflow_run_live_read_to_approval_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_run_live_read_to_approval_error("wait for the current turn to finish")
+            return True
+
+        parsed = _parse_workflow_run_live_read_to_approval_command(prompt)
+        if parsed.error is not None:
+            self._render_workflow_run_live_read_to_approval_error(parsed.error)
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, parsed.package_path)
+            report = run_workflow_live_read_to_approval(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=parsed.fixture_name,
+                    mode=WorkflowRunMode.LIVE_READ,
+                    connector_allowlist=parsed.connector_allowlist,
+                ),
+                live_read_broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
+                credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_run_live_read_to_approval_error(str(error))
+            return True
+
+        kind = "info" if report.status in {"passed", "approval-required"} else "error"
+        rendered = format_workflow_phase_run_report(report, title="Workflow live-read-to-approval run")
+        self.history.add(StatusLine(f"Workflow live-read-to-approval run {report.status}", kind=kind))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_run_live_read_to_approval_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow live-read-to-approval run failed: {message}", kind="error"))
         self.status.set_message("Idle")
         self._refresh_footer()
         self.tui.request_render()
@@ -2980,6 +3032,10 @@ def _is_workflow_run_live_read_command(prompt: str) -> bool:
     return prompt == "/workflow-run-live-read" or prompt.startswith("/workflow-run-live-read ")
 
 
+def _is_workflow_run_live_read_to_approval_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-live-read-to-approval" or prompt.startswith("/workflow-run-live-read-to-approval ")
+
+
 def _is_workflow_run_live_production_command(prompt: str) -> bool:
     return prompt == "/workflow-run-live-production" or prompt.startswith("/workflow-run-live-production ")
 
@@ -3204,6 +3260,21 @@ def _parse_workflow_run_live_read_command(prompt: str) -> _WorkflowRunLiveReadCo
     args = prompt.split()
     expected = "expected /workflow-run-live-read <path> <fixture> --allow <action>[,<action>]"
     if len(args) != 5 or args[0] != "/workflow-run-live-read" or args[3] != "--allow":
+        return _WorkflowRunLiveReadCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[4].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowRunLiveReadCommand(error=expected)
+    return _WorkflowRunLiveReadCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        connector_allowlist=allowlist,
+    )
+
+
+def _parse_workflow_run_live_read_to_approval_command(prompt: str) -> _WorkflowRunLiveReadCommand:
+    args = prompt.split()
+    expected = "expected /workflow-run-live-read-to-approval <path> <fixture> --allow <action>[,<action>]"
+    if len(args) != 5 or args[0] != "/workflow-run-live-read-to-approval" or args[3] != "--allow":
         return _WorkflowRunLiveReadCommand(error=expected)
     allowlist = tuple(action.strip() for action in args[4].split(",") if action.strip())
     if not allowlist:

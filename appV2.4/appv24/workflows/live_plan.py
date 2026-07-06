@@ -125,6 +125,7 @@ def build_workflow_live_plan(
     live_read_refs = _action_refs(live_read)
     live_draft_refs = _action_refs(live_draft)
     live_production_refs = _action_refs(live_production)
+    phase_command_refs = _live_read_to_approval_refs(ir, fixture or {}) if approvals else ()
     return WorkflowLivePlan(
         workflow_name=ir.name,
         fixture_name=fixture_name,
@@ -141,6 +142,7 @@ def build_workflow_live_plan(
             package,
             fixture_name,
             live_read_refs=live_read_refs,
+            live_read_to_approval_refs=phase_command_refs,
             live_draft_refs=live_draft_refs,
             live_production_refs=live_production_refs,
         ),
@@ -212,6 +214,7 @@ def _next_commands(
     fixture_name: str,
     *,
     live_read_refs: tuple[str, ...],
+    live_read_to_approval_refs: tuple[str, ...],
     live_draft_refs: tuple[str, ...],
     live_production_refs: tuple[str, ...],
 ) -> tuple[str, ...]:
@@ -220,9 +223,14 @@ def _next_commands(
     if live_read_refs:
         allow = ",".join(live_read_refs)
         commands.append(f"/workflow-live-ready live-read {package_arg} {fixture_name} --allow {allow}")
-        commands.append(f"/workflow-run-live-read {package_arg} {fixture_name} --allow {allow}")
+        if live_read_to_approval_refs:
+            phase_allow = ",".join(live_read_to_approval_refs)
+            commands.append(f"/workflow-run-live-read-to-approval {package_arg} {fixture_name} --allow {phase_allow}")
+        else:
+            commands.append(f"/workflow-run-live-read {package_arg} {fixture_name} --allow {allow}")
     if live_draft_refs or live_production_refs:
-        commands.append(f"/workflow-run-approval {package_arg} {fixture_name}")
+        if not live_read_to_approval_refs:
+            commands.append(f"/workflow-run-approval {package_arg} {fixture_name}")
         commands.append(f"/workflow-approvals {package_arg} <approval-run-id>")
     if live_draft_refs:
         allow = ",".join(live_draft_refs)
@@ -235,6 +243,46 @@ def _next_commands(
         if all(action in BUILTIN_LIVE_PRODUCTION_TRANSPORTS for action in live_production_refs):
             commands.append(f"/workflow-run-live-production {package_arg} {fixture_name} <approval-run-id> --allow {allow}")
     return tuple(commands)
+
+
+def _live_read_to_approval_refs(ir: WorkflowIR, fixture: Mapping[str, Any]) -> tuple[str, ...]:
+    catalog = builtin_connector_catalog()
+    refs: list[str] = []
+    saw_live_read = False
+    current = ir.entrypoint
+    transitions = 0
+
+    while current:
+        transitions += 1
+        if transitions > 200:
+            break
+        step = ir.steps.get(current)
+        if step is None or step.kind is StepKind.TERMINAL:
+            break
+        if step.kind is StepKind.DECISION:
+            _selected_branch, next_step = _select_branch(step, fixture)
+            if next_step is None:
+                break
+            current = next_step
+            continue
+        if step.kind is not StepKind.ACTION or step.uses is None:
+            current = step.next_step
+            continue
+
+        action_ref = step.uses.dotted
+        metadata = catalog.actions.get(action_ref)
+        is_live_read = metadata is not None and metadata.live_read_eligible
+        if is_live_read:
+            refs.append(action_ref)
+            saw_live_read = True
+            current = step.next_step
+            continue
+        if saw_live_read:
+            refs.append(action_ref)
+            break
+        current = step.next_step
+
+    return tuple(dict.fromkeys(refs)) if saw_live_read and len(refs) > 1 else ()
 
 
 def _action_label(step: WorkflowStep) -> str:

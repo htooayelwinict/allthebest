@@ -3375,6 +3375,66 @@ def test_cli_plain_workflow_run_live_production_uses_env_transport_registry(monk
     assert len(run_dirs) == 2
 
 
+def test_cli_plain_workflow_run_live_read_to_approval_prints_phase_report(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    prompts = iter([f"/workflow-run-live-read-to-approval {package.name} happy_path.yaml --allow telegram.receive_webhook,llm.extract_structured", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow phase command: {prompt}")
+
+    called: dict[str, object] = {}
+
+    def fake_phase_runner(request, *, live_read_broker, credential_resolver, local_broker=None):
+        called["package_path"] = request.package_path
+        called["fixture_name"] = request.fixture_name
+        called["allowlist"] = request.connector_allowlist
+        return WorkflowPhaseRunReport(
+            status="approval-required",
+            live_read_run_id="run-live",
+            local_run_id="run-local",
+            approval_run_id="run-local",
+            phase_statuses=("live-read: paused", "local-resume: blocked"),
+            next_commands=(
+                f"/workflow-approvals {package.resolve()} run-local",
+                f"/workflow-live-plan {package.resolve()} happy_path.yaml",
+            ),
+            issues=("approval required for create_ticket",),
+        )
+
+    monkeypatch.setattr(cli, "run_workflow_live_read_to_approval", fake_phase_runner, raising=False)
+    monkeypatch.setattr(cli, "build_live_read_transports_from_env", lambda env: {}, raising=False)
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert called["package_path"] == package.resolve()
+    assert called["fixture_name"] == "happy_path.yaml"
+    assert called["allowlist"] == ("telegram.receive_webhook", "llm.extract_structured")
+    assert "Workflow live-read-to-approval run: approval-required" in captured.out
+    assert "- live-read: paused" in captured.out
+    assert "- local-resume: blocked" in captured.out
+    assert "approval run: run-local" in captured.out
+    assert "- /workflow-approvals" in captured.out
+
+
 def test_cli_plain_workflow_connectors_renders_safe_registry(monkeypatch, tmp_path, capsys) -> None:
     package = _write_live_production_workflow_package(tmp_path)
     prompts = iter([f"/workflow-connectors {package.name}", "/exit"])

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from appv24.workflows.bundle_export import write_workflow_bundle
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.live_readiness import format_workflow_live_readiness_report, inspect_workflow_live_readiness
 
@@ -51,12 +52,69 @@ def test_live_readiness_passes_with_configured_live_read_setup(tmp_path: Path) -
 
     rendered = format_workflow_live_readiness_report(report)
     assert report.status == "ready"
+    assert report.bundle_status == "missing"
     assert report.configured_transports == ("github.list_dependabot_alerts",)
     assert "Workflow live readiness: ready" in rendered
+    assert "bundle check: missing" in rendered
+    assert f"- /workflow-export-bundle {package}" in rendered
     assert "configured transports:" in rendered
     assert "- github.list_dependabot_alerts" in rendered
     assert "ghp_secret_value" not in rendered
     assert not (package / ".workflow-runs").exists()
+
+
+def test_live_readiness_reports_current_bundle_check(tmp_path: Path) -> None:
+    package = _write_live_read_workflow_package(tmp_path)
+    write_workflow_bundle(package)
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("github.list_dependabot_alerts",),
+        ),
+        env={
+            "APPV24_GITHUB_CREDENTIAL_REF": "github-prod",
+            "APPV24_GITHUB_SCOPES": "dependabot:read",
+            "APPV24_WORKFLOW_LIVE_READ_ENABLED": "true",
+            "APPV24_GITHUB_TOKEN": "ghp_secret_value",
+        },
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "ready"
+    assert report.bundle_status == "passed"
+    assert report.bundle_issues == ()
+    assert "bundle check: passed" in rendered
+    assert "missing bundle.manifest.json" not in rendered
+
+
+def test_live_readiness_blocks_stale_bundle_check(tmp_path: Path) -> None:
+    package = _write_live_read_workflow_package(tmp_path)
+    write_workflow_bundle(package)
+    (package / "rollback.md").write_text("# Rollback\n\nChanged after bundle export.\n", encoding="utf-8")
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("github.list_dependabot_alerts",),
+        ),
+        env={
+            "APPV24_GITHUB_CREDENTIAL_REF": "github-prod",
+            "APPV24_GITHUB_SCOPES": "dependabot:read",
+            "APPV24_WORKFLOW_LIVE_READ_ENABLED": "true",
+            "APPV24_GITHUB_TOKEN": "ghp_secret_value",
+        },
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "blocked"
+    assert report.bundle_status == "failed"
+    assert any(issue.startswith("workflow bundle check failed: source package fingerprint changed") for issue in report.issues)
+    assert "bundle check: failed" in rendered
 
 
 def test_live_readiness_passes_with_configured_source_live_read_setup(tmp_path: Path) -> None:

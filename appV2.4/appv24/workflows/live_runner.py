@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from appv24.workflows.broker import BrokerRequest
+from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.connector_packs import builtin_connector_catalog
 from appv24.workflows.credential_refs import CredentialRefResolver, preflight_credential_refs
@@ -69,6 +70,14 @@ def run_live_read_workflow(
             workflow_name=workflow_name,
             package_fingerprint=package_fingerprint,
             issues=tuple(issue.message for issue in policy.issues),
+        )
+    bundle_issues = _default_bundle_issues(documents.root)
+    if bundle_issues:
+        return _blocked_report(
+            request,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            issues=bundle_issues,
         )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
@@ -208,6 +217,14 @@ def run_live_draft_workflow(
             workflow_name=workflow_name,
             package_fingerprint=package_fingerprint,
             issues=tuple(issue.message for issue in policy.issues),
+        )
+    bundle_issues = _default_bundle_issues(documents.root)
+    if bundle_issues:
+        return _blocked_report(
+            request,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            issues=bundle_issues,
         )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
@@ -370,6 +387,14 @@ def run_live_production_workflow(
             workflow_name=workflow_name,
             package_fingerprint=package_fingerprint,
             issues=tuple(issue.message for issue in policy.issues),
+        )
+    bundle_issues = _default_bundle_issues(documents.root)
+    if bundle_issues:
+        return _blocked_report(
+            request,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            issues=bundle_issues,
         )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
@@ -888,6 +913,10 @@ def _result(
         brokered_actions=brokered_actions,
         issues=issues,
     )
+
+
+def _default_bundle_issues(package_path: Path) -> tuple[str, ...]:
+    return inspect_default_workflow_bundle(package_path).issues
 
 
 def _invoke_broker(

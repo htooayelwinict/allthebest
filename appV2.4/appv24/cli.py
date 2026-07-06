@@ -88,7 +88,11 @@ from appv24.workflows.explain import (
 )
 from appv24.workflows.iac_export import export_deployment_intent_from_path, format_deployment_intent
 from appv24.workflows.live_plan import build_workflow_live_plan_from_path, format_workflow_live_plan
-from appv24.workflows.phase_runner import run_workflow_approved_live_production
+from appv24.workflows.phase_runner import (
+    format_workflow_phase_run_report,
+    run_workflow_approved_live_production,
+    run_workflow_live_read_to_approval,
+)
 from appv24.workflows.runner import format_workflow_run_report, run_workflow
 from appv24.workflows.staging import run_workflow_draft_stages, should_stage_workflow_drafts
 from appv24.workflows.validator import validate_workflow_draft_text, validate_workflow_package
@@ -586,6 +590,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if _handle_workflow_run_live_read_command(app, prompt):
             return 0
+        if _handle_workflow_run_live_read_to_approval_command(app, prompt):
+            return 0
         if _handle_workflow_run_live_draft_command(app, prompt):
             return 0
         if _handle_workflow_run_live_production_command(app, prompt):
@@ -645,6 +651,8 @@ def main(argv: list[str] | None = None) -> int:
         if _handle_workflow_live_production_preflight_command(app, prompt):
             continue
         if _handle_workflow_run_live_read_command(app, prompt):
+            continue
+        if _handle_workflow_run_live_read_to_approval_command(app, prompt):
             continue
         if _handle_workflow_run_live_draft_command(app, prompt):
             continue
@@ -1375,6 +1383,31 @@ def _handle_workflow_run_live_production_command(app: CodingApp, prompt: str) ->
     return True
 
 
+def _handle_workflow_run_live_read_to_approval_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_run_live_read_to_approval_command(prompt):
+        return False
+
+    parsed = _parse_workflow_run_live_read_to_approval_command(prompt)
+    try:
+        if parsed.error is not None:
+            raise ValueError(parsed.error)
+        package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        report = run_workflow_live_read_to_approval(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=parsed.fixture_name,
+                mode=WorkflowRunMode.LIVE_READ,
+                connector_allowlist=parsed.connector_allowlist,
+            ),
+            live_read_broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
+            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+        )
+        print(format_workflow_phase_run_report(report, title="Workflow live-read-to-approval run"))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow live-read-to-approval run failed: {error}")
+    return True
+
+
 def _handle_workflow_run_live_read_command(app: CodingApp, prompt: str) -> bool:
     if not _is_workflow_run_live_read_command(prompt):
         return False
@@ -1439,6 +1472,10 @@ def _is_workflow_run_live_draft_command(prompt: str) -> bool:
 
 def _is_workflow_run_live_read_command(prompt: str) -> bool:
     return prompt == "/workflow-run-live-read" or prompt.startswith("/workflow-run-live-read ")
+
+
+def _is_workflow_run_live_read_to_approval_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-live-read-to-approval" or prompt.startswith("/workflow-run-live-read-to-approval ")
 
 
 def _is_workflow_run_live_production_command(prompt: str) -> bool:
@@ -1614,6 +1651,21 @@ def _parse_workflow_run_live_read_command(prompt: str) -> _WorkflowRunLiveReadCo
     args = prompt.split()
     expected = "expected /workflow-run-live-read <path> <fixture> --allow <action>[,<action>]"
     if len(args) != 5 or args[0] != "/workflow-run-live-read" or args[3] != "--allow":
+        return _WorkflowRunLiveReadCommand(error=expected)
+    allowlist = tuple(action.strip() for action in args[4].split(",") if action.strip())
+    if not allowlist:
+        return _WorkflowRunLiveReadCommand(error=expected)
+    return _WorkflowRunLiveReadCommand(
+        package_path=args[1],
+        fixture_name=args[2],
+        connector_allowlist=allowlist,
+    )
+
+
+def _parse_workflow_run_live_read_to_approval_command(prompt: str) -> _WorkflowRunLiveReadCommand:
+    args = prompt.split()
+    expected = "expected /workflow-run-live-read-to-approval <path> <fixture> --allow <action>[,<action>]"
+    if len(args) != 5 or args[0] != "/workflow-run-live-read-to-approval" or args[3] != "--allow":
         return _WorkflowRunLiveReadCommand(error=expected)
     allowlist = tuple(action.strip() for action in args[4].split(",") if action.strip())
     if not allowlist:

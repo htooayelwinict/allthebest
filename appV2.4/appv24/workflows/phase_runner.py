@@ -10,6 +10,7 @@ from appv24.workflows.credential_refs import CredentialRefResolver
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
 from appv24.workflows.live_broker import LiveWorkflowBroker
 from appv24.workflows.live_runner import run_live_production_workflow, run_live_read_workflow
+from appv24.workflows.run_store import WorkflowRunStore
 from appv24.workflows.runner import DEFAULT_FIXTURE_NAME, run_workflow_from_handoff
 
 
@@ -21,9 +22,35 @@ class WorkflowPhaseRunReport:
     approval_run_id: str | None
     phase_statuses: tuple[str, ...]
     next_commands: tuple[str, ...]
+    approval_request_ids: tuple[str, ...] = ()
     live_production_run_id: str = ""
     live_production_report: WorkflowRunReport | None = None
     issues: tuple[str, ...] = ()
+
+
+def format_workflow_phase_run_report(report: WorkflowPhaseRunReport, *, title: str = "Workflow phase run") -> str:
+    lines = [f"{title}: {report.status}"]
+    if report.live_read_run_id:
+        lines.append(f"live-read run: {report.live_read_run_id}")
+    if report.local_run_id:
+        lines.append(f"local run: {report.local_run_id}")
+    if report.live_production_run_id:
+        lines.append(f"live-production run: {report.live_production_run_id}")
+    if report.approval_run_id:
+        lines.append(f"approval run: {report.approval_run_id}")
+    if report.approval_request_ids:
+        lines.append("approval requests:")
+        lines.extend(f"- {request_id}" for request_id in report.approval_request_ids)
+    if report.phase_statuses:
+        lines.append("phases:")
+        lines.extend(f"- {phase}" for phase in report.phase_statuses)
+    if report.issues:
+        lines.append("issues:")
+        lines.extend(f"- {issue}" for issue in report.issues)
+    if report.next_commands:
+        lines.append("next commands:")
+        lines.extend(f"- {command}" for command in report.next_commands)
+    return "\n".join(lines)
 
 
 def run_workflow_live_read_to_approval(
@@ -75,16 +102,18 @@ def run_workflow_live_read_to_approval(
     approval_required = _approval_required(local_report.issues)
     status = "approval-required" if approval_required else local_report.status
     approval_run_id = local_report.run_id if approval_required else None
+    approval_request_ids = _approval_request_ids(request, approval_run_id=approval_run_id)
     return WorkflowPhaseRunReport(
         status=status,
         live_read_run_id=live_report.run_id,
         local_run_id=local_report.run_id,
         approval_run_id=approval_run_id,
+        approval_request_ids=approval_request_ids,
         phase_statuses=(
             f"live-read: {live_report.status}",
             f"local-resume: {local_report.status}",
         ),
-        next_commands=_next_commands(request, approval_run_id=approval_run_id),
+        next_commands=_next_commands(request, approval_run_id=approval_run_id, approval_request_ids=approval_request_ids),
         issues=local_report.issues,
     )
 
@@ -117,6 +146,7 @@ def run_workflow_approved_live_production(
         live_read_run_id="",
         local_run_id="",
         approval_run_id=approval_run_id,
+        approval_request_ids=(),
         phase_statuses=(f"live-production: {live_report.status}",),
         next_commands=(),
         live_production_run_id=live_report.run_id,
@@ -129,12 +159,25 @@ def _approval_required(issues: tuple[str, ...]) -> bool:
     return any(issue.startswith("approval required for ") for issue in issues)
 
 
-def _next_commands(request: WorkflowRunRequest, *, approval_run_id: str | None) -> tuple[str, ...]:
+def _approval_request_ids(request: WorkflowRunRequest, *, approval_run_id: str | None) -> tuple[str, ...]:
+    if approval_run_id is None:
+        return ()
+    package = Path(request.package_path).expanduser().resolve()
+    store = WorkflowRunStore(request.run_root or (package / ".workflow-runs"))
+    return tuple(approval.approval_request_id for approval in store.read_approval_requests(approval_run_id))
+
+
+def _next_commands(
+    request: WorkflowRunRequest,
+    *,
+    approval_run_id: str | None,
+    approval_request_ids: tuple[str, ...] = (),
+) -> tuple[str, ...]:
     if approval_run_id is None:
         return ()
     package = Path(request.package_path).expanduser().resolve()
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
-    return (
-        f"/workflow-approvals {package} {approval_run_id}",
-        f"/workflow-live-plan {package} {fixture_name}",
-    )
+    commands = [f"/workflow-approvals {package} {approval_run_id}"]
+    commands.extend(f"/workflow-approve {package} {approval_run_id} {request_id}" for request_id in approval_request_ids)
+    commands.append(f"/workflow-live-plan {package} {fixture_name}")
+    return tuple(commands)

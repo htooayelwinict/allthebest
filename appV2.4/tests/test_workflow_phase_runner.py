@@ -85,12 +85,14 @@ def test_phase_runner_chains_live_read_to_local_resume_pending_approval(tmp_path
     assert report.live_read_run_id.startswith("run-")
     assert report.local_run_id.startswith("run-")
     assert report.approval_run_id == report.local_run_id
+    assert len(report.approval_request_ids) == 1
     assert report.phase_statuses == (
         "live-read: paused",
         "local-resume: blocked",
     )
     assert report.next_commands == (
         f"/workflow-approvals {package.resolve()} {report.local_run_id}",
+        f"/workflow-approve {package.resolve()} {report.local_run_id} {report.approval_request_ids[0]}",
         f"/workflow-live-plan {package.resolve()} happy_path.yaml",
     )
     assert seen_handoff_inputs == [[{"title": "Rate decision"}]]

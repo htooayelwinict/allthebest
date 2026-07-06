@@ -50,6 +50,20 @@ transport action names, approval-run requirements, and the next run command.
 It must not print raw API keys, OAuth tokens, bot tokens, credential reference
 values, or provider responses.
 
+Readiness also checks the default exported runtime bundle at
+`<package>/.workflow-bundle`. A missing bundle is surfaced as an operator next
+step:
+
+```text
+/workflow-export-bundle <package>
+```
+
+If a bundle exists but its manifest, checksums, or source package fingerprint
+are stale, readiness is blocked until the bundle is re-exported. Live-run
+commands also enforce the same stale-bundle block before creating run artifacts
+or invoking broker transports. This keeps operator handoff artifacts aligned
+with the package that live commands are about to inspect.
+
 Operators can also render a safe `.env` setup template before readiness checks:
 
 ```text
@@ -142,6 +156,17 @@ stops at the approval ledger. Its status is `approval-required` when the local
 resume run creates a pending approval request. It does not auto-approve or run
 live-draft/live-production actions. That keeps the first orchestrated path
 side-effect safe while proving the phase handoff and approval-prep sequence.
+
+Operators can invoke that first orchestrated phase chain directly:
+
+```text
+/workflow-run-live-read-to-approval <package> <fixture> --allow <connector.action>[,<connector.action>]
+```
+
+The command uses the live-read transport registry for the read prefix, resumes
+locally from the handoff, and prints the live-read run id, local run id,
+approval run id, phase statuses, issues, and next approval commands. It does
+not approve requests or run live-production.
 
 After an operator records an approval decision, the phase runner can continue
 from that approved local ledger into the live-production phase. This

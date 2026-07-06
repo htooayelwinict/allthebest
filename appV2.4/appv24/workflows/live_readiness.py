@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
+from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.credential_refs import credential_env_name, preflight_credential_refs
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.live_preflight import (
@@ -30,6 +32,9 @@ class WorkflowLiveReadinessReport:
     configured_transports: tuple[str, ...]
     required_credential_env: tuple[str, ...]
     required_transport_env: tuple[str, ...]
+    bundle_status: str
+    bundle_path: Path
+    bundle_issues: tuple[str, ...]
     issues: tuple[str, ...]
     next_steps: tuple[str, ...]
 
@@ -46,7 +51,8 @@ def inspect_workflow_live_readiness(
     required_credential_env = _required_credential_env(request)
     required_transport_env = _required_transport_env(request)
     setup_issues = _setup_issues(request, env=env)
-    issues = _dedupe((*setup_issues, *preflight.issues))
+    bundle = inspect_default_workflow_bundle(request.package_path)
+    issues = _dedupe((*setup_issues, *preflight.issues, *bundle.issues))
     status = "ready" if preflight.status == "passed" and not issues else "blocked"
     return WorkflowLiveReadinessReport(
         mode=request.mode,
@@ -55,8 +61,11 @@ def inspect_workflow_live_readiness(
         configured_transports=tuple(sorted(available_transports)),
         required_credential_env=required_credential_env,
         required_transport_env=required_transport_env,
+        bundle_status=bundle.status,
+        bundle_path=bundle.bundle_path,
+        bundle_issues=bundle.issues,
         issues=issues,
-        next_steps=_next_steps(request, status),
+        next_steps=_next_steps(request, status, bundle_status=bundle.status),
     )
 
 
@@ -69,6 +78,8 @@ def format_workflow_live_readiness_report(report: WorkflowLiveReadinessReport) -
     ]
     if report.preflight.approval_run_id:
         lines.append(f"approval run: {report.preflight.approval_run_id}")
+    lines.append(f"bundle check: {report.bundle_status}")
+    lines.append(f"bundle: {report.bundle_path}")
     if report.issues:
         lines.append("issues:")
         lines.extend(f"- {issue}" for issue in report.issues)
@@ -197,22 +208,31 @@ def _setup_issues(request: WorkflowRunRequest, *, env: Mapping[str, str]) -> tup
     return tuple(issues)
 
 
-def _next_steps(request: WorkflowRunRequest, status: str) -> tuple[str, ...]:
+def _next_steps(request: WorkflowRunRequest, status: str, *, bundle_status: str) -> tuple[str, ...]:
+    steps: list[str] = []
+    if bundle_status in {"missing", "failed"}:
+        steps.append(f"/workflow-export-bundle {request.package_path}")
     if status == "ready":
         if request.mode is WorkflowRunMode.LIVE_READ:
-            return (_live_read_run_command(request),)
+            steps.append(_live_read_run_command(request))
+            return tuple(steps)
         if request.mode is WorkflowRunMode.LIVE_DRAFT:
-            return (_live_draft_run_command(request),)
+            steps.append(_live_draft_run_command(request))
+            return tuple(steps)
         if request.mode is WorkflowRunMode.LIVE_PRODUCTION:
-            return (_live_production_run_command(request),)
-        return ()
+            steps.append(_live_production_run_command(request))
+            return tuple(steps)
+        return tuple(steps)
     if request.mode is WorkflowRunMode.LIVE_READ:
-        return ("fix the listed env/allowlist issues, then rerun /workflow-live-ready live-read",)
+        steps.append("fix the listed env/allowlist issues, then rerun /workflow-live-ready live-read")
+        return tuple(steps)
     if request.mode is WorkflowRunMode.LIVE_DRAFT:
-        return ("run a local workflow approval pass, approve the request, fix env issues, then rerun readiness",)
+        steps.append("run a local workflow approval pass, approve the request, fix env issues, then rerun readiness")
+        return tuple(steps)
     if request.mode is WorkflowRunMode.LIVE_PRODUCTION:
-        return ("run a local workflow approval pass, approve the request, fix env issues, then rerun readiness",)
-    return ()
+        steps.append("run a local workflow approval pass, approve the request, fix env issues, then rerun readiness")
+        return tuple(steps)
+    return tuple(steps)
 
 
 def _live_read_run_command(request: WorkflowRunRequest) -> str:

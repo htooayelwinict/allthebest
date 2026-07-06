@@ -2320,6 +2320,48 @@ def test_interactive_mode_workflow_run_live_production_uses_env_transport_regist
     assert len(run_dirs) == 2
 
 
+def test_interactive_mode_workflow_run_live_read_to_approval_prints_phase_report(tmp_path, monkeypatch) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    called: dict[str, object] = {}
+
+    def fake_phase_runner(request, *, live_read_broker, credential_resolver, local_broker=None):
+        called["package_path"] = request.package_path
+        called["fixture_name"] = request.fixture_name
+        called["allowlist"] = request.connector_allowlist
+        return WorkflowPhaseRunReport(
+            status="approval-required",
+            live_read_run_id="run-live",
+            local_run_id="run-local",
+            approval_run_id="run-local",
+            phase_statuses=("live-read: paused", "local-resume: blocked"),
+            next_commands=(
+                f"/workflow-approvals {package.resolve()} run-local",
+                f"/workflow-live-plan {package.resolve()} happy_path.yaml",
+            ),
+            issues=("approval required for create_ticket",),
+        )
+
+    monkeypatch.setattr(interactive_mode, "run_workflow_live_read_to_approval", fake_phase_runner, raising=False)
+    monkeypatch.setattr(interactive_mode, "build_live_read_transports_from_env", lambda env: {}, raising=False)
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter([f"/workflow-run-live-read-to-approval {package.name} happy_path.yaml --allow telegram.receive_webhook,llm.extract_structured", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert called["package_path"] == package.resolve()
+    assert called["fixture_name"] == "happy_path.yaml"
+    assert called["allowlist"] == ("telegram.receive_webhook", "llm.extract_structured")
+    assert "Workflow live-read-to-approval run: approval-required" in rendered
+    assert "- live-read: paused" in rendered
+    assert "- local-resume: blocked" in rendered
+    assert "approval run: run-local" in rendered
+    assert "- /workflow-approvals" in rendered
+
+
 def test_interactive_mode_workflow_connectors_renders_safe_registry(tmp_path, monkeypatch) -> None:
     package = _write_live_production_workflow_package(tmp_path)
     monkeypatch.setenv("APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED", "true")

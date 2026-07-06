@@ -30,8 +30,7 @@ def test_live_plan_for_mixed_financial_workflow_separates_live_and_local_phases(
     )
     assert plan.next_commands == (
         f"/workflow-live-ready live-read {package.resolve()} happy_path.yaml --allow source.fetch_items",
-        f"/workflow-run-live-read {package.resolve()} happy_path.yaml --allow source.fetch_items",
-        f"/workflow-run-approval {package.resolve()} happy_path.yaml",
+        f"/workflow-run-live-read-to-approval {package.resolve()} happy_path.yaml --allow source.fetch_items,llm.extract_structured",
         f"/workflow-approvals {package.resolve()} <approval-run-id>",
         f"/workflow-live-ready live-draft {package.resolve()} happy_path.yaml <approval-run-id> --allow notification.create_draft",
     )

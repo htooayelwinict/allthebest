@@ -5,6 +5,7 @@ from pathlib import Path
 
 import yaml
 
+from appv24.workflows.bundle_export import write_workflow_bundle
 from appv24.workflows.approval_gate import ApprovalDecision
 from appv24.workflows.credential_refs import CredentialRefResolver, CredentialScope
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
@@ -244,6 +245,27 @@ def test_live_read_preflight_passes_with_configured_transport(tmp_path: Path) ->
     assert report.status == "passed"
     assert report.checked_actions == ("github.list_dependabot_alerts",)
     assert report.issues == ()
+
+
+def test_live_read_preflight_blocks_stale_bundle_before_transport_check(tmp_path: Path) -> None:
+    package = _write_read_only_package(tmp_path)
+    write_workflow_bundle(package)
+    (package / "rollback.md").write_text("# Rollback\n\nChanged after bundle export.\n", encoding="utf-8")
+
+    report = preflight_live_read_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("github.list_dependabot_alerts",),
+        ),
+        credential_resolver=CredentialRefResolver({"github": CredentialScope(available=True, scopes=("dependabot:read",))}),
+        available_transports=("github.list_dependabot_alerts",),
+    )
+
+    assert report.status == "blocked"
+    assert report.checked_actions == ()
+    assert any(issue.startswith("workflow bundle check failed: source package fingerprint changed") for issue in report.issues)
 
 
 def test_live_read_preflight_blocks_mutating_steps(tmp_path: Path) -> None:

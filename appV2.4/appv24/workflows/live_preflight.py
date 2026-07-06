@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.connector_packs import builtin_connector_catalog
 from appv24.workflows.credential_refs import (
@@ -90,6 +91,16 @@ def preflight_live_draft_workflow(
             package_fingerprint=package_fingerprint,
             checked_actions=(),
             issues=tuple(issue.message for issue in policy.issues),
+        )
+    bundle_issues = _default_bundle_issues(package_path)
+    if bundle_issues:
+        return _report(
+            request,
+            package_path=package_path,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            checked_actions=(),
+            issues=bundle_issues,
         )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
@@ -192,6 +203,16 @@ def preflight_live_read_workflow(
             checked_actions=(),
             issues=tuple(issue.message for issue in policy.issues),
         )
+    bundle_issues = _default_bundle_issues(package_path)
+    if bundle_issues:
+        return _report(
+            request,
+            package_path=package_path,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            checked_actions=(),
+            issues=bundle_issues,
+        )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
@@ -275,6 +296,16 @@ def preflight_live_production_workflow(
             package_fingerprint=package_fingerprint,
             checked_actions=(),
             issues=tuple(issue.message for issue in policy.issues),
+        )
+    bundle_issues = _default_bundle_issues(package_path)
+    if bundle_issues:
+        return _report(
+            request,
+            package_path=package_path,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            checked_actions=(),
+            issues=bundle_issues,
         )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
@@ -701,6 +732,10 @@ def _idempotency_key(
         input_ref=step.raw,
         fixture=fixture,
     )
+
+
+def _default_bundle_issues(package_path: Path) -> tuple[str, ...]:
+    return inspect_default_workflow_bundle(package_path).issues
 
 
 def _report(
