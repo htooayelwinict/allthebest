@@ -12,6 +12,7 @@ from appv24.workflows.broker import BrokerRequest
 from appv24.workflows.live_transports import (
     GmailCreateDraftTransport,
     GitHubDependabotAlertsTransport,
+    HttpFetchTransport,
     SourceFetchDocumentTransport,
     SourceFetchItemsTransport,
     TelegramSendMessageTransport,
@@ -54,6 +55,18 @@ def test_live_read_transport_registry_registers_source_reader_when_enabled() -> 
     assert tuple(transports) == ("source.fetch_document", "source.fetch_items")
     assert isinstance(transports["source.fetch_document"], SourceFetchDocumentTransport)
     assert isinstance(transports["source.fetch_items"], SourceFetchItemsTransport)
+
+
+def test_live_read_transport_registry_registers_http_fetch_with_allowed_hosts() -> None:
+    transports = build_live_read_transports_from_env(
+        {
+            "APPV24_WORKFLOW_LIVE_READ_ENABLED": "true",
+            "APPV24_HTTP_FETCH_ALLOWED_HOSTS": "api.example.com,news.example.com",
+        }
+    )
+
+    assert tuple(transports) == ("http.fetch",)
+    assert isinstance(transports["http.fetch"], HttpFetchTransport)
 
 
 def test_live_draft_transport_registry_disabled_by_default() -> None:
@@ -352,6 +365,63 @@ def test_source_fetch_items_transport_calls_base_url_and_slims_outputs() -> None
                 "query": "public company catalysts",
                 "tickers": "NVDA,MSFT",
             },
+        }
+    ]
+
+
+def test_http_fetch_transport_blocks_unapproved_host_before_http() -> None:
+    client = FakeClient({"ok": True})
+    transport = HttpFetchTransport(allowed_hosts=("api.example.com",), client_factory=lambda: client)
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="fetch_news",
+            connector_action="http.fetch",
+            input_ref={"with": {"url": "https://evil.example/news.json"}},
+            fixture={"input": {}},
+            allowed_outputs=("status_code", "url", "json", "text"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == ("http.fetch URL host is not allowlisted: evil.example",)
+    assert client.calls == []
+
+
+def test_http_fetch_transport_fetches_allowlisted_json() -> None:
+    client = FakeClient({"items": [{"id": "1", "title": "Market update"}]})
+    transport = HttpFetchTransport(allowed_hosts=("api.example.com",), client_factory=lambda: client)
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="fetch_news",
+            connector_action="http.fetch",
+            input_ref={
+                "with": {
+                    "url": "https://api.example.com/news.json",
+                    "topic": "finance",
+                }
+            },
+            fixture={"input": {}},
+            allowed_outputs=("status_code", "url", "json", "text"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "live-read"
+    assert result.provider_id == "http"
+    assert result.outputs == {
+        "status_code": 200,
+        "url": "https://api.example.com/news.json",
+        "json": {"items": [{"id": "1", "title": "Market update"}]},
+    }
+    assert client.calls == [
+        {
+            "url": "https://api.example.com/news.json",
+            "headers": {"Accept": "application/json, text/plain;q=0.9"},
+            "params": {"topic": "finance"},
         }
     ]
 
@@ -738,6 +808,31 @@ def test_telegram_send_message_transport_blocks_missing_fields_without_http() ->
     assert result.status == "blocked"
     assert result.outputs == {}
     assert result.issues == ("telegram.send_message requires chat_id and text",)
+    assert client.post_calls == []
+
+
+def test_telegram_send_message_transport_blocks_unapproved_chat_before_http() -> None:
+    client = FakeClient({"ok": True})
+    transport = TelegramSendMessageTransport(
+        token="telegram-token",
+        allowed_chat_ids=("admin-chat",),
+        client_factory=lambda: client,
+    )
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="notify_admin",
+            connector_action="telegram.send_message",
+            input_ref={"with": {"chat_id": "customer-chat", "text": "Ticket created."}},
+            fixture={"input": {}},
+            allowed_outputs=("message_id", "chat_id"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == ("telegram.send_message chat_id is not allowlisted: customer-chat",)
     assert client.post_calls == []
 
 

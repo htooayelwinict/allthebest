@@ -144,7 +144,7 @@ def builtin_connector_contract_catalog() -> dict[str, ConnectorContract]:
         ),
         _contract(
             "llm.extract_structured",
-            allowed_outputs=("alerts", "items", "fields", "confidence", "confidence_score", "issues", "raw_response", "artifact_path"),
+            allowed_outputs=("alerts", "items", "count", "fields", "confidence", "confidence_score", "issues", "raw_response", "artifact_path"),
             adapter="llm",
             prompt_summary="llm.extract_structured(input: text/items/schema) -> fields, confidence, issues",
         ),

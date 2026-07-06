@@ -18,6 +18,7 @@ from appv24.workflows.idempotency import build_idempotency_key
 from appv24.workflows.ir import ActionCapability, StepKind, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import StepTrace
 from appv24.workflows.live_broker import LiveWorkflowBroker
+from appv24.workflows.live_gate import evaluate_live_gate
 from appv24.workflows.loader import load_package_documents
 from appv24.workflows.policy import MUTATING_SIDE_EFFECTS, evaluate_policy
 from appv24.workflows.run_preview import WorkflowBrokeredActionPreview
@@ -130,6 +131,39 @@ def run_live_read_workflow(
             issues=credential_report.issues,
         )
     append_event("credential_preflight_passed", "passed")
+
+    live_gate = evaluate_live_gate(
+        compiled.ir,
+        fixture,
+        mode=request.mode,
+        package_fingerprint=package_fingerprint,
+        connector_allowlist=set(request.connector_allowlist),
+        approval_index={},
+        available_transports=broker.configured_actions,
+        env={},
+    )
+    if not live_gate.ok:
+        gate_issues = _live_gate_issue_messages(live_gate)
+        append_event(
+            "live_gate_blocked",
+            "blocked",
+            checked_actions=list(live_gate.checked_actions),
+            issues=list(gate_issues),
+        )
+        return _persist_report(
+            request,
+            store=store,
+            run_id=run_id,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            status="blocked",
+            terminal_step=None,
+            trace=(),
+            brokered_actions=(),
+            events=events,
+            issues=gate_issues,
+        )
+    append_event("live_gate_passed", "passed", checked_actions=list(live_gate.checked_actions))
 
     broker_mode_issue = _broker_mode_issue(broker, "live-read")
     if broker_mode_issue is not None:
@@ -278,24 +312,6 @@ def run_live_draft_workflow(
         )
     append_event("credential_preflight_passed", "passed")
 
-    broker_mode_issue = _broker_mode_issue(broker, "live-draft")
-    if broker_mode_issue is not None:
-        append_event("broker_preflight_blocked", "blocked", issues=[broker_mode_issue], broker_mode=broker.mode)
-        return _persist_report(
-            request,
-            store=store,
-            run_id=run_id,
-            workflow_name=workflow_name,
-            package_fingerprint=package_fingerprint,
-            status="blocked",
-            terminal_step=None,
-            trace=(),
-            brokered_actions=(),
-            events=events,
-            issues=(broker_mode_issue,),
-        )
-    append_event("broker_preflight_passed", "passed", broker_mode=broker.mode)
-
     approval_index, approval_issues = _live_draft_approval_index(
         store,
         request.approval_run_id,
@@ -317,6 +333,57 @@ def run_live_draft_workflow(
             issues=approval_issues,
         )
     append_event("approval_preflight_passed", "passed", approval_run_id=request.approval_run_id)
+
+    live_gate = evaluate_live_gate(
+        compiled.ir,
+        fixture,
+        mode=request.mode,
+        package_fingerprint=package_fingerprint,
+        connector_allowlist=set(request.connector_allowlist),
+        approval_index=approval_index,
+        available_transports=broker.configured_actions,
+        env={},
+    )
+    if not live_gate.ok:
+        gate_issues = _live_gate_issue_messages(live_gate)
+        append_event(
+            "live_gate_blocked",
+            "blocked",
+            checked_actions=list(live_gate.checked_actions),
+            issues=list(gate_issues),
+        )
+        return _persist_report(
+            request,
+            store=store,
+            run_id=run_id,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            status="blocked",
+            terminal_step=None,
+            trace=(),
+            brokered_actions=(),
+            events=events,
+            issues=gate_issues,
+        )
+    append_event("live_gate_passed", "passed", checked_actions=list(live_gate.checked_actions))
+
+    broker_mode_issue = _broker_mode_issue(broker, "live-draft")
+    if broker_mode_issue is not None:
+        append_event("broker_preflight_blocked", "blocked", issues=[broker_mode_issue], broker_mode=broker.mode)
+        return _persist_report(
+            request,
+            store=store,
+            run_id=run_id,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            status="blocked",
+            terminal_step=None,
+            trace=(),
+            brokered_actions=(),
+            events=events,
+            issues=(broker_mode_issue,),
+        )
+    append_event("broker_preflight_passed", "passed", broker_mode=broker.mode)
 
     result = _execute_live_draft(
         compiled.ir,
@@ -448,24 +515,6 @@ def run_live_production_workflow(
         )
     append_event("credential_preflight_passed", "passed")
 
-    broker_mode_issue = _broker_mode_issue(broker, "live-production")
-    if broker_mode_issue is not None:
-        append_event("broker_preflight_blocked", "blocked", issues=[broker_mode_issue], broker_mode=broker.mode)
-        return _persist_report(
-            request,
-            store=store,
-            run_id=run_id,
-            workflow_name=workflow_name,
-            package_fingerprint=package_fingerprint,
-            status="blocked",
-            terminal_step=None,
-            trace=(),
-            brokered_actions=(),
-            events=events,
-            issues=(broker_mode_issue,),
-        )
-    append_event("broker_preflight_passed", "passed", broker_mode=broker.mode)
-
     approval_index, approval_issues = _live_draft_approval_index(
         store,
         request.approval_run_id,
@@ -488,6 +537,57 @@ def run_live_production_workflow(
             issues=approval_issues,
         )
     append_event("approval_preflight_passed", "passed", approval_run_id=request.approval_run_id)
+
+    live_gate = evaluate_live_gate(
+        compiled.ir,
+        fixture,
+        mode=request.mode,
+        package_fingerprint=package_fingerprint,
+        connector_allowlist=set(request.connector_allowlist),
+        approval_index=approval_index,
+        available_transports=broker.configured_actions,
+        env={},
+    )
+    if not live_gate.ok:
+        gate_issues = _live_gate_issue_messages(live_gate)
+        append_event(
+            "live_gate_blocked",
+            "blocked",
+            checked_actions=list(live_gate.checked_actions),
+            issues=list(gate_issues),
+        )
+        return _persist_report(
+            request,
+            store=store,
+            run_id=run_id,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            status="blocked",
+            terminal_step=None,
+            trace=(),
+            brokered_actions=(),
+            events=events,
+            issues=gate_issues,
+        )
+    append_event("live_gate_passed", "passed", checked_actions=list(live_gate.checked_actions))
+
+    broker_mode_issue = _broker_mode_issue(broker, "live-production")
+    if broker_mode_issue is not None:
+        append_event("broker_preflight_blocked", "blocked", issues=[broker_mode_issue], broker_mode=broker.mode)
+        return _persist_report(
+            request,
+            store=store,
+            run_id=run_id,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            status="blocked",
+            terminal_step=None,
+            trace=(),
+            brokered_actions=(),
+            events=events,
+            issues=(broker_mode_issue,),
+        )
+    append_event("broker_preflight_passed", "passed", broker_mode=broker.mode)
 
     result = _execute_live_production(
         compiled.ir,
@@ -913,6 +1013,10 @@ def _result(
         brokered_actions=brokered_actions,
         issues=issues,
     )
+
+
+def _live_gate_issue_messages(live_gate: Any) -> tuple[str, ...]:
+    return tuple(issue.message for issue in live_gate.issues)
 
 
 def _default_bundle_issues(package_path: Path) -> tuple[str, ...]:

@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from appv24.workflows.broker import BrokerRequest, BrokerResult
+from appv24.workflows.http_safety import validate_http_fetch_url
 from appv24.workflows.live_broker import LiveWorkflowTransport
 
 
@@ -28,6 +29,11 @@ GITHUB_API_BASE_URL_ENV = "APPV24_GITHUB_API_BASE_URL"
 GMAIL_API_BASE_URL_ENV = "APPV24_GMAIL_API_BASE_URL"
 GOOGLE_OAUTH_TOKEN_URL_ENV = "APPV24_GOOGLE_OAUTH_TOKEN_URL"
 TELEGRAM_API_BASE_URL_ENV = "APPV24_TELEGRAM_API_BASE_URL"
+HTTP_FETCH_ALLOWED_HOSTS_ENV = "APPV24_HTTP_FETCH_ALLOWED_HOSTS"
+HTTP_FETCH_MAX_RESPONSE_BYTES_ENV = "APPV24_HTTP_FETCH_MAX_RESPONSE_BYTES"
+HTTP_FETCH_TIMEOUT_SECONDS_ENV = "APPV24_HTTP_FETCH_TIMEOUT_SECONDS"
+HTTP_FETCH_FOLLOW_REDIRECTS_ENV = "APPV24_HTTP_FETCH_FOLLOW_REDIRECTS"
+TELEGRAM_ALLOWED_CHAT_IDS_ENV = "APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
 GITHUB_API_VERSION = "2026-03-10"
 DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com"
 DEFAULT_GMAIL_API_BASE_URL = "https://gmail.googleapis.com/gmail/v1"
@@ -79,6 +85,15 @@ def build_live_read_transports_from_env(
         )
         transports["source.fetch_items"] = SourceFetchItemsTransport(
             base_url=source_base_url,
+            client_factory=client_factory,
+        )
+    http_allowed_hosts = _split_csv(env.get(HTTP_FETCH_ALLOWED_HOSTS_ENV, ""))
+    if http_allowed_hosts:
+        transports["http.fetch"] = HttpFetchTransport(
+            allowed_hosts=http_allowed_hosts,
+            timeout_seconds=_float_env(env.get(HTTP_FETCH_TIMEOUT_SECONDS_ENV), default=15.0),
+            max_response_bytes=_int_env(env.get(HTTP_FETCH_MAX_RESPONSE_BYTES_ENV), default=65536),
+            follow_redirects=_env_enabled(env.get(HTTP_FETCH_FOLLOW_REDIRECTS_ENV)),
             client_factory=client_factory,
         )
     return transports
@@ -136,10 +151,12 @@ def build_live_production_transports_from_env(
     if not telegram_token:
         return {}
     base_url = env.get(TELEGRAM_API_BASE_URL_ENV, DEFAULT_TELEGRAM_API_BASE_URL).strip() or DEFAULT_TELEGRAM_API_BASE_URL
+    allowed_chat_ids = _split_csv(env.get(TELEGRAM_ALLOWED_CHAT_IDS_ENV, ""))
     return {
         "telegram.send_message": TelegramSendMessageTransport(
             token=telegram_token,
             base_url=base_url,
+            allowed_chat_ids=allowed_chat_ids,
             client_factory=client_factory,
         )
     }
@@ -288,6 +305,62 @@ class SourceFetchDocumentTransport:
         return BrokerResult(status="live-read", provider_id="source", outputs={"document": document})
 
 
+class HttpFetchPayloadError(Exception):
+    """Sanitized HTTP response shaping failure."""
+
+
+class HttpFetchTransport:
+    """Read-only HTTP GET transport for operator-allowlisted public URLs."""
+
+    def __init__(
+        self,
+        *,
+        allowed_hosts: tuple[str, ...],
+        timeout_seconds: float = 15.0,
+        max_response_bytes: int = 65536,
+        follow_redirects: bool = False,
+        client_factory: Callable[[], _HttpClient] | None = None,
+    ) -> None:
+        self._allowed_hosts = tuple(host.strip().lower() for host in allowed_hosts if host.strip())
+        self._timeout_seconds = timeout_seconds
+        self._max_response_bytes = max_response_bytes
+        self._follow_redirects = follow_redirects
+        self._client_factory = client_factory or (
+            lambda: httpx.Client(timeout=timeout_seconds, follow_redirects=follow_redirects, trust_env=False)
+        )
+
+    def invoke(self, request: BrokerRequest) -> BrokerResult:
+        url = _http_fetch_url_for_request(request)
+        if url is None:
+            return _blocked("http.fetch requires url", provider_id="http")
+        issue = validate_http_fetch_url(url, allowed_hosts=self._allowed_hosts)
+        if issue is not None:
+            return _blocked(issue, provider_id="http")
+
+        client = self._client_factory()
+        try:
+            response = client.get(
+                url,
+                headers={"Accept": "application/json, text/plain;q=0.9"},
+                params=_http_query_params(request),
+            )
+            response.raise_for_status()
+            outputs = _http_fetch_outputs(response, fallback_url=url, max_response_bytes=self._max_response_bytes)
+        except httpx.HTTPStatusError as error:
+            status_code = error.response.status_code if error.response is not None else "unknown"
+            return _blocked(f"http.fetch returned HTTP {status_code}", provider_id="http")
+        except HttpFetchPayloadError as error:
+            return _blocked(str(error), provider_id="http")
+        except httpx.RequestError as error:
+            return _blocked(f"http.fetch request failed: {type(error).__name__}", provider_id="http")
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+        return BrokerResult(status="live-read", provider_id="http", outputs=outputs)
+
+
 class StaticBearerTokenProvider:
     def __init__(self, token: str) -> None:
         self._token = token
@@ -420,16 +493,21 @@ class TelegramSendMessageTransport:
         *,
         token: str,
         base_url: str = DEFAULT_TELEGRAM_API_BASE_URL,
+        allowed_chat_ids: tuple[str, ...] = (),
         client_factory: Callable[[], _HttpClient] | None = None,
     ) -> None:
         self._token = token
         self._base_url = base_url.rstrip("/")
+        self._allowed_chat_ids = tuple(chat_id.strip() for chat_id in allowed_chat_ids if chat_id.strip())
         self._client_factory = client_factory or (lambda: httpx.Client(timeout=15.0))
 
     def invoke(self, request: BrokerRequest) -> BrokerResult:
         fields = _telegram_message_fields_for_request(request)
         if fields is None:
             return _blocked("telegram.send_message requires chat_id and text", provider_id="telegram")
+        chat_id = str(fields["chat_id"])
+        if self._allowed_chat_ids and chat_id not in self._allowed_chat_ids:
+            return _blocked(f"telegram.send_message chat_id is not allowlisted: {chat_id}", provider_id="telegram")
 
         client = self._client_factory()
         try:
@@ -468,6 +546,26 @@ class TelegramSendMessageTransport:
 
 def _env_enabled(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _split_csv(value: str | None) -> tuple[str, ...]:
+    return tuple(part.strip() for part in (value or "").split(",") if part.strip())
+
+
+def _int_env(value: str | None, *, default: int) -> int:
+    try:
+        parsed = int(str(value or "").strip())
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _float_env(value: str | None, *, default: float) -> float:
+    try:
+        parsed = float(str(value or "").strip())
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
 
 
 def _repository_for_request(request: BrokerRequest) -> tuple[str, str] | None:
@@ -604,6 +702,54 @@ def _source_query_params(request: BrokerRequest) -> dict[str, str]:
         if rendered is not None:
             params[key] = rendered
     return params
+
+
+def _http_fetch_url_for_request(request: BrokerRequest) -> str | None:
+    with_map = _mapping(request.input_ref.get("with"))
+    fixture_input = _mapping(request.fixture.get("input"))
+    return (
+        _string(_resolve_input_ref(with_map.get("url"), fixture_input))
+        or _string(_resolve_input_ref(with_map.get("source_url"), fixture_input))
+        or _string(fixture_input.get("url"))
+        or _string(fixture_input.get("source_url"))
+    )
+
+
+def _http_query_params(request: BrokerRequest) -> dict[str, str]:
+    with_map = _mapping(request.input_ref.get("with"))
+    fixture_input = _mapping(request.fixture.get("input"))
+    params: dict[str, str] = {}
+    for key in sorted(with_map):
+        if key in {"url", "source_url"}:
+            continue
+        value = _resolve_input_ref(with_map.get(key), fixture_input)
+        rendered = _query_param_value(value)
+        if rendered is not None:
+            params[key] = rendered
+    return params
+
+
+def _http_fetch_outputs(response: Any, *, fallback_url: str, max_response_bytes: int) -> dict[str, Any]:
+    content = getattr(response, "content", None)
+    if isinstance(content, bytes) and len(content) > max_response_bytes:
+        raise HttpFetchPayloadError("http.fetch response exceeded max response bytes")
+    status_code = getattr(response, "status_code", 200)
+    outputs: dict[str, Any] = {
+        "status_code": status_code if isinstance(status_code, int) else 200,
+        "url": str(getattr(response, "url", fallback_url) or fallback_url),
+    }
+    try:
+        payload = response.json()
+    except ValueError:
+        text = getattr(response, "text", "")
+        if not isinstance(text, str):
+            text = ""
+        if len(text.encode("utf-8")) > max_response_bytes:
+            raise HttpFetchPayloadError("http.fetch response exceeded max response bytes")
+        outputs["text"] = text
+        return outputs
+    outputs["json"] = payload
+    return outputs
 
 
 def _query_param_value(value: object) -> str | None:

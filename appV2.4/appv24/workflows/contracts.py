@@ -55,6 +55,7 @@ BUILTIN_ACTION_OUTPUT_FIELDS = {
     "llm.extract_structured": (
         "alerts",
         "items",
+        "count",
         "confidence_score",
         "raw_response",
         "confidence",

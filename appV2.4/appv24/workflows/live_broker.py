@@ -31,6 +31,10 @@ class LiveWorkflowBroker:
     def mode(self) -> str:
         return self._mode
 
+    @property
+    def configured_actions(self) -> tuple[str, ...]:
+        return tuple(sorted(self._transports))
+
     def invoke(self, request: BrokerRequest) -> BrokerResult:
         if self._mode == "live-production" and not self._production_enabled:
             return BrokerResult(

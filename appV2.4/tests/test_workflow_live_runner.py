@@ -60,6 +60,30 @@ def test_live_read_runner_executes_allowlisted_read_action_and_writes_report(tmp
     assert saved_report["mode"] == "live-read"
     assert saved_report["status"] == "passed"
     assert any(event.event_type == "credential_preflight_passed" for event in report.events)
+    assert any(event.event_type == "live_gate_passed" for event in report.events)
+
+
+def test_live_read_runner_blocks_missing_configured_transport_before_broker_dispatch(tmp_path: Path) -> None:
+    package = _write_read_only_package(tmp_path)
+
+    report = run_live_read_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            run_root=tmp_path / ".workflow-runs",
+            connector_allowlist=("github.list_dependabot_alerts",),
+        ),
+        broker=LiveWorkflowBroker({}, mode="live-read"),
+        credential_resolver=CredentialRefResolver({"github": CredentialScope(available=True, scopes=("dependabot:read",))}),
+    )
+
+    assert report.status == "blocked"
+    assert report.issues == (
+        "live-read transport is not configured for github.list_dependabot_alerts; required env: "
+        "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_GITHUB_TOKEN",
+    )
+    assert any(event.event_type == "live_gate_blocked" for event in report.events)
 
 
 def test_live_read_runner_blocks_stale_bundle_before_transport(tmp_path: Path) -> None:
