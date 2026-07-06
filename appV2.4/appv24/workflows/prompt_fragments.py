@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from appv24.workflows.catalog import BUILTIN_WORKFLOW_ACTIONS
+from appv24.workflows.connector_contracts import builtin_connector_contract_catalog
 from appv24.workflows.contracts import BUILTIN_LLM_OUTPUT_CONTRACTS
 
 
@@ -91,9 +92,12 @@ def render_schema_reminders_fragment() -> str:
 
 
 def render_capability_catalog_fragment() -> str:
+    contract_catalog = builtin_connector_contract_catalog()
     lines = [
         "Built-in executable workflow capability catalog:",
         *[f"- {action}" for action in sorted(BUILTIN_WORKFLOW_ACTIONS)],
+        "Compact action contracts:",
+        *[f"- {contract_catalog[action].prompt_summary}" for action in sorted(contract_catalog)],
         "- workflow.yaml steps[].uses values must match one of these actions exactly.",
         "- Prefer draft actions for user-visible messages: telegram.create_message_draft, gmail.create_draft, notification.create_draft.",
         "- Do not invent connector action names, even for read-only actions.",

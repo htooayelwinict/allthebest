@@ -38,6 +38,13 @@ BUILTIN_ACTION_OUTPUT_FIELDS = {
         "draft_id",
         "artifact_path",
     ),
+    "http.fetch": (
+        "status_code",
+        "url",
+        "text",
+        "json",
+        "artifact_path",
+    ),
     "llm.classify": (
         "classification",
         "confidence_score",

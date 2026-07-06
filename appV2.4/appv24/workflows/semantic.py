@@ -7,6 +7,10 @@ import re
 from typing import Any, Iterable, Mapping
 
 from appv24.workflows.catalog import BUILTIN_WORKFLOW_ACTIONS, is_builtin_workflow_action
+from appv24.workflows.connector_contracts import (
+    SideEffectClass,
+    builtin_connector_contract_catalog,
+)
 from appv24.workflows.contracts import (
     BUILTIN_LLM_OUTPUT_CONTRACTS,
     builtin_action_output_fields,
@@ -75,6 +79,7 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     issues.extend(_intelligence_node_contract_issues(steps, connectors))
     issues.extend(_builtin_action_output_contract_issues(action_entries))
     issues.extend(_catalog_issues(action_entries))
+    issues.extend(_connector_contract_issues(action_entries))
     issues.extend(_side_effect_contract_issues(action_entries, steps_by_action, documents.permissions))
 
     mutating_steps = _mutating_steps(steps, connectors)
@@ -555,6 +560,90 @@ def _catalog_issues(actions: Mapping[tuple[str, str], Mapping[str, Any]]) -> lis
     return issues
 
 
+def _connector_contract_issues(actions: Mapping[tuple[str, str], Mapping[str, Any]]) -> list[WorkflowIssue]:
+    contracts = builtin_connector_contract_catalog()
+    issues: list[WorkflowIssue] = []
+    for (connector_id, action_id), action in sorted(actions.items()):
+        action_ref = f"{connector_id}.{action_id}"
+        if action.get("custom") is True and action.get("execution_mode") == "design_only":
+            continue
+        contract = contracts.get(action_ref)
+        if contract is None:
+            issues.append(
+                WorkflowIssue(
+                    "unknown_connector_contract",
+                    "connectors.yaml",
+                    ("connectors", connector_id, "actions", action_id),
+                    f"{action_ref} is not in the built-in connector contract catalog",
+                    expected=", ".join(sorted(contracts)),
+                    repair_hint="Use a built-in action contract or make the action custom: true with execution_mode: design_only.",
+                )
+            )
+            continue
+
+        declared_side_effect = action.get("side_effect")
+        if declared_side_effect != contract.side_effect:
+            issues.append(
+                WorkflowIssue(
+                    "connector_contract_mismatch",
+                    "connectors.yaml",
+                    ("connectors", connector_id, "actions", action_id, "side_effect"),
+                    f"{action_ref} side_effect must match connector contract value {contract.side_effect!r}",
+                    expected=str(contract.side_effect).lower(),
+                )
+            )
+
+        declared_class = action.get("side_effect_class")
+        expected_class = None if contract.side_effect_class is SideEffectClass.READ else contract.side_effect_class.value
+        if expected_class is not None and declared_class != expected_class:
+            issues.append(
+                WorkflowIssue(
+                    "connector_contract_mismatch",
+                    "connectors.yaml",
+                    ("connectors", connector_id, "actions", action_id, "side_effect_class"),
+                    f"{action_ref} side_effect_class must match connector contract value {expected_class}",
+                    expected=expected_class,
+                )
+            )
+        elif expected_class is None and declared_class not in {None, "read"}:
+            issues.append(
+                WorkflowIssue(
+                    "connector_contract_mismatch",
+                    "connectors.yaml",
+                    ("connectors", connector_id, "actions", action_id, "side_effect_class"),
+                    f"{action_ref} side_effect_class must be read-only",
+                    expected="read or omitted",
+                )
+            )
+
+        declared_scopes = set(str(scope) for scope in action.get("required_scopes", []) if isinstance(scope, str))
+        for scope in contract.required_scopes:
+            if scope not in declared_scopes:
+                issues.append(
+                    WorkflowIssue(
+                        "connector_contract_scope_mismatch",
+                        "connectors.yaml",
+                        ("connectors", connector_id, "actions", action_id, "required_scopes"),
+                        f"{action_ref} required_scopes must include {scope}",
+                        expected=scope,
+                    )
+                )
+
+        allowed_outputs = set(_allowed_outputs(action))
+        unsupported_outputs = sorted(output for output in allowed_outputs if output not in contract.allowed_outputs)
+        if unsupported_outputs:
+            issues.append(
+                WorkflowIssue(
+                    "connector_contract_output_mismatch",
+                    "connectors.yaml",
+                    ("connectors", connector_id, "actions", action_id, "outputs", "allowed"),
+                    f"{action_ref} outputs.allowed contains unsupported fields: {', '.join(unsupported_outputs)}",
+                    expected=", ".join(contract.allowed_outputs),
+                )
+            )
+    return issues
+
+
 def _steps_by_action_use(steps: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], list[Mapping[str, Any]]]:
     used: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     for step in steps:
@@ -612,7 +701,15 @@ def _connector_reference_issues(
             )
         granted_scopes = permission_scopes.get(connector_id, set())
         action = connectors[connector_id][action_id]
-        for scope in sorted(str(scope) for scope in action.get("required_scopes", []) if isinstance(scope, str)):
+        contract = builtin_connector_contract_catalog().get(uses)
+        required_scopes = {
+            str(scope)
+            for scope in action.get("required_scopes", [])
+            if isinstance(scope, str)
+        }
+        if contract is not None:
+            required_scopes.update(contract.required_scopes)
+        for scope in sorted(required_scopes):
             if scope not in granted_scopes and "*" not in granted_scopes:
                 issues.append(
                     WorkflowIssue(
