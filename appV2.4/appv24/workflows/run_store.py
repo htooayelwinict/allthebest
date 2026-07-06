@@ -12,7 +12,7 @@ from uuid import uuid4
 from appv24.workflows.approval_gate import ApprovalDecision, ApprovalRequest, resume_approval
 from appv24.workflows.execution import WorkflowRunEvent
 
-SECRET_VALUE_RE = re.compile(r"(sk-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+)")
+SECRET_VALUE_RE = re.compile(r"(?<![A-Za-z0-9_])(sk-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+)")
 
 
 class WorkflowRunStore:

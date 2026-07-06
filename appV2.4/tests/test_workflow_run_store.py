@@ -46,6 +46,19 @@ def test_run_store_reads_run_manifest(tmp_path: Path) -> None:
     }
 
 
+def test_run_store_allows_risk_review_metadata_path(tmp_path: Path) -> None:
+    store = WorkflowRunStore(tmp_path)
+    package_path = tmp_path / "iam-access-risk-review-assistant"
+
+    run_id = store.create_run(
+        "iam_access_risk_review",
+        "sha256:abc",
+        metadata={"package_path": str(package_path)},
+    )
+
+    assert store.read_run_manifest(run_id)["package_path"] == str(package_path)
+
+
 def test_run_store_blocks_event_for_different_run_id(tmp_path: Path) -> None:
     store = WorkflowRunStore(tmp_path)
     store.create_run("telegram_support_ticket", "sha256:abc")

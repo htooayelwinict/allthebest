@@ -36,7 +36,7 @@ DESIGN_CONTRACT_EXPECTED = (
     "approval_gates, failure_modes, and rollback"
 )
 SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|secret|password|credential)", re.IGNORECASE)
-SECRET_VALUE_RE = re.compile(r"(sk-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+)")
+SECRET_VALUE_RE = re.compile(r"(?<![A-Za-z0-9_])(sk-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+)")
 SECRET_REF_KEY_RE = re.compile(r"^secret[_-]?ref$", re.IGNORECASE)
 ROLLBACK_COMMAND_RE = re.compile(
     r"^\s*(?:[-*]\s*)?(?:[`$>#]\s*)?(?:curl|gh\s+api|aws|gcloud|az|kubectl|terraform|rm\s+-rf)\b",
