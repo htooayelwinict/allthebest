@@ -1,8 +1,8 @@
 # appv24 Plan Implementation Audit
 
-Current branch: `feature/appv24-run-live-preview`
+Current branch: `next/appv24`
 
-This audit reconciles older appv24 plan checklists with the current codebase. Some older plan files still contain unchecked boxes, especially commit steps. Those checkboxes are not reliable completion evidence because this branch is intentionally not being committed or pushed without explicit `gitops`.
+This audit reconciles older appv24 plan checklists with the current codebase. Some older plan files still contain unchecked boxes, especially commit steps. Those checkboxes are not reliable completion evidence because appv24 work has been consolidated onto the dedicated `next/appv24` product branch.
 
 ## Verified Evidence
 
@@ -10,7 +10,7 @@ Fresh verification from this worktree:
 
 ```text
 PYTHONPATH=appV2.4 .venv/bin/python -m pytest appV2.4/tests
-1485 passed in 42.22s
+1561 passed in 48.46s
 ```
 
 Additional guards from this worktree:
@@ -45,10 +45,11 @@ The following plan goals have current implementation and test evidence:
 
 ## Known Non-Completion Items
 
-- No git commit/push/release is performed without explicit `gitops`.
+- No npm or GHCR release has been performed for appv24.
 - Real provider calls remain manual-gated because they require live credentials and can cost money or mutate external systems.
-- Older plan checkboxes that say "commit" remain intentionally not executed unless Lewis asks for gitops.
+- Older plan checkboxes that say "commit" are stale plan bookkeeping unless current branch history or this audit says otherwise.
+- Live production remains intentionally narrow: only explicitly allowlisted, approval-gated Telegram send is enabled as V0.
 
 ## Current Product State
 
-appv24 can generate, validate, repair, save, preview, locally run, preflight, and execute approved live-read/live-draft/live-production V0 workflow paths under explicit allowlists and env gates. The first live production connector is intentionally narrow: `telegram.send_message`.
+appv24 can generate, validate, repair, save, preview, locally run, preflight, and execute approved live-read/live-draft/live-production V0 workflow paths under explicit allowlists and env gates. The first live production connector is intentionally narrow: `telegram.send_message`. The dedicated product branch is `next/appv24`; it is separate from appv23 and appv231.
