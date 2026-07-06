@@ -35,6 +35,7 @@ class WorkflowRunExplanation:
     status: str
     terminal_step: str | None
     provenance: tuple[str, ...]
+    gate: tuple[str, ...]
     trace: tuple[str, ...]
     brokered_actions: tuple[str, ...]
     approvals: tuple[str, ...]
@@ -149,6 +150,7 @@ def explain_workflow_run_artifacts(
             status="unavailable",
             terminal_step=None,
             provenance=(),
+            gate=(),
             trace=(),
             brokered_actions=(),
             approvals=(),
@@ -170,6 +172,7 @@ def explain_workflow_run_artifacts(
             status="unavailable",
             terminal_step=None,
             provenance=(),
+            gate=(),
             trace=(),
             brokered_actions=(),
             approvals=(),
@@ -181,6 +184,7 @@ def explain_workflow_run_artifacts(
 
     run_manifest = _read_optional_json(run_dir / "run.json")
     handoff_payload = _read_optional_json(run_dir / "handoff.json")
+    events_payload = _read_optional_jsonl(run_dir / "events.jsonl")
     approval_decisions = _read_optional_jsonl(run_dir / "approval_decisions.jsonl")
     issues = tuple(str(issue) for issue in report.get("issues", []) if isinstance(issue, str))
     return WorkflowRunExplanation(
@@ -189,6 +193,7 @@ def explain_workflow_run_artifacts(
         status=str(report.get("status", "unavailable")),
         terminal_step=report.get("terminal_step") if isinstance(report.get("terminal_step"), str) else None,
         provenance=_provenance(run_manifest),
+        gate=_gate_details(events_payload),
         trace=_trace_steps(trace_payload),
         brokered_actions=_brokered_actions(report),
         approvals=_approvals(approvals_payload),
@@ -241,6 +246,9 @@ def format_workflow_run_explanation(explanation: WorkflowRunExplanation) -> str:
     if explanation.provenance:
         lines.append("Provenance:")
         lines.extend(f"- {item}" for item in explanation.provenance)
+    if explanation.gate:
+        lines.append("Gate:")
+        lines.extend(f"- {item}" for item in explanation.gate)
     if explanation.trace:
         lines.append("Trace:")
         lines.extend(f"- {step}" for step in explanation.trace)
@@ -366,6 +374,21 @@ def _provenance(run_manifest: Mapping[str, Any]) -> tuple[str, ...]:
     if isinstance(activation_trigger_type, str):
         items.append(f"trigger: {activation_trigger_type}")
     return tuple(items)
+
+
+def _gate_details(events: tuple[Mapping[str, Any], ...]) -> tuple[str, ...]:
+    details: list[str] = []
+    for event in events:
+        event_type = event.get("event_type")
+        if event_type not in {"live_gate_passed", "live_gate_blocked"}:
+            continue
+        status = event.get("status") if isinstance(event.get("status"), str) else "unknown"
+        event_details = event.get("details") if isinstance(event.get("details"), Mapping) else {}
+        checked_actions = event_details.get("checked_actions")
+        actions = _unique_strings(checked_actions) if isinstance(checked_actions, list | tuple) else ()
+        suffix = f" actions={','.join(actions)}" if actions else ""
+        details.append(f"live_gate: {status}{suffix}")
+    return tuple(details)
 
 
 def _trace_steps(payload: Mapping[str, Any]) -> tuple[str, ...]:

@@ -61,6 +61,16 @@ def test_live_read_runner_executes_allowlisted_read_action_and_writes_report(tmp
     assert saved_report["status"] == "passed"
     assert any(event.event_type == "credential_preflight_passed" for event in report.events)
     assert any(event.event_type == "live_gate_passed" for event in report.events)
+    assert _event_names(report.events)[:8] == (
+        "run_created",
+        "package_validation_passed",
+        "compile_passed",
+        "policy_passed",
+        "bundle_guard_passed",
+        "credential_preflight_passed",
+        "live_gate_passed",
+        "broker_preflight_passed",
+    )
 
 
 def test_live_read_runner_blocks_missing_configured_transport_before_broker_dispatch(tmp_path: Path) -> None:
@@ -357,6 +367,10 @@ def test_live_draft_runner_executes_approved_draft_action_and_writes_report(tmp_
     assert report.brokered_actions[0].idempotency_key.startswith("idemp:")
     assert transport.requests[0].dry_run is False
     assert (run_dir / "report.json").is_file()
+    idempotency_events = [event for event in report.events if event.event_type == "idempotency_reserved"]
+    assert len(idempotency_events) == 1
+    assert idempotency_events[0].step_id == "create_gmail_draft"
+    assert idempotency_events[0].details["idempotency_key"].startswith("idemp:")
     saved_report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     assert saved_report["mode"] == "live-draft"
     assert saved_report["status"] == "passed"
@@ -562,6 +576,10 @@ def test_live_production_runner_executes_approved_telegram_send_and_writes_repor
     assert report.brokered_actions[0].idempotency_key.startswith("idemp:")
     assert transport.requests[0].dry_run is False
     assert (run_dir / "report.json").is_file()
+    idempotency_events = [event for event in report.events if event.event_type == "idempotency_reserved"]
+    assert len(idempotency_events) == 1
+    assert idempotency_events[0].step_id == "notify_admin"
+    assert idempotency_events[0].details["idempotency_key"].startswith("idemp:")
     saved_report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     assert saved_report["mode"] == "live-production"
     assert saved_report["status"] == "passed"
@@ -1122,6 +1140,10 @@ def _set_run_mode(run_root: Path, run_id: str, mode: str) -> None:
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["mode"] = mode
     path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+def _event_names(events: tuple[object, ...]) -> tuple[str, ...]:
+    return tuple(str(event.event_type) for event in events)
 
 
 def _design(*, side_effects: list[str], approval_gates: list[str] | None = None) -> dict[str, object]:

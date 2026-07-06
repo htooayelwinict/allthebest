@@ -349,8 +349,11 @@ def test_run_explanation_reports_live_production_provenance_without_filtered_out
     assert "mode: live-production" in explanation.provenance
     assert f"approval run: {approval_report.run_id}" in explanation.provenance
     assert "allowlist: telegram.send_message" in explanation.provenance
+    assert explanation.gate == ("live_gate: passed actions=telegram.send_message",)
     assert explanation.brokered_actions[0].startswith("notify_admin: telegram.send_message -> live-production idempotency=idemp:")
     rendered = format_workflow_run_explanation(explanation)
+    assert "Gate:" in rendered
+    assert "live_gate: passed actions=telegram.send_message" in rendered
     assert "must-not-render" not in rendered
     assert "secret" not in rendered
 
@@ -389,6 +392,7 @@ def test_run_explanation_recommends_safe_commands_for_blocked_live_run(tmp_path:
     explanation = explain_workflow_run(package, report.run_id)
 
     assert explanation.status == "blocked"
+    assert explanation.gate == ("live_gate: blocked actions=telegram.send_message",)
     assert explanation.next_steps == (
         f"/workflow-live-env-template live-production {package.resolve()} --allow telegram.send_message",
         (

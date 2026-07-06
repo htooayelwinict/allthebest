@@ -113,6 +113,7 @@ def run_live_read_workflow(
         mode=request.mode.value,
         run_dir=str(store.run_dir(run_id)),
     )
+    _append_package_gate_passed_events(append_event)
 
     credential_report = preflight_credential_refs(documents, credential_resolver)
     if not credential_report.ok:
@@ -293,6 +294,7 @@ def run_live_draft_workflow(
         mode=request.mode.value,
         run_dir=str(store.run_dir(run_id)),
     )
+    _append_package_gate_passed_events(append_event)
 
     credential_report = preflight_credential_refs(documents, credential_resolver)
     if not credential_report.ok:
@@ -496,6 +498,7 @@ def run_live_production_workflow(
         mode=request.mode.value,
         run_dir=str(store.run_dir(run_id)),
     )
+    _append_package_gate_passed_events(append_event)
 
     credential_report = preflight_credential_refs(documents, credential_resolver)
     if not credential_report.ok:
@@ -830,6 +833,13 @@ def _execute_live_draft(
             )
             return _result("blocked", None, trace, brokered_actions, issues)
 
+        _append_idempotency_reservation(
+            step,
+            action,
+            package_fingerprint=package_fingerprint,
+            fixture=fixture,
+            append_event=append_event,
+        )
         outputs, broker_status, broker_provider_id, broker_issues = _invoke_broker(ir, step, fixture, broker, append_event)
         if action is not None and step.uses is not None:
             brokered_actions.append(
@@ -948,6 +958,13 @@ def _execute_live_production(
             )
             return _result("blocked", None, trace, brokered_actions, issues)
 
+        _append_idempotency_reservation(
+            step,
+            action,
+            package_fingerprint=package_fingerprint,
+            fixture=fixture,
+            append_event=append_event,
+        )
         outputs, broker_status, broker_provider_id, broker_issues = _invoke_broker(ir, step, fixture, broker, append_event)
         if action is not None and step.uses is not None:
             brokered_actions.append(
@@ -1017,6 +1034,36 @@ def _result(
 
 def _live_gate_issue_messages(live_gate: Any) -> tuple[str, ...]:
     return tuple(issue.message for issue in live_gate.issues)
+
+
+def _append_package_gate_passed_events(append_event: Callable[..., None]) -> None:
+    append_event("package_validation_passed", "passed")
+    append_event("compile_passed", "passed")
+    append_event("policy_passed", "passed")
+    append_event("bundle_guard_passed", "passed")
+
+
+def _append_idempotency_reservation(
+    step: WorkflowStep,
+    action: ActionCapability | None,
+    *,
+    package_fingerprint: str,
+    fixture: Mapping[str, Any],
+    append_event: Callable[..., None],
+) -> None:
+    if action is None or step.uses is None or not _is_mutating_step(step, action):
+        return
+    idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
+    if idempotency_key is None:
+        return
+    append_event(
+        "idempotency_reserved",
+        "reserved",
+        step_id=step.step_id,
+        connector_action=step.uses.dotted,
+        idempotency_key=idempotency_key,
+        idempotency_key_fields=list(action.idempotency_key_fields),
+    )
 
 
 def _default_bundle_issues(package_path: Path) -> tuple[str, ...]:
