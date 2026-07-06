@@ -73,4 +73,4 @@ Follow-up chore:
   - `unauthorized_user.yaml`
   - `ticket_draft_timeout.yaml`
 - Added local Telegram message draft artifact provider for `telegram.create_message_draft`.
-- Live production remains disabled until approval ledger, credential policy, and broker enforcement are stronger.
+- Earlier note superseded: live production V0 now exists only for `telegram.send_message`, and remains disabled by default unless approval ledger, credential policy, allowlist, idempotency, transport, and production broker gates pass.

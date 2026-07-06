@@ -55,7 +55,7 @@ credential-reference values, or provider responses.
 
 ## External Effects
 
-Telegram `sendMessage` is mutating. It is represented by `telegram.send_message`, requires approval policy, and live production remains disabled.
+Telegram `sendMessage` is mutating. It is represented by `telegram.send_message`, requires approval policy, and live production remains disabled by default unless the explicit V0 production gates pass.
 
 Gmail `drafts.create` creates drafts. It maps to `gmail.create_draft` and is draft-eligible only after broker and credential policy are proven.
 
