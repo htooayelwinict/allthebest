@@ -69,6 +69,8 @@ connectors:
       - id: list_dependabot_alerts
         operationId: dependabot_list_alerts
         side_effect: false
+        required_scopes:
+          - dependabot:read
       - id: create_issue
         operationId: issues_create
         side_effect: true

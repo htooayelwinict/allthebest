@@ -367,7 +367,7 @@ def _gmail_draft_triage() -> GoldenWorkflowExample:
                         "side_effect_class": "create",
                         "approval_required": True,
                         "dry_run_supported": True,
-                        "required_scopes": ["gmail:draft"],
+                        "required_scopes": ["gmail.compose"],
                         "outputs": {"allowed": ["draft_id", "thread_id"]},
                         "idempotency": {"key_fields": ["to", "subject", "body_hash"]},
                     }
@@ -378,7 +378,7 @@ def _gmail_draft_triage() -> GoldenWorkflowExample:
     permissions = {
         "version": "appv24.permissions/v1",
         "permissions": [
-            {"connector": "gmail", "scopes": ["gmail:draft"], "actions": ["create_draft"]},
+            {"connector": "gmail", "scopes": ["gmail.compose"], "actions": ["create_draft"]},
         ],
         "approvals": [
             {
