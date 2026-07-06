@@ -9,6 +9,7 @@ from appv24.workflows.broker import LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.loader import PackageDocuments
 from appv24.workflows.policy import evaluate_policy
+from appv24.workflows.quality_gate import check_workflow_quality_documents
 from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.validator import validate_workflow_documents
 
@@ -33,6 +34,19 @@ def build_enablement_report(
     broker: LocalWorkflowBroker | None = None,
 ) -> WorkflowEnablementReport:
     workflow_name = str(documents.workflow.get("name", ""))
+    quality = check_workflow_quality_documents(documents, broker=broker)
+    if not quality.ok:
+        return WorkflowEnablementReport(
+            workflow_name=workflow_name,
+            validation_ok=quality.validation_ok,
+            compile_ok=quality.compile_ok,
+            policy_ok=quality.policy_ok,
+            simulation_status="blocked",
+            terminal_step=None,
+            simulated_side_effects=(),
+            issues=tuple(issue.message for issue in quality.issues),
+        )
+
     validation = validate_workflow_documents(documents)
     if not validation.ok:
         return WorkflowEnablementReport(

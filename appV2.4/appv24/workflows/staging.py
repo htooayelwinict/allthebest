@@ -97,6 +97,8 @@ def build_workflow_stage_prompt(
             "",
             render_required_package_blocks_fragment(),
             "",
+            "Every non-terminal action step must include next, every decision step must include branches, and every dry-run fixture must traverse from entrypoint to a terminal step.",
+            "",
             "Schema reminders:",
             render_schema_reminders_fragment(),
             render_capability_catalog_fragment(),

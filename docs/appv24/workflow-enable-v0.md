@@ -11,10 +11,13 @@ PackageDocuments
   -> validate_workflow_documents
   -> compile_workflow_documents
   -> evaluate_policy
+  -> check_workflow_quality_documents
   -> LocalWorkflowBroker
   -> simulate_workflow_fixture
   -> WorkflowEnablementReport
 ```
+
+The quality gate requires static terminal reachability and terminal completion for declared dry-run fixtures. It does not execute real connectors.
 
 ## Python API
 
@@ -38,6 +41,7 @@ report = build_enablement_report(
 - broker requests are dry-run only
 - provider outputs are filtered to declared `outputs.allowed`
 - unknown connector actions block simulation
+- quality-gate failures block enablement reports before a package is considered ready
 - real connector execution is out of scope
 - CLI/TUI commands are deferred
 

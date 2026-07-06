@@ -56,8 +56,10 @@ from appv24.tui.interactive import (
 )
 from appv24.workflows.live_validation import (
     assistant_text_from_messages,
+    format_workflow_quality_report,
     format_workflow_validation_report,
     should_validate_workflow_drafts,
+    workflow_quality_result_for_draft,
 )
 from appv24.workflows.live_env_template import build_workflow_live_env_template, format_workflow_live_env_template
 from appv24.workflows.live_preflight import (
@@ -77,6 +79,7 @@ from appv24.workflows.live_transports import (
     build_live_production_transports_from_env,
     build_live_read_transports_from_env,
 )
+from appv24.workflows.quality_gate import WorkflowQualityResult, check_workflow_quality_package
 from appv24.workflows.repair import (
     WorkflowDraftRepairConfig,
     WorkflowDraftRepairResult,
@@ -246,6 +249,7 @@ class InteractiveMode:
         self._last_openrouter_model_fetch_error: Exception | None = None
         self._last_workflow_validation: WorkflowDraftValidationResult | None = None
         self._last_workflow_repair_report: WorkflowRepairReport | None = None
+        self._last_workflow_quality: WorkflowQualityResult | None = None
         self._last_turn_finished_at = 0.0
         self._last_idle_ctrl_c_at = 0.0
         self.setup_autocomplete_provider()
@@ -1063,6 +1067,9 @@ class InteractiveMode:
         if validation is None or not validation.ok:
             self._render_workflow_save_error("last workflow draft is not valid")
             return True
+        if self._last_workflow_quality is not None and not self._last_workflow_quality.ok:
+            self._render_workflow_save_error("last workflow draft does not pass quality gate")
+            return True
 
         try:
             saved_path = save_workflow_draft_blocks(validation.blocks, cwd=self.app.cwd, relative_path=relative_path)
@@ -1074,6 +1081,15 @@ class InteractiveMode:
         disk_validation = validate_workflow_package(saved_path)
         disk_kind = "info" if disk_validation.ok else "error"
         self.history.add(StatusLine(_format_workflow_package_validation_report(disk_validation), kind=disk_kind))
+        if disk_validation.ok:
+            disk_quality = check_workflow_quality_package(saved_path)
+            quality_kind = "info" if disk_quality.ok else "error"
+            self.history.add(
+                StatusLine(
+                    format_workflow_quality_report(disk_quality, label="Workflow package quality gate"),
+                    kind=quality_kind,
+                )
+            )
         self.status.set_message("Idle")
         self._refresh_footer()
         self.tui.request_render()
@@ -2436,9 +2452,14 @@ class InteractiveMode:
             if repair_stop_report:
                 self.history.add(StatusLine(repair_stop_report, kind="error"))
 
+        quality = workflow_quality_result_for_draft(result)
         self._last_workflow_validation = result if result.validation.ok else None
+        self._last_workflow_quality = quality
         kind = "info" if result.validation.ok else "error"
         self.history.add(StatusLine(format_workflow_validation_report(result), kind=kind))
+        if quality is not None:
+            quality_kind = "info" if quality.ok else "error"
+            self.history.add(StatusLine(format_workflow_quality_report(quality), kind=quality_kind))
 
     def _refresh_footer(self) -> None:
         self.footer.model = self.app.session.model.id

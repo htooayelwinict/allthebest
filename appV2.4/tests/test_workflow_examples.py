@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 from appv24.workflows.approval_gate import ApprovalDecision
@@ -134,6 +136,24 @@ def test_enablement_report_summarizes_golden_example() -> None:
     assert report.issues == ()
 
 
+def test_enablement_report_blocks_quality_gate_failure() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+    workflow = deepcopy(example.documents.workflow)
+    workflow["steps"][1].pop("next")
+    documents = replace(example.documents, workflow=workflow)
+
+    report = build_enablement_report(
+        documents,
+        "happy_path.yaml",
+        documents.dry_run_fixtures["happy_path.yaml"],
+        broker=example.broker,
+    )
+
+    assert report.simulation_status == "blocked"
+    assert report.terminal_step is None
+    assert any("requires a runtime transition" in issue for issue in report.issues)
+
+
 def test_fixture_helpers_return_sorted_names_and_required_fixture() -> None:
     example = golden_workflow_examples()["telegram_support_ticket"]
 
@@ -244,3 +264,10 @@ def _approve_first_request(run_root: Path, run_id: str, *, package_fingerprint: 
         requests[0].approval_request_id,
         ApprovalDecision(approved=True, package_fingerprint=package_fingerprint, decided_by="test"),
     )
+
+
+def test_golden_examples_include_gmail_draft_triage() -> None:
+    examples = golden_workflow_examples()
+
+    assert "gmail_draft_triage" in examples
+    assert examples["gmail_draft_triage"].documents.workflow["name"] == "gmail_draft_triage"

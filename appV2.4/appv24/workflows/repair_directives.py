@@ -8,12 +8,15 @@ from typing import Any, Mapping
 
 from appv24.workflows.catalog import BUILTIN_WORKFLOW_ACTIONS
 from appv24.workflows.contracts import BUILTIN_LLM_OUTPUT_CONTRACTS
+from appv24.workflows.quality_gate import check_workflow_quality_documents
 from appv24.workflows.validator import WorkflowDraftValidationResult
 
 MUTATING_SIDE_EFFECT_CLASSES = {"create", "update", "delete", "send", "publish", "provision"}
 ACTION_REF_RE = re.compile(r"\b[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+\b")
 DESIGN_ONLY_ACTION_RE = re.compile(r"design-only action (?P<action>[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+)")
 QUOTED_VALUE_RE = re.compile(r"'(?P<value>[^']+)'")
+NO_BRANCH_MATCH_RE = re.compile(r"no branch matched for (?P<step>[A-Za-z0-9_.-]+)")
+DECISION_STEP_RE = re.compile(r"decision step (?P<step>[A-Za-z0-9_.-]+)")
 
 
 @dataclass(frozen=True)
@@ -43,11 +46,8 @@ def build_workflow_repair_directives(
     *,
     max_directives: int = 8,
 ) -> tuple[WorkflowRepairDirective, ...]:
-    if result.ok:
-        return ()
-
     directives: list[WorkflowRepairDirective] = []
-    for issue in result.validation.issues:
+    for issue in _repair_issues(result):
         if len(directives) >= max(0, max_directives):
             break
         directive = _directive_for_issue(result, issue)
@@ -109,6 +109,34 @@ def _directive_for_issue(
                 message,
                 "Mutating connector actions must declare side_effect_class, execution_mode, approval_required, and dry_run_supported.",
                 "Brokered mutating actions require approval_required: true, dry_run_supported: true, explicit outputs.allowed, and idempotency.key_fields where required.",
+            ),
+        )
+
+    if code == "catalog_metadata_mismatch":
+        action_ref = _first_action_ref(message)
+        target = f" for {action_ref}" if action_ref else ""
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction=f"Update only the mismatched catalog metadata fields{target}.",
+            rules=(
+                message,
+                "Keep the workflow step ids, branch names, fixtures, approvals, and rollback text unchanged.",
+                "Use the built-in catalog action metadata exactly; do not invent alternate side-effect classes or execution modes.",
+            ),
+        )
+
+    if code == "unknown_catalog_action":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Replace this action with a built-in catalog action or make it design-only.",
+            rules=(
+                message,
+                "Use only built-in workflow capability catalog actions when the workflow step calls the action.",
+                f"Built-in workflow capability catalog actions: {', '.join(sorted(BUILTIN_WORKFLOW_ACTIONS))}.",
+                "If the non-catalog action represents an incoming trigger or fixture input, model it as trigger/input data instead of a workflow step action.",
+                "For future-only custom actions, set custom: true and execution_mode: design_only, and remove workflow step calls to it.",
             ),
         )
 
@@ -192,6 +220,7 @@ def _directive_for_issue(
         )
 
     if code in {"missing_fixture_decision", "unknown_fixture_decision_branch"}:
+        decision_rules = _fixture_decision_rules(result, issue, message)
         return WorkflowRepairDirective(
             code=code,
             location=location,
@@ -200,6 +229,7 @@ def _directive_for_issue(
                 message,
                 "Use one of the branch names from workflow.yaml steps[].branches.",
                 "Place the value under decision: <step-id>: <branch-name> in the affected fixture.",
+                *decision_rules,
                 "Do not rely on expected_path; it is documentation only and does not drive simulation.",
             ),
         )
@@ -348,7 +378,84 @@ def _directive_for_issue(
             rules=(message,),
         )
 
+    if code == "missing_transition":
+        step_id = _issue_step_id(issue)
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add the smallest correct next transition for this non-terminal step.",
+            rules=(
+                message,
+                "Preserve existing step ids and step order.",
+                "Prefer connecting to the next existing step in the intended flow.",
+                "Do not redesign unrelated connector actions, permissions, fixtures, or rollback notes.",
+                f"Target step: {step_id}." if step_id else "Use the failed path exactly as reported.",
+            ),
+        )
+
+    if code == "missing_branch_transition":
+        step_id = _issue_step_id(issue)
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add explicit branches for this decision step.",
+            rules=(
+                message,
+                "Use existing downstream step ids.",
+                "Do not rename the decision step.",
+                f"Target decision step: {step_id}." if step_id else "Use the failed path exactly as reported.",
+            ),
+        )
+
+    if code == "terminal_unreachable":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Connect the entrypoint path to an existing terminal step.",
+            rules=(
+                message,
+                "Prefer adding the smallest missing next transition or branch.",
+                "Do not invent a new terminal if an existing terminal step can be reached.",
+            ),
+        )
+
+    if code == "cycle_without_terminal_escape":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Add an exit branch or transition from the cycle to an existing terminal path.",
+            rules=(
+                message,
+                "Keep the loop only if it is part of the user intent.",
+                "Do not remove approval gates or side-effect metadata.",
+            ),
+        )
+
+    if code in {"fixture_no_terminal", "fixture_branch_unmatched", "fixture_transition_budget_exceeded", "fixture_broker_blocked"}:
+        decision_rules = _fixture_decision_rules(result, issue, message)
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Fix the workflow transitions, fixture decisions, or dry-run support so this fixture reaches terminal.",
+            rules=(
+                message,
+                "For decision failures, add the smallest valid dry_run_fixtures decision mapping.",
+                *decision_rules,
+                "For transition failures, fix workflow.yaml next or branches.",
+                "For broker failures, preserve the connector action and make sure the dry-run path uses declared allowed outputs.",
+            ),
+        )
+
     return None
+
+
+def _repair_issues(result: WorkflowDraftValidationResult) -> tuple[object, ...]:
+    if not result.ok:
+        return result.validation.issues
+    if result.documents is None:
+        return ()
+    quality = check_workflow_quality_documents(result.documents)
+    return () if quality.ok else quality.issues
 
 
 def _schema_repair_directive(
@@ -515,6 +622,112 @@ def _issue_step_id(issue: object) -> str | None:
         return None
     step_id = path[1]
     return step_id if isinstance(step_id, str) and step_id else None
+
+
+def _fixture_decision_rules(result: WorkflowDraftValidationResult, issue: object, message: str) -> tuple[str, ...]:
+    step_id = _decision_step_id_from_message(message)
+    base_rules = [
+        "Use top-level `decision:` in the fixture, not `decisions:`.",
+        "Use branch keys as values, not target step ids.",
+    ]
+    if result.documents is None or step_id is None:
+        return tuple(base_rules)
+
+    branches = _workflow_decision_branches(result.documents.workflow, step_id)
+    if not branches:
+        return tuple(base_rules)
+
+    branch_text = ", ".join(f"`{key}` -> `{target}`" for key, target in branches.items())
+    first_key, first_target = next(iter(branches.items()))
+    base_rules.extend(
+        [
+            f"Decision mapping key must be exactly `{step_id}`.",
+            f"Decision step `{step_id}` branch map: {branch_text}.",
+            f"Use `{step_id}: {first_key}`, not `{step_id}: {first_target}`.",
+        ]
+    )
+    base_rules.extend(_current_fixture_decision_replacements(result, issue, step_id, branches))
+    return tuple(base_rules)
+
+
+def _decision_step_id_from_message(message: str) -> str | None:
+    match = NO_BRANCH_MATCH_RE.search(message)
+    if match is not None:
+        return match.group("step")
+    match = DECISION_STEP_RE.search(message)
+    if match is not None:
+        return match.group("step")
+    return None
+
+
+def _workflow_decision_branches(workflow: Mapping[str, Any], step_id: str) -> Mapping[str, str]:
+    step = _workflow_steps_by_id(workflow).get(step_id)
+    if step is None:
+        return {}
+    branches = step.get("branches")
+    if not isinstance(branches, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in branches.items() if isinstance(value, str)}
+
+
+def _current_fixture_decision_replacements(
+    result: WorkflowDraftValidationResult,
+    issue: object,
+    step_id: str,
+    branches: Mapping[str, str],
+) -> tuple[str, ...]:
+    if result.documents is None:
+        return ()
+
+    fixture_name = _issue_fixture_name(issue)
+    if fixture_name is None:
+        return ()
+    fixture = result.documents.dry_run_fixtures.get(fixture_name)
+    if fixture is None:
+        return ()
+
+    decisions = _fixture_decisions(fixture)
+    if not decisions:
+        first_key = next(iter(branches))
+        return (f"Add `decision: {{{step_id}: {first_key}}}` to {fixture_name}.",)
+
+    target_to_branch = {target: key for key, target in branches.items()}
+    rules: list[str] = []
+    for current_key, current_value in decisions.items():
+        replacement_value = current_value
+        if current_value in target_to_branch:
+            replacement_value = target_to_branch[current_value]
+        if current_key != step_id or replacement_value != current_value:
+            rules.append(f"Replace `{current_key}: {current_value}` with `{step_id}: {replacement_value}`.")
+    if not rules:
+        return ()
+    rules.append(f"Remove any fixture decision keys that are not `{step_id}`.")
+    return tuple(rules)
+
+
+def _issue_fixture_name(issue: object) -> str | None:
+    file = str(getattr(issue, "file", ""))
+    prefix = "dry_run_fixtures/"
+    if file.startswith(prefix):
+        return file.removeprefix(prefix)
+    location = str(getattr(issue, "location", ""))
+    if location.startswith(prefix):
+        return location.removeprefix(prefix).partition(":")[0]
+    return None
+
+
+def _fixture_decisions(fixture: Mapping[str, Any]) -> Mapping[str, str]:
+    for key in ("decision", "decisions"):
+        value = fixture.get(key)
+        if isinstance(value, Mapping):
+            return {str(decision_key): str(decision_value) for decision_key, decision_value in value.items()}
+    nested = fixture.get("fixture")
+    if isinstance(nested, Mapping):
+        for key in ("decision", "decisions"):
+            value = nested.get(key)
+            if isinstance(value, Mapping):
+                return {str(decision_key): str(decision_value) for decision_key, decision_value in value.items()}
+    return {}
 
 
 def _first_action_ref(message: str) -> str | None:

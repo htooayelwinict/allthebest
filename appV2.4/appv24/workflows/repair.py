@@ -21,9 +21,9 @@ from appv24.workflows.prompt_fragments import (
     render_secret_reference_fragment,
     render_side_effect_contract_fragment,
 )
+from appv24.workflows.quality_gate import WorkflowQualityResult, check_workflow_quality_documents
 from appv24.workflows.repair_directives import render_workflow_repair_directives
 from appv24.workflows.repair_report import WorkflowRepairAttemptSummary, WorkflowRepairReport
-from appv24.workflows.repair_scope import workflow_validation_fingerprint
 from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text
 
 MUTATING_SIDE_EFFECT_CLASSES = {"create", "update", "delete", "send", "publish", "provision"}
@@ -77,24 +77,26 @@ def validate_latest_workflow_draft(messages: list[object]) -> WorkflowDraftValid
 
 
 def compact_workflow_validation_issues(result: WorkflowDraftValidationResult, *, max_issues: int = 8) -> str:
-    if result.ok:
+    repair_issues = _repair_issues(result)
+    if not repair_issues:
         return "No validation issues."
 
     visible_count = max(0, max_issues)
-    lines = [_render_compact_issue(issue) for issue in result.validation.issues[:visible_count]]
-    remaining = len(result.validation.issues) - visible_count
+    lines = [_render_compact_issue(issue) for issue in repair_issues[:visible_count]]
+    remaining = len(repair_issues) - visible_count
     if remaining > 0:
         lines.append(f"- {remaining} more issue(s) were omitted from this repair prompt")
     return "\n".join(lines)
 
 
 def compact_workflow_failed_edit_scope(result: WorkflowDraftValidationResult, *, max_issues: int = 8) -> str:
-    if result.ok:
+    repair_issues = _repair_issues(result)
+    if not repair_issues:
         return "No failed edit scope."
 
     visible_count = max(0, max_issues)
-    lines = [_render_failed_edit_scope(issue) for issue in result.validation.issues[:visible_count]]
-    remaining = len(result.validation.issues) - visible_count
+    lines = [_render_failed_edit_scope(issue) for issue in repair_issues[:visible_count]]
+    remaining = len(repair_issues) - visible_count
     if remaining > 0:
         lines.append(f"- {remaining} more failed path(s) were omitted from this repair prompt")
     return "\n".join(lines)
@@ -117,7 +119,7 @@ def _render_failed_edit_scope(issue: object) -> str:
 
 
 def compact_workflow_repair_hints(result: WorkflowDraftValidationResult, *, max_hints: int = 8) -> str:
-    if result.ok or result.documents is None:
+    if result.validation.ok or result.documents is None:
         return ""
 
     steps = _workflow_steps_by_id(result.documents.workflow)
@@ -170,15 +172,18 @@ def build_workflow_repair_prompt(
     failed_scope = compact_workflow_failed_edit_scope(result, max_issues=max_issues)
     directives = render_workflow_repair_directives(result, max_directives=max_issues)
     micro_examples = render_repair_micro_examples(result)
+    failure_kind = "workflow validation"
+    if result.ok and _workflow_quality_result(result) is not None:
+        failure_kind = "workflow validation or quality gate"
     attempt_line = f"Repair attempt {attempt}."
     if max_attempts is not None:
         attempt_line = f"Repair attempt {attempt}/{max_attempts}."
     lines = [
-        "The latest workflow draft failed appv24 workflow validation.",
+        f"The latest workflow draft failed appv24 {failure_kind}.",
         "",
         attempt_line,
         "",
-        "This repair loop continues until the workflow validates. Treat validation issues like compiler errors.",
+        "This repair loop continues until the workflow validates and passes the quality gate. Treat validation and quality issues like compiler errors.",
         "",
         "Validation issues:",
         issues,
@@ -283,7 +288,30 @@ def _issue_step_id(issue: object) -> str | None:
 
 
 def _validation_fingerprint(result: WorkflowDraftValidationResult) -> tuple[str, ...]:
-    return workflow_validation_fingerprint(result.validation)
+    return tuple(
+        f"{issue.code} {issue.location}: {issue.message}"
+        for issue in _repair_issues(result)
+    )
+
+
+def _workflow_quality_result(result: WorkflowDraftValidationResult) -> WorkflowQualityResult | None:
+    if not result.ok or result.documents is None:
+        return None
+    quality = check_workflow_quality_documents(result.documents)
+    return None if quality.ok else quality
+
+
+def _workflow_draft_ready(result: WorkflowDraftValidationResult) -> bool:
+    return result.ok and _workflow_quality_result(result) is None
+
+
+def _repair_issues(result: WorkflowDraftValidationResult) -> tuple[object, ...]:
+    if not result.ok:
+        return result.validation.issues
+    quality = _workflow_quality_result(result)
+    if quality is None:
+        return ()
+    return quality.issues
 
 
 def repair_workflow_draft_messages(
@@ -316,7 +344,7 @@ def repair_workflow_draft_messages(
     if _repair_aborted(messages, should_abort):
         return _aborted_repair_result(validation, attempts=0)
 
-    if validation.ok:
+    if _workflow_draft_ready(validation):
         return WorkflowDraftRepairResult(
             validation=validation,
             attempts=0,
@@ -336,7 +364,7 @@ def repair_workflow_draft_messages(
             validation = deterministic_validation
             fingerprint = _validation_fingerprint(validation)
             validation_fingerprint_counts[fingerprint] = validation_fingerprint_counts.get(fingerprint, 0) + 1
-            if validation.ok:
+            if _workflow_draft_ready(validation):
                 repair_attempts.append(WorkflowRepairAttemptSummary(attempt=attempts, status="passed", issue_fingerprints=()))
                 return WorkflowDraftRepairResult(
                     validation=validation,
@@ -360,7 +388,7 @@ def repair_workflow_draft_messages(
                 validation=validation,
                 attempts=attempts,
                 repaired=False,
-                exhausted=not validation.ok,
+                exhausted=not _workflow_draft_ready(validation),
                 feedback_prompts=tuple(feedback_prompts),
                 stop_reason="timeout",
                 repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
@@ -401,13 +429,13 @@ def repair_workflow_draft_messages(
                 validation=validation,
                 attempts=attempts,
                 repaired=False,
-                exhausted=not validation.ok,
+                exhausted=not _workflow_draft_ready(validation),
                 feedback_prompts=tuple(feedback_prompts),
                 stop_reason="missing_repair_draft",
                 repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
             )
         validation = next_validation
-        if validation.ok:
+        if _workflow_draft_ready(validation):
             repair_attempts.append(WorkflowRepairAttemptSummary(attempt=attempts, status="passed", issue_fingerprints=()))
             return WorkflowDraftRepairResult(
                 validation=validation,
@@ -437,9 +465,9 @@ def repair_workflow_draft_messages(
         validation=validation,
         attempts=attempts,
         repaired=False,
-        exhausted=not validation.ok,
+        exhausted=not _workflow_draft_ready(validation),
         feedback_prompts=tuple(feedback_prompts),
-        stop_reason="max_attempts" if not validation.ok else None,
+        stop_reason="max_attempts" if not _workflow_draft_ready(validation) else None,
         repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
     )
 

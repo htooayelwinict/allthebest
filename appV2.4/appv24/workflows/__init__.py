@@ -43,6 +43,11 @@ from appv24.workflows.connector_registry import (
     inspect_workflow_connector_registry,
 )
 from appv24.workflows.execution import WorkflowRunEvent, WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
+from appv24.workflows.enablement import (
+    CapabilityPlanItem,
+    WorkflowEnablementV1Report,
+    build_workflow_enablement_report,
+)
 from appv24.workflows.examples import GoldenWorkflowExample, golden_workflow_examples
 from appv24.workflows.explain import (
     WorkflowRunExplanation,
@@ -72,8 +77,10 @@ from appv24.workflows.live_preflight import (
     credential_resolver_for_package_env,
     format_live_draft_preflight_report,
     format_live_production_preflight_report,
+    format_live_read_preflight_report,
     preflight_live_draft_workflow,
     preflight_live_production_workflow,
+    preflight_live_read_workflow,
 )
 from appv24.workflows.live_plan import WorkflowLivePlan, build_workflow_live_plan_from_path, format_workflow_live_plan
 from appv24.workflows.live_readiness import (
@@ -95,10 +102,18 @@ from appv24.workflows.live_transports import (
 from appv24.workflows.local_artifacts import LocalArtifactProviders
 from appv24.workflows.phase_runner import (
     WorkflowPhaseRunReport,
+    format_workflow_phase_run_report,
     run_workflow_approved_live_production,
     run_workflow_live_read_to_approval,
 )
 from appv24.workflows.policy import PolicyIssue, PolicyReport, PolicySeverity, evaluate_policy
+from appv24.workflows.quality_gate import (
+    WorkflowFixtureQualityReport,
+    WorkflowQualityIssue,
+    WorkflowQualityResult,
+    check_workflow_quality_documents,
+    check_workflow_quality_package,
+)
 from appv24.workflows.reports import WorkflowEnablementReport, build_enablement_report
 from appv24.workflows.run_preview import (
     WorkflowApprovalPreview,
@@ -148,6 +163,10 @@ __all__ = (
     "WorkflowConnectorRegistryReport",
     "WorkflowDeploymentIntent",
     "WorkflowEnablementReport",
+    "WorkflowEnablementV1Report",
+    "WorkflowFixtureQualityReport",
+    "WorkflowQualityIssue",
+    "WorkflowQualityResult",
     "WorkflowRunEvent",
     "WorkflowRunMode",
     "WorkflowApprovalPreview",
@@ -184,12 +203,14 @@ __all__ = (
     "WorkflowPackageError",
     "WorkflowStep",
     "WorkflowValidationResult",
+    "CapabilityPlanItem",
     "PolicyIssue",
     "PolicyReport",
     "PolicySeverity",
     "SimulationLedger",
     "StepTrace",
     "build_workflow_stage_prompt",
+    "build_workflow_enablement_report",
     "build_enablement_report",
     "build_run_preview",
     "build_run_preview_from_path",
@@ -206,6 +227,8 @@ __all__ = (
     "format_workflow_run_explanation",
     "format_live_draft_preflight_report",
     "format_live_production_preflight_report",
+    "format_live_read_preflight_report",
+    "format_workflow_phase_run_report",
     "format_workflow_live_env_template",
     "format_workflow_live_plan",
     "format_workflow_live_readiness_report",
@@ -220,8 +243,11 @@ __all__ = (
     "run_live_read_workflow",
     "preflight_live_draft_workflow",
     "preflight_live_production_workflow",
+    "preflight_live_read_workflow",
     "inspect_workflow_connector_registry",
     "inspect_workflow_live_readiness",
+    "check_workflow_quality_documents",
+    "check_workflow_quality_package",
     "compile_workflow_documents",
     "compile_workflow_package",
     "create_approval_request",

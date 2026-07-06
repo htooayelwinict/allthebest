@@ -36,8 +36,10 @@ from appv24.profiles import (
 from appv24.tui.interactive_mode import InteractiveMode
 from appv24.workflows.live_validation import (
     assistant_text_from_messages,
+    format_workflow_quality_report,
     format_workflow_validation_report,
     should_validate_workflow_drafts,
+    workflow_quality_result_for_draft,
 )
 from appv24.workflows.live_env_template import build_workflow_live_env_template, format_workflow_live_env_template
 from appv24.workflows.live_preflight import (
@@ -57,6 +59,7 @@ from appv24.workflows.live_transports import (
     build_live_production_transports_from_env,
     build_live_read_transports_from_env,
 )
+from appv24.workflows.quality_gate import check_workflow_quality_package
 from appv24.workflows.repair import (
     WorkflowDraftRepairConfig,
     WorkflowDraftRepairResult,
@@ -817,6 +820,9 @@ def _print_workflow_validation_if_needed(
             print(repair_stop_report)
 
     print(format_workflow_validation_report(result))
+    quality = workflow_quality_result_for_draft(result)
+    if quality is not None:
+        print(format_workflow_quality_report(quality))
 
 
 def _handle_workflow_activation_command(app: CodingApp, prompt: str) -> bool:
@@ -1759,6 +1765,11 @@ def _handle_workflow_save_command(app: CodingApp, profile_id: str, prompt: str) 
         print("Workflow draft save failed: last workflow draft is not valid")
         print(format_workflow_validation_report(result))
         return True
+    quality = workflow_quality_result_for_draft(result)
+    if quality is not None and not quality.ok:
+        print("Workflow draft save failed: last workflow draft does not pass quality gate")
+        print(format_workflow_quality_report(quality))
+        return True
 
     try:
         saved_path = save_workflow_draft_blocks(result.blocks, cwd=app.cwd, relative_path=relative_path)
@@ -1769,6 +1780,9 @@ def _handle_workflow_save_command(app: CodingApp, profile_id: str, prompt: str) 
     disk_validation = validate_workflow_package(saved_path)
     print(f"Workflow draft saved: {saved_path}")
     print(_format_workflow_package_validation_report(disk_validation))
+    if disk_validation.ok:
+        disk_quality = check_workflow_quality_package(saved_path)
+        print(format_workflow_quality_report(disk_quality, label="Workflow package quality gate"))
     return True
 
 

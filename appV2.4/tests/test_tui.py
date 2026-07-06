@@ -457,6 +457,33 @@ def _write_live_production_workflow_package(root):
     return package
 
 
+def _quality_failing_workflow_draft_text() -> str:
+    return (
+        _valid_workflow_draft_text()
+        .replace(
+            "    next: draft_issue\n  - id: draft_issue",
+            "    next: decide_path\n"
+            "  - id: decide_path\n"
+            "    type: decision\n"
+            "    branches:\n"
+            "      approved: draft_issue\n"
+            "      rejected: decide_path\n"
+            "  - id: draft_issue",
+            1,
+        )
+        .replace(
+            "input:\n  repo: owner/project",
+            "decision:\n  decide_path: rejected",
+            1,
+        )
+        .replace(
+            "approval:\n  human-review: rejected",
+            "decision:\n  decide_path: rejected",
+            1,
+        )
+    )
+
+
 def test_visible_width_strips_ansi() -> None:
     assert visible_width("\x1b[31mred\x1b[0m") == 3
     assert visible_width("plain") == 5
@@ -1413,6 +1440,35 @@ def test_interactive_mode_workflow_save_writes_last_valid_draft(tmp_path) -> Non
     assert "Workflow draft saved:" in rendered
     assert f"Workflow draft saved: {saved_path.resolve()}" in history
     assert "Workflow draft validation: passed" in rendered
+
+
+def test_interactive_mode_workflow_save_rejects_quality_gate_failure(tmp_path) -> None:
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    app.session.agent.state.messages.append(
+        AssistantMessage(
+            content=[TextContent(text=_quality_failing_workflow_draft_text())],
+            api="test",
+            provider="test",
+            model="test",
+            usage=empty_usage(),
+            stop_reason="stop",
+            timestamp=now_ms(),
+        )
+    )
+    inputs = iter(["/workflow-save saved-workflow", "/exit"])
+
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+    mode._render_workflow_validation_if_needed()
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert not (tmp_path / "saved-workflow").exists()
+    assert "Workflow draft quality gate: failed" in rendered
+    assert "fixture_transition_budget_exceeded" in rendered
+    assert "Workflow draft save failed: last workflow draft does not pass quality gate" in rendered
 
 
 def test_interactive_mode_workflow_save_uses_repaired_valid_draft(tmp_path) -> None:

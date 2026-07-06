@@ -337,6 +337,33 @@ def _invalid_workflow_draft_text() -> str:
     return _valid_workflow_draft_text().replace("side_effect: true", "side_effect: send")
 
 
+def _quality_failing_workflow_draft_text() -> str:
+    return (
+        _valid_workflow_draft_text()
+        .replace(
+            "    next: draft_issue\n  - id: draft_issue",
+            "    next: decide_path\n"
+            "  - id: decide_path\n"
+            "    type: decision\n"
+            "    branches:\n"
+            "      approved: draft_issue\n"
+            "      rejected: decide_path\n"
+            "  - id: draft_issue",
+            1,
+        )
+        .replace(
+            "input:\n  repo: owner/project",
+            "decision:\n  decide_path: rejected",
+            1,
+        )
+        .replace(
+            "approval:\n  human-review: rejected",
+            "decision:\n  decide_path: rejected",
+            1,
+        )
+    )
+
+
 @pytest.fixture(autouse=True)
 def _disable_real_startup_live_catalog_fetch(monkeypatch) -> None:
     monkeypatch.setenv("APPV24_MODEL_CATALOG_STARTUP_FETCH", "false")
@@ -2378,6 +2405,39 @@ def test_cli_plain_workflow_save_writes_last_valid_draft(monkeypatch, tmp_path, 
     assert "Workflow draft validation: passed" in captured.out
     assert "Workflow draft save failed:" not in captured.out
     assert app.cwd == tmp_path.resolve()
+
+
+def test_cli_plain_workflow_save_rejects_quality_gate_failure(monkeypatch, tmp_path, capsys) -> None:
+    prompts = iter(["/workflow-save saved-workflow", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = [_assistant_message(_quality_failing_workflow_draft_text())]
+
+        def run_turn(self, prompt):
+            raise AssertionError("save command should not call the model")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow draft save failed: last workflow draft does not pass quality gate" in captured.out
+    assert "fixture_transition_budget_exceeded" in captured.out
+    assert not (tmp_path / "saved-workflow").exists()
 
 
 def test_cli_plain_workflow_explain_summarizes_saved_package_without_model(monkeypatch, tmp_path, capsys) -> None:
