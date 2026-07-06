@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -18,7 +18,7 @@ from appv24.workflows.runner import run_workflow
 from appv24.workflows.validator import validate_workflow_documents
 
 
-ALLOWED_TRIGGER_TYPES = frozenset({"manual", "schedule", "webhook"})
+ALLOWED_TRIGGER_TYPES = frozenset({"manual", "schedule", "poll", "webhook"})
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,13 @@ class WorkflowActivationRecord:
     fixture_name: str
     mode: WorkflowRunMode
     approve_all: bool
+    trigger_config: Mapping[str, Any] = field(default_factory=dict)
+    cursor: str | None = None
+    max_concurrency: int = 1
+    cooldown_seconds: int = 0
+    last_started_at: str | None = None
+    last_finished_at: str | None = None
+    consecutive_failures: int = 0
     enabled: bool = True
     last_run_id: str | None = None
     last_status: str | None = None
@@ -52,6 +59,13 @@ class WorkflowActivationRecord:
             fixture_name=str(value["fixture_name"]),
             mode=WorkflowRunMode(str(value["mode"])),
             approve_all=bool(value.get("approve_all", False)),
+            trigger_config=value["trigger_config"] if isinstance(value.get("trigger_config"), Mapping) else {},
+            cursor=str(value["cursor"]) if value.get("cursor") else None,
+            max_concurrency=max(1, int(value.get("max_concurrency", 1))),
+            cooldown_seconds=max(0, int(value.get("cooldown_seconds", 0))),
+            last_started_at=str(value["last_started_at"]) if value.get("last_started_at") else None,
+            last_finished_at=str(value["last_finished_at"]) if value.get("last_finished_at") else None,
+            consecutive_failures=max(0, int(value.get("consecutive_failures", 0))),
             enabled=bool(value.get("enabled", True)),
             last_run_id=str(value["last_run_id"]) if value.get("last_run_id") else None,
             last_status=str(value["last_status"]) if value.get("last_status") else None,
@@ -70,6 +84,10 @@ class WorkflowActivationStore:
         fixture_name: str = "happy_path.yaml",
         mode: WorkflowRunMode = WorkflowRunMode.LOCAL,
         approve_all: bool = False,
+        trigger_config: Mapping[str, Any] | None = None,
+        cursor: str | None = None,
+        max_concurrency: int = 1,
+        cooldown_seconds: int = 0,
         enabled: bool = True,
     ) -> WorkflowActivationRecord:
         trigger_type = str(trigger_type).strip()
@@ -97,6 +115,10 @@ class WorkflowActivationStore:
             fixture_name=fixture_name,
             mode=mode,
             approve_all=approve_all,
+            trigger_config=dict(trigger_config or {}),
+            cursor=cursor,
+            max_concurrency=max(1, int(max_concurrency)),
+            cooldown_seconds=max(0, int(cooldown_seconds)),
             enabled=enabled,
         )
         self._write_activation(activation)
@@ -126,6 +148,35 @@ class WorkflowActivationStore:
         self._write_activation(updated)
         return updated
 
+    def mark_run_started(self, activation_id: str, *, started_at: str) -> WorkflowActivationRecord:
+        activation = self.get_activation(activation_id)
+        updated = replace(activation, last_started_at=started_at)
+        self._write_activation(updated)
+        return updated
+
+    def mark_run_finished(
+        self,
+        activation_id: str,
+        *,
+        run_id: str,
+        status: str,
+        finished_at: str,
+        cursor: str | None = None,
+    ) -> WorkflowActivationRecord:
+        activation = self.get_activation(activation_id)
+        consecutive_failures = 0 if status == "passed" else activation.consecutive_failures + 1
+        updated = replace(
+            activation,
+            cursor=cursor if cursor is not None else activation.cursor,
+            last_run_id=run_id,
+            last_status=status,
+            last_finished_at=finished_at,
+            consecutive_failures=consecutive_failures,
+        )
+        self._write_activation(updated)
+        self._append_history(updated.activation_id, run_id)
+        return updated
+
     def run_activation(self, activation_id: str) -> WorkflowRunReport:
         activation = self.get_activation(activation_id)
         if not activation.enabled:
@@ -149,7 +200,12 @@ class WorkflowActivationStore:
                 activation_trigger_type=activation.trigger_type,
             )
         )
-        updated = replace(activation, last_run_id=report.run_id, last_status=report.status)
+        updated = replace(
+            activation,
+            last_run_id=report.run_id,
+            last_status=report.status,
+            consecutive_failures=0 if report.status == "passed" else activation.consecutive_failures + 1,
+        )
         self._write_activation(updated)
         self._append_history(updated.activation_id, report.run_id)
         return report
@@ -179,6 +235,13 @@ class WorkflowActivationStore:
             "trigger_type": activation.trigger_type,
             "fixture_name": activation.fixture_name,
             "enabled": activation.enabled,
+            "trigger_config": dict(activation.trigger_config),
+            "cursor": activation.cursor,
+            "max_concurrency": activation.max_concurrency,
+            "cooldown_seconds": activation.cooldown_seconds,
+            "last_started_at": activation.last_started_at,
+            "last_finished_at": activation.last_finished_at,
+            "consecutive_failures": activation.consecutive_failures,
             "last_run_id": activation.last_run_id,
             "last_status": activation.last_status,
             "runs": len(self.history(activation.activation_id)),
