@@ -185,6 +185,8 @@ def _approval_request_from_mapping(raw: Any) -> ApprovalRequest:
             allowed_outputs=_string_tuple(raw["allowed_outputs"]),
             idempotency_key_fields=_string_tuple(raw["idempotency_key_fields"]),
             idempotency_key=None if raw.get("idempotency_key") is None else str(raw["idempotency_key"]),
+            payload_hash=None if raw.get("payload_hash") is None else str(raw["payload_hash"]),
+            payload_preview_path=None if raw.get("payload_preview_path") is None else str(raw["payload_preview_path"]),
             status=str(raw.get("status", "pending")),
         )
     except KeyError as error:
@@ -210,4 +212,6 @@ def _approval_decision_payload(request: ApprovalRequest, decision: ApprovalDecis
         "package_fingerprint": decision.package_fingerprint,
         "decided_by": decision.decided_by,
         "idempotency_key": request.idempotency_key,
+        "payload_hash": request.payload_hash,
+        "payload_preview_path": request.payload_preview_path,
     }

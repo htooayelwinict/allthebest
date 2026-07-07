@@ -18,6 +18,7 @@ from appv24.workflows.validator import validate_workflow_documents
 BUILTIN_LIVE_READ_TRANSPORTS = frozenset(
     {
         "github.list_dependabot_alerts",
+        "brave.search",
         "source.fetch_document",
         "source.fetch_items",
     }

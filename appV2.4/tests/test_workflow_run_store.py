@@ -179,7 +179,36 @@ def test_run_store_records_approval_decision_by_request_id(tmp_path: Path) -> No
         "package_fingerprint": "sha256:abc",
         "decided_by": "Lewis",
         "idempotency_key": "idemp:abc",
+        "payload_hash": None,
+        "payload_preview_path": None,
     }
+    assert store.read_approval_decisions(run_id) == (record,)
+
+
+def test_run_store_records_approval_payload_binding_in_decision(tmp_path: Path) -> None:
+    store = WorkflowRunStore(tmp_path)
+    run_id = store.create_run("telegram_support_ticket", "sha256:abc")
+    request = ApprovalRequest(
+        approval_request_id="approval-1",
+        run_id=run_id,
+        package_fingerprint="sha256:abc",
+        step_id="notify_admin",
+        connector_action="telegram.send_message",
+        approval_id="admin_approval",
+        allowed_outputs=("message_id",),
+        idempotency_key_fields=("ticket_id",),
+        idempotency_key="idemp:abc",
+        payload_hash="payload:abc",
+        payload_preview_path="artifacts/approvals/approval-1.json",
+        status="pending",
+    )
+    decision = ApprovalDecision(approved=True, package_fingerprint="sha256:abc", decided_by="Lewis")
+    store.write_approvals(run_id, [], approval_requests=(request,))
+
+    record = store.record_approval_decision(run_id, "approval-1", decision)
+
+    assert record["payload_hash"] == "payload:abc"
+    assert record["payload_preview_path"] == "artifacts/approvals/approval-1.json"
     assert store.read_approval_decisions(run_id) == (record,)
 
 
@@ -242,6 +271,8 @@ def test_run_store_appends_and_reads_approval_decisions(tmp_path: Path) -> None:
             "package_fingerprint": "sha256:abc",
             "decided_by": "Lewis",
             "idempotency_key": "idemp:abc",
+            "payload_hash": None,
+            "payload_preview_path": None,
         },
     )
 

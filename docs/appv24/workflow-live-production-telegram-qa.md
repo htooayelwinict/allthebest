@@ -19,6 +19,7 @@ Set these only in the operator shell that will run the live-production test:
 ```bash
 export APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true
 export APPV24_TELEGRAM_BOT_TOKEN='<telegram-bot-token>'
+export APPV24_TELEGRAM_ALLOWED_CHAT_IDS='<admin-or-test-chat-id>'
 export APPV24_TELEGRAM_CREDENTIAL_REF='telegram-bot-prod'
 export APPV24_TELEGRAM_SCOPES='telegram:send'
 ```

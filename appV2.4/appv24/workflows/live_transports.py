@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping
 from email.message import EmailMessage
+import re
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
 
@@ -24,6 +25,8 @@ GMAIL_REFRESH_TOKEN_ENV = "APPV24_GMAIL_REFRESH_TOKEN"
 GMAIL_CLIENT_ID_ENV = "APPV24_GMAIL_CLIENT_ID"
 GMAIL_CLIENT_SECRET_ENV = "APPV24_GMAIL_CLIENT_SECRET"
 TELEGRAM_BOT_TOKEN_ENV = "APPV24_TELEGRAM_BOT_TOKEN"
+BRAVE_SEARCH_API_KEY_ENV = "APPV24_BRAVE_SEARCH_API_KEY"
+BRAVE_SEARCH_BASE_URL_ENV = "APPV24_BRAVE_SEARCH_BASE_URL"
 SOURCE_BASE_URL_ENV = "APPV24_SOURCE_BASE_URL"
 GITHUB_API_BASE_URL_ENV = "APPV24_GITHUB_API_BASE_URL"
 GMAIL_API_BASE_URL_ENV = "APPV24_GMAIL_API_BASE_URL"
@@ -34,11 +37,14 @@ HTTP_FETCH_MAX_RESPONSE_BYTES_ENV = "APPV24_HTTP_FETCH_MAX_RESPONSE_BYTES"
 HTTP_FETCH_TIMEOUT_SECONDS_ENV = "APPV24_HTTP_FETCH_TIMEOUT_SECONDS"
 HTTP_FETCH_FOLLOW_REDIRECTS_ENV = "APPV24_HTTP_FETCH_FOLLOW_REDIRECTS"
 TELEGRAM_ALLOWED_CHAT_IDS_ENV = "APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+TELEGRAM_MAX_MESSAGE_CHARS = 4096
 GITHUB_API_VERSION = "2026-03-10"
 DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com"
 DEFAULT_GMAIL_API_BASE_URL = "https://gmail.googleapis.com/gmail/v1"
 DEFAULT_GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+DEFAULT_BRAVE_SEARCH_BASE_URL = "https://api.search.brave.com/res/v1/web/search"
+STEP_OUTPUT_TEMPLATE_RE = re.compile(r"^\s*\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_.-]+)\s*\}\}\s*$")
 
 
 class _HttpClient(Protocol):
@@ -74,6 +80,14 @@ def build_live_read_transports_from_env(
         base_url = env.get(GITHUB_API_BASE_URL_ENV, DEFAULT_GITHUB_API_BASE_URL).strip() or DEFAULT_GITHUB_API_BASE_URL
         transports["github.list_dependabot_alerts"] = GitHubDependabotAlertsTransport(
             token=github_token,
+            base_url=base_url,
+            client_factory=client_factory,
+        )
+    brave_key = env.get(BRAVE_SEARCH_API_KEY_ENV, "").strip()
+    if brave_key:
+        base_url = env.get(BRAVE_SEARCH_BASE_URL_ENV, DEFAULT_BRAVE_SEARCH_BASE_URL).strip() or DEFAULT_BRAVE_SEARCH_BASE_URL
+        transports["brave.search"] = BraveSearchTransport(
+            api_key=brave_key,
             base_url=base_url,
             client_factory=client_factory,
         )
@@ -150,8 +164,10 @@ def build_live_production_transports_from_env(
     telegram_token = env.get(TELEGRAM_BOT_TOKEN_ENV, "").strip()
     if not telegram_token:
         return {}
-    base_url = env.get(TELEGRAM_API_BASE_URL_ENV, DEFAULT_TELEGRAM_API_BASE_URL).strip() or DEFAULT_TELEGRAM_API_BASE_URL
     allowed_chat_ids = _split_csv(env.get(TELEGRAM_ALLOWED_CHAT_IDS_ENV, ""))
+    if not allowed_chat_ids:
+        return {}
+    base_url = env.get(TELEGRAM_API_BASE_URL_ENV, DEFAULT_TELEGRAM_API_BASE_URL).strip() or DEFAULT_TELEGRAM_API_BASE_URL
     return {
         "telegram.send_message": TelegramSendMessageTransport(
             token=telegram_token,
@@ -212,6 +228,52 @@ class GitHubDependabotAlertsTransport:
             provider_id="github",
             outputs={"alerts": alerts, "count": len(alerts)},
         )
+
+
+class BraveSearchTransport:
+    """Read-only Brave Search transport for public web/news discovery."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = DEFAULT_BRAVE_SEARCH_BASE_URL,
+        client_factory: Callable[[], _HttpClient] | None = None,
+    ) -> None:
+        self._api_key = api_key
+        self._base_url = base_url
+        self._client_factory = client_factory or (lambda: httpx.Client(timeout=15.0, trust_env=False))
+
+    def invoke(self, request: BrokerRequest) -> BrokerResult:
+        query = _brave_query_for_request(request)
+        if query is None:
+            return _blocked("brave.search requires query", provider_id="brave")
+        client = self._client_factory()
+        try:
+            response = client.get(
+                self._base_url,
+                headers={
+                    "Accept": "application/json",
+                    "X-Subscription-Token": self._api_key,
+                },
+                params=_brave_query_params(request, query),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as error:
+            status_code = error.response.status_code if error.response is not None else "unknown"
+            return _blocked(f"brave.search returned HTTP {status_code}", provider_id="brave")
+        except httpx.RequestError as error:
+            return _blocked(f"brave.search request failed: {type(error).__name__}", provider_id="brave")
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+        parsed = _brave_search_payload(payload, query=query)
+        if parsed is None:
+            return _blocked("brave.search returned malformed response", provider_id="brave")
+        return BrokerResult(status="live-read", provider_id="brave", outputs=parsed)
 
 
 class GmailTokenError(Exception):
@@ -505,8 +567,13 @@ class TelegramSendMessageTransport:
         fields = _telegram_message_fields_for_request(request)
         if fields is None:
             return _blocked("telegram.send_message requires chat_id and text", provider_id="telegram")
+        if not self._allowed_chat_ids:
+            return _blocked(f"telegram.send_message requires {TELEGRAM_ALLOWED_CHAT_IDS_ENV}", provider_id="telegram")
+        text = str(fields["text"])
+        if len(text) > TELEGRAM_MAX_MESSAGE_CHARS:
+            return _blocked(f"telegram.send_message text exceeds {TELEGRAM_MAX_MESSAGE_CHARS} characters", provider_id="telegram")
         chat_id = str(fields["chat_id"])
-        if self._allowed_chat_ids and chat_id not in self._allowed_chat_ids:
+        if chat_id not in self._allowed_chat_ids:
             return _blocked(f"telegram.send_message chat_id is not allowlisted: {chat_id}", provider_id="telegram")
 
         client = self._client_factory()
@@ -599,6 +666,40 @@ def _query_params(request: BrokerRequest) -> dict[str, str]:
     return params
 
 
+def _brave_query_for_request(request: BrokerRequest) -> str | None:
+    with_map = _mapping(request.input_ref.get("with"))
+    fixture_input = _mapping(request.fixture.get("input"))
+    query = (
+        _string(_resolve_input_ref(with_map.get("query"), fixture_input))
+        or _string(_resolve_input_ref(with_map.get("q"), fixture_input))
+        or _string(fixture_input.get("query"))
+        or _string(fixture_input.get("q"))
+    )
+    if query is None:
+        return None
+    words = query.split()
+    if len(words) > 50:
+        query = " ".join(words[:50])
+    return query[:400].strip() or None
+
+
+def _brave_query_params(request: BrokerRequest, query: str) -> dict[str, str]:
+    with_map = _mapping(request.input_ref.get("with"))
+    fixture_input = _mapping(request.fixture.get("input"))
+    params = {"q": query}
+    count = _small_count(_resolve_input_ref(with_map.get("count"), fixture_input), maximum=20)
+    if count is not None:
+        params["count"] = str(count)
+    for key in ("freshness", "country", "search_lang", "ui_lang"):
+        value = _string(_resolve_input_ref(with_map.get(key), fixture_input))
+        if value:
+            params[key] = value
+    extra_snippets = _resolve_input_ref(with_map.get("extra_snippets"), fixture_input)
+    if isinstance(extra_snippets, bool):
+        params["extra_snippets"] = "true" if extra_snippets else "false"
+    return dict(sorted(params.items()))
+
+
 def _per_page(value: object) -> int | None:
     if isinstance(value, bool):
         return None
@@ -609,6 +710,18 @@ def _per_page(value: object) -> int | None:
     else:
         return None
     return min(max(parsed, 1), 100)
+
+
+def _small_count(value: object, *, maximum: int) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        return None
+    return min(max(parsed, 1), maximum)
 
 
 def _slim_alert(alert: Mapping[str, Any]) -> dict[str, Any]:
@@ -782,6 +895,26 @@ def _source_items_payload(payload: Any) -> tuple[list[dict[str, Any]], int] | No
     return items, source_count
 
 
+def _brave_search_payload(payload: Any, *, query: str) -> dict[str, Any] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    web = _mapping(payload.get("web"))
+    raw_items = web.get("results")
+    if not isinstance(raw_items, list):
+        return None
+    items = [_slim_brave_result(item) for item in raw_items if isinstance(item, Mapping)]
+    items = [item for item in items if item]
+    return {
+        "items": items,
+        "source_count": len(items),
+        "query": query,
+    }
+
+
+def _slim_brave_result(item: Mapping[str, Any]) -> dict[str, Any]:
+    return _slim_mapping(item, ("title", "url", "description", "age", "published_at", "source"))
+
+
 def _slim_source_item(item: Mapping[str, Any]) -> dict[str, Any]:
     return _slim_mapping(
         item,
@@ -868,16 +1001,16 @@ def _gmail_create_draft_payload(fields: Mapping[str, str]) -> dict[str, Any]:
 def _telegram_message_fields_for_request(request: BrokerRequest) -> dict[str, Any] | None:
     with_map = _mapping(request.input_ref.get("with"))
     fixture_input = _mapping(request.fixture.get("input"))
-    chat_id = _first_string(with_map, fixture_input, ("chat_id", "admin_chat_id", "recipient"))
-    text = _first_string(with_map, fixture_input, ("text", "message_text", "body"))
+    chat_id = _first_string(with_map, fixture_input, ("chat_id", "admin_chat_id", "recipient"), fixture=request.fixture)
+    text = _first_string(with_map, fixture_input, ("text", "message_text", "body"), fixture=request.fixture)
     if chat_id is None or text is None:
         return None
     fields: dict[str, Any] = {"chat_id": chat_id, "text": text}
-    parse_mode = _first_string(with_map, fixture_input, ("parse_mode",))
+    parse_mode = _first_string(with_map, fixture_input, ("parse_mode",), fixture=request.fixture)
     if parse_mode is not None:
         fields["parse_mode"] = parse_mode
     for key in ("disable_notification", "protect_content"):
-        value = _first_bool(with_map, fixture_input, key)
+        value = _first_bool(with_map, fixture_input, key, fixture=request.fixture)
         if value is not None:
             fields[key] = value
     return fields
@@ -894,29 +1027,69 @@ def _telegram_send_message_payload(fields: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _first_string(primary: Mapping[str, Any], fallback: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:
+def _first_string(
+    primary: Mapping[str, Any],
+    fallback: Mapping[str, Any],
+    keys: tuple[str, ...],
+    *,
+    fixture: Mapping[str, Any] | None = None,
+) -> str | None:
     for source, fixture_input in ((primary, fallback), (fallback, fallback)):
         for key in keys:
-            value = _string(_resolve_input_ref(source.get(key), fixture_input))
+            value = _string(_resolve_input_ref(source.get(key), fixture_input, fixture=fixture))
             if value is not None:
                 return value
     return None
 
 
-def _first_bool(primary: Mapping[str, Any], fallback: Mapping[str, Any], key: str) -> bool | None:
+def _first_bool(
+    primary: Mapping[str, Any],
+    fallback: Mapping[str, Any],
+    key: str,
+    *,
+    fixture: Mapping[str, Any] | None = None,
+) -> bool | None:
     for source, fixture_input in ((primary, fallback), (fallback, fallback)):
-        value = _resolve_input_ref(source.get(key), fixture_input)
+        value = _resolve_input_ref(source.get(key), fixture_input, fixture=fixture)
         if isinstance(value, bool):
             return value
     return None
 
 
-def _resolve_input_ref(value: object, fixture_input: Mapping[str, Any]) -> object:
+def _resolve_input_ref(
+    value: object,
+    fixture_input: Mapping[str, Any],
+    *,
+    fixture: Mapping[str, Any] | None = None,
+) -> object:
     if isinstance(value, Mapping):
         input_ref = value.get("inputRef")
         if isinstance(input_ref, str):
             return fixture_input.get(input_ref)
+    if isinstance(value, str) and fixture is not None:
+        resolved = _resolve_step_output_template(value, fixture)
+        if resolved is not None:
+            return resolved
     return value
+
+
+def _resolve_step_output_template(value: str, fixture: Mapping[str, Any]) -> object | None:
+    match = STEP_OUTPUT_TEMPLATE_RE.match(value)
+    if match is None:
+        return None
+    step_id, output_path = match.groups()
+    steps = fixture.get("steps")
+    if not isinstance(steps, Mapping):
+        return None
+    step_entry = steps.get(step_id)
+    if not isinstance(step_entry, Mapping):
+        return None
+    current: object = step_entry.get("outputs")
+    for part in output_path.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(part)
+    return current
 
 
 def _mapping(value: object) -> Mapping[str, Any]:

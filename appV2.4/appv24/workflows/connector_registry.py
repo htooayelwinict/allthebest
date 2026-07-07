@@ -213,6 +213,7 @@ def _transport_env_hints(action_ref: str, live_modes: tuple[str, ...]) -> tuple[
 
 def _transport_env_hint(mode: str, action_ref: str) -> str | None:
     hints = {
+        ("live-read", "brave.search"): "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_BRAVE_SEARCH_API_KEY",
         ("live-read", "github.list_dependabot_alerts"): "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_GITHUB_TOKEN",
         ("live-read", "source.fetch_document"): "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_SOURCE_BASE_URL",
         ("live-read", "source.fetch_items"): "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_SOURCE_BASE_URL",
@@ -223,7 +224,10 @@ def _transport_env_hint(mode: str, action_ref: str) -> str | None:
             "APPV24_WORKFLOW_LIVE_DRAFT_ENABLED=true plus APPV24_GMAIL_ACCESS_TOKEN or "
             "APPV24_GMAIL_REFRESH_TOKEN, APPV24_GMAIL_CLIENT_ID, APPV24_GMAIL_CLIENT_SECRET"
         ),
-        ("live-production", "telegram.send_message"): "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, APPV24_TELEGRAM_BOT_TOKEN",
+        ("live-production", "telegram.send_message"): (
+            "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
+            "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+        ),
     }
     return hints.get((mode, action_ref))
 

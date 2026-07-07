@@ -23,6 +23,7 @@ def test_build_workflow_bundle_exports_runtime_artifacts_without_secret_values(t
         env={
             "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED": "true",
             "APPV24_TELEGRAM_BOT_TOKEN": "secret-token",
+            "APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat",
             "APPV24_TELEGRAM_CREDENTIAL_REF": "telegram-prod",
             "APPV24_TELEGRAM_SCOPES": "telegram:send",
         },
@@ -35,6 +36,7 @@ def test_build_workflow_bundle_exports_runtime_artifacts_without_secret_values(t
         "README.md",
         "bundle.manifest.json",
         "connectors.manifest.json",
+        "deployment.intent.json",
         "live.env.example",
         "policy.json",
         "runtime.json",
@@ -77,13 +79,22 @@ def test_build_workflow_bundle_exports_runtime_artifacts_without_secret_values(t
         "APPV24_TELEGRAM_CREDENTIAL_REF, APPV24_TELEGRAM_SCOPES=telegram:send"
     ]
     assert secrets["required_transport_env"] == [
-        "live-production: APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, APPV24_TELEGRAM_BOT_TOKEN"
+        "live-production: APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
+        "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
     ]
 
     runtime = json.loads(bundle.files["runtime.json"])
     assert runtime["runtime_mode"] == "export-only"
     assert runtime["execution_status"] == "not-started"
     assert runtime["side_effects"] == "none"
+
+    deployment_intent = json.loads(bundle.files["deployment.intent.json"])
+    assert deployment_intent["version"] == "appv24.deployment_intent/v1"
+    assert deployment_intent["workflow_name"] == "telegram-production-alert"
+    assert deployment_intent["package_fingerprint"] == bundle.package_fingerprint
+    assert deployment_intent["runtime_modes"] == ["local", "live-production"]
+    assert deployment_intent["local_runtime_commands"] == []
+    assert deployment_intent["connector_targets"]["telegram.send_message"] == ["APPV24_TELEGRAM_ALLOWED_CHAT_IDS"]
 
     assert "secret-token" not in "\n".join(bundle.files.values())
     assert not (package / ".workflow-runs").exists()
@@ -124,6 +135,33 @@ def test_workflow_bundle_exports_safe_live_env_example(tmp_path: Path) -> None:
     assert "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true" in env_example
     assert "APPV24_TELEGRAM_BOT_TOKEN=<telegram-bot-token>" in env_example
     assert "secret-token" not in env_example
+
+
+def test_workflow_bundle_exports_local_service_templates_for_webhook_runtime(tmp_path: Path) -> None:
+    package = _write_golden_package(tmp_path, "telegram_support_ticket")
+
+    bundle = build_workflow_bundle(package, env={})
+
+    assert "services.manifest.json" in bundle.files
+    assert "services/run-webhook.sh" in bundle.files
+    assert "services.systemd/appv24-workflow-telegram-support-ticket-webhook.service" in bundle.files
+    assert "services.launchd/com.appv24.workflow.telegram-support-ticket.webhook.plist" in bundle.files
+    manifest = json.loads(bundle.files["services.manifest.json"])
+    assert manifest["services"][0]["kind"] == "webhook"
+    assert manifest["services"][0]["command"] == "/workflow-webhook-serve 1000000 127.0.0.1 8765"
+    assert "APPV24_WORKFLOW_WEBHOOK_SECRET" in bundle.files["services/run-webhook.sh"]
+
+
+def test_write_workflow_bundle_persists_nested_local_service_templates(tmp_path: Path) -> None:
+    package = _write_golden_package(tmp_path, "telegram_support_ticket")
+    output_dir = tmp_path / "bundle"
+
+    bundle = write_workflow_bundle(package, output_dir=output_dir, env={})
+
+    assert bundle.output_dir == output_dir.resolve()
+    assert (output_dir / "services" / "run-webhook.sh").is_file()
+    assert (output_dir / "services.systemd" / "appv24-workflow-telegram-support-ticket-webhook.service").is_file()
+    assert (output_dir / "services.launchd" / "com.appv24.workflow.telegram-support-ticket.webhook.plist").is_file()
 
 
 def test_workflow_bundle_exports_live_path_next_commands(tmp_path: Path) -> None:
@@ -292,4 +330,22 @@ def _write_telegram_package(root: Path) -> Path:
         encoding="utf-8",
     )
     (package / "rollback.md").write_text("# Rollback\n\nSend a corrective message manually.\n", encoding="utf-8")
+    return package
+
+
+def _write_golden_package(root: Path, example_name: str) -> Path:
+    from appv24.workflows.examples import golden_workflow_examples
+
+    example = golden_workflow_examples()[example_name]
+    package = root / example_name
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(yaml.safe_dump(dict(example.documents.workflow), sort_keys=False), encoding="utf-8")
+    (package / "connectors.yaml").write_text(yaml.safe_dump(dict(example.documents.connectors), sort_keys=False), encoding="utf-8")
+    (package / "permissions.yaml").write_text(yaml.safe_dump(dict(example.documents.permissions), sort_keys=False), encoding="utf-8")
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    for name, fixture in example.documents.dry_run_fixtures.items():
+        (fixtures / name).write_text(yaml.safe_dump(dict(fixture), sort_keys=False), encoding="utf-8")
+    if example.documents.rollback_text is not None:
+        (package / "rollback.md").write_text(example.documents.rollback_text, encoding="utf-8")
     return package

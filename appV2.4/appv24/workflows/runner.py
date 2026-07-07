@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 from appv24.workflows.approval_gate import ApprovalDecision, ApprovalRequest, create_approval_request, resume_approval
@@ -14,7 +16,7 @@ from appv24.workflows.connector_sandbox import ConnectorSandboxProviders
 from appv24.workflows.execution import WorkflowRunEvent, WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import require_fixture
-from appv24.workflows.idempotency import build_idempotency_key
+from appv24.workflows.idempotency import build_idempotency_key, build_idempotency_payload_hash
 from appv24.workflows.ir import ActionCapability, StepKind, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import StepTrace
 from appv24.workflows.loader import load_package_documents
@@ -26,6 +28,7 @@ from appv24.workflows.validator import validate_workflow_documents
 
 DEFAULT_FIXTURE_NAME = "happy_path.yaml"
 MAX_TRANSITIONS = 200
+SECRET_VALUE_RE = re.compile(r"(?<![A-Za-z0-9_])(sk-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+)")
 
 
 def run_workflow(
@@ -120,6 +123,7 @@ def run_workflow(
         fixture,
         broker=local_broker,
         run_id=run_id,
+        run_dir=store.run_dir(run_id),
         package_fingerprint=package_fingerprint,
         approve_all=request.approve_all,
         append_event=append_event,
@@ -255,6 +259,7 @@ def run_workflow_from_handoff(
         _fixture_with_handoff(fixture, handoff),
         broker=local_broker,
         run_id=run_id,
+        run_dir=store.run_dir(run_id),
         package_fingerprint=package_fingerprint,
         approve_all=request.approve_all,
         append_event=append_event,
@@ -314,6 +319,7 @@ def build_workflow_run_metadata(
         "connector_allowlist": list(request.connector_allowlist),
         "activation_id": request.activation_id,
         "activation_trigger_type": request.activation_trigger_type,
+        "operator_env_names": sorted(str(key) for key in request.operator_env),
     }
 
 
@@ -353,6 +359,7 @@ def _execute_local(
     *,
     broker: LocalWorkflowBroker,
     run_id: str,
+    run_dir: Path,
     package_fingerprint: str,
     approve_all: bool,
     append_event: Callable[..., None],
@@ -421,6 +428,16 @@ def _execute_local(
                 allowed_outputs=action.allowed_outputs if action is not None else (),
                 idempotency_key_fields=action.idempotency_key_fields if action is not None else (),
                 idempotency_key=idempotency_key,
+                payload_hash=build_idempotency_payload_hash(input_ref=step.raw, fixture=fixture),
+            )
+            approval_request = replace(
+                approval_request,
+                payload_preview_path=_write_approval_payload_preview(
+                    run_dir,
+                    approval_request,
+                    step,
+                    fixture,
+                ),
             )
             approvals.append(
                 WorkflowApprovalPreview(
@@ -438,6 +455,8 @@ def _execute_local(
                 approval_id=approval_id,
                 approval_request_id=approval_request.approval_request_id,
                 idempotency_key=idempotency_key,
+                payload_hash=approval_request.payload_hash,
+                payload_preview_path=approval_request.payload_preview_path,
             )
             if not approve_all:
                 approval_requests.append(approval_request)
@@ -536,6 +555,55 @@ def _result(
         approval_requests=approval_requests,
         issues=issues,
     )
+
+
+def _write_approval_payload_preview(
+    run_dir: Path,
+    request: ApprovalRequest,
+    step: WorkflowStep,
+    fixture: Mapping[str, Any],
+) -> str:
+    relative_path = Path("artifacts") / "approvals" / f"{request.approval_request_id}.json"
+    preview_path = run_dir / relative_path
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": "appv24.approval-payload-preview/v1",
+        "approval_request_id": request.approval_request_id,
+        "run_id": request.run_id,
+        "package_fingerprint": request.package_fingerprint,
+        "step_id": request.step_id,
+        "connector_action": request.connector_action,
+        "approval_id": request.approval_id,
+        "allowed_outputs": list(request.allowed_outputs),
+        "idempotency_key_fields": list(request.idempotency_key_fields),
+        "idempotency_key": request.idempotency_key,
+        "payload_hash": request.payload_hash,
+        "payload_shape": _approval_payload_shape(step, fixture),
+    }
+    encoded = json.dumps(payload, sort_keys=True, indent=2)
+    if SECRET_VALUE_RE.search(encoded):
+        raise ValueError("workflow approval payload preview contains a raw secret-looking value")
+    preview_path.write_text(encoded + "\n", encoding="utf-8")
+    return relative_path.as_posix()
+
+
+def _approval_payload_shape(step: WorkflowStep, fixture: Mapping[str, Any]) -> dict[str, object]:
+    with_values = step.raw.get("with")
+    with_map = with_values if isinstance(with_values, Mapping) else {}
+    fixture_input = fixture.get("input")
+    return {
+        "step_with_fields": sorted(str(key) for key in with_map),
+        "input_refs": _input_refs(with_map),
+        "fixture_input_fields": sorted(str(key) for key in fixture_input) if isinstance(fixture_input, Mapping) else [],
+    }
+
+
+def _input_refs(with_map: Mapping[str, Any]) -> dict[str, str]:
+    refs: dict[str, str] = {}
+    for key, value in with_map.items():
+        if isinstance(value, Mapping) and isinstance(value.get("inputRef"), str):
+            refs[str(key)] = str(value["inputRef"])
+    return refs
 
 
 def _load_handoff(

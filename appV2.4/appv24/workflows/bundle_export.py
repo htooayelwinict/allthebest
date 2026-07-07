@@ -19,6 +19,7 @@ from appv24.workflows.live_env_template import build_workflow_live_env_template,
 from appv24.workflows.live_plan import WorkflowLivePlan, build_workflow_live_plan_from_path
 from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.policy import PolicyReport, evaluate_policy
+from appv24.workflows.service_export import build_local_service_export
 from appv24.workflows.validator import validate_workflow_documents
 
 
@@ -74,6 +75,7 @@ def build_workflow_bundle(
     bundle_id = f"bundle-{package_fingerprint.removeprefix('sha256:')[:12]}"
     registry = inspect_workflow_connector_registry(documents.root, env=env or {})
     intent = export_deployment_intent(compiled.ir, documents)
+    service_export = build_local_service_export(intent, package_path=documents.root)
     live_plan = _bundle_live_plan(documents)
     files = _bundle_files(
         bundle_id=bundle_id,
@@ -84,6 +86,7 @@ def build_workflow_bundle(
         registry=registry,
         live_plan=live_plan,
         deployment_intent=deployment_intent_to_dict(intent),
+        service_files=service_export.files if service_export.services else {},
     )
     return WorkflowBundleExport(
         bundle_id=bundle_id,
@@ -108,7 +111,9 @@ def write_workflow_bundle(
     target = Path(output_dir).expanduser().resolve() if output_dir is not None else bundle.package_path / ".workflow-bundle"
     target.mkdir(parents=True, exist_ok=True)
     for filename, content in bundle.files.items():
-        (target / filename).write_text(content, encoding="utf-8")
+        file_path = target / filename
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
     return WorkflowBundleExport(
         bundle_id=bundle.bundle_id,
         workflow_name=bundle.workflow_name,
@@ -253,6 +258,7 @@ def _bundle_files(
     registry: Any,
     live_plan: WorkflowLivePlan | None,
     deployment_intent: Mapping[str, Any],
+    service_files: Mapping[str, str],
 ) -> dict[str, str]:
     connector_actions = [_connector_action_payload(action) for action in registry.actions]
     required_credential_env = sorted({hint for action in registry.actions for hint in action.required_credential_env})
@@ -287,6 +293,7 @@ def _bundle_files(
                 "issues": list(registry.issues),
             }
         ),
+        "deployment.intent.json": _json(deployment_intent),
         "live.env.example": _live_env_example(documents, registry),
         "policy.json": _json(
             {
@@ -332,6 +339,7 @@ def _bundle_files(
             next_commands=live_plan.next_commands if live_plan is not None else (),
         ),
     }
+    files.update(service_files)
     files["bundle.manifest.json"] = _bundle_manifest(
         bundle_id=bundle_id,
         package_fingerprint=package_fingerprint,

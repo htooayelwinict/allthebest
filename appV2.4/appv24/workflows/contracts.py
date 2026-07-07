@@ -34,6 +34,12 @@ LLM_OUTPUT_CONTRACT_FIELDS = {
 }
 
 BUILTIN_ACTION_OUTPUT_FIELDS = {
+    "brave.search": (
+        "items",
+        "source_count",
+        "query",
+        "artifact_path",
+    ),
     "gmail.create_draft": (
         "draft_id",
         "artifact_path",

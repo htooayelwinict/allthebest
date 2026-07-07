@@ -42,6 +42,7 @@ DESIGN_CONTRACT_EXPECTED = (
 SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|secret|password|credential)", re.IGNORECASE)
 SECRET_VALUE_RE = re.compile(r"(?<![A-Za-z0-9_])(sk-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+)")
 SECRET_REF_KEY_RE = re.compile(r"^secret[_-]?ref$", re.IGNORECASE)
+INPUT_TEMPLATE_RE = re.compile(r"^\s*\{\{\s*(?P<path>inputs?\.[A-Za-z0-9_.-]+)\s*\}\}\s*$")
 ROLLBACK_COMMAND_RE = re.compile(
     r"^\s*(?:[-*]\s*)?(?:[`$>#]\s*)?(?:curl|gh\s+api|aws|gcloud|az|kubectl|terraform|rm\s+-rf)\b",
 )
@@ -51,6 +52,13 @@ ROLLBACK_AUTH_HEADER_RE = re.compile(r"\bauthorization\s*:\s*bearer\b", re.IGNOR
 ROLLBACK_HTTP_DELETE_RE = re.compile(r"\b(?:-X\s+)?DELETE\b")
 URL_METADATA_KEYS = {"token_url"}
 UNSUPPORTED_DECISION_TRANSITION_KEYS = ("reject_next", "true_next", "false_next", "else_next")
+SCALAR_ACTION_INPUT_FIELDS = {
+    "brave.search": ("query",),
+    "http.fetch": ("url",),
+    "telegram.create_message_draft": ("chat_id", "text"),
+    "telegram.send_message": ("chat_id", "text"),
+    "telegram.send_message_draft": ("chat_id", "text"),
+}
 
 
 def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
@@ -74,8 +82,7 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     issues.extend(_runtime_transition_issues(steps))
     issues.extend(_transition_issues(steps, known_steps))
     issues.extend(_connector_reference_issues(steps, connectors, permission_actions, permission_scopes))
-    issues.extend(_intelligence_node_contract_issues(steps, connectors))
-    issues.extend(_builtin_action_output_contract_issues(action_entries))
+    issues.extend(_scalar_connector_input_issues(steps, documents.dry_run_fixtures))
     issues.extend(_intelligence_node_contract_issues(steps, connectors))
     issues.extend(_builtin_action_output_contract_issues(action_entries))
     issues.extend(_catalog_issues(action_entries))
@@ -365,6 +372,114 @@ def _transition_issues(steps: Iterable[Mapping[str, Any]], known_steps: set[str]
                     )
                 )
     return issues
+
+
+def _scalar_connector_input_issues(
+    steps: Iterable[Mapping[str, Any]],
+    dry_run_fixtures: Mapping[str, Mapping[str, Any]],
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    reported: set[tuple[str, str]] = set()
+    for index, step in enumerate(steps):
+        uses = step.get("uses")
+        if not isinstance(uses, str):
+            continue
+        scalar_fields = SCALAR_ACTION_INPUT_FIELDS.get(uses, ())
+        if not scalar_fields:
+            continue
+        step_id = str(step.get("id", f"steps[{index}]"))
+        step_with = step.get("with")
+        with_map = step_with if isinstance(step_with, Mapping) else {}
+        for field in scalar_fields:
+            value = with_map.get(field)
+            issue_key = (step_id, field)
+            if _is_collection(value):
+                issues.append(
+                    _scalar_input_issue(
+                        uses,
+                        step_id,
+                        field,
+                        "literal collection",
+                    )
+                )
+                reported.add(issue_key)
+                continue
+            input_path = _input_template_path(value)
+            if input_path is None:
+                continue
+            for fixture_name, fixture in sorted(dry_run_fixtures.items()):
+                resolved = _resolve_fixture_input_path(fixture, input_path)
+                if _is_collection(resolved):
+                    issues.append(
+                        _scalar_input_issue(
+                            uses,
+                            step_id,
+                            field,
+                            f"dry_run_fixtures/{fixture_name}:{'.'.join(input_path)}",
+                        )
+                    )
+                    reported.add(issue_key)
+                    break
+            if issue_key in reported:
+                continue
+    return issues
+
+
+def _scalar_input_issue(action_ref: str, step_id: str, field: str, source: str) -> WorkflowIssue:
+    return WorkflowIssue(
+        "connector_scalar_input_collection",
+        "workflow.yaml",
+        ("steps", step_id, "with", field),
+        f"{action_ref} {field} must resolve to a scalar value; {source} is a collection",
+        expected="single string, number, or boolean value",
+        repair_hint=(
+            "Use one explicit scalar target for this action, or keep collection fanout as "
+            "fixture/future-connector design until a cataloged broadcast action exists."
+        ),
+    )
+
+
+def _input_template_path(value: Any) -> tuple[str, ...] | None:
+    if isinstance(value, Mapping):
+        input_ref = value.get("inputRef")
+        if len(value) == 1 and isinstance(input_ref, str) and input_ref.strip():
+            return ("input", *tuple(part for part in input_ref.split(".") if part))
+        return None
+    if not isinstance(value, str):
+        return None
+    match = INPUT_TEMPLATE_RE.match(value)
+    if match is None:
+        return None
+    return tuple(part for part in match.group("path").split(".") if part)
+
+
+def _resolve_fixture_input_path(fixture: Mapping[str, Any], path: tuple[str, ...]) -> Any:
+    if not path:
+        return None
+    variants = [path]
+    if path[0] == "inputs":
+        variants.append(("input", *path[1:]))
+    elif path[0] == "input":
+        variants.append(("inputs", *path[1:]))
+    for candidate in variants:
+        current: Any = fixture
+        for part in candidate:
+            if isinstance(current, Mapping) and part in current:
+                current = current[part]
+            else:
+                current = None
+                break
+        if current is not None:
+            return current
+    return None
+
+
+def _is_collection(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        input_ref = value.get("inputRef")
+        if len(value) == 1 and isinstance(input_ref, str) and input_ref.strip():
+            return False
+    return isinstance(value, (Mapping, list, tuple))
 
 
 def _runtime_transition_issues(steps: Iterable[Mapping[str, Any]]) -> list[WorkflowIssue]:
@@ -662,6 +777,7 @@ def _connector_reference_issues(
     permission_scopes: Mapping[str, set[str]],
 ) -> list[WorkflowIssue]:
     issues: list[WorkflowIssue] = []
+    wildcard_scope_reported: set[str] = set()
     for index, step in enumerate(steps):
         uses = step.get("uses")
         if not isinstance(uses, str):
@@ -700,6 +816,16 @@ def _connector_reference_issues(
                 )
             )
         granted_scopes = permission_scopes.get(connector_id, set())
+        if "*" in granted_scopes and connector_id not in wildcard_scope_reported:
+            issues.append(
+                WorkflowIssue(
+                    "permission_wildcard_scope",
+                    "permissions.yaml",
+                    ("permissions",),
+                    f"permissions for {connector_id} must not use wildcard scope; grant explicit required scopes",
+                )
+            )
+            wildcard_scope_reported.add(connector_id)
         action = connectors[connector_id][action_id]
         contract = builtin_connector_contract_catalog().get(uses)
         required_scopes = {
@@ -710,7 +836,7 @@ def _connector_reference_issues(
         if contract is not None:
             required_scopes.update(contract.required_scopes)
         for scope in sorted(required_scopes):
-            if scope not in granted_scopes and "*" not in granted_scopes:
+            if scope not in granted_scopes:
                 issues.append(
                     WorkflowIssue(
                         "permission_missing_scope",

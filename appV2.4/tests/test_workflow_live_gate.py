@@ -98,6 +98,33 @@ def test_live_gate_blocks_mutating_action_in_live_read() -> None:
     assert decision.issues[0].message == "live-read cannot execute mutating step draft_reply"
 
 
+def test_live_gate_allows_live_read_prefix_before_unallowlisted_local_action() -> None:
+    decision = evaluate_live_gate(
+        _ir(
+            [
+                _step("search_news", "brave.search", with_={"query": "market catalysts"}, next_step="extract_news"),
+                _step("extract_news", "llm.extract_structured", with_={"output_contract": "summary_v1"}, next_step="done"),
+                _terminal("done"),
+            ],
+            [
+                _action("brave", "search", allowed_outputs=("items", "source_count", "query"), scopes=("brave:search")),
+                _action("llm", "extract_structured", allowed_outputs=("summary", "raw_response"), scopes=()),
+            ],
+        ),
+        {"input": {}},
+        mode=WorkflowRunMode.LIVE_READ,
+        package_fingerprint="sha256:test",
+        connector_allowlist={"brave.search"},
+        approval_index={},
+        available_transports={"brave.search"},
+        env={},
+    )
+
+    assert decision.ok is True
+    assert decision.checked_actions == ("brave.search",)
+    assert decision.issues == ()
+
+
 def test_live_gate_blocks_missing_configured_transport() -> None:
     decision = evaluate_live_gate(
         _ir(
@@ -192,6 +219,58 @@ def test_live_gate_blocks_telegram_target_outside_configured_allowlist() -> None
     assert decision.ok is False
     assert decision.issues[0].code == "target_not_allowlisted"
     assert decision.issues[0].message == "telegram.send_message chat_id is not allowlisted: customer-chat"
+
+
+def test_live_gate_blocks_telegram_when_allowed_chat_ids_missing() -> None:
+    fixture = {"input": {"chat_id": "admin-chat", "text": "Ticket created."}}
+    step_raw = {"with": {"chat_id": {"inputRef": "chat_id"}, "text": {"inputRef": "text"}}}
+    idempotency_key = build_idempotency_key(
+        package_fingerprint="sha256:test",
+        step_id="notify_admin",
+        connector_action="telegram.send_message",
+        key_fields=("chat_id", "text"),
+        input_ref=step_raw,
+        fixture=fixture,
+    )
+
+    decision = evaluate_live_gate(
+        _ir(
+            [
+                _step(
+                    "notify_admin",
+                    "telegram.send_message",
+                    with_=step_raw["with"],
+                    side_effect_class="send",
+                    approval="admin-review",
+                    next_step="done",
+                ),
+                _terminal("done"),
+            ],
+            [
+                _action(
+                    "telegram",
+                    "send_message",
+                    side_effect=True,
+                    side_effect_class="send",
+                    approval_required=True,
+                    idempotency=("chat_id", "text"),
+                    scopes=("telegram:send",),
+                    allowed_outputs=("message_id", "chat_id"),
+                )
+            ],
+        ),
+        fixture,
+        mode=WorkflowRunMode.LIVE_PRODUCTION,
+        package_fingerprint="sha256:test",
+        connector_allowlist={"telegram.send_message"},
+        approval_index={("notify_admin", "telegram.send_message", idempotency_key): True},
+        available_transports={"telegram.send_message"},
+        env={},
+    )
+
+    assert decision.ok is False
+    assert decision.issues[0].code == "missing_target_allowlist"
+    assert decision.issues[0].message == "telegram.send_message requires APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
 
 
 def test_live_gate_requires_idempotency_key_fields_for_mutating_action() -> None:

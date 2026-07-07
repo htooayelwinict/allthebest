@@ -61,7 +61,8 @@ def test_prompt_fragments_render_builtin_capability_catalog() -> None:
     assert "prefer compact with.output_contract over inline with.output_schema" in fragment
     assert "event_alerts_v1" in fragment
     assert "Do not use llm.do_anything, agent.run, http.request, finance.*, trading.*" in fragment
-    assert "informational alerts only" in fragment
+    assert "Financial catalyst workflows" not in fragment
+    assert "informational alerts only" not in fragment
     assert "policy.check steps must use deterministic with.checks" in fragment
 
 
@@ -107,7 +108,8 @@ def test_build_package_stage_prompt_requires_full_package_sections() -> None:
     assert "Read, classify, analyze, summarize, draft, format, and local artifact steps must use side_effect: false" in prompt
     assert "Only external create, update, delete, send, publish, or provision actions should be mutating" in prompt
     assert "prefer compact with.output_contract over inline with.output_schema" in prompt
-    assert "Financial catalyst workflows must be informational alerts only" in prompt
+    assert "Financial catalyst workflows must be informational alerts only" not in prompt
+    assert "buy/sell/hold recommendations" not in prompt
     assert "outputs.allowed" in prompt
     assert "workflow.yaml must include design metadata" in prompt
     assert "appv24 only designs workflow packages; it does not execute workflows" in prompt

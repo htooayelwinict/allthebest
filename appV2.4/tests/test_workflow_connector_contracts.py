@@ -8,6 +8,8 @@ from appv24.workflows.connector_contracts import (
     SideEffectClass,
     WorkflowLiveMode,
     builtin_connector_contract_catalog,
+    workflow_operator_env_from_env,
+    workflow_operator_env_names,
 )
 from appv24.workflows.connector_packs import builtin_connector_catalog
 from appv24.workflows.loader import PackageDocuments
@@ -18,6 +20,7 @@ from appv24.workflows.semantic import validate_semantics
 def test_builtin_contract_catalog_is_default_deny() -> None:
     catalog = builtin_connector_contract_catalog()
 
+    assert "brave.search" in catalog
     assert "source.fetch_items" in catalog
     assert "http.fetch" in catalog
     assert "gmail.create_draft" in catalog
@@ -46,6 +49,36 @@ def test_telegram_send_message_contract_requires_target_policy() -> None:
     assert WorkflowLiveMode.LIVE_PRODUCTION in contract.live_modes
 
 
+def test_brave_search_contract_is_read_only_live_read() -> None:
+    contract = builtin_connector_contract_catalog()["brave.search"]
+
+    assert contract.approval_class is ApprovalClass.NONE
+    assert contract.side_effect_class is SideEffectClass.READ
+    assert contract.required_scopes == ("brave:search",)
+    assert contract.secrets[0].env_name == "APPV24_BRAVE_SEARCH_API_KEY"
+    assert WorkflowLiveMode.LIVE_READ in contract.live_modes
+    assert contract.prompt_summary == "brave.search(input: query, freshness, count) -> items, source_count"
+
+
+def test_workflow_operator_env_uses_only_target_policy_env_names() -> None:
+    source_env = {
+        "APPV24_HTTP_FETCH_ALLOWED_HOSTS": "example.com",
+        "APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat",
+        "APPV24_TELEGRAM_CREDENTIAL_REF": "telegram-prod",
+        "APPV24_TELEGRAM_SCOPES": "telegram:send",
+        "OPENROUTER_API_KEY": "provider-secret",
+    }
+
+    assert workflow_operator_env_names() == (
+        "APPV24_HTTP_FETCH_ALLOWED_HOSTS",
+        "APPV24_TELEGRAM_ALLOWED_CHAT_IDS",
+    )
+    assert workflow_operator_env_from_env(source_env) == {
+        "APPV24_HTTP_FETCH_ALLOWED_HOSTS": "example.com",
+        "APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat",
+    }
+
+
 def test_connector_metadata_and_capabilities_are_derived_from_contracts() -> None:
     connector_catalog = builtin_connector_catalog()
     capability_catalog = built_in_capability_catalog()
@@ -66,6 +99,9 @@ def test_connector_metadata_and_capabilities_are_derived_from_contracts() -> Non
 def test_capability_prompt_uses_slim_contract_summaries() -> None:
     fragment = render_capability_catalog_fragment()
 
+    assert "brave.search(input: query, freshness, count) -> items, source_count" in fragment
+    assert "For public web/news search, prefer brave.search over placeholder source.fetch_items URLs." in fragment
+    assert "dynamic subscriber capture, lookup, or broadcast must be fixture/input/future-connector design until cataloged" in fragment
     assert "http.fetch(input: url, query) -> status_code, url, text/json" in fragment
     assert "gmail.create_draft(input: to, subject, body) -> draft_id, thread_id" in fragment
     assert "ConnectorContract(" not in fragment
@@ -77,6 +113,14 @@ def test_semantics_reject_contract_scope_mismatch() -> None:
 
     messages = "\n".join(issue.message for issue in issues)
     assert "http.fetch required_scopes must include http:read" in messages
+    assert "permissions for http do not grant http:read required by fetch" in messages
+
+
+def test_semantics_reject_permission_wildcard_scope() -> None:
+    issues = validate_semantics(_http_fetch_documents(required_scopes=["http:read"], permission_scopes=["*"]))
+
+    messages = "\n".join(issue.message for issue in issues)
+    assert "permissions for http must not use wildcard scope; grant explicit required scopes" in messages
     assert "permissions for http do not grant http:read required by fetch" in messages
 
 

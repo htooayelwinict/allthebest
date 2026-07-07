@@ -333,6 +333,7 @@ def test_run_explanation_reports_live_production_provenance_without_filtered_out
             run_root=run_root,
             approval_run_id=approval_report.run_id,
             connector_allowlist=("telegram.send_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
         ),
         broker=LiveWorkflowBroker(
             {"telegram.send_message": _RecordingProductionTransport()},

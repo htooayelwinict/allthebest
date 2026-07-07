@@ -162,3 +162,46 @@ def test_quality_gate_reports_broker_blocked_fixture() -> None:
 
     assert not result.ok
     assert "fixture_broker_blocked" in {issue.code for issue in result.issues}
+
+
+def test_quality_gate_rejects_removed_ticketing_create_ticket_action() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+    documents = deepcopy(example.documents)
+    workflow = deepcopy(documents.workflow)
+    connectors = deepcopy(documents.connectors)
+    permissions = deepcopy(documents.permissions)
+
+    workflow["steps"][1]["uses"] = "ticketing.create_ticket"
+    connectors["connectors"][0] = {
+        "id": "ticketing",
+        "adapter": "manual",
+        "description": "Ticketing production mutation adapter.",
+        "actions": [
+            {
+                "id": "create_ticket",
+                "operationId": "ticketing_create_ticket",
+                "execution_mode": "brokered",
+                "side_effect": True,
+                "side_effect_class": "create",
+                "approval_required": True,
+                "dry_run_supported": True,
+                "required_scopes": ["ticket:draft"],
+                "outputs": {"allowed": ["ticket_id"]},
+                "idempotency": {"key_fields": ["customer_id", "summary"]},
+            }
+        ],
+    }
+    permissions["permissions"][0] = {
+        "connector": "ticketing",
+        "actions": ["create_ticket"],
+        "scopes": ["ticket:draft"],
+    }
+    documents = replace(documents, workflow=workflow, connectors=connectors, permissions=permissions)
+
+    result = check_workflow_quality_documents(documents)
+
+    assert not result.ok
+    codes = {issue.code for issue in result.issues}
+    assert "unknown_catalog_action" in codes
+    assert "unknown_connector_contract" in codes
+    assert any("ticketing.create_ticket" in issue.message for issue in result.issues)

@@ -30,6 +30,24 @@ def test_create_approval_request_records_package_fingerprint_and_action() -> Non
     assert request.idempotency_key == "idemp:abc"
 
 
+def test_create_approval_request_records_payload_binding() -> None:
+    request = create_approval_request(
+        run_id="run-1",
+        package_fingerprint="sha256:abc",
+        step_id="notify_admin",
+        connector_action="telegram.send_message",
+        approval_id="admin_approval",
+        allowed_outputs=("message_id",),
+        idempotency_key_fields=("ticket_id", "admin_chat_id"),
+        idempotency_key="idemp:abc",
+        payload_hash="payload:abc",
+        payload_preview_path="artifacts/approvals/approval-1.json",
+    )
+
+    assert request.payload_hash == "payload:abc"
+    assert request.payload_preview_path == "artifacts/approvals/approval-1.json"
+
+
 def test_resume_approval_blocks_stale_package_fingerprint() -> None:
     request = ApprovalRequest(
         approval_request_id="approval-1",
@@ -82,6 +100,8 @@ def test_list_workflow_approval_requests_formats_pending_request(tmp_path: Path)
         allowed_outputs=("draft_id", "thread_id"),
         idempotency_key_fields=("thread_id", "body"),
         idempotency_key="idemp:abc",
+        payload_hash="payload:abc",
+        payload_preview_path="artifacts/approvals/approval-1.json",
     )
     store.write_approvals(run_id, [], approval_requests=(request,))
 
@@ -94,9 +114,13 @@ def test_list_workflow_approval_requests_formats_pending_request(tmp_path: Path)
     assert result.items[0].step_id == "create_gmail_draft"
     assert result.items[0].connector_action == "gmail.create_draft"
     assert result.items[0].idempotency_key == "idemp:abc"
+    assert result.items[0].payload_preview_path == "artifacts/approvals/approval-1.json"
     formatted = format_workflow_approval_list(result)
     assert f"Workflow approvals: {run_id}" in formatted
-    assert "- approval-1 pending create_gmail_draft gmail.create_draft approval=human-review idempotency=idemp:abc" in formatted
+    assert (
+        "- approval-1 pending create_gmail_draft gmail.create_draft approval=human-review "
+        "idempotency=idemp:abc preview=artifacts/approvals/approval-1.json"
+    ) in formatted
 
 
 def test_list_workflow_approval_requests_reflects_latest_decision(tmp_path: Path) -> None:

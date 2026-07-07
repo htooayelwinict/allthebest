@@ -172,6 +172,7 @@ def _required_transport_env(request: WorkflowRunRequest) -> tuple[str, ...]:
 
 def _transport_env_hint(mode: WorkflowRunMode, action_ref: str) -> str | None:
     hints = {
+        (WorkflowRunMode.LIVE_READ, "brave.search"): "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_BRAVE_SEARCH_API_KEY",
         (WorkflowRunMode.LIVE_READ, "github.list_dependabot_alerts"): "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_GITHUB_TOKEN",
         (
             WorkflowRunMode.LIVE_READ,
@@ -191,7 +192,10 @@ def _transport_env_hint(mode: WorkflowRunMode, action_ref: str) -> str | None:
         (
             WorkflowRunMode.LIVE_PRODUCTION,
             "telegram.send_message",
-        ): "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, APPV24_TELEGRAM_BOT_TOKEN",
+        ): (
+            "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
+            "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+        ),
     }
     return hints.get((mode, action_ref))
 

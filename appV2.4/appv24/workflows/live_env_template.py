@@ -65,6 +65,12 @@ def _transport_lines(mode: WorkflowRunMode, allowlist: tuple[str, ...]) -> tuple
 
 
 def _known_transport_lines(mode: WorkflowRunMode, action_ref: str) -> tuple[str, ...]:
+    if mode is WorkflowRunMode.LIVE_READ and action_ref == "brave.search":
+        return (
+            "APPV24_WORKFLOW_LIVE_READ_ENABLED=true",
+            "APPV24_BRAVE_SEARCH_API_KEY=<brave-search-api-key>",
+            "APPV24_BRAVE_SEARCH_BASE_URL=https://api.search.brave.com/res/v1/web/search",
+        )
     if mode is WorkflowRunMode.LIVE_READ and action_ref == "github.list_dependabot_alerts":
         return ("APPV24_WORKFLOW_LIVE_READ_ENABLED=true", "APPV24_GITHUB_TOKEN=<github-token>")
     if mode is WorkflowRunMode.LIVE_READ and action_ref in {"source.fetch_document", "source.fetch_items"}:

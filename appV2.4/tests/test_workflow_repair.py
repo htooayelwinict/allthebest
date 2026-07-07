@@ -285,6 +285,38 @@ def _wrong_fixture_decision_key_draft() -> str:
     )
 
 
+def _wrong_fixture_decision_key_with_sibling_decision_draft() -> str:
+    return (
+        _valid_draft()
+        .replace(
+            "    next: draft_issue\n  - id: draft_issue",
+            "    next: check_eligibility\n"
+            "  - id: check_eligibility\n"
+            "    type: decision\n"
+            "    branches:\n"
+            "      eligible: route_priority\n"
+            "      rejected: done\n"
+            "  - id: route_priority\n"
+            "    type: decision\n"
+            "    branches:\n"
+            "      high: draft_issue\n"
+            "      low: done\n"
+            "  - id: draft_issue",
+            1,
+        )
+        .replace(
+            "input:\n  repo: owner/project",
+            "decision:\n  check_path: eligible\n  route_priority: high",
+            1,
+        )
+        .replace(
+            "approval:\n  human-review: rejected",
+            "decision:\n  check_path: rejected\n  route_priority: low",
+            1,
+        )
+    )
+
+
 def _missing_workflow_step_side_effect_class_draft() -> str:
     return _valid_draft().replace(
         "    side_effect_class: create\n    approval: human-review",
@@ -329,6 +361,112 @@ def _missing_broker_contract_draft() -> str:
         "",
         1,
     )
+
+
+def _collection_scalar_input_draft() -> str:
+    return """
+Here is the workflow package draft.
+
+```yaml workflow.yaml
+version: appv24.workflow/v1
+name: telegram-financial-alerts
+description: Draft and send approved financial alerts.
+design:
+  intent: Draft and send approved financial alerts.
+  trigger: Scheduled scan.
+  inputs:
+    - Subscriber chat IDs.
+  outputs:
+    - Approved Telegram alert.
+  assumptions:
+    - Subscribers are fixture input.
+  side_effects:
+    - Send Telegram alert after approval.
+  approval_gates:
+    - approve_broadcast
+  failure_modes:
+    - Broadcast target is invalid.
+  rollback:
+    - Send a correction manually if needed.
+triggers:
+  - id: scheduled
+    type: schedule
+    schedule: "0 9 * * 1-5"
+entrypoint: send_broadcast
+steps:
+  - id: send_broadcast
+    uses: telegram.send_message
+    side_effect_class: send
+    approval: approve_broadcast
+    with:
+      chat_id: "{{ inputs.subscribers }}"
+      text: Market catalyst alert.
+    next: done
+  - id: done
+    type: terminal
+```
+
+```yaml connectors.yaml
+version: appv24.connectors/v1
+connectors:
+  - id: telegram
+    adapter: direct_api
+    actions:
+      - id: send_message
+        side_effect: true
+        side_effect_class: send
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        idempotency:
+          key_fields:
+            - chat_id
+            - text
+        outputs:
+          allowed:
+            - message_id
+            - chat_id
+        required_scopes:
+          - telegram:send
+```
+
+```yaml permissions.yaml
+version: appv24.permissions/v1
+permissions:
+  - connector: telegram
+    actions:
+      - send_message
+    scopes:
+      - telegram:send
+approvals:
+  - id: approve_broadcast
+    mode: explicit
+    required_for:
+      - send_broadcast
+```
+
+```yaml dry_run_fixtures/happy_path.yaml
+inputs:
+  subscribers:
+    - 1000000001
+approval:
+  approve_broadcast: approved
+```
+
+```yaml dry_run_fixtures/rejection_path.yaml
+inputs:
+  subscribers:
+    - 1000000001
+approval:
+  approve_broadcast: rejected
+```
+
+```markdown rollback.md
+# Rollback
+
+Send a correction manually if needed.
+```
+"""
 
 
 def _schema_drift_draft() -> str:
@@ -455,7 +593,8 @@ def test_repair_prompt_includes_shared_contract_fragments() -> None:
     assert render_secret_reference_fragment() in prompt
     assert render_capability_catalog_fragment() in prompt
     assert "prefer compact with.output_contract over inline with.output_schema" in prompt
-    assert "Financial catalyst workflows must be informational alerts only" in prompt
+    assert "Financial catalyst workflows must be informational alerts only" not in prompt
+    assert "buy/sell/hold recommendations" not in prompt
 
 
 def test_repeated_repair_prompt_tells_model_to_revert_unrelated_drift() -> None:
@@ -533,8 +672,37 @@ def test_build_workflow_repair_prompt_includes_design_only_directive() -> None:
 
     assert "Repair directives:" in prompt
     assert "design_only_action_used workflow.yaml:steps.draft_issue" in prompt
-    assert "Remove the workflow step call to design-only action github.create_issue" in prompt
-    assert "keep the intended output as a non-executing local artifact draft instead" in prompt
+    assert "Correct connector metadata for built-in action github.create_issue" in prompt
+    assert "Keep the workflow.yaml step that uses github.create_issue; do not remove or rename it" in prompt
+    assert "Set connectors.yaml github.create_issue execution_mode to brokered" in prompt
+    assert "Remove the workflow step call to design-only action github.create_issue" not in prompt
+
+
+def test_build_workflow_repair_prompt_repairs_builtin_llm_design_only_metadata(tmp_path: Path) -> None:
+    from test_workflow_packages import write_intelligence_package
+
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    draft = _package_draft(package).replace(
+        "      - id: extract_structured\n"
+        "        side_effect: false\n"
+        "        side_effect_class: read\n"
+        "        execution_mode: brokered",
+        "      - id: extract_structured\n"
+        "        side_effect: false\n"
+        "        side_effect_class: read\n"
+        "        execution_mode: design_only",
+        1,
+    )
+    result = validate_workflow_draft_text(draft)
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=8)
+
+    assert "design_only_action_used workflow.yaml:steps.extract_catalysts" in prompt
+    assert "Correct connector metadata for built-in action llm.extract_structured" in prompt
+    assert "Keep the workflow.yaml step that uses llm.extract_structured; do not remove or rename it" in prompt
+    assert "Set connectors.yaml llm.extract_structured execution_mode to brokered" in prompt
+    assert "Remove the workflow step call to design-only action llm.extract_structured" not in prompt
 
 
 def test_build_workflow_repair_prompt_includes_broker_contract_directive() -> None:
@@ -750,6 +918,45 @@ def test_build_workflow_repair_prompt_replaces_wrong_fixture_decision_key() -> N
     assert "Replace `check_path: eligible` with `check_eligibility: eligible`." in prompt
     assert "Replace `check_path: rejected` with `check_eligibility: rejected`." in prompt
     assert "decision: {check_path:" not in prompt
+
+
+def test_build_workflow_repair_prompt_preserves_sibling_fixture_decisions() -> None:
+    result = validate_workflow_draft_text(_wrong_fixture_decision_key_with_sibling_decision_draft())
+    assert not result.ok
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=None, max_issues=8)
+
+    assert "Decision mapping key must be exactly `check_eligibility`." in prompt
+    assert "Replace `check_path: eligible` with `check_eligibility: eligible`." in prompt
+    assert "Replace `check_path: rejected` with `check_eligibility: rejected`." in prompt
+    assert "Preserve existing decision entries for other decision steps" in prompt
+    assert "Replace `route_priority:" not in prompt
+    assert "Remove any fixture decision keys" not in prompt
+
+
+def test_build_workflow_repair_prompt_includes_connector_contract_scope_directive() -> None:
+    result = validate_workflow_draft_text(
+        _valid_draft().replace("        required_scopes:\n          - issues:write\n", "", 1)
+    )
+    assert not result.ok
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=None, max_issues=8)
+
+    assert "connector_contract_scope_mismatch connectors.yaml:connectors.github.actions.create_issue.required_scopes" in prompt
+    assert "Update connectors.yaml metadata for github.create_issue to match the built-in connector contract" in prompt
+    assert "Add required_scopes entry `issues:write`" in prompt
+
+
+def test_build_workflow_repair_prompt_includes_scalar_connector_input_directive() -> None:
+    result = validate_workflow_draft_text(_collection_scalar_input_draft())
+    assert not result.ok
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=None, max_issues=8)
+
+    assert "connector_scalar_input_collection workflow.yaml:steps.send_broadcast.with.chat_id" in prompt
+    assert "telegram.send_message chat_id must resolve to a scalar value" in prompt
+    assert "Do not pass arrays, maps, subscriber collections, or broadcast lists into scalar connector fields." in prompt
+    assert "Until a cataloged broadcast/fanout action exists" in prompt
 
 
 def test_repair_noops_when_latest_draft_is_valid() -> None:

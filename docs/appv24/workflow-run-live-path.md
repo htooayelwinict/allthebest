@@ -75,6 +75,21 @@ only placeholder values for credential references, scopes, and built-in
 transport gates. It does not read current env values, create run artifacts, call
 the model, or invoke connector transports.
 
+Some connector contracts also define operator target-policy environment gates.
+These are separate from credential references and transport secrets. CLI/TUI
+commands copy only the target-policy variables required by the active connector
+catalog into the workflow request, so preflight and live runners can enforce
+targets without depending on the terminal layer as the authorization boundary.
+Run manifests persist only the variable names in `operator_env_names`; raw env
+values are not written to run artifacts or terminal output.
+
+Built-in target-policy env gates:
+
+```text
+APPV24_HTTP_FETCH_ALLOWED_HOSTS
+APPV24_TELEGRAM_ALLOWED_CHAT_IDS
+```
+
 Operators can ask appv24 to classify a package into the live/local phases that
 are actually available today:
 
@@ -281,6 +296,20 @@ Brokered action reports and events record hashed `idempotency_key` values when
 an action declares `idempotency.key_fields`. This is required audit material
 before any future live mutation path.
 
+Live-draft and live-production mutating actions also use a local append-only
+idempotency ledger at:
+
+```text
+<run-root>/idempotency.jsonl
+```
+
+Before invoking a mutating live transport, the runner checks this ledger for a
+committed result with the same idempotency key and payload hash. If found, the
+runner reuses the committed filtered outputs and does not call the transport
+again. If the key exists with a different payload hash, the run blocks before
+transport invocation. Successful live mutating actions commit only filtered
+broker outputs to the ledger; raw secret-looking values are rejected.
+
 Local runs that stop for human approval persist approval request records in
 `approvals.json`. Each request pins the package fingerprint, action, approval
 id, allowed outputs, idempotency fields, and hashed idempotency key so stale or
@@ -388,6 +417,11 @@ record:
 ```text
 /workflow-run-live-draft <package> <fixture> <approval-run-id> --allow <connector.action>[,<connector.action>]
 ```
+
+CLI and TUI both route this command through the approved phase-runner
+continuation. The command keeps the existing action-level live-draft run
+output, while the internal phase report records which approved local ledger run
+authorized the draft phase.
 
 By default this command uses an empty live transport registry. It can create a
 `live-draft` run directory and prove validation, credential, approval,
@@ -497,7 +531,7 @@ If the env-gated transport is missing, the preflight issue includes the safe
 operator hint:
 
 ```text
-required env: APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, APPV24_TELEGRAM_BOT_TOKEN
+required env: APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS
 ```
 
 The hint names required variables only. It must not print raw bot tokens,
@@ -516,11 +550,12 @@ authorized the production phase.
 
 The first production transport is `telegram.send_message`. It remains off by
 default and registers only when the operator enables live-production and
-provides a Telegram bot token:
+provides a Telegram bot token plus an approved target allowlist:
 
 ```text
 APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true
 APPV24_TELEGRAM_BOT_TOKEN=<bot-token>
+APPV24_TELEGRAM_ALLOWED_CHAT_IDS=<comma-separated-test-or-admin-chat-ids>
 ```
 
 Optional:

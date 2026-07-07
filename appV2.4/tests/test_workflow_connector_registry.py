@@ -15,6 +15,7 @@ def test_connector_registry_joins_package_catalog_and_env_gates(tmp_path: Path) 
         env={
             "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED": "true",
             "APPV24_TELEGRAM_BOT_TOKEN": "secret-token",
+            "APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat",
             "APPV24_TELEGRAM_CREDENTIAL_REF": "telegram-prod",
             "APPV24_TELEGRAM_SCOPES": "telegram:send",
         },
@@ -36,7 +37,8 @@ def test_connector_registry_joins_package_catalog_and_env_gates(tmp_path: Path) 
     assert action.configured_live_modes == ("live-production",)
     assert action.required_credential_env == ("APPV24_TELEGRAM_CREDENTIAL_REF, APPV24_TELEGRAM_SCOPES=telegram:send",)
     assert action.required_transport_env == (
-        "live-production: APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, APPV24_TELEGRAM_BOT_TOKEN",
+        "live-production: APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
+        "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS",
     )
     assert "secret-token" not in report.to_text()
 

@@ -15,7 +15,19 @@ def test_workflow_run_request_defaults_to_preview_without_allowlist() -> None:
 
     assert request.mode is WorkflowRunMode.PREVIEW
     assert request.connector_allowlist == ()
+    assert request.operator_env == {}
     assert request.run_root is None
+
+
+def test_workflow_run_request_operator_env_is_available_for_live_gates() -> None:
+    request = WorkflowRunRequest(
+        package_path=Path("pkg"),
+        fixture_name="happy_path.yaml",
+        mode=WorkflowRunMode.LIVE_PRODUCTION,
+        operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
+    )
+
+    assert request.operator_env == {"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"}
 
 
 def test_workflow_run_event_round_trips_through_json_dict() -> None:

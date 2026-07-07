@@ -1492,6 +1492,14 @@ def test_semantic_validation_rejects_llm_contract_output_allowlist_mismatch(tmp_
         path=("connectors", "llm", "actions", "extract_structured", "outputs", "allowed"),
         message_substring="llm.extract_structured outputs.allowed must include event_alerts_v1 fields",
     )
+    matches = [
+        issue
+        for issue in issues
+        if issue.file == "connectors.yaml"
+        and issue.code == "llm_output_contract_mismatch"
+        and issue.path == ("connectors", "llm", "actions", "extract_structured", "outputs", "allowed")
+    ]
+    assert len(matches) == 1
 
 
 def test_semantic_validation_rejects_source_fetch_items_output_allowlist_mismatch(tmp_path: Path) -> None:
@@ -1514,6 +1522,14 @@ def test_semantic_validation_rejects_source_fetch_items_output_allowlist_mismatc
             "artifact_path, items, source_count"
         ),
     )
+    matches = [
+        issue
+        for issue in issues
+        if issue.file == "connectors.yaml"
+        and issue.code == "builtin_output_contract_mismatch"
+        and issue.path == ("connectors", "source", "actions", "fetch_items", "outputs", "allowed")
+    ]
+    assert len(matches) == 1
 
 
 def test_semantic_validation_rejects_mutating_llm_node(tmp_path: Path) -> None:
@@ -1597,6 +1613,109 @@ def test_semantic_validation_rejects_unbounded_llm_action(tmp_path: Path) -> Non
         file="workflow.yaml",
         code="unknown_catalog_action",
         message_substring="llm.do_anything is not in the built-in workflow capability catalog",
+    )
+
+
+def test_semantic_validation_rejects_collection_value_for_scalar_connector_input(tmp_path: Path) -> None:
+    package = tmp_path / "package"
+    write_intelligence_package(package)
+    (package / "workflow.yaml").write_text(
+        """
+version: appv24.workflow/v1
+name: telegram-financial-alerts
+description: Draft and send approved financial alerts.
+design:
+  intent: Draft and send approved financial alerts.
+  trigger: Scheduled scan.
+  inputs:
+    - Subscriber chat IDs.
+  outputs:
+    - Approved Telegram alert.
+  assumptions:
+    - Subscribers are fixture input.
+  side_effects:
+    - Send Telegram alert after approval.
+  approval_gates:
+    - approve_broadcast
+  failure_modes:
+    - Broadcast target is invalid.
+  rollback:
+    - Send a correction manually if needed.
+triggers:
+  - id: scheduled
+    type: schedule
+    schedule: "0 9 * * 1-5"
+entrypoint: send_broadcast
+steps:
+  - id: send_broadcast
+    uses: telegram.send_message
+    side_effect_class: send
+    approval: approve_broadcast
+    with:
+      chat_id: "{{ inputs.subscribers }}"
+      text: Market catalyst alert.
+    next: done
+  - id: done
+    type: terminal
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        """
+version: appv24.connectors/v1
+connectors:
+  - id: telegram
+    adapter: direct_api
+    actions:
+      - id: send_message
+        side_effect: true
+        side_effect_class: send
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        idempotency:
+          key_fields:
+            - chat_id
+            - text
+        outputs:
+          allowed:
+            - message_id
+            - chat_id
+        required_scopes:
+          - telegram:send
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        """
+version: appv24.permissions/v1
+permissions:
+  - connector: telegram
+    actions:
+      - send_message
+    scopes:
+      - telegram:send
+approvals:
+  - id: approve_broadcast
+    mode: explicit
+    required_for:
+      - send_broadcast
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (package / "dry_run_fixtures" / "happy_path.yaml").write_text(
+        "inputs:\n  subscribers:\n    - 1000000001\napproval:\n  approve_broadcast: approved\n",
+        encoding="utf-8",
+    )
+
+    issues = validate_semantics(load_package_documents(package))
+
+    assert_has_issue(
+        issues,
+        file="workflow.yaml",
+        code="connector_scalar_input_collection",
+        location="workflow.yaml:steps.send_broadcast.with.chat_id",
+        message_substring="telegram.send_message chat_id must resolve to a scalar value",
     )
 
 

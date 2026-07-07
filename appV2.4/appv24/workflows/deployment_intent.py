@@ -23,6 +23,7 @@ class WorkflowDeploymentIntent:
     idempotency_required_for: tuple[str, ...]
     state_requirements: tuple[str, ...]
     audit_requirements: tuple[str, ...]
+    local_runtime_commands: tuple[str, ...]
     rollback_required: bool
 
 
@@ -41,6 +42,7 @@ def deployment_intent_to_dict(intent: WorkflowDeploymentIntent) -> dict[str, Any
     data["idempotency_required_for"] = list(intent.idempotency_required_for)
     data["state_requirements"] = list(intent.state_requirements)
     data["audit_requirements"] = list(intent.audit_requirements)
+    data["local_runtime_commands"] = list(intent.local_runtime_commands)
     data["rollback_required"] = intent.rollback_required
     return {"version": data.pop("version"), **data}
 

@@ -10,7 +10,7 @@ Fresh verification from this worktree:
 
 ```text
 PYTHONPATH=appV2.4 .venv/bin/python -m pytest appV2.4/tests
-1561 passed in 48.46s
+1647 passed in 52.32s
 ```
 
 Additional guards from this worktree:
@@ -36,12 +36,13 @@ The following plan goals have current implementation and test evidence:
 - Workflow IR/simulator/policy: compiler, policy checker, simulator, ledger traces.
 - Local workflow run: persisted run artifacts, approval requests, brokered local artifacts, idempotency keys, reports.
 - Run preview and IaC intent: preview reports, approval plan, ledger preview, deployment-intent export.
+- Trigger runtime handoff: schedule/poll sweep, bounded activation loop, local webhook ingress, foreground webhook server, and passive service templates in exported bundles.
 - Live-read: live-read preflight, command wiring, env-gated GitHub Dependabot transport, output filtering.
 - Live-draft: approval-gated live-draft runner, Gmail draft transport, OAuth refresh token support, transport readiness preflight.
 - Live-production V0: approval-gated `telegram.send_message` only, production-disabled broker default, env-gated Telegram transport.
 - Operator usability: approval listing/approve/deny commands, live run explanation provenance, credential and transport env hints.
 - Workflow intelligence nodes: source, LLM transform, policy, notification primitives with compact output contracts.
-- Recent safety fixes: fixture-aware idempotency keys, live transport `inputRef` resolution across GitHub, Gmail, and Telegram, `approval_run_id` provenance gating that requires a prior `run.json` manifest with `mode: local`, live broker mode validation, `production_enabled` scoping to live-production only, live broker mode matching before transport invocation, live transport result-status matching before outputs are accepted, blocked live transport outputs being dropped before persistence, `/workflow-live-ready` operator readiness reports that surface credential, transport, approval, and next-step hints without provider calls, `/workflow-live-env-template` placeholder generation that helps operators configure live env vars without reading or printing secrets, and `/workflow-run-approval` local approval-prep runs that create pending approval requests without live side effects.
+- Recent safety fixes: fixture-aware idempotency keys, live transport `inputRef` resolution across GitHub, Gmail, and Telegram, `approval_run_id` provenance gating that requires a prior `run.json` manifest with `mode: local`, payload-bound approval decisions, live broker mode validation, `production_enabled` scoping to live-production only, live broker mode matching before transport invocation, live transport result-status matching before outputs are accepted, blocked live transport outputs being dropped before persistence, operator target-policy env propagation through preflight/live runners/phase runners with only env names persisted, `/workflow-live-ready` operator readiness reports that surface credential, transport, approval, and next-step hints without provider calls, `/workflow-live-env-template` placeholder generation that helps operators configure live env vars without reading or printing secrets, `/workflow-run-approval` local approval-prep runs that create pending approval requests without live side effects, and CLI/TUI service-sized bounds for exported `/workflow-activation-loop` and `/workflow-webhook-serve` commands.
 
 ## Known Non-Completion Items
 

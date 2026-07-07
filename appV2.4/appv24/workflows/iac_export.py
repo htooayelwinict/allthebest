@@ -67,6 +67,7 @@ def export_deployment_intent(ir: WorkflowIR, documents: PackageDocuments) -> Wor
         idempotency_required_for=_idempotency_required_for(ir),
         state_requirements=_state_requirements(ir),
         audit_requirements=("events.jsonl", "report.json", "trace.json", "approvals.json"),
+        local_runtime_commands=_local_runtime_commands(ir),
         rollback_required=bool(documents.rollback_text and documents.rollback_text.strip()),
     )
 
@@ -110,6 +111,7 @@ def format_deployment_intent(intent: WorkflowDeploymentIntent) -> str:
     _append_section(lines, "idempotency required for", intent.idempotency_required_for)
     _append_section(lines, "state requirements", intent.state_requirements)
     _append_section(lines, "audit requirements", intent.audit_requirements)
+    _append_section(lines, "local runtime commands", intent.local_runtime_commands)
     lines.append(f"rollback required: {'yes' if intent.rollback_required else 'no'}")
     return "\n".join(lines)
 
@@ -170,6 +172,16 @@ def _state_requirements(ir: WorkflowIR) -> tuple[str, ...]:
     if "poll" in trigger_types:
         requirements.append("cursor_store")
     return tuple(requirements)
+
+
+def _local_runtime_commands(ir: WorkflowIR) -> tuple[str, ...]:
+    trigger_types = {trigger.trigger_type for trigger in ir.triggers}
+    commands: list[str] = []
+    if "schedule" in trigger_types or "poll" in trigger_types:
+        commands.append("/workflow-activation-loop <ticks> [interval-seconds]")
+    if "webhook" in trigger_types:
+        commands.append("/workflow-webhook-serve <max-requests> [host] [port]")
+    return tuple(commands)
 
 
 def _unique(values: list[str]) -> tuple[str, ...]:

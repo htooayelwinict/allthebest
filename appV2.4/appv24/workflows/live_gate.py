@@ -50,12 +50,13 @@ def evaluate_live_gate(
     approval_index: Mapping[tuple[str, str, str | None], bool],
     available_transports: Collection[str] | None,
     env: Mapping[str, str],
+    start_step: str | None = None,
 ) -> LiveGateDecision:
     """Evaluate the executable path for the selected live mode."""
 
     checked_actions: list[str] = []
     issues: list[LiveGateIssue] = []
-    current = ir.entrypoint
+    current = start_step or ir.entrypoint
     transitions = 0
     contracts = builtin_connector_contract_catalog()
 
@@ -122,8 +123,6 @@ def gate_step_against_contract(
         return LiveGateIssue("missing_action", step.step_id, None, f"missing connector action for step {step.step_id}")
     if action is None:
         return LiveGateIssue("unknown_action", step.step_id, action_ref, f"unknown action for step {step.step_id}")
-    if action_ref not in connector_allowlist:
-        return LiveGateIssue("missing_allowlist", step.step_id, action_ref, f"{mode.value} action is not allowlisted: {action_ref}")
     contract = contracts.get(action_ref)
     if contract is None:
         return LiveGateIssue("uncataloged_action", step.step_id, action_ref, f"{mode.value} action is not cataloged: {action_ref}")
@@ -140,6 +139,9 @@ def gate_step_against_contract(
     )
     if mode_issue is not None:
         return mode_issue
+
+    if action_ref not in connector_allowlist:
+        return LiveGateIssue("missing_allowlist", step.step_id, action_ref, f"{mode.value} action is not allowlisted: {action_ref}")
 
     transport_issue = _transport_gate_issue(mode.value, step, available_transports)
     if transport_issue is not None:
@@ -266,7 +268,12 @@ def _target_policy_issue(
     if action_ref == "telegram.send_message":
         allowed_chat_ids = _split_csv(env.get(contract.target_policy.allowed_chat_ids_env or "", ""))
         if not allowed_chat_ids:
-            return None
+            return LiveGateIssue(
+                "missing_target_allowlist",
+                step.step_id,
+                action_ref,
+                "telegram.send_message requires APPV24_TELEGRAM_ALLOWED_CHAT_IDS",
+            )
         chat_id = _field_value(step, fixture, "chat_id")
         if chat_id is None:
             return LiveGateIssue("missing_target", step.step_id, action_ref, "telegram.send_message requires chat_id")
@@ -350,6 +357,7 @@ def _split_csv(value: str | None) -> tuple[str, ...]:
 
 def _transport_env_hint(action_ref: str) -> str | None:
     return {
+        "brave.search": "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_BRAVE_SEARCH_API_KEY",
         "github.list_dependabot_alerts": "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_GITHUB_TOKEN",
         "source.fetch_document": "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_SOURCE_BASE_URL",
         "source.fetch_items": "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_SOURCE_BASE_URL",
@@ -358,5 +366,8 @@ def _transport_env_hint(action_ref: str) -> str | None:
             "APPV24_WORKFLOW_LIVE_DRAFT_ENABLED=true plus APPV24_GMAIL_ACCESS_TOKEN or "
             "APPV24_GMAIL_REFRESH_TOKEN, APPV24_GMAIL_CLIENT_ID, APPV24_GMAIL_CLIENT_SECRET"
         ),
-        "telegram.send_message": "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, APPV24_TELEGRAM_BOT_TOKEN",
+        "telegram.send_message": (
+            "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
+            "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+        ),
     }.get(action_ref)

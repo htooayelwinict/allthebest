@@ -10,6 +10,7 @@ import httpx
 
 from appv24.workflows.broker import BrokerRequest
 from appv24.workflows.live_transports import (
+    BraveSearchTransport,
     GmailCreateDraftTransport,
     GitHubDependabotAlertsTransport,
     HttpFetchTransport,
@@ -67,6 +68,18 @@ def test_live_read_transport_registry_registers_http_fetch_with_allowed_hosts() 
 
     assert tuple(transports) == ("http.fetch",)
     assert isinstance(transports["http.fetch"], HttpFetchTransport)
+
+
+def test_live_read_transport_registry_registers_brave_search_when_enabled() -> None:
+    transports = build_live_read_transports_from_env(
+        {
+            "APPV24_WORKFLOW_LIVE_READ_ENABLED": "true",
+            "APPV24_BRAVE_SEARCH_API_KEY": "brave-token",
+        }
+    )
+
+    assert tuple(transports) == ("brave.search",)
+    assert isinstance(transports["brave.search"], BraveSearchTransport)
 
 
 def test_live_draft_transport_registry_disabled_by_default() -> None:
@@ -132,11 +145,23 @@ def test_live_production_transport_registry_registers_telegram_when_enabled() ->
         {
             "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED": "true",
             "APPV24_TELEGRAM_BOT_TOKEN": "telegram-token",
+            "APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat",
         }
     )
 
     assert tuple(transports) == ("telegram.send_message",)
     assert isinstance(transports["telegram.send_message"], TelegramSendMessageTransport)
+
+
+def test_live_production_transport_registry_requires_telegram_allowed_chat_ids() -> None:
+    transports = build_live_production_transports_from_env(
+        {
+            "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED": "true",
+            "APPV24_TELEGRAM_BOT_TOKEN": "telegram-token",
+        }
+    )
+
+    assert transports == {}
 
 
 def test_github_dependabot_transport_calls_api_and_slims_outputs() -> None:
@@ -367,6 +392,102 @@ def test_source_fetch_items_transport_calls_base_url_and_slims_outputs() -> None
             },
         }
     ]
+
+
+def test_brave_search_transport_calls_api_and_slims_outputs() -> None:
+    client = FakeClient(
+        {
+            "web": {
+                "results": [
+                    {
+                        "title": "NVDA earnings catalyst",
+                        "url": "https://news.example/nvda",
+                        "description": "Guidance increased after earnings.",
+                        "age": "2 hours ago",
+                        "extra_snippets": ["raw extra snippet"],
+                        "profile": {"name": "must not persist"},
+                    }
+                ]
+            },
+            "query": {"original": "nvda earnings catalyst", "more_results_available": True},
+            "raw": "must not persist",
+        }
+    )
+    transport = BraveSearchTransport(api_key="brave-token", client_factory=lambda: client)
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="search_financial_news",
+            connector_action="brave.search",
+            input_ref={
+                "with": {
+                    "query": "nvda earnings catalyst",
+                    "freshness": "pw",
+                    "count": 25,
+                    "country": "US",
+                    "search_lang": "en",
+                    "extra_snippets": True,
+                }
+            },
+            fixture={"input": {}},
+            allowed_outputs=("items", "source_count", "query"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "live-read"
+    assert result.provider_id == "brave"
+    assert result.issues == ()
+    assert result.outputs == {
+        "items": [
+            {
+                "title": "NVDA earnings catalyst",
+                "url": "https://news.example/nvda",
+                "description": "Guidance increased after earnings.",
+                "age": "2 hours ago",
+            }
+        ],
+        "source_count": 1,
+        "query": "nvda earnings catalyst",
+    }
+    assert client.calls == [
+        {
+            "url": "https://api.search.brave.com/res/v1/web/search",
+            "headers": {
+                "Accept": "application/json",
+                "X-Subscription-Token": "brave-token",
+            },
+            "params": {
+                "count": "20",
+                "country": "US",
+                "extra_snippets": "true",
+                "freshness": "pw",
+                "q": "nvda earnings catalyst",
+                "search_lang": "en",
+            },
+        }
+    ]
+
+
+def test_brave_search_transport_blocks_missing_query_without_http() -> None:
+    client = FakeClient({"web": {"results": []}})
+    transport = BraveSearchTransport(api_key="brave-token", client_factory=lambda: client)
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="search_financial_news",
+            connector_action="brave.search",
+            input_ref={"with": {}},
+            fixture={"input": {}},
+            allowed_outputs=("items", "source_count"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == ("brave.search requires query",)
+    assert client.calls == []
 
 
 def test_http_fetch_transport_blocks_unapproved_host_before_http() -> None:
@@ -705,6 +826,7 @@ def test_telegram_send_message_transport_posts_json_and_slims_outputs() -> None:
     transport = TelegramSendMessageTransport(
         token="telegram-token",
         base_url="https://telegram.test",
+        allowed_chat_ids=("admin-chat",),
         client_factory=lambda: client,
     )
 
@@ -753,6 +875,7 @@ def test_telegram_send_message_transport_resolves_input_refs_from_with_fields() 
     transport = TelegramSendMessageTransport(
         token="telegram-token",
         base_url="https://telegram.test",
+        allowed_chat_ids=("admin-chat",),
         client_factory=lambda: client,
     )
 
@@ -790,9 +913,55 @@ def test_telegram_send_message_transport_resolves_input_refs_from_with_fields() 
     }
 
 
+def test_telegram_send_message_transport_resolves_prior_step_output_template() -> None:
+    client = FakeClient({"ok": True, "result": {"message_id": 44, "chat": {"id": "admin-chat"}}})
+    transport = TelegramSendMessageTransport(
+        token="telegram-token",
+        base_url="https://telegram.test",
+        allowed_chat_ids=("admin-chat",),
+        client_factory=lambda: client,
+    )
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="notify_admin",
+            connector_action="telegram.send_message",
+            input_ref={
+                "with": {
+                    "chat_id": {"inputRef": "target_chat"},
+                    "text": "{{ steps.extract_news.outputs.summary }}",
+                }
+            },
+            fixture={
+                "input": {"target_chat": "admin-chat"},
+                "steps": {
+                    "extract_news": {
+                        "outputs": {
+                            "summary": "Fed minutes are a market catalyst.",
+                        }
+                    }
+                },
+            },
+            allowed_outputs=("message_id", "chat_id"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "live-production"
+    assert result.outputs == {"message_id": "44", "chat_id": "admin-chat"}
+    assert client.post_calls[0]["json"] == {
+        "chat_id": "admin-chat",
+        "text": "Fed minutes are a market catalyst.",
+    }
+
+
 def test_telegram_send_message_transport_blocks_missing_fields_without_http() -> None:
     client = FakeClient({"ok": True})
-    transport = TelegramSendMessageTransport(token="telegram-token", client_factory=lambda: client)
+    transport = TelegramSendMessageTransport(
+        token="telegram-token",
+        allowed_chat_ids=("admin-chat",),
+        client_factory=lambda: client,
+    )
 
     result = transport.invoke(
         BrokerRequest(
@@ -808,6 +977,27 @@ def test_telegram_send_message_transport_blocks_missing_fields_without_http() ->
     assert result.status == "blocked"
     assert result.outputs == {}
     assert result.issues == ("telegram.send_message requires chat_id and text",)
+    assert client.post_calls == []
+
+
+def test_telegram_send_message_transport_blocks_missing_allowed_chat_ids_without_http() -> None:
+    client = FakeClient({"ok": True})
+    transport = TelegramSendMessageTransport(token="telegram-token", client_factory=lambda: client)
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="notify_admin",
+            connector_action="telegram.send_message",
+            input_ref={"with": {"chat_id": "admin-chat", "text": "Ticket created."}},
+            fixture={"input": {}},
+            allowed_outputs=("message_id", "chat_id"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == ("telegram.send_message requires APPV24_TELEGRAM_ALLOWED_CHAT_IDS",)
     assert client.post_calls == []
 
 
@@ -836,9 +1026,38 @@ def test_telegram_send_message_transport_blocks_unapproved_chat_before_http() ->
     assert client.post_calls == []
 
 
+def test_telegram_send_message_transport_blocks_text_over_bot_api_limit_without_http() -> None:
+    client = FakeClient({"ok": True})
+    transport = TelegramSendMessageTransport(
+        token="telegram-token",
+        allowed_chat_ids=("admin-chat",),
+        client_factory=lambda: client,
+    )
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="notify_admin",
+            connector_action="telegram.send_message",
+            input_ref={"with": {"chat_id": "admin-chat", "text": "x" * 4097}},
+            fixture={"input": {}},
+            allowed_outputs=("message_id", "chat_id"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == ("telegram.send_message text exceeds 4096 characters",)
+    assert client.post_calls == []
+
+
 def test_telegram_send_message_transport_sanitizes_http_failure() -> None:
     client = FakeClient({"ok": False}, post_responses=[FakeResponse({"ok": False}, status_code=403)])
-    transport = TelegramSendMessageTransport(token="telegram-token", client_factory=lambda: client)
+    transport = TelegramSendMessageTransport(
+        token="telegram-token",
+        allowed_chat_ids=("admin-chat",),
+        client_factory=lambda: client,
+    )
 
     result = transport.invoke(
         BrokerRequest(
@@ -859,7 +1078,11 @@ def test_telegram_send_message_transport_sanitizes_http_failure() -> None:
 
 def test_telegram_send_message_transport_blocks_malformed_response() -> None:
     client = FakeClient({"ok": True, "result": {"chat": {"id": "admin-chat"}}})
-    transport = TelegramSendMessageTransport(token="telegram-token", client_factory=lambda: client)
+    transport = TelegramSendMessageTransport(
+        token="telegram-token",
+        allowed_chat_ids=("admin-chat",),
+        client_factory=lambda: client,
+    )
 
     result = transport.invoke(
         BrokerRequest(

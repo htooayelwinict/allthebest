@@ -31,6 +31,7 @@ class WorkflowApprovalListItem:
     step_id: str
     connector_action: str
     idempotency_key: str | None
+    payload_preview_path: str | None
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ def list_workflow_approval_requests(package_path: str | Path, run_id: str) -> Wo
             step_id=request.step_id,
             connector_action=request.connector_action,
             idempotency_key=request.idempotency_key,
+            payload_preview_path=request.payload_preview_path,
         )
         for request in requests
     )
@@ -65,6 +67,7 @@ def format_workflow_approval_list(result: WorkflowApprovalListResult) -> str:
         return "\n".join(lines)
     for item in result.items:
         idempotency = item.idempotency_key or "<none>"
+        preview = item.payload_preview_path or "<none>"
         lines.append(
             "- "
             f"{item.approval_request_id} "
@@ -72,7 +75,8 @@ def format_workflow_approval_list(result: WorkflowApprovalListResult) -> str:
             f"{item.step_id} "
             f"{item.connector_action} "
             f"approval={item.approval_id} "
-            f"idempotency={idempotency}"
+            f"idempotency={idempotency} "
+            f"preview={preview}"
         )
     return "\n".join(lines)
 

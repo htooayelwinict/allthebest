@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 from appv24.workflows.broker import LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents
+from appv24.workflows.connector_sandbox import ConnectorSandboxProviders
 from appv24.workflows.ir import StepKind, WorkflowIR
 from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.policy import evaluate_policy
@@ -138,7 +140,17 @@ def check_workflow_quality_documents(
             issues=graph_issues,
         )
 
-    fixture_issues, fixture_reports = _check_fixtures(compiled.ir, documents, broker)
+    local_broker = broker
+    temp_artifacts: TemporaryDirectory[str] | None = None
+    if local_broker is None:
+        temp_artifacts = TemporaryDirectory(prefix="appv24-quality-artifacts-")
+        providers = ConnectorSandboxProviders(Path(temp_artifacts.name))
+        local_broker = LocalWorkflowBroker(providers.provider_map())
+    try:
+        fixture_issues, fixture_reports = _check_fixtures(compiled.ir, documents, local_broker)
+    finally:
+        if temp_artifacts is not None:
+            temp_artifacts.cleanup()
     return WorkflowQualityResult(
         root=documents.root,
         validation_ok=True,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from appv24.workflows import idempotency as idempotency_module
 from appv24.workflows.idempotency import IdempotencyStore
 from appv24.workflows.idempotency import build_idempotency_key
 
@@ -56,3 +57,44 @@ def test_idempotency_key_resolves_input_refs_from_selected_fixture() -> None:
     assert first.startswith("idemp:")
     assert second.startswith("idemp:")
     assert first != second
+
+
+def test_persistent_idempotency_store_reuses_committed_result_across_instances(tmp_path) -> None:
+    assert hasattr(idempotency_module, "PersistentIdempotencyStore")
+    PersistentIdempotencyStore = idempotency_module.PersistentIdempotencyStore
+    path = tmp_path / "idempotency.jsonl"
+    first_store = PersistentIdempotencyStore(path)
+    second_store = PersistentIdempotencyStore(path)
+
+    first = first_store.record_or_reuse("key-1", {"message_id": 10}, payload_hash="payload-a")
+    second = second_store.record_or_reuse("key-1", {"message_id": 11}, payload_hash="payload-a")
+
+    assert first == {"message_id": 10}
+    assert second == {"message_id": 10}
+
+
+def test_persistent_idempotency_store_blocks_conflicting_payload_across_instances(tmp_path) -> None:
+    assert hasattr(idempotency_module, "PersistentIdempotencyStore")
+    PersistentIdempotencyStore = idempotency_module.PersistentIdempotencyStore
+    path = tmp_path / "idempotency.jsonl"
+    PersistentIdempotencyStore(path).record_or_reuse("key-1", {"message_id": 10}, payload_hash="payload-a")
+
+    try:
+        PersistentIdempotencyStore(path).record_or_reuse("key-1", {"message_id": 11}, payload_hash="payload-b")
+    except ValueError as error:
+        assert str(error) == "idempotency key conflict for key-1"
+    else:
+        raise AssertionError("expected idempotency conflict")
+
+
+def test_persistent_idempotency_store_rejects_raw_secret_looking_result(tmp_path) -> None:
+    assert hasattr(idempotency_module, "PersistentIdempotencyStore")
+    PersistentIdempotencyStore = idempotency_module.PersistentIdempotencyStore
+    store = PersistentIdempotencyStore(tmp_path / "idempotency.jsonl")
+
+    try:
+        store.record_or_reuse("key-1", {"token": "sk-or-v1-secret-looking-value"}, payload_hash="payload-a")
+    except ValueError as error:
+        assert str(error) == "idempotency result contains a raw secret-looking value"
+    else:
+        raise AssertionError("expected raw secret-looking result to be rejected")

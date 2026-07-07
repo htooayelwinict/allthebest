@@ -27,6 +27,16 @@ class BlockedOutputTransport(LiveWorkflowTransport):
         )
 
 
+class RecordingTransport(LiveWorkflowTransport):
+    def __init__(self, status: str):
+        self.status = status
+        self.requests: list[BrokerRequest] = []
+
+    def invoke(self, request: BrokerRequest) -> BrokerResult:
+        self.requests.append(request)
+        return BrokerResult(status=self.status, provider_id="fake", outputs={"message_id": "msg-1", "draft_id": "draft-1"})
+
+
 def test_live_broker_rejects_unknown_mode() -> None:
     try:
         LiveWorkflowBroker({"telegram.send_message": FakeTransport()}, mode="production", production_enabled=True)
@@ -180,3 +190,62 @@ def test_live_broker_blocks_transport_status_mismatch() -> None:
     assert result.issues == (
         "live transport for telegram.send_message returned status live-read; expected live-production",
     )
+
+
+def test_live_broker_blocks_unsupported_telegram_input_before_transport() -> None:
+    transport = RecordingTransport("live-production")
+    broker = LiveWorkflowBroker(
+        {"telegram.send_message": transport},
+        mode="live-production",
+        production_enabled=True,
+    )
+
+    result = broker.invoke(
+        BrokerRequest(
+            step_id="notify_admin",
+            connector_action="telegram.send_message",
+            input_ref={
+                "with": {
+                    "chat_id": "admin-chat",
+                    "text": "Ticket ready",
+                    "disable_web_page_preview": True,
+                }
+            },
+            fixture={},
+            allowed_outputs=("message_id",),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == ("telegram.send_message input contains unsupported fields: disable_web_page_preview",)
+    assert transport.requests == []
+
+
+def test_live_broker_blocks_unsupported_gmail_input_before_transport() -> None:
+    transport = RecordingTransport("live-draft")
+    broker = LiveWorkflowBroker({"gmail.create_draft": transport}, mode="live-draft")
+
+    result = broker.invoke(
+        BrokerRequest(
+            step_id="create_gmail_draft",
+            connector_action="gmail.create_draft",
+            input_ref={
+                "with": {
+                    "to": "customer@example.com",
+                    "subject": "Ticket update",
+                    "body": "We opened your ticket.",
+                    "send": True,
+                }
+            },
+            fixture={},
+            allowed_outputs=("draft_id",),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == ("gmail.create_draft input contains unsupported fields: send",)
+    assert transport.requests == []

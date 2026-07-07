@@ -47,6 +47,109 @@ def _write_intelligence_package(root: Path) -> Path:
     return package
 
 
+def _write_policy_decision_package(root: Path) -> Path:
+    package = root / "policy-decision-package"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "policy-decision-package",
+                "description": "Policy gate followed by a decision branch.",
+                "design": {
+                    "intent": "Check a policy gate before selecting an allowed or rejected branch.",
+                    "trigger": "Manual dry-run fixture.",
+                    "inputs": ["fixture input"],
+                    "outputs": ["policy trace"],
+                    "assumptions": ["No external connectors run."],
+                    "side_effects": [],
+                    "approval_gates": [],
+                    "failure_modes": ["policy rejection"],
+                    "rollback": ["No external state changes."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "policy_gate",
+                "steps": [
+                    {
+                        "id": "policy_gate",
+                        "uses": "policy.check",
+                        "side_effect_class": "read",
+                        "with": {"checks": {"tenant_allowlist": True}},
+                        "next": "approve_path",
+                    },
+                    {
+                        "id": "approve_path",
+                        "type": "decision",
+                        "branches": {"allowed": "done", "rejected": "done"},
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "policy",
+                        "adapter": "manual",
+                        "actions": [
+                            {
+                                "id": "check",
+                                "side_effect": False,
+                                "side_effect_class": "read",
+                                "execution_mode": "brokered",
+                                "dry_run_supported": True,
+                                "outputs": {"allowed": ["approved", "allowed", "reason", "matched_rule"]},
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [{"connector": "policy", "actions": ["check"]}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.dry-run/v1",
+                "decision": {"approve_path": "allowed"},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (fixtures / "rejection_path.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.dry-run/v1",
+                "decision": {"approve_path": "rejected"},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "rollback.md").write_text("# Rollback\n\nNo external state changes.\n", encoding="utf-8")
+    return package
+
+
 def test_local_run_happy_path_writes_report_trace_events_and_artifacts(tmp_path: Path) -> None:
     package = _write_package(tmp_path, "telegram_support_ticket")
     run_root = tmp_path / ".workflow-runs"
@@ -148,6 +251,31 @@ def test_local_run_rejection_path_reaches_terminal_without_artifacts(tmp_path: P
     assert report.terminal_step == "rejected"
     assert [step.step_id for step in report.step_trace] == ["check_authorized_customer", "rejected"]
     assert list((run_dir / "artifacts").glob("*.json")) == []
+
+
+def test_local_policy_outputs_reflect_downstream_rejection_decision(tmp_path: Path) -> None:
+    package = _write_policy_decision_package(tmp_path)
+
+    report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="rejection_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=tmp_path / ".workflow-runs",
+            approve_all=True,
+        )
+    )
+
+    policy_action = report.brokered_actions[0]
+    assert report.status == "passed"
+    assert report.terminal_step == "done"
+    assert policy_action.connector_action == "policy.check"
+    assert policy_action.broker_status == "simulated"
+    assert policy_action.simulated_outputs["approved"] is False
+    assert policy_action.simulated_outputs["allowed"] is False
+    assert policy_action.simulated_outputs["matched_rule"] == "decision.approve_path.rejected"
+    assert policy_action.simulated_outputs["reason"] == "policy rejected by fixture decision approve_path=rejected"
+    assert [step.selected_branch for step in report.step_trace if step.step_id == "approve_path"] == ["rejected"]
 
 
 def test_local_run_unauthorized_user_reaches_rejected_without_broker_actions(tmp_path: Path) -> None:
@@ -254,7 +382,16 @@ def test_local_run_without_approval_blocks_before_broker_action(tmp_path: Path) 
     assert approval_requests[0]["allowed_outputs"] == ["ticket_id"]
     assert approval_requests[0]["idempotency_key_fields"] == ["telegram_user_id", "message_text"]
     assert approval_requests[0]["idempotency_key"].startswith("idemp:")
+    assert approval_requests[0]["payload_hash"].startswith("payload:")
+    assert approval_requests[0]["payload_preview_path"].startswith("artifacts/approvals/")
     assert approval_requests[0]["status"] == "pending"
+    payload_preview = json.loads((run_dir / approval_requests[0]["payload_preview_path"]).read_text(encoding="utf-8"))
+    assert payload_preview["version"] == "appv24.approval-payload-preview/v1"
+    assert payload_preview["approval_request_id"] == approval_requests[0]["approval_request_id"]
+    assert payload_preview["payload_hash"] == approval_requests[0]["payload_hash"]
+    assert payload_preview["step_id"] == "create_ticket_draft"
+    assert payload_preview["connector_action"] == "ticket.create_draft"
+    assert payload_preview["idempotency_key"] == approval_requests[0]["idempotency_key"]
 
 
 def test_live_production_run_is_blocked_without_creating_run_artifacts(tmp_path: Path) -> None:

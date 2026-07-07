@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 from typing import Mapping
 
-from appv24.workflows.activation import WorkflowActivationRecord
+from appv24.workflows.activation import WorkflowActivationRecord, WorkflowActivationStore
 from appv24.workflows.run_store import SECRET_VALUE_RE
 
 
@@ -19,6 +20,16 @@ class WebhookIngressDecision:
     activation_id: str
     replay_key: str | None
     event: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class WebhookRunDecision:
+    activation_id: str
+    status: str
+    reason: str
+    replay_key: str | None
+    run_id: str | None = None
+    run_status: str | None = None
 
 
 class WebhookReplayStore:
@@ -70,6 +81,54 @@ def handle_local_webhook(
         activation_id=activation.activation_id,
         replay_key=replay_key,
         event=event,
+    )
+
+
+def handle_local_webhook_run(
+    store: WorkflowActivationStore,
+    activation_id: str,
+    *,
+    payload: bytes,
+    headers: Mapping[str, str],
+    shared_secret: str,
+    replay_store: WebhookReplayStore,
+    now: datetime | None = None,
+) -> WebhookRunDecision:
+    activation = store.get_activation(activation_id)
+    ingress = handle_local_webhook(
+        activation,
+        payload=payload,
+        headers=headers,
+        shared_secret=shared_secret,
+        replay_store=replay_store,
+    )
+    if ingress.status != "accepted":
+        return WebhookRunDecision(
+            activation_id=activation.activation_id,
+            status=ingress.status,
+            reason=ingress.reason,
+            replay_key=ingress.replay_key,
+        )
+
+    timestamp = (now or datetime.now(timezone.utc)).isoformat()
+    store.mark_run_started(activation.activation_id, started_at=timestamp)
+    try:
+        report = store.run_activation(activation.activation_id, finished_at=timestamp)
+    except ValueError as error:
+        return WebhookRunDecision(
+            activation_id=activation.activation_id,
+            status="blocked",
+            reason=str(error),
+            replay_key=ingress.replay_key,
+        )
+
+    return WebhookRunDecision(
+        activation_id=activation.activation_id,
+        status="ran",
+        reason="webhook run finished",
+        replay_key=ingress.replay_key,
+        run_id=report.run_id,
+        run_status=report.status,
     )
 
 

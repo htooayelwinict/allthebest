@@ -59,6 +59,31 @@ def test_live_env_template_renders_source_live_read_placeholders(tmp_path: Path)
     assert "APPV24_SOURCE_BASE_URL=<https-source-base-url>" in rendered
 
 
+def test_live_env_template_renders_brave_search_live_read_placeholders(tmp_path: Path) -> None:
+    package = _write_package(
+        tmp_path,
+        name="public-brave-search",
+        connector_id="brave",
+        action_id="search",
+        scopes=("brave:search",),
+    )
+
+    template = build_workflow_live_env_template(
+        WorkflowRunRequest(
+            package_path=package,
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("brave.search",),
+        )
+    )
+
+    rendered = format_workflow_live_env_template(template)
+    assert "APPV24_BRAVE_CREDENTIAL_REF=<credential-ref>" in rendered
+    assert "APPV24_BRAVE_SCOPES=brave:search" in rendered
+    assert "APPV24_WORKFLOW_LIVE_READ_ENABLED=true" in rendered
+    assert "APPV24_BRAVE_SEARCH_API_KEY=<brave-search-api-key>" in rendered
+    assert "APPV24_BRAVE_SEARCH_BASE_URL=https://api.search.brave.com/res/v1/web/search" in rendered
+
+
 def test_live_env_template_renders_gmail_live_draft_token_alternatives(tmp_path: Path) -> None:
     package = _write_package(
         tmp_path,

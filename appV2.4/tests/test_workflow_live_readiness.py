@@ -169,7 +169,10 @@ def test_live_readiness_reports_production_approval_and_transport_setup(tmp_path
     assert "mode: live-production" in rendered
     assert "- live-production requires approval_run_id" in rendered
     assert "- missing credential ref for telegram; required env: APPV24_TELEGRAM_CREDENTIAL_REF, APPV24_TELEGRAM_SCOPES=telegram:send" in rendered
-    assert "- APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, APPV24_TELEGRAM_BOT_TOKEN" in rendered
+    assert (
+        "- APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
+        "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+    ) in rendered
     assert "telegram-token" not in rendered
     assert not (package / ".workflow-runs").exists()
 

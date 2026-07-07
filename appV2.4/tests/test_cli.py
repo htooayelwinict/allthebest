@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from argparse import Namespace
 from pathlib import Path
@@ -268,6 +269,8 @@ connectors:
       - id: list_dependabot_alerts
         operationId: dependabot_list_alerts
         side_effect: false
+        required_scopes:
+          - dependabot:read
       - id: create_issue
         operationId: issues_create
         side_effect: true
@@ -2358,6 +2361,22 @@ def test_cli_workflow_validation_report_includes_repair_stop_reason(capsys) -> N
     assert "Workflow draft validation: failed" in captured.out
 
 
+def test_cli_workflow_repair_uses_repeated_validation_fuse(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_repair_workflow_draft_messages(messages, run_turn, *, config, on_attempt):
+        captured["config"] = config
+        return cli.WorkflowDraftRepairResult(validation=None, attempts=0, repaired=False, exhausted=False)
+
+    monkeypatch.setattr(cli, "repair_workflow_draft_messages", fake_repair_workflow_draft_messages)
+    app = SimpleNamespace(messages=[], run_turn=lambda prompt: None)
+
+    result = cli._repair_workflow_draft_if_needed(app, "workflow-designer-lite")
+
+    assert result is not None
+    assert captured["config"].max_repeated_validation_results == 4
+
+
 def test_cli_plain_workflow_save_writes_last_valid_draft(monkeypatch, tmp_path, capsys) -> None:
     created: dict[str, object] = {}
     assistant_text = _valid_workflow_draft_text()
@@ -2906,6 +2925,7 @@ def test_cli_plain_workflow_live_production_preflight_passes_without_model(monke
     monkeypatch.setenv("APPV24_TELEGRAM_SCOPES", "telegram:send")
     monkeypatch.setenv("APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED", "true")
     monkeypatch.setenv("APPV24_TELEGRAM_BOT_TOKEN", "telegram-token")
+    monkeypatch.setenv("APPV24_TELEGRAM_ALLOWED_CHAT_IDS", "admin-chat")
 
     class FakeApp:
         def __init__(self, **kwargs):
@@ -3161,7 +3181,7 @@ def test_cli_plain_workflow_run_live_read_creates_blocked_run_without_transport(
     run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
     assert exit_code == 0
     assert "Workflow live-read run: blocked" in captured.out
-    assert "live transport is not configured for github.list_dependabot_alerts" in captured.out
+    assert "live-read transport is not configured for github.list_dependabot_alerts" in captured.out
     assert len(run_dirs) == 1
 
 
@@ -3269,7 +3289,7 @@ def test_cli_plain_workflow_run_live_draft_creates_blocked_run_without_transport
     run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
     assert exit_code == 0
     assert "Workflow live-draft run: blocked" in captured.out
-    assert "live transport is not configured for gmail.create_draft" in captured.out
+    assert "live-draft transport is not configured for gmail.create_draft" in captured.out
     assert len(run_dirs) == 2
 
 
@@ -3310,12 +3330,43 @@ def test_cli_plain_workflow_run_live_draft_uses_env_transport_registry(monkeypat
         def run_turn(self, prompt):
             raise AssertionError(f"model should not run for workflow live-draft command: {prompt}")
 
+    called: dict[str, object] = {}
+
+    def fake_phase_runner(request, *, approval_run_id, live_draft_broker, credential_resolver):
+        called["approval_run_id"] = approval_run_id
+        called["operator_env"] = dict(request.operator_env)
+        live_report = cli.run_live_draft_workflow(
+            WorkflowRunRequest(
+                package_path=request.package_path,
+                fixture_name=request.fixture_name,
+                mode=WorkflowRunMode.LIVE_DRAFT,
+                run_root=request.run_root,
+                approval_run_id=approval_run_id,
+                connector_allowlist=request.connector_allowlist,
+                operator_env=request.operator_env,
+            ),
+            broker=live_draft_broker,
+            credential_resolver=credential_resolver,
+        )
+        return WorkflowPhaseRunReport(
+            status=live_report.status,
+            live_read_run_id="",
+            local_run_id="",
+            approval_run_id=approval_run_id,
+            phase_statuses=(f"live-draft: {live_report.status}",),
+            next_commands=(),
+            live_draft_run_id=live_report.run_id,
+            live_draft_report=live_report,
+            issues=live_report.issues,
+        )
+
     monkeypatch.setattr(
         cli,
         "build_live_draft_transports_from_env",
         lambda env: {"gmail.create_draft": FakeTransport()},
         raising=False,
     )
+    monkeypatch.setattr(cli, "run_workflow_approved_live_draft", fake_phase_runner, raising=False)
     monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
     monkeypatch.setattr(
         cli,
@@ -3334,6 +3385,8 @@ def test_cli_plain_workflow_run_live_draft_uses_env_transport_registry(monkeypat
     captured = capsys.readouterr()
     run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
     assert exit_code == 0
+    assert called["approval_run_id"] == approval_report.run_id
+    assert called["operator_env"] == {}
     assert "Workflow live-draft run: passed" in captured.out
     assert "create_gmail_draft: gmail.create_draft -> live-draft" in captured.out
     assert len(run_dirs) == 2
@@ -3359,6 +3412,8 @@ def test_cli_plain_workflow_run_live_production_uses_env_transport_registry(monk
     prompts = iter([f"/workflow-run-live-production {package.name} happy_path.yaml {approval_report.run_id} --allow telegram.send_message", "/exit"])
     monkeypatch.setenv("APPV24_TELEGRAM_CREDENTIAL_REF", "telegram-prod")
     monkeypatch.setenv("APPV24_TELEGRAM_SCOPES", "telegram:send")
+    monkeypatch.setenv("APPV24_TELEGRAM_ALLOWED_CHAT_IDS", "admin-chat")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "provider-key-should-not-enter-workflow-request")
 
     class FakeTransport:
         def invoke(self, request):
@@ -3380,6 +3435,7 @@ def test_cli_plain_workflow_run_live_production_uses_env_transport_registry(monk
 
     def fake_phase_runner(request, *, approval_run_id, live_production_broker, credential_resolver):
         called["approval_run_id"] = approval_run_id
+        called["operator_env"] = dict(request.operator_env)
         live_report = cli.run_live_production_workflow(
             WorkflowRunRequest(
                 package_path=request.package_path,
@@ -3388,6 +3444,7 @@ def test_cli_plain_workflow_run_live_production_uses_env_transport_registry(monk
                 run_root=request.run_root,
                 approval_run_id=approval_run_id,
                 connector_allowlist=request.connector_allowlist,
+                operator_env=request.operator_env,
             ),
             broker=live_production_broker,
             credential_resolver=credential_resolver,
@@ -3430,9 +3487,109 @@ def test_cli_plain_workflow_run_live_production_uses_env_transport_registry(monk
     run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
     assert exit_code == 0
     assert called["approval_run_id"] == approval_report.run_id
+    assert called["operator_env"] == {
+        "APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat",
+    }
     assert "Workflow live-production run: passed" in captured.out
     assert "notify_admin: telegram.send_message -> live-production" in captured.out
     assert len(run_dirs) == 2
+
+
+def test_cli_plain_workflow_run_live_production_enforces_operator_env_target_policy(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_live_production_workflow_package(tmp_path)
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    store = WorkflowRunStore(package / ".workflow-runs")
+    request = store.read_approval_requests(approval_report.run_id)[0]
+    store.record_approval_decision(
+        approval_report.run_id,
+        request.approval_request_id,
+        ApprovalDecision(approved=True, package_fingerprint=approval_report.package_fingerprint, decided_by="test"),
+    )
+    prompts = iter([f"/workflow-run-live-production {package.name} happy_path.yaml {approval_report.run_id} --allow telegram.send_message", "/exit"])
+    monkeypatch.setenv("APPV24_TELEGRAM_CREDENTIAL_REF", "telegram-prod")
+    monkeypatch.setenv("APPV24_TELEGRAM_SCOPES", "telegram:send")
+    monkeypatch.setenv("APPV24_TELEGRAM_ALLOWED_CHAT_IDS", "other-admin")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "provider-key-should-not-enter-workflow-request")
+
+    class FakeTransport:
+        def invoke(self, request):
+            raise AssertionError("disallowed telegram target must block before transport invocation")
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow live-production command: {prompt}")
+
+    def fake_phase_runner(request, *, approval_run_id, live_production_broker, credential_resolver):
+        live_report = cli.run_live_production_workflow(
+            WorkflowRunRequest(
+                package_path=request.package_path,
+                fixture_name=request.fixture_name,
+                mode=WorkflowRunMode.LIVE_PRODUCTION,
+                run_root=request.run_root,
+                approval_run_id=approval_run_id,
+                connector_allowlist=request.connector_allowlist,
+                operator_env=request.operator_env,
+            ),
+            broker=live_production_broker,
+            credential_resolver=credential_resolver,
+        )
+        return WorkflowPhaseRunReport(
+            status=live_report.status,
+            live_read_run_id="",
+            local_run_id="",
+            approval_run_id=approval_run_id,
+            phase_statuses=(f"live-production: {live_report.status}",),
+            next_commands=(),
+            live_production_run_id=live_report.run_id,
+            live_production_report=live_report,
+            issues=live_report.issues,
+        )
+
+    monkeypatch.setattr(
+        cli,
+        "build_live_production_transports_from_env",
+        lambda env: {"telegram.send_message": FakeTransport()},
+        raising=False,
+    )
+    monkeypatch.setattr(cli, "run_workflow_approved_live_production", fake_phase_runner, raising=False)
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    run_dirs = sorted((package / ".workflow-runs").glob("run-*"))
+    run_manifests = [json.loads((run_dir / "run.json").read_text(encoding="utf-8")) for run_dir in run_dirs]
+    run_manifest = next(manifest for manifest in run_manifests if manifest["mode"] == "live-production")
+    assert exit_code == 0
+    assert "Workflow live-production run: blocked" in captured.out
+    assert "telegram.send_message chat_id is not allowlisted: admin-chat" in captured.out
+    assert run_manifest["operator_env_names"] == [
+        "APPV24_TELEGRAM_ALLOWED_CHAT_IDS",
+    ]
+    assert "other-admin" not in json.dumps(run_manifest)
+    assert "provider-key-should-not-enter-workflow-request" not in json.dumps(run_manifest)
 
 
 def test_cli_plain_workflow_run_live_read_to_approval_prints_phase_report(monkeypatch, tmp_path, capsys) -> None:
@@ -3500,6 +3657,7 @@ def test_cli_plain_workflow_connectors_renders_safe_registry(monkeypatch, tmp_pa
     prompts = iter([f"/workflow-connectors {package.name}", "/exit"])
     monkeypatch.setenv("APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED", "true")
     monkeypatch.setenv("APPV24_TELEGRAM_BOT_TOKEN", "telegram-secret-token")
+    monkeypatch.setenv("APPV24_TELEGRAM_ALLOWED_CHAT_IDS", "admin-chat")
     monkeypatch.setenv("APPV24_TELEGRAM_CREDENTIAL_REF", "telegram-prod")
     monkeypatch.setenv("APPV24_TELEGRAM_SCOPES", "telegram:send")
 
@@ -3848,6 +4006,275 @@ def test_cli_plain_workflow_activation_run_status_and_history(monkeypatch, tmp_p
     assert "Workflow activation history:" in captured.out
     assert "run-1:" in captured.out
     assert len(list((store.root / activation.activation_id / "runs").glob("run-*"))) == 1
+
+
+def test_cli_plain_workflow_activation_tick_runs_due_schedule(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    store = WorkflowActivationStore(tmp_path / ".appv24" / "workflow-activations")
+    activation = store.create_activation(
+        package,
+        trigger_type="schedule",
+        trigger_config={"cron": "*/5 * * * *"},
+        fixture_name="happy_path.yaml",
+        approve_all=True,
+    )
+    prompts = iter([f"/workflow-activation-tick {activation.activation_id}", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError("activation tick command should not call the model")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    updated = store.get_activation(activation.activation_id)
+    assert exit_code == 0
+    assert "Workflow activation tick: ran" in captured.out
+    assert f"activation: {activation.activation_id}" in captured.out
+    assert "trigger: schedule" in captured.out
+    assert "reason: trigger run finished" in captured.out
+    assert "run status: passed" in captured.out
+    assert updated.last_run_id is not None
+    assert store.history(activation.activation_id) == (updated.last_run_id,)
+
+
+def test_cli_plain_workflow_activation_tick_all_runs_due_automatic_triggers(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    store = WorkflowActivationStore(tmp_path / ".appv24" / "workflow-activations")
+    schedule = store.create_activation(package, trigger_type="schedule", fixture_name="happy_path.yaml", approve_all=True)
+    poll = store.create_activation(package, trigger_type="poll", fixture_name="happy_path.yaml", approve_all=True)
+    manual = store.create_activation(package, trigger_type="manual", fixture_name="happy_path.yaml", approve_all=True)
+    disabled = store.create_activation(
+        package,
+        trigger_type="schedule",
+        fixture_name="happy_path.yaml",
+        enabled=False,
+        approve_all=True,
+    )
+    prompts = iter(["/workflow-activation-tick-all", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError("activation sweep command should not call the model")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow activation sweep: ran" in captured.out
+    assert "checked: 4" in captured.out
+    assert "ran: 2" in captured.out
+    assert "skipped: 2" in captured.out
+    assert f"- {schedule.activation_id} schedule ran trigger run finished" in captured.out
+    assert f"- {poll.activation_id} poll ran trigger run finished" in captured.out
+    assert f"- {manual.activation_id} manual skipped trigger type is not automatic: manual" in captured.out
+    assert f"- {disabled.activation_id} schedule disabled activation disabled" in captured.out
+    assert store.get_activation(schedule.activation_id).last_run_id is not None
+    assert store.get_activation(poll.activation_id).last_run_id is not None
+    assert store.history(manual.activation_id) == ()
+    assert store.history(disabled.activation_id) == ()
+
+
+def test_cli_plain_workflow_activation_loop_runs_bounded_ticks(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    store = WorkflowActivationStore(tmp_path / ".appv24" / "workflow-activations")
+    activation = store.create_activation(
+        package,
+        trigger_type="schedule",
+        fixture_name="happy_path.yaml",
+        cooldown_seconds=60,
+        approve_all=True,
+    )
+    prompts = iter(["/workflow-activation-loop 2 0", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError("activation loop command should not call the model")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow activation loop: ran" in captured.out
+    assert "ticks: 2" in captured.out
+    assert "interval seconds: 0" in captured.out
+    assert "ran: 1" in captured.out
+    assert "tick 1: ran checked=1 ran=1 skipped=0 blocked=0" in captured.out
+    assert "tick 2: idle checked=1 ran=0 skipped=1 blocked=0" in captured.out
+    assert store.history(activation.activation_id) == (store.get_activation(activation.activation_id).last_run_id,)
+
+
+def test_cli_workflow_service_runtime_parsers_accept_export_bounds() -> None:
+    assert cli._parse_activation_loop_ticks("1000000") == 1_000_000
+    assert cli._parse_webhook_server_max_requests("1000000") == 1_000_000
+
+
+def test_cli_plain_workflow_activation_webhook_run_accepts_once(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_golden_workflow_package(tmp_path, "telegram_support_ticket")
+    payload = tmp_path / "webhook.json"
+    payload.write_text('{"message":"hello"}\n', encoding="utf-8")
+    store = WorkflowActivationStore(tmp_path / ".appv24" / "workflow-activations")
+    activation = store.create_activation(
+        package,
+        trigger_type="webhook",
+        fixture_name="happy_path.yaml",
+        approve_all=True,
+    )
+    prompts = iter(
+        [
+            f"/workflow-activation-webhook-run {activation.activation_id} {payload.name} delivery-1",
+            f"/workflow-activation-webhook-run {activation.activation_id} {payload.name} delivery-1",
+            "/exit",
+        ]
+    )
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError("activation webhook command should not call the model")
+
+    monkeypatch.setenv("APPV24_WORKFLOW_WEBHOOK_SECRET", "local-secret")
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    updated = store.get_activation(activation.activation_id)
+    assert exit_code == 0
+    assert "Workflow activation webhook run: ran" in captured.out
+    assert f"activation: {activation.activation_id}" in captured.out
+    assert "replay key: delivery-1" in captured.out
+    assert "reason: webhook run finished" in captured.out
+    assert "run status: passed" in captured.out
+    assert "Workflow activation webhook run: blocked" in captured.out
+    assert "reason: duplicate webhook replay key" in captured.out
+    assert updated.last_run_id is not None
+    assert store.history(activation.activation_id) == (updated.last_run_id,)
+
+
+def test_cli_plain_workflow_webhook_serve_uses_env_secret_and_bounded_requests(monkeypatch, tmp_path, capsys) -> None:
+    prompts = iter(["/workflow-webhook-serve 1000000 127.0.0.1 0", "/exit"])
+    captured_config: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError("webhook serve command should not call the model")
+
+    def fake_serve(config, *, max_requests):
+        captured_config["activation_root"] = config.activation_root
+        captured_config["replay_root"] = config.replay_root
+        captured_config["shared_secret"] = config.shared_secret
+        captured_config["host"] = config.host
+        captured_config["port"] = config.port
+        captured_config["max_requests"] = max_requests
+        return cli.WorkflowWebhookServerReport(
+            status="ran",
+            host=config.host,
+            port=config.port,
+            handled=1,
+            ran=1,
+            blocked=0,
+        )
+
+    monkeypatch.setenv("APPV24_WORKFLOW_WEBHOOK_SECRET", "local-secret")
+    monkeypatch.setattr(cli, "serve_workflow_webhooks", fake_serve)
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured_config == {
+        "activation_root": tmp_path / ".appv24" / "workflow-activations",
+        "replay_root": tmp_path / ".appv24" / "webhook-replays",
+        "shared_secret": "local-secret",
+        "host": "127.0.0.1",
+        "port": 0,
+        "max_requests": 1_000_000,
+    }
+    assert "Workflow webhook server: ran" in captured.out
+    assert "handled: 1" in captured.out
+    assert "ran: 1" in captured.out
 
 
 def test_cli_plain_workflow_activation_run_explain(monkeypatch, tmp_path, capsys) -> None:

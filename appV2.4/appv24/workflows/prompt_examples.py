@@ -43,7 +43,7 @@ Mutating step and action shape:
 ```yaml
 steps:
   - id: create_ticket
-    uses: ticketing.create_ticket
+    uses: ticket.create_draft
     side_effect_class: create
     approval: approve_create_ticket
     next: done
@@ -149,7 +149,7 @@ Approval wiring shape:
 ```yaml
 steps:
   - id: create_ticket
-    uses: ticketing.create_ticket
+    uses: ticket.create_draft
     side_effect_class: create
     approval: approve_create_ticket
     next: done
@@ -226,7 +226,7 @@ Runtime transition shape:
 ```yaml
 steps:
   - id: create_ticket
-    uses: ticketing.create_ticket
+    uses: ticket.create_draft
     side_effect_class: create
     approval: approve_create_ticket
     next: done

@@ -177,7 +177,7 @@ class WorkflowActivationStore:
         self._append_history(updated.activation_id, run_id)
         return updated
 
-    def run_activation(self, activation_id: str) -> WorkflowRunReport:
+    def run_activation(self, activation_id: str, *, finished_at: str | None = None) -> WorkflowRunReport:
         activation = self.get_activation(activation_id)
         if not activation.enabled:
             raise ValueError(f"workflow activation is disabled: {activation.activation_id}")
@@ -204,6 +204,7 @@ class WorkflowActivationStore:
             activation,
             last_run_id=report.run_id,
             last_status=report.status,
+            last_finished_at=finished_at if finished_at is not None else activation.last_finished_at,
             consecutive_failures=0 if report.status == "passed" else activation.consecutive_failures + 1,
         )
         self._write_activation(updated)

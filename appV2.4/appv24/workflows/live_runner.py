@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from appv24.workflows.approval_gate import ApprovalIndexKey, build_payload_bound_approval_index
 from appv24.workflows.broker import BrokerRequest
 from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.compiler import compile_workflow_documents
@@ -14,7 +16,7 @@ from appv24.workflows.credential_refs import CredentialRefResolver, preflight_cr
 from appv24.workflows.execution import WorkflowRunEvent, WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import require_fixture
-from appv24.workflows.idempotency import build_idempotency_key
+from appv24.workflows.idempotency import PersistentIdempotencyStore, build_idempotency_key, build_idempotency_payload_hash
 from appv24.workflows.ir import ActionCapability, StepKind, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import StepTrace
 from appv24.workflows.live_broker import LiveWorkflowBroker
@@ -84,6 +86,7 @@ def run_live_read_workflow(
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
     store = WorkflowRunStore(request.run_root or (Path(request.package_path) / ".workflow-runs"))
+    fixture = _fixture_with_prior_run_outputs(fixture, store, request.approval_run_id)
     run_id = store.create_run(
         workflow_name,
         package_fingerprint,
@@ -141,7 +144,7 @@ def run_live_read_workflow(
         connector_allowlist=set(request.connector_allowlist),
         approval_index={},
         available_transports=broker.configured_actions,
-        env={},
+        env=request.operator_env,
     )
     if not live_gate.ok:
         gate_issues = _live_gate_issue_messages(live_gate)
@@ -265,6 +268,7 @@ def run_live_draft_workflow(
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
     store = WorkflowRunStore(request.run_root or (Path(request.package_path) / ".workflow-runs"))
+    fixture = _fixture_with_prior_run_outputs(fixture, store, request.approval_run_id)
     run_id = store.create_run(
         workflow_name,
         package_fingerprint,
@@ -318,6 +322,8 @@ def run_live_draft_workflow(
         store,
         request.approval_run_id,
         package_fingerprint=package_fingerprint,
+        ir=compiled.ir,
+        fixture=fixture,
     )
     if approval_issues:
         append_event("approval_preflight_blocked", "blocked", issues=list(approval_issues))
@@ -334,7 +340,15 @@ def run_live_draft_workflow(
             events=events,
             issues=approval_issues,
         )
-    append_event("approval_preflight_passed", "passed", approval_run_id=request.approval_run_id)
+    start_step = _approved_live_start_step(
+        compiled.ir,
+        fixture,
+        package_fingerprint=package_fingerprint,
+        approval_index=approval_index,
+        connector_allowlist=set(request.connector_allowlist),
+        mode=request.mode,
+    )
+    append_event("approval_preflight_passed", "passed", approval_run_id=request.approval_run_id, start_step=start_step)
 
     live_gate = evaluate_live_gate(
         compiled.ir,
@@ -344,7 +358,8 @@ def run_live_draft_workflow(
         connector_allowlist=set(request.connector_allowlist),
         approval_index=approval_index,
         available_transports=broker.configured_actions,
-        env={},
+        env=request.operator_env,
+        start_step=start_step,
     )
     if not live_gate.ok:
         gate_issues = _live_gate_issue_messages(live_gate)
@@ -391,10 +406,12 @@ def run_live_draft_workflow(
         compiled.ir,
         fixture,
         broker=broker,
+        idempotency_store=PersistentIdempotencyStore(store.root / "idempotency.jsonl"),
         package_fingerprint=package_fingerprint,
         connector_allowlist=set(request.connector_allowlist),
         approval_index=approval_index,
         append_event=append_event,
+        start_step=start_step,
     )
     append_event("run_completed", result.status, terminal_step=result.terminal_step, issues=list(result.issues))
     return _persist_report(
@@ -469,6 +486,7 @@ def run_live_production_workflow(
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
     store = WorkflowRunStore(request.run_root or (Path(request.package_path) / ".workflow-runs"))
+    fixture = _fixture_with_prior_run_outputs(fixture, store, request.approval_run_id)
     run_id = store.create_run(
         workflow_name,
         package_fingerprint,
@@ -522,6 +540,8 @@ def run_live_production_workflow(
         store,
         request.approval_run_id,
         package_fingerprint=package_fingerprint,
+        ir=compiled.ir,
+        fixture=fixture,
         mode="live-production",
     )
     if approval_issues:
@@ -539,7 +559,15 @@ def run_live_production_workflow(
             events=events,
             issues=approval_issues,
         )
-    append_event("approval_preflight_passed", "passed", approval_run_id=request.approval_run_id)
+    start_step = _approved_live_start_step(
+        compiled.ir,
+        fixture,
+        package_fingerprint=package_fingerprint,
+        approval_index=approval_index,
+        connector_allowlist=set(request.connector_allowlist),
+        mode=request.mode,
+    )
+    append_event("approval_preflight_passed", "passed", approval_run_id=request.approval_run_id, start_step=start_step)
 
     live_gate = evaluate_live_gate(
         compiled.ir,
@@ -549,7 +577,8 @@ def run_live_production_workflow(
         connector_allowlist=set(request.connector_allowlist),
         approval_index=approval_index,
         available_transports=broker.configured_actions,
-        env={},
+        env=request.operator_env,
+        start_step=start_step,
     )
     if not live_gate.ok:
         gate_issues = _live_gate_issue_messages(live_gate)
@@ -596,10 +625,12 @@ def run_live_production_workflow(
         compiled.ir,
         fixture,
         broker=broker,
+        idempotency_store=PersistentIdempotencyStore(store.root / "idempotency.jsonl"),
         package_fingerprint=package_fingerprint,
         connector_allowlist=set(request.connector_allowlist),
         approval_index=approval_index,
         append_event=append_event,
+        start_step=start_step,
     )
     append_event("run_completed", result.status, terminal_step=result.terminal_step, issues=list(result.issues))
     return _persist_report(
@@ -771,15 +802,17 @@ def _execute_live_draft(
     fixture: Mapping[str, Any],
     *,
     broker: LiveWorkflowBroker,
+    idempotency_store: PersistentIdempotencyStore,
     package_fingerprint: str,
     connector_allowlist: set[str],
     approval_index: Mapping[tuple[str, str, str | None], bool],
     append_event: Callable[..., None],
+    start_step: str | None = None,
 ) -> _ExecutionResult:
     trace: list[StepTrace] = []
     brokered_actions: list[WorkflowBrokeredActionPreview] = []
     issues: list[str] = []
-    current = ir.entrypoint
+    current = start_step or ir.entrypoint
     transitions = 0
 
     while current:
@@ -840,22 +873,70 @@ def _execute_live_draft(
             fixture=fixture,
             append_event=append_event,
         )
-        outputs, broker_status, broker_provider_id, broker_issues = _invoke_broker(ir, step, fixture, broker, append_event)
-        if action is not None and step.uses is not None:
-            brokered_actions.append(
-                WorkflowBrokeredActionPreview(
-                    step_id=step.step_id,
-                    connector_action=step.uses.dotted,
-                    approval_id=step.approval,
-                    side_effect_class=step.side_effect_class,
-                    allowed_outputs=action.allowed_outputs,
-                    idempotency_key_fields=action.idempotency_key_fields,
-                    idempotency_key=_idempotency_key(package_fingerprint, step, action, fixture),
-                    broker_status=broker_status,
-                    broker_provider_id=broker_provider_id,
-                    simulated_outputs=dict(outputs),
-                )
+        reused_outputs, reused_issue = _reuse_committed_idempotency_result(
+            step,
+            action,
+            fixture,
+            idempotency_store=idempotency_store,
+            package_fingerprint=package_fingerprint,
+            append_event=append_event,
+        )
+        if reused_issue is not None:
+            issues.append(reused_issue)
+            trace.append(_trace(step, "blocked", issues=(reused_issue,)))
+            append_event(
+                "step_blocked",
+                "blocked",
+                step_id=step.step_id,
+                connector_action=_connector_action(step),
+                issue=reused_issue,
             )
+            return _result("blocked", None, trace, brokered_actions, issues)
+        if reused_outputs is not None:
+            _append_brokered_action_preview(
+                brokered_actions,
+                step,
+                action,
+                package_fingerprint=package_fingerprint,
+                fixture=fixture,
+                outputs=reused_outputs,
+                broker_status="idempotency-reused",
+                broker_provider_id="idempotency",
+            )
+            trace.append(_trace(step, "completed", outputs=reused_outputs, broker_status="idempotency-reused", broker_provider_id="idempotency"))
+            append_event(
+                "step_completed",
+                "completed",
+                step_id=step.step_id,
+                connector_action=_connector_action(step),
+                outputs=dict(reused_outputs),
+                broker_status="idempotency-reused",
+            )
+            current = step.next_step
+            continue
+        outputs, broker_status, broker_provider_id, broker_issues = _invoke_broker(ir, step, fixture, broker, append_event)
+        _append_brokered_action_preview(
+            brokered_actions,
+            step,
+            action,
+            package_fingerprint=package_fingerprint,
+            fixture=fixture,
+            outputs=outputs,
+            broker_status=broker_status,
+            broker_provider_id=broker_provider_id,
+        )
+        if not broker_issues:
+            commit_issue = _commit_idempotency_result(
+                step,
+                action,
+                fixture,
+                outputs,
+                idempotency_store=idempotency_store,
+                package_fingerprint=package_fingerprint,
+                append_event=append_event,
+            )
+            if commit_issue is not None:
+                broker_issues = (*broker_issues, commit_issue)
         if broker_issues:
             issues.extend(broker_issues)
             trace.append(
@@ -896,15 +977,17 @@ def _execute_live_production(
     fixture: Mapping[str, Any],
     *,
     broker: LiveWorkflowBroker,
+    idempotency_store: PersistentIdempotencyStore,
     package_fingerprint: str,
     connector_allowlist: set[str],
     approval_index: Mapping[tuple[str, str, str | None], bool],
     append_event: Callable[..., None],
+    start_step: str | None = None,
 ) -> _ExecutionResult:
     trace: list[StepTrace] = []
     brokered_actions: list[WorkflowBrokeredActionPreview] = []
     issues: list[str] = []
-    current = ir.entrypoint
+    current = start_step or ir.entrypoint
     transitions = 0
 
     while current:
@@ -965,22 +1048,70 @@ def _execute_live_production(
             fixture=fixture,
             append_event=append_event,
         )
-        outputs, broker_status, broker_provider_id, broker_issues = _invoke_broker(ir, step, fixture, broker, append_event)
-        if action is not None and step.uses is not None:
-            brokered_actions.append(
-                WorkflowBrokeredActionPreview(
-                    step_id=step.step_id,
-                    connector_action=step.uses.dotted,
-                    approval_id=step.approval,
-                    side_effect_class=step.side_effect_class,
-                    allowed_outputs=action.allowed_outputs,
-                    idempotency_key_fields=action.idempotency_key_fields,
-                    idempotency_key=_idempotency_key(package_fingerprint, step, action, fixture),
-                    broker_status=broker_status,
-                    broker_provider_id=broker_provider_id,
-                    simulated_outputs=dict(outputs),
-                )
+        reused_outputs, reused_issue = _reuse_committed_idempotency_result(
+            step,
+            action,
+            fixture,
+            idempotency_store=idempotency_store,
+            package_fingerprint=package_fingerprint,
+            append_event=append_event,
+        )
+        if reused_issue is not None:
+            issues.append(reused_issue)
+            trace.append(_trace(step, "blocked", issues=(reused_issue,)))
+            append_event(
+                "step_blocked",
+                "blocked",
+                step_id=step.step_id,
+                connector_action=_connector_action(step),
+                issue=reused_issue,
             )
+            return _result("blocked", None, trace, brokered_actions, issues)
+        if reused_outputs is not None:
+            _append_brokered_action_preview(
+                brokered_actions,
+                step,
+                action,
+                package_fingerprint=package_fingerprint,
+                fixture=fixture,
+                outputs=reused_outputs,
+                broker_status="idempotency-reused",
+                broker_provider_id="idempotency",
+            )
+            trace.append(_trace(step, "completed", outputs=reused_outputs, broker_status="idempotency-reused", broker_provider_id="idempotency"))
+            append_event(
+                "step_completed",
+                "completed",
+                step_id=step.step_id,
+                connector_action=_connector_action(step),
+                outputs=dict(reused_outputs),
+                broker_status="idempotency-reused",
+            )
+            current = step.next_step
+            continue
+        outputs, broker_status, broker_provider_id, broker_issues = _invoke_broker(ir, step, fixture, broker, append_event)
+        _append_brokered_action_preview(
+            brokered_actions,
+            step,
+            action,
+            package_fingerprint=package_fingerprint,
+            fixture=fixture,
+            outputs=outputs,
+            broker_status=broker_status,
+            broker_provider_id=broker_provider_id,
+        )
+        if not broker_issues:
+            commit_issue = _commit_idempotency_result(
+                step,
+                action,
+                fixture,
+                outputs,
+                idempotency_store=idempotency_store,
+                package_fingerprint=package_fingerprint,
+                append_event=append_event,
+            )
+            if commit_issue is not None:
+                broker_issues = (*broker_issues, commit_issue)
         if broker_issues:
             issues.extend(broker_issues)
             trace.append(
@@ -1036,6 +1167,108 @@ def _live_gate_issue_messages(live_gate: Any) -> tuple[str, ...]:
     return tuple(issue.message for issue in live_gate.issues)
 
 
+def _approved_live_start_step(
+    ir: WorkflowIR,
+    fixture: Mapping[str, Any],
+    *,
+    package_fingerprint: str,
+    approval_index: Mapping[tuple[str, str, str | None], bool],
+    connector_allowlist: set[str],
+    mode: WorkflowRunMode,
+) -> str | None:
+    current = ir.entrypoint
+    transitions = 0
+
+    while current:
+        transitions += 1
+        if transitions > MAX_TRANSITIONS:
+            return None
+        step = ir.steps.get(current)
+        if step is None or step.kind is StepKind.TERMINAL:
+            return None
+        if step.kind is StepKind.DECISION:
+            _, current = _select_branch(step, fixture)
+            continue
+        if step.uses is None:
+            current = step.next_step
+            continue
+        action = _action_for_step(ir, step)
+        action_ref = step.uses.dotted
+        if (
+            action is not None
+            and action_ref in connector_allowlist
+            and _approved_start_mode_matches(step, action, action_ref=action_ref, mode=mode)
+        ):
+            idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
+            if approval_index.get((step.step_id, action_ref, idempotency_key)) is True:
+                return step.step_id
+        current = step.next_step
+    return None
+
+
+def _fixture_with_prior_run_outputs(
+    fixture: Mapping[str, Any],
+    store: WorkflowRunStore,
+    approval_run_id: str | None,
+) -> dict[str, Any]:
+    merged = dict(fixture)
+    if not approval_run_id:
+        return merged
+    try:
+        trace_payload = json.loads((store.run_dir(approval_run_id) / "trace.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return merged
+    outputs = _trace_outputs(trace_payload if isinstance(trace_payload, Mapping) else {})
+    if not outputs:
+        return merged
+    raw_steps = merged.get("steps")
+    steps: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_steps, Mapping):
+        for step_id, value in raw_steps.items():
+            if isinstance(step_id, str) and isinstance(value, Mapping):
+                steps[step_id] = {str(key): item for key, item in value.items()}
+    for step_id, step_outputs in outputs.items():
+        step_entry = dict(steps.get(step_id, {}))
+        step_entry["outputs"] = step_outputs
+        steps[step_id] = step_entry
+    merged["steps"] = steps
+    return merged
+
+
+def _trace_outputs(trace_payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    outputs: dict[str, dict[str, Any]] = {}
+    trace = trace_payload.get("trace")
+    if not isinstance(trace, list):
+        return outputs
+    for item in trace:
+        if not isinstance(item, Mapping) or item.get("status") != "completed":
+            continue
+        step_id = item.get("step_id")
+        simulated_outputs = item.get("simulated_outputs")
+        if isinstance(step_id, str) and isinstance(simulated_outputs, Mapping) and simulated_outputs:
+            outputs[step_id] = {str(key): value for key, value in simulated_outputs.items()}
+    return outputs
+
+
+def _approved_start_mode_matches(
+    step: WorkflowStep,
+    action: ActionCapability,
+    *,
+    action_ref: str,
+    mode: WorkflowRunMode,
+) -> bool:
+    if not _is_mutating_step(step, action):
+        return False
+    metadata = builtin_connector_catalog().actions.get(action_ref)
+    if metadata is None:
+        return False
+    if mode is WorkflowRunMode.LIVE_DRAFT:
+        return metadata.live_draft_eligible
+    if mode is WorkflowRunMode.LIVE_PRODUCTION:
+        return metadata.live_production_enabled
+    return False
+
+
 def _append_package_gate_passed_events(append_event: Callable[..., None]) -> None:
     append_event("package_validation_passed", "passed")
     append_event("compile_passed", "passed")
@@ -1063,6 +1296,98 @@ def _append_idempotency_reservation(
         connector_action=step.uses.dotted,
         idempotency_key=idempotency_key,
         idempotency_key_fields=list(action.idempotency_key_fields),
+    )
+
+
+def _reuse_committed_idempotency_result(
+    step: WorkflowStep,
+    action: ActionCapability | None,
+    fixture: Mapping[str, Any],
+    *,
+    idempotency_store: PersistentIdempotencyStore,
+    package_fingerprint: str,
+    append_event: Callable[..., None],
+) -> tuple[Mapping[str, Any] | None, str | None]:
+    if action is None or step.uses is None or not _is_mutating_step(step, action):
+        return None, None
+    idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
+    if idempotency_key is None:
+        return None, None
+    payload_hash = build_idempotency_payload_hash(input_ref=step.raw, fixture=fixture)
+    try:
+        reused = idempotency_store.reuse_committed(idempotency_key, payload_hash=payload_hash)
+    except ValueError as error:
+        return None, str(error)
+    if reused is None:
+        return None, None
+    append_event(
+        "idempotency_reused",
+        "reused",
+        step_id=step.step_id,
+        connector_action=step.uses.dotted,
+        idempotency_key=idempotency_key,
+        payload_hash=payload_hash,
+    )
+    return reused, None
+
+
+def _commit_idempotency_result(
+    step: WorkflowStep,
+    action: ActionCapability | None,
+    fixture: Mapping[str, Any],
+    outputs: Mapping[str, Any],
+    *,
+    idempotency_store: PersistentIdempotencyStore,
+    package_fingerprint: str,
+    append_event: Callable[..., None],
+) -> str | None:
+    if action is None or step.uses is None or not _is_mutating_step(step, action):
+        return None
+    idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
+    if idempotency_key is None:
+        return None
+    payload_hash = build_idempotency_payload_hash(input_ref=step.raw, fixture=fixture)
+    try:
+        idempotency_store.record_or_reuse(idempotency_key, outputs, payload_hash=payload_hash)
+    except ValueError as error:
+        return str(error)
+    append_event(
+        "idempotency_committed",
+        "committed",
+        step_id=step.step_id,
+        connector_action=step.uses.dotted,
+        idempotency_key=idempotency_key,
+        payload_hash=payload_hash,
+    )
+    return None
+
+
+def _append_brokered_action_preview(
+    brokered_actions: list[WorkflowBrokeredActionPreview],
+    step: WorkflowStep,
+    action: ActionCapability | None,
+    *,
+    package_fingerprint: str,
+    fixture: Mapping[str, Any],
+    outputs: Mapping[str, Any],
+    broker_status: str | None,
+    broker_provider_id: str | None,
+) -> None:
+    if action is None or step.uses is None:
+        return
+    brokered_actions.append(
+        WorkflowBrokeredActionPreview(
+            step_id=step.step_id,
+            connector_action=step.uses.dotted,
+            approval_id=step.approval,
+            side_effect_class=step.side_effect_class,
+            allowed_outputs=action.allowed_outputs,
+            idempotency_key_fields=action.idempotency_key_fields,
+            idempotency_key=_idempotency_key(package_fingerprint, step, action, fixture),
+            broker_status=broker_status,
+            broker_provider_id=broker_provider_id,
+            simulated_outputs=dict(outputs),
+        )
     )
 
 
@@ -1121,13 +1446,13 @@ def _live_read_gate_issue(step: WorkflowStep, action: ActionCapability | None, c
         return f"unknown action for step {step.step_id}"
     if _is_mutating_step(step, action):
         return f"live-read cannot execute mutating step {step.step_id}"
-    if step.uses.dotted not in connector_allowlist:
-        return f"live-read action is not allowlisted: {step.uses.dotted}"
     metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
     if metadata is None:
         return f"live-read action is not cataloged: {step.uses.dotted}"
     if not metadata.live_read_eligible:
         return f"live-read action is not live-read eligible: {step.uses.dotted}"
+    if step.uses.dotted not in connector_allowlist:
+        return f"live-read action is not allowlisted: {step.uses.dotted}"
     return None
 
 
@@ -1276,6 +1601,8 @@ def _live_draft_approval_index(
     approval_run_id: str | None,
     *,
     package_fingerprint: str,
+    ir: WorkflowIR,
+    fixture: Mapping[str, Any],
     mode: str = "live-draft",
 ) -> tuple[dict[tuple[str, str, str | None], bool], tuple[str, ...]]:
     if not approval_run_id:
@@ -1287,17 +1614,33 @@ def _live_draft_approval_index(
         decisions = store.read_approval_decisions(approval_run_id)
     except ValueError:
         return {}, (f"unknown approval run: {approval_run_id}",)
-    approved: dict[tuple[str, str, str | None], bool] = {}
-    for decision in decisions:
-        if decision.get("package_fingerprint") != package_fingerprint:
+    return build_payload_bound_approval_index(
+        decisions,
+        package_fingerprint=package_fingerprint,
+        expected_payload_hashes=_expected_approval_payload_hashes(ir, fixture, package_fingerprint),
+    )
+
+
+def _expected_approval_payload_hashes(
+    ir: WorkflowIR,
+    fixture: Mapping[str, Any],
+    package_fingerprint: str,
+) -> dict[ApprovalIndexKey, str]:
+    expected: dict[ApprovalIndexKey, str] = {}
+    for step in ir.steps.values():
+        if step.uses is None:
             continue
-        step_id = decision.get("step_id")
-        connector_action = decision.get("connector_action")
-        if not isinstance(step_id, str) or not isinstance(connector_action, str):
+        action = _action_for_step(ir, step)
+        if action is None or not _is_mutating_step(step, action):
             continue
-        key = (step_id, connector_action, decision.get("idempotency_key") if isinstance(decision.get("idempotency_key"), str) else None)
-        approved[key] = decision.get("approved") is True and decision.get("status") == "approved"
-    return approved, ()
+        idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
+        if idempotency_key is None:
+            continue
+        expected[(step.step_id, step.uses.dotted, idempotency_key)] = build_idempotency_payload_hash(
+            input_ref=step.raw,
+            fixture=fixture,
+        )
+    return expected
 
 
 def _trace(

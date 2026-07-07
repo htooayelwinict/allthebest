@@ -64,7 +64,7 @@ from appv24.workflows.iac_export import (
     export_deployment_intent_from_path,
     format_deployment_intent,
 )
-from appv24.workflows.idempotency import IdempotencyStore
+from appv24.workflows.idempotency import IdempotencyStore, PersistentIdempotencyStore
 from appv24.workflows.ir import WorkflowCompileResult, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import SimulationLedger, StepTrace
 from appv24.workflows.live_broker import LiveWorkflowBroker, LiveWorkflowTransport
@@ -104,6 +104,7 @@ from appv24.workflows.local_artifacts import LocalArtifactProviders
 from appv24.workflows.phase_runner import (
     WorkflowPhaseRunReport,
     format_workflow_phase_run_report,
+    run_workflow_approved_live_draft,
     run_workflow_approved_live_production,
     run_workflow_live_read_to_approval,
 )
@@ -127,7 +128,19 @@ from appv24.workflows.run_preview import (
 )
 from appv24.workflows.run_store import WorkflowRunStore
 from appv24.workflows.runner import format_workflow_run_report, run_workflow, run_workflow_from_handoff
-from appv24.workflows.scheduler import TriggerTickDecision, evaluate_trigger_tick
+from appv24.workflows.scheduler import (
+    TriggerLoopReport,
+    TriggerRunDecision,
+    TriggerSweepReport,
+    TriggerTickDecision,
+    evaluate_trigger_tick,
+    format_trigger_loop_report,
+    format_trigger_sweep_report,
+    run_activation_scheduler_loop,
+    run_due_activation_sweep,
+    run_due_activation_tick,
+)
+from appv24.workflows.service_export import LocalServiceExport, build_local_service_export, format_local_service_export
 from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.staging import (
     WorkflowDraftStageConfig,
@@ -143,7 +156,13 @@ from appv24.workflows.validator import (
     validate_workflow_draft_text,
     validate_workflow_package,
 )
-from appv24.workflows.webhook_ingress import WebhookIngressDecision, WebhookReplayStore, handle_local_webhook
+from appv24.workflows.webhook_ingress import WebhookIngressDecision, WebhookReplayStore, WebhookRunDecision, handle_local_webhook, handle_local_webhook_run
+from appv24.workflows.webhook_server import (
+    WorkflowWebhookServerConfig,
+    WorkflowWebhookServerReport,
+    format_workflow_webhook_server_report,
+    serve_workflow_webhooks,
+)
 
 __all__ = (
     "WorkflowActivationRecord",
@@ -179,13 +198,20 @@ __all__ = (
     "WorkflowRunRequest",
     "WorkflowRunExplanation",
     "WorkflowTriggerState",
+    "TriggerLoopReport",
+    "TriggerRunDecision",
+    "TriggerSweepReport",
     "TriggerTickDecision",
     "WebhookIngressDecision",
     "WebhookReplayStore",
+    "WebhookRunDecision",
+    "WorkflowWebhookServerConfig",
+    "WorkflowWebhookServerReport",
     "WorkflowLiveEnvTemplate",
     "WorkflowLivePlan",
     "WorkflowLiveReadinessReport",
     "WorkflowRunStore",
+    "LocalServiceExport",
     "BrokerRequest",
     "BrokerResult",
     "CredentialPreflightReport",
@@ -193,6 +219,7 @@ __all__ = (
     "CredentialScope",
     "GoldenWorkflowExample",
     "IdempotencyStore",
+    "PersistentIdempotencyStore",
     "LiveWorkflowBroker",
     "LiveWorkflowTransport",
     "LiveDraftPreflightReport",
@@ -225,6 +252,7 @@ __all__ = (
     "build_workflow_live_env_template",
     "build_workflow_live_plan_from_path",
     "build_workflow_bundle",
+    "build_local_service_export",
     "check_workflow_bundle",
     "build_live_draft_transports_from_env",
     "build_live_production_transports_from_env",
@@ -242,10 +270,17 @@ __all__ = (
     "format_workflow_live_readiness_report",
     "format_workflow_bundle_export",
     "format_workflow_bundle_check",
+    "format_local_service_export",
+    "format_trigger_loop_report",
+    "format_trigger_sweep_report",
+    "format_workflow_webhook_server_report",
     "run_workflow",
     "run_workflow_from_handoff",
+    "run_workflow_approved_live_draft",
     "run_workflow_approved_live_production",
     "run_workflow_live_read_to_approval",
+    "run_activation_scheduler_loop",
+    "run_due_activation_sweep",
     "run_live_draft_workflow",
     "run_live_production_workflow",
     "run_live_read_workflow",
@@ -279,10 +314,13 @@ __all__ = (
     "require_fixture",
     "resume_approval",
     "handle_local_webhook",
+    "serve_workflow_webhooks",
     "run_workflow_draft_stages",
     "save_workflow_draft_blocks",
     "should_stage_workflow_drafts",
     "simulate_workflow_fixture",
+    "run_due_activation_tick",
+    "handle_local_webhook_run",
     "validate_workflow_documents",
     "validate_workflow_draft_text",
     "validate_workflow_package",

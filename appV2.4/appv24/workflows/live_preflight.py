@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from appv24.workflows.approval_gate import ApprovalIndexKey, build_payload_bound_approval_index
 from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.compiler import compile_workflow_documents
+from appv24.workflows.connector_contracts import builtin_connector_contract_catalog
 from appv24.workflows.connector_packs import builtin_connector_catalog
 from appv24.workflows.credential_refs import (
     CredentialRefResolver,
@@ -18,9 +20,10 @@ from appv24.workflows.credential_refs import (
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import require_fixture
-from appv24.workflows.idempotency import build_idempotency_key
+from appv24.workflows.idempotency import build_idempotency_key, build_idempotency_payload_hash
 from appv24.workflows.ir import ActionCapability, StepKind, WorkflowIR, WorkflowStep
 from appv24.workflows.loader import load_package_documents
+from appv24.workflows.http_safety import validate_http_fetch_url
 from appv24.workflows.policy import MUTATING_SIDE_EFFECTS, evaluate_policy
 from appv24.workflows.run_store import WorkflowRunStore
 from appv24.workflows.runner import DEFAULT_FIXTURE_NAME, MAX_TRANSITIONS
@@ -121,6 +124,8 @@ def preflight_live_draft_workflow(
         WorkflowRunStore(request.run_root or (package_path / ".workflow-runs")),
         request.approval_run_id,
         package_fingerprint=package_fingerprint,
+        ir=compiled.ir,
+        fixture=fixture,
     )
     if approval_issues:
         return _report(
@@ -139,6 +144,7 @@ def preflight_live_draft_workflow(
         connector_allowlist=set(request.connector_allowlist),
         approval_index=approval_index,
         available_transports=available_transports,
+        env=request.operator_env,
     )
     return _report(
         request,
@@ -233,6 +239,7 @@ def preflight_live_read_workflow(
         fixture,
         connector_allowlist=set(request.connector_allowlist),
         available_transports=available_transports,
+        env=request.operator_env,
     )
     return _report(
         request,
@@ -326,6 +333,8 @@ def preflight_live_production_workflow(
         WorkflowRunStore(request.run_root or (package_path / ".workflow-runs")),
         request.approval_run_id,
         package_fingerprint=package_fingerprint,
+        ir=compiled.ir,
+        fixture=fixture,
         mode="live-production",
     )
     if approval_issues:
@@ -345,6 +354,7 @@ def preflight_live_production_workflow(
         connector_allowlist=set(request.connector_allowlist),
         approval_index=approval_index,
         available_transports=available_transports,
+        env=request.operator_env,
     )
     return _report(
         request,
@@ -401,6 +411,7 @@ def _preflight_live_read_steps(
     *,
     connector_allowlist: set[str],
     available_transports: Collection[str] | None,
+    env: Mapping[str, str],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     checked_actions: list[str] = []
     issues: list[str] = []
@@ -430,6 +441,10 @@ def _preflight_live_read_steps(
         if issue is not None:
             issues.append(issue)
             break
+        target_issue = _target_policy_issue(step, fixture, env=env)
+        if target_issue is not None:
+            issues.append(target_issue)
+            break
         transport_issue = _transport_gate_issue("live-read", step, available_transports)
         if transport_issue is not None:
             issues.append(transport_issue)
@@ -446,6 +461,7 @@ def _preflight_steps(
     connector_allowlist: set[str],
     approval_index: Mapping[tuple[str, str, str | None], bool],
     available_transports: Collection[str] | None,
+    env: Mapping[str, str],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     checked_actions: list[str] = []
     issues: list[str] = []
@@ -478,6 +494,7 @@ def _preflight_steps(
             package_fingerprint=package_fingerprint,
             approval_index=approval_index,
             fixture=fixture,
+            env=env,
         )
         if issue is not None:
             issues.append(issue)
@@ -498,6 +515,7 @@ def _preflight_live_production_steps(
     connector_allowlist: set[str],
     approval_index: Mapping[tuple[str, str, str | None], bool],
     available_transports: Collection[str] | None,
+    env: Mapping[str, str],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     checked_actions: list[str] = []
     issues: list[str] = []
@@ -530,6 +548,7 @@ def _preflight_live_production_steps(
             package_fingerprint=package_fingerprint,
             approval_index=approval_index,
             fixture=fixture,
+            env=env,
         )
         if issue is not None:
             issues.append(issue)
@@ -537,6 +556,10 @@ def _preflight_live_production_steps(
         transport_issue = _transport_gate_issue("live-production", step, available_transports)
         if transport_issue is not None:
             issues.append(transport_issue)
+            break
+        target_issue = _target_policy_issue(step, fixture, env=env)
+        if target_issue is not None:
+            issues.append(target_issue)
             break
         current = step.next_step
     return tuple(checked_actions), tuple(issues)
@@ -571,6 +594,7 @@ def _live_production_gate_issue(
     package_fingerprint: str,
     approval_index: Mapping[tuple[str, str, str | None], bool],
     fixture: Mapping[str, Any],
+    env: Mapping[str, str],
 ) -> str | None:
     if step.uses is None:
         return f"missing connector action for step {step.step_id}"
@@ -597,6 +621,54 @@ def _live_production_gate_issue(
     return None
 
 
+def _target_policy_issue(step: WorkflowStep, fixture: Mapping[str, object], *, env: Mapping[str, str]) -> str | None:
+    if step.uses is None:
+        return None
+    contract = builtin_connector_contract_catalog().get(step.uses.dotted)
+    if contract is None:
+        return None
+
+    if step.uses.dotted == "http.fetch":
+        allowed_hosts = _split_csv(env.get(contract.target_policy.allow_env or "", ""))
+        if not allowed_hosts:
+            return None
+        url = _field_value(step, fixture, "url") or _field_value(step, fixture, "source_url")
+        if url is None:
+            return "http.fetch requires url"
+        return validate_http_fetch_url(str(url), allowed_hosts=allowed_hosts)
+
+    if step.uses.dotted == "telegram.send_message":
+        allowed_chat_ids = _split_csv(env.get(contract.target_policy.allowed_chat_ids_env or "", ""))
+        if not allowed_chat_ids:
+            return "telegram.send_message requires APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+        chat_id = _field_value(step, fixture, "chat_id")
+        if chat_id is None:
+            return "telegram.send_message requires chat_id"
+        if str(chat_id) not in allowed_chat_ids:
+            return f"telegram.send_message chat_id is not allowlisted: {chat_id}"
+    return None
+
+
+def _field_value(step: WorkflowStep, fixture: Mapping[str, object], field: str) -> object | None:
+    raw_with = step.raw.get("with") if isinstance(step.raw, dict) else None
+    if isinstance(raw_with, dict) and field in raw_with:
+        value = raw_with[field]
+        if isinstance(value, dict) and isinstance(value.get("inputRef"), str):
+            input_values = fixture.get("input")
+            if isinstance(input_values, Mapping):
+                return input_values.get(value["inputRef"])
+            return None
+        return value
+    input_values = fixture.get("input")
+    if isinstance(input_values, Mapping):
+        return input_values.get(field)
+    return None
+
+
+def _split_csv(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
 def _transport_gate_issue(mode: str, step: WorkflowStep, available_transports: Collection[str] | None) -> str | None:
     if available_transports is None or step.uses is None:
         return None
@@ -612,6 +684,7 @@ def _transport_gate_issue(mode: str, step: WorkflowStep, available_transports: C
 
 def _transport_env_hint(action_ref: str) -> str | None:
     return {
+        "brave.search": "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_BRAVE_SEARCH_API_KEY",
         "github.list_dependabot_alerts": "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_GITHUB_TOKEN",
         "source.fetch_document": "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_SOURCE_BASE_URL",
         "source.fetch_items": "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_SOURCE_BASE_URL",
@@ -619,7 +692,10 @@ def _transport_env_hint(action_ref: str) -> str | None:
             "APPV24_WORKFLOW_LIVE_DRAFT_ENABLED=true plus APPV24_GMAIL_ACCESS_TOKEN or "
             "APPV24_GMAIL_REFRESH_TOKEN, APPV24_GMAIL_CLIENT_ID, APPV24_GMAIL_CLIENT_SECRET"
         ),
-        "telegram.send_message": "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, APPV24_TELEGRAM_BOT_TOKEN",
+        "telegram.send_message": (
+            "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
+            "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+        ),
     }.get(action_ref)
 
 
@@ -631,6 +707,7 @@ def _live_draft_gate_issue(
     package_fingerprint: str,
     approval_index: Mapping[tuple[str, str, str | None], bool],
     fixture: Mapping[str, Any],
+    env: Mapping[str, str],
 ) -> str | None:
     if step.uses is None:
         return f"missing connector action for step {step.step_id}"
@@ -644,6 +721,9 @@ def _live_draft_gate_issue(
     if _is_mutating_step(step, action):
         if not metadata.live_draft_eligible:
             return f"live-draft action is not draft-eligible: {step.uses.dotted}"
+        target_issue = _target_policy_issue(step, fixture, env=env)
+        if target_issue is not None:
+            return target_issue
         idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
         if idempotency_key is None:
             return f"live-draft requires idempotency key fields for {step.step_id}"
@@ -662,6 +742,8 @@ def _approval_index(
     approval_run_id: str | None,
     *,
     package_fingerprint: str,
+    ir: WorkflowIR,
+    fixture: Mapping[str, Any],
     mode: str = "live-draft",
 ) -> tuple[dict[tuple[str, str, str | None], bool], tuple[str, ...]]:
     if not approval_run_id:
@@ -673,17 +755,33 @@ def _approval_index(
         decisions = store.read_approval_decisions(approval_run_id)
     except ValueError:
         return {}, (f"unknown approval run: {approval_run_id}",)
-    approved: dict[tuple[str, str, str | None], bool] = {}
-    for decision in decisions:
-        if decision.get("package_fingerprint") != package_fingerprint:
+    return build_payload_bound_approval_index(
+        decisions,
+        package_fingerprint=package_fingerprint,
+        expected_payload_hashes=_expected_approval_payload_hashes(ir, fixture, package_fingerprint),
+    )
+
+
+def _expected_approval_payload_hashes(
+    ir: WorkflowIR,
+    fixture: Mapping[str, Any],
+    package_fingerprint: str,
+) -> dict[ApprovalIndexKey, str]:
+    expected: dict[ApprovalIndexKey, str] = {}
+    for step in ir.steps.values():
+        if step.uses is None:
             continue
-        step_id = decision.get("step_id")
-        connector_action = decision.get("connector_action")
-        if not isinstance(step_id, str) or not isinstance(connector_action, str):
+        action = _action_for_step(ir, step)
+        if action is None or not _is_mutating_step(step, action):
             continue
-        key = (step_id, connector_action, decision.get("idempotency_key") if isinstance(decision.get("idempotency_key"), str) else None)
-        approved[key] = decision.get("approved") is True and decision.get("status") == "approved"
-    return approved, ()
+        idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
+        if idempotency_key is None:
+            continue
+        expected[(step.step_id, step.uses.dotted, idempotency_key)] = build_idempotency_payload_hash(
+            input_ref=step.raw,
+            fixture=fixture,
+        )
+    return expected
 
 
 def _select_branch(step: WorkflowStep, fixture: Mapping[str, object]) -> tuple[str | None, str | None]:

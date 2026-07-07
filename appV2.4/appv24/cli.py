@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -82,6 +83,7 @@ from appv24.workflows.bundle_export import (
     write_workflow_bundle,
 )
 from appv24.workflows.connector_registry import inspect_workflow_connector_registry
+from appv24.workflows.connector_contracts import workflow_operator_env_from_env
 from appv24.workflows.explain import (
     explain_workflow_activation_run,
     explain_workflow_package,
@@ -93,12 +95,27 @@ from appv24.workflows.iac_export import export_deployment_intent_from_path, form
 from appv24.workflows.live_plan import build_workflow_live_plan_from_path, format_workflow_live_plan
 from appv24.workflows.phase_runner import (
     format_workflow_phase_run_report,
+    run_workflow_approved_live_draft,
     run_workflow_approved_live_production,
     run_workflow_live_read_to_approval,
 )
 from appv24.workflows.runner import format_workflow_run_report, run_workflow
+from appv24.workflows.scheduler import (
+    format_trigger_loop_report,
+    format_trigger_sweep_report,
+    run_activation_scheduler_loop,
+    run_due_activation_sweep,
+    run_due_activation_tick,
+)
 from appv24.workflows.staging import run_workflow_draft_stages, should_stage_workflow_drafts
 from appv24.workflows.validator import validate_workflow_draft_text, validate_workflow_package
+from appv24.workflows.webhook_ingress import WebhookReplayStore, handle_local_webhook_run
+from appv24.workflows.webhook_server import (
+    WorkflowWebhookServerConfig,
+    WorkflowWebhookServerReport,
+    format_workflow_webhook_server_report,
+    serve_workflow_webhooks,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -135,6 +152,7 @@ class _CliModelRegistry:
 
 _VALID_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 _FALSE_ENV_VALUES = {"0", "false", "no", "off"}
+_MAX_WORKFLOW_SERVICE_TICKS = 1_000_000
 
 
 def _positive_int_arg(value: str) -> int:
@@ -599,6 +617,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if _handle_workflow_run_live_production_command(app, prompt):
             return 0
+        if _handle_workflow_webhook_serve_command(app, prompt):
+            return 0
         if _handle_workflow_activation_command(app, prompt):
             return 0
         _run_prompt_for_profile(app, selected_profile.id, prompt)
@@ -660,6 +680,8 @@ def main(argv: list[str] | None = None) -> int:
         if _handle_workflow_run_live_draft_command(app, prompt):
             continue
         if _handle_workflow_run_live_production_command(app, prompt):
+            continue
+        if _handle_workflow_webhook_serve_command(app, prompt):
             continue
         if _handle_workflow_activation_command(app, prompt):
             continue
@@ -789,7 +811,7 @@ def _repair_workflow_draft_if_needed(app: CodingApp, profile_id: str) -> Workflo
         return repair_workflow_draft_messages(
             app.messages,
             app.run_turn,
-            config=WorkflowDraftRepairConfig(max_issues=8),
+            config=WorkflowDraftRepairConfig(max_issues=8, max_repeated_validation_results=4),
             on_attempt=on_attempt,
         )
     except Exception as error:  # noqa: BLE001 - repair failures are rendered as product feedback
@@ -873,6 +895,70 @@ def _handle_workflow_activation_command(app: CodingApp, prompt: str) -> bool:
             report = store.run_activation(activation_id)
             rendered = format_workflow_run_report(report).replace("Workflow local run:", "Workflow activation run:", 1)
             print(f"{rendered}\nactivation: {activation_id}")
+        elif command == "/workflow-activation-tick":
+            if len(args) != 2:
+                raise ValueError("expected /workflow-activation-tick <id>")
+            decision = run_due_activation_tick(
+                store,
+                _resolve_workflow_activation_id(args[1]),
+                now=datetime.now(timezone.utc),
+            )
+            lines = [
+                f"Workflow activation tick: {decision.status}",
+                f"activation: {decision.activation_id}",
+                f"trigger: {decision.trigger_type}",
+                f"reason: {decision.reason}",
+            ]
+            if decision.run_id:
+                lines.append(f"run: {decision.run_id}")
+            if decision.run_status:
+                lines.append(f"run status: {decision.run_status}")
+            print("\n".join(lines))
+        elif command == "/workflow-activation-tick-all":
+            if len(args) != 1:
+                raise ValueError("expected /workflow-activation-tick-all")
+            report = run_due_activation_sweep(store, now=datetime.now(timezone.utc))
+            print(format_trigger_sweep_report(report))
+        elif command == "/workflow-activation-loop":
+            if len(args) not in {2, 3}:
+                raise ValueError("expected /workflow-activation-loop <ticks> [interval-seconds]")
+            report = run_activation_scheduler_loop(
+                store,
+                ticks=_parse_activation_loop_ticks(args[1]),
+                interval_seconds=_parse_activation_loop_interval(args[2]) if len(args) == 3 else 5.0,
+            )
+            print(format_trigger_loop_report(report))
+        elif command == "/workflow-activation-webhook-run":
+            if len(args) not in {3, 4}:
+                raise ValueError("expected /workflow-activation-webhook-run <id> <payload-file> [replay-key]")
+            secret = os.environ.get("APPV24_WORKFLOW_WEBHOOK_SECRET", "")
+            if not secret:
+                raise ValueError("APPV24_WORKFLOW_WEBHOOK_SECRET is required")
+            payload_path = _resolve_workflow_payload_path(app.cwd, args[2])
+            headers = {"x-appv24-webhook-secret": secret}
+            if len(args) == 4:
+                headers["x-appv24-replay-key"] = _resolve_webhook_replay_key(args[3])
+            decision = handle_local_webhook_run(
+                store,
+                _resolve_workflow_activation_id(args[1]),
+                payload=payload_path.read_bytes(),
+                headers=headers,
+                shared_secret=secret,
+                replay_store=WebhookReplayStore(_workflow_webhook_replay_root(app.cwd)),
+                now=datetime.now(timezone.utc),
+            )
+            lines = [
+                f"Workflow activation webhook run: {decision.status}",
+                f"activation: {decision.activation_id}",
+                f"reason: {decision.reason}",
+            ]
+            if decision.replay_key:
+                lines.append(f"replay key: {decision.replay_key}")
+            if decision.run_id:
+                lines.append(f"run: {decision.run_id}")
+            if decision.run_status:
+                lines.append(f"run status: {decision.run_status}")
+            print("\n".join(lines))
         elif command == "/workflow-activation-run-explain":
             if len(args) not in {2, 3}:
                 raise ValueError("expected /workflow-activation-run-explain <id> [run-id]")
@@ -913,6 +999,36 @@ def _handle_workflow_activation_command(app: CodingApp, prompt: str) -> bool:
             raise ValueError("unknown workflow activation command")
     except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
         print(f"Workflow activation failed: {error}")
+    return True
+
+
+def _handle_workflow_webhook_serve_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_webhook_serve_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) not in {2, 3, 4}:
+            raise ValueError("expected /workflow-webhook-serve <max-requests> [host] [port]")
+        secret = os.environ.get("APPV24_WORKFLOW_WEBHOOK_SECRET", "")
+        if not secret:
+            raise ValueError("APPV24_WORKFLOW_WEBHOOK_SECRET is required")
+        max_requests = _parse_webhook_server_max_requests(args[1])
+        host = args[2] if len(args) >= 3 else "127.0.0.1"
+        port = _parse_webhook_server_port(args[3]) if len(args) == 4 else 8765
+        report = serve_workflow_webhooks(
+            WorkflowWebhookServerConfig(
+                activation_root=_workflow_activation_root(app.cwd),
+                replay_root=_workflow_webhook_replay_root(app.cwd),
+                shared_secret=secret,
+                host=host,
+                port=port,
+            ),
+            max_requests=max_requests,
+        )
+        print(format_workflow_webhook_server_report(report))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow webhook server failed: {error}")
     return True
 
 
@@ -1269,6 +1385,7 @@ def _handle_workflow_live_draft_preflight_command(app: CodingApp, prompt: str) -
                 mode=WorkflowRunMode.LIVE_DRAFT,
                 approval_run_id=parsed.approval_run_id,
                 connector_allowlist=parsed.connector_allowlist,
+                operator_env=workflow_operator_env_from_env(os.environ),
             ),
             credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
             available_transports=build_live_draft_transports_from_env(os.environ).keys(),
@@ -1294,6 +1411,7 @@ def _handle_workflow_live_read_preflight_command(app: CodingApp, prompt: str) ->
                 fixture_name=parsed.fixture_name,
                 mode=WorkflowRunMode.LIVE_READ,
                 connector_allowlist=parsed.connector_allowlist,
+                operator_env=workflow_operator_env_from_env(os.environ),
             ),
             credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
             available_transports=build_live_read_transports_from_env(os.environ).keys(),
@@ -1320,6 +1438,7 @@ def _handle_workflow_live_production_preflight_command(app: CodingApp, prompt: s
                 mode=WorkflowRunMode.LIVE_PRODUCTION,
                 approval_run_id=parsed.approval_run_id,
                 connector_allowlist=parsed.connector_allowlist,
+                operator_env=workflow_operator_env_from_env(os.environ),
             ),
             credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
             available_transports=build_live_production_transports_from_env(os.environ).keys(),
@@ -1339,17 +1458,21 @@ def _handle_workflow_run_live_draft_command(app: CodingApp, prompt: str) -> bool
         if parsed.error is not None:
             raise ValueError(parsed.error)
         package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
-        report = run_live_draft_workflow(
+        phase_report = run_workflow_approved_live_draft(
             WorkflowRunRequest(
                 package_path=package_path,
                 fixture_name=parsed.fixture_name,
                 mode=WorkflowRunMode.LIVE_DRAFT,
-                approval_run_id=parsed.approval_run_id,
                 connector_allowlist=parsed.connector_allowlist,
+                operator_env=workflow_operator_env_from_env(os.environ),
             ),
-            broker=LiveWorkflowBroker(build_live_draft_transports_from_env(os.environ), mode="live-draft"),
+            approval_run_id=parsed.approval_run_id,
+            live_draft_broker=LiveWorkflowBroker(build_live_draft_transports_from_env(os.environ), mode="live-draft"),
             credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
         )
+        report = phase_report.live_draft_report
+        if report is None:
+            raise RuntimeError("live-draft phase did not produce a run report")
         print(format_workflow_run_report(report).replace("Workflow local run:", "Workflow live-draft run:", 1))
     except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
         print(f"Workflow live-draft run failed: {error}")
@@ -1371,6 +1494,7 @@ def _handle_workflow_run_live_production_command(app: CodingApp, prompt: str) ->
                 fixture_name=parsed.fixture_name,
                 mode=WorkflowRunMode.LIVE_PRODUCTION,
                 connector_allowlist=parsed.connector_allowlist,
+                operator_env=workflow_operator_env_from_env(os.environ),
             ),
             approval_run_id=parsed.approval_run_id,
             live_production_broker=LiveWorkflowBroker(
@@ -1404,6 +1528,7 @@ def _handle_workflow_run_live_read_to_approval_command(app: CodingApp, prompt: s
                 fixture_name=parsed.fixture_name,
                 mode=WorkflowRunMode.LIVE_READ,
                 connector_allowlist=parsed.connector_allowlist,
+                operator_env=workflow_operator_env_from_env(os.environ),
             ),
             live_read_broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
             credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
@@ -1429,6 +1554,7 @@ def _handle_workflow_run_live_read_command(app: CodingApp, prompt: str) -> bool:
                 fixture_name=parsed.fixture_name,
                 mode=WorkflowRunMode.LIVE_READ,
                 connector_allowlist=parsed.connector_allowlist,
+                operator_env=workflow_operator_env_from_env(os.environ),
             ),
             broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
             credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
@@ -1711,6 +1837,14 @@ def _is_workflow_activation_command(prompt: str) -> bool:
         or prompt.startswith("/workflow-activation-list ")
         or prompt == "/workflow-activation-run"
         or prompt.startswith("/workflow-activation-run ")
+        or prompt == "/workflow-activation-tick"
+        or prompt.startswith("/workflow-activation-tick ")
+        or prompt == "/workflow-activation-tick-all"
+        or prompt.startswith("/workflow-activation-tick-all ")
+        or prompt == "/workflow-activation-loop"
+        or prompt.startswith("/workflow-activation-loop ")
+        or prompt == "/workflow-activation-webhook-run"
+        or prompt.startswith("/workflow-activation-webhook-run ")
         or prompt == "/workflow-activation-run-explain"
         or prompt.startswith("/workflow-activation-run-explain ")
         or prompt == "/workflow-activation-status"
@@ -1720,8 +1854,16 @@ def _is_workflow_activation_command(prompt: str) -> bool:
     )
 
 
+def _is_workflow_webhook_serve_command(prompt: str) -> bool:
+    return prompt == "/workflow-webhook-serve" or prompt.startswith("/workflow-webhook-serve ")
+
+
 def _workflow_activation_root(cwd: str | Path) -> Path:
     return Path(cwd).resolve() / ".appv24" / "workflow-activations"
+
+
+def _workflow_webhook_replay_root(cwd: str | Path) -> Path:
+    return Path(cwd).resolve() / ".appv24" / "webhook-replays"
 
 
 def _resolve_workflow_package_path(cwd: str | Path, path_text: str) -> Path:
@@ -1735,6 +1877,19 @@ def _resolve_workflow_package_path(cwd: str | Path, path_text: str) -> Path:
     return candidate
 
 
+def _resolve_workflow_payload_path(cwd: str | Path, path_text: str) -> Path:
+    base = Path(cwd).resolve()
+    raw_path = Path(path_text).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (base / raw_path).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as error:
+        raise ValueError("webhook payload path must stay inside the current working directory") from error
+    if not candidate.is_file():
+        raise ValueError(f"webhook payload file not found: {path_text}")
+    return candidate
+
+
 def _resolve_workflow_activation_id(value: str) -> str:
     activation_id = value.strip()
     if not activation_id:
@@ -1744,6 +1899,53 @@ def _resolve_workflow_activation_id(value: str) -> str:
     if not activation_id.startswith("activation-"):
         raise ValueError("activation id must start with activation-")
     return activation_id
+
+
+def _resolve_webhook_replay_key(value: str) -> str:
+    replay_key = value.strip()
+    if not replay_key:
+        raise ValueError("missing webhook replay key")
+    return replay_key
+
+
+def _parse_activation_loop_ticks(value: str) -> int:
+    try:
+        ticks = int(value)
+    except ValueError as error:
+        raise ValueError("activation loop ticks must be an integer") from error
+    if ticks < 1 or ticks > _MAX_WORKFLOW_SERVICE_TICKS:
+        raise ValueError(f"activation loop ticks must be between 1 and {_MAX_WORKFLOW_SERVICE_TICKS}")
+    return ticks
+
+
+def _parse_activation_loop_interval(value: str) -> float:
+    try:
+        interval = float(value)
+    except ValueError as error:
+        raise ValueError("activation loop interval must be a number") from error
+    if interval < 0 or interval > 3600:
+        raise ValueError("activation loop interval must be between 0 and 3600 seconds")
+    return interval
+
+
+def _parse_webhook_server_max_requests(value: str) -> int:
+    try:
+        max_requests = int(value)
+    except ValueError as error:
+        raise ValueError("webhook server max requests must be an integer") from error
+    if max_requests < 1 or max_requests > _MAX_WORKFLOW_SERVICE_TICKS:
+        raise ValueError(f"webhook server max requests must be between 1 and {_MAX_WORKFLOW_SERVICE_TICKS}")
+    return max_requests
+
+
+def _parse_webhook_server_port(value: str) -> int:
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise ValueError("webhook server port must be an integer") from error
+    if port < 0 or port > 65535:
+        raise ValueError("webhook server port must be between 0 and 65535")
+    return port
 
 
 def _handle_workflow_save_command(app: CodingApp, profile_id: str, prompt: str) -> bool:

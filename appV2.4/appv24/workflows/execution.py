@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Mapping
@@ -31,6 +31,7 @@ class WorkflowRunRequest:
     approve_all: bool = False
     activation_id: str | None = None
     activation_trigger_type: str | None = None
+    operator_env: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

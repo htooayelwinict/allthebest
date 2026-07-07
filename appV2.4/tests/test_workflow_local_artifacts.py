@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from appv24.workflows.broker import BrokerRequest
+from appv24.workflows.catalog import BUILTIN_WORKFLOW_ACTIONS
 from appv24.workflows.local_artifacts import LocalArtifactProviders
 
 
@@ -104,7 +105,12 @@ def test_local_artifact_provider_map_exposes_supported_actions(tmp_path: Path) -
     providers = LocalArtifactProviders(tmp_path)
 
     assert sorted(providers.provider_map()) == [
+        "brave.search",
+        "github.create_issue",
+        "github.create_issue_draft",
+        "github.list_dependabot_alerts",
         "gmail.create_draft",
+        "http.fetch",
         "llm.classify",
         "llm.extract_structured",
         "llm.summarize",
@@ -114,8 +120,15 @@ def test_local_artifact_provider_map_exposes_supported_actions(tmp_path: Path) -
         "source.fetch_items",
         "telegram.create_message_draft",
         "telegram.send_message",
+        "telegram.send_message_draft",
         "ticket.create_draft",
     ]
+
+
+def test_local_artifact_provider_map_covers_builtin_workflow_actions(tmp_path: Path) -> None:
+    providers = LocalArtifactProviders(tmp_path)
+
+    assert sorted(BUILTIN_WORKFLOW_ACTIONS - set(providers.provider_map())) == []
 
 
 def test_llm_extract_provider_honors_event_alert_contract_outputs(tmp_path: Path) -> None:
@@ -156,6 +169,43 @@ def test_llm_extract_provider_blocks_event_alert_contract_with_incompatible_outp
         "provider outputs for llm.extract_structured do not match declared allowed_outputs: "
         "produced alerts, confidence_score, raw_response; allowed confidence, items",
     )
+
+
+def test_llm_summarize_provider_uses_handoff_items_when_available(tmp_path: Path) -> None:
+    providers = LocalArtifactProviders(tmp_path)
+
+    result = providers.llm_summarize(
+        BrokerRequest(
+            step_id="summarize_items",
+            connector_action="llm.summarize",
+            input_ref={"with": {"output_contract": "summary_v1"}},
+            fixture={
+                "handoff": {
+                    "outputs": {
+                        "search_news": {
+                            "items": [
+                                {
+                                    "title": "Fed minutes move markets",
+                                    "url": "https://example.test/fed",
+                                    "description": "Treasury yields moved after the release.",
+                                },
+                                {
+                                    "title": "Chip earnings lift AI stocks",
+                                    "url": "https://example.test/chips",
+                                },
+                            ]
+                        }
+                    }
+                }
+            },
+            allowed_outputs=("summary", "raw_response"),
+        )
+    )
+
+    assert result.status == "simulated"
+    assert "Fed minutes move markets" in str(result.outputs["summary"])
+    assert "Chip earnings lift AI stocks" in str(result.outputs["summary"])
+    assert "https://example.test/fed" in str(result.outputs["summary"])
 
 
 def test_policy_check_provider_blocks_rejected_fixture(tmp_path: Path) -> None:

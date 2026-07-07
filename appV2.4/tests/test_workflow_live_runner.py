@@ -557,6 +557,7 @@ def test_live_production_runner_executes_approved_telegram_send_and_writes_repor
             run_root=run_root,
             approval_run_id=approval_report.run_id,
             connector_allowlist=("telegram.send_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
         ),
         broker=LiveWorkflowBroker(
             {"telegram.send_message": transport},
@@ -586,6 +587,153 @@ def test_live_production_runner_executes_approved_telegram_send_and_writes_repor
     assert any(event.event_type == "approval_preflight_passed" for event in report.events)
 
 
+def test_live_production_runner_reuses_committed_idempotency_result_without_second_send(tmp_path: Path) -> None:
+    package = _write_production_telegram_package(tmp_path)
+    run_root = tmp_path / ".workflow-runs"
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=run_root,
+            approve_all=False,
+        )
+    )
+    _approve_first_request(run_root, approval_report.run_id, package_fingerprint=approval_report.package_fingerprint)
+    first_transport = RecordingTransport(
+        {"message_id": "msg-1", "chat_id": "admin-chat"},
+        status="live-production",
+    )
+    second_transport = RecordingTransport(
+        {"message_id": "msg-2", "chat_id": "admin-chat"},
+        status="live-production",
+    )
+    request = WorkflowRunRequest(
+        package_path=package,
+        fixture_name="happy_path.yaml",
+        mode=WorkflowRunMode.LIVE_PRODUCTION,
+        run_root=run_root,
+        approval_run_id=approval_report.run_id,
+        connector_allowlist=("telegram.send_message",),
+        operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
+    )
+
+    first_report = run_live_production_workflow(
+        request,
+        broker=LiveWorkflowBroker(
+            {"telegram.send_message": first_transport},
+            mode="live-production",
+            production_enabled=True,
+        ),
+        credential_resolver=CredentialRefResolver({"telegram": CredentialScope(available=True, scopes=("telegram:send",))}),
+    )
+    second_report = run_live_production_workflow(
+        request,
+        broker=LiveWorkflowBroker(
+            {"telegram.send_message": second_transport},
+            mode="live-production",
+            production_enabled=True,
+        ),
+        credential_resolver=CredentialRefResolver({"telegram": CredentialScope(available=True, scopes=("telegram:send",))}),
+    )
+
+    assert first_report.status == "passed"
+    assert second_report.status == "passed"
+    assert len(first_transport.requests) == 1
+    assert second_transport.requests == []
+    assert second_report.brokered_actions[0].broker_status == "idempotency-reused"
+    assert second_report.brokered_actions[0].simulated_outputs == {"message_id": "msg-1", "chat_id": "admin-chat"}
+    assert any(event.event_type == "idempotency_reused" for event in second_report.events)
+
+
+def test_live_production_runner_blocks_stale_payload_hash_approval_before_transport(tmp_path: Path) -> None:
+    package = _write_production_telegram_package(tmp_path)
+    run_root = tmp_path / ".workflow-runs"
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=run_root,
+            approve_all=False,
+        )
+    )
+    request = WorkflowRunStore(run_root).read_approval_requests(approval_report.run_id)[0]
+    _append_raw_approval_decision(
+        run_root,
+        approval_report.run_id,
+        request,
+        package_fingerprint=approval_report.package_fingerprint,
+        payload_hash="payload:stale",
+    )
+    transport = RecordingTransport({"message_id": "msg-1", "chat_id": "admin-chat"}, status="live-production")
+
+    report = run_live_production_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_PRODUCTION,
+            run_root=run_root,
+            approval_run_id=approval_report.run_id,
+            connector_allowlist=("telegram.send_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
+        ),
+        broker=LiveWorkflowBroker(
+            {"telegram.send_message": transport},
+            mode="live-production",
+            production_enabled=True,
+        ),
+        credential_resolver=CredentialRefResolver({"telegram": CredentialScope(available=True, scopes=("telegram:send",))}),
+    )
+
+    assert report.status == "blocked"
+    assert report.issues == ("approval payload hash is stale for notify_admin",)
+    assert transport.requests == []
+    assert any(event.event_type == "approval_preflight_blocked" for event in report.events)
+
+
+def test_live_production_runner_blocks_disallowed_telegram_target_from_operator_env(tmp_path: Path) -> None:
+    package = _write_production_telegram_package(tmp_path)
+    run_root = tmp_path / ".workflow-runs"
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=run_root,
+            approve_all=False,
+        )
+    )
+    _approve_first_request(run_root, approval_report.run_id, package_fingerprint=approval_report.package_fingerprint)
+    transport = RecordingTransport({"message_id": "msg-1", "chat_id": "admin-chat"}, status="live-production")
+
+    report = run_live_production_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_PRODUCTION,
+            run_root=run_root,
+            approval_run_id=approval_report.run_id,
+            connector_allowlist=("telegram.send_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "other-admin"},
+        ),
+        broker=LiveWorkflowBroker(
+            {"telegram.send_message": transport},
+            mode="live-production",
+            production_enabled=True,
+        ),
+        credential_resolver=CredentialRefResolver({"telegram": CredentialScope(available=True, scopes=("telegram:send",))}),
+    )
+
+    run_manifest = json.loads((run_root / report.run_id / "run.json").read_text(encoding="utf-8"))
+    assert report.status == "blocked"
+    assert report.issues == ("telegram.send_message chat_id is not allowlisted: admin-chat",)
+    assert transport.requests == []
+    assert any(event.event_type == "live_gate_blocked" for event in report.events)
+    assert run_manifest["operator_env_names"] == ["APPV24_TELEGRAM_ALLOWED_CHAT_IDS"]
+    assert "other-admin" not in json.dumps(run_manifest)
+
+
 def test_live_production_runner_blocks_non_local_approval_run_before_transport(tmp_path: Path) -> None:
     package = _write_production_telegram_package(tmp_path)
     run_root = tmp_path / ".workflow-runs"
@@ -610,6 +758,7 @@ def test_live_production_runner_blocks_non_local_approval_run_before_transport(t
             run_root=run_root,
             approval_run_id=approval_report.run_id,
             connector_allowlist=("telegram.send_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
         ),
         broker=LiveWorkflowBroker(
             {"telegram.send_message": transport},
@@ -647,6 +796,7 @@ def test_live_production_runner_blocks_wrong_broker_mode_before_transport(tmp_pa
             run_root=run_root,
             approval_run_id=approval_report.run_id,
             connector_allowlist=("telegram.send_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
         ),
         broker=LiveWorkflowBroker(
             {"telegram.send_message": transport},
@@ -996,7 +1146,7 @@ def _write_draft_package(root: Path) -> Path:
 
 
 def _write_production_telegram_package(root: Path) -> Path:
-    return _write_package(
+    package = _write_package(
         root,
         workflow={
             "version": "appv24.workflow/v1",
@@ -1048,6 +1198,15 @@ def _write_production_telegram_package(root: Path) -> Path:
             "permissions": [{"connector": "telegram", "actions": ["send_message"], "scopes": ["telegram:send"]}],
         },
     )
+    (package / "dry_run_fixtures" / "happy_path.yaml").write_text(
+        "input:\n  chat_id: admin-chat\n  text: Production alert.\n",
+        encoding="utf-8",
+    )
+    (package / "dry_run_fixtures" / "rejection_path.yaml").write_text(
+        "input:\n  chat_id: admin-chat\n  text: Production alert.\n",
+        encoding="utf-8",
+    )
+    return package
 
 
 def _write_mutating_package(root: Path) -> Path:
@@ -1133,6 +1292,33 @@ def _deny_first_request(run_root: Path, run_id: str, *, package_fingerprint: str
         request.approval_request_id,
         ApprovalDecision(approved=False, package_fingerprint=package_fingerprint, decided_by="Lewis"),
     )
+
+
+def _append_raw_approval_decision(
+    run_root: Path,
+    run_id: str,
+    request: object,
+    *,
+    package_fingerprint: str,
+    payload_hash: str,
+) -> None:
+    path = run_root / run_id / "approval_decisions.jsonl"
+    payload = {
+        "approval_request_id": request.approval_request_id,
+        "run_id": run_id,
+        "approval_id": request.approval_id,
+        "step_id": request.step_id,
+        "connector_action": request.connector_action,
+        "approved": True,
+        "status": "approved",
+        "package_fingerprint": package_fingerprint,
+        "decided_by": "Lewis",
+        "idempotency_key": request.idempotency_key,
+        "payload_hash": payload_hash,
+        "payload_preview_path": getattr(request, "payload_preview_path", None),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
 def _set_run_mode(run_root: Path, run_id: str, mode: str) -> None:

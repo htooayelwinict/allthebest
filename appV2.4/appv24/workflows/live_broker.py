@@ -5,9 +5,10 @@ Tests use injected fake transports. Real provider transports remain manual-gated
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Mapping, Protocol
 
 from appv24.workflows.broker import BrokerRequest, BrokerResult, filter_broker_outputs
+from appv24.workflows.connector_contracts import builtin_connector_contract_catalog
 
 LIVE_WORKFLOW_BROKER_MODES = frozenset(("live-read", "live-draft", "live-production"))
 
@@ -43,6 +44,14 @@ class LiveWorkflowBroker:
                 outputs={},
                 issues=("live-production broker is disabled by default",),
             )
+        contract_issue = _contract_input_issue(request)
+        if contract_issue is not None:
+            return BrokerResult(
+                status="blocked",
+                provider_id="live",
+                outputs={},
+                issues=(contract_issue,),
+            )
         transport = self._transports.get(request.connector_action)
         if transport is None:
             return BrokerResult(
@@ -70,3 +79,22 @@ class LiveWorkflowBroker:
                 ),
             )
         return filter_broker_outputs(request, result)
+
+
+def _contract_input_issue(request: BrokerRequest) -> str | None:
+    contract = builtin_connector_contract_catalog().get(request.connector_action)
+    if contract is None:
+        return f"live connector action is not cataloged: {request.connector_action}"
+    if contract.input_schema.get("additionalProperties") is not False:
+        return None
+    properties = contract.input_schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return None
+    with_map = request.input_ref.get("with")
+    if not isinstance(with_map, Mapping):
+        return None
+    allowed_fields = {str(key) for key in properties}
+    unsupported = sorted(str(key) for key in with_map if str(key) not in allowed_fields)
+    if not unsupported:
+        return None
+    return f"{request.connector_action} input contains unsupported fields: {', '.join(unsupported)}"

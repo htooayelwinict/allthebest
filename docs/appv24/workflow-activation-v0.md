@@ -17,6 +17,11 @@ Enabled in v0:
 - manual activations
 - persisted activation records
 - local fixture-backed workflow runs
+- due schedule/poll ticks invoked by an operator command
+- one-shot due schedule/poll sweep invoked by an operator command
+- bounded local schedule/poll loop invoked by an operator command
+- local webhook payload acceptance invoked by an operator command
+- foreground local webhook HTTP server with bounded request count
 - activation status
 - activation run history
 
@@ -28,7 +33,7 @@ Recorded but not executed as services in v0:
 Still disabled:
 
 - background scheduler loops
-- webhook ingress servers
+- unbounded webhook ingress servers
 - live external mutation
 - real send/deploy/cloud side effects
 
@@ -89,6 +94,46 @@ status = store.status(activation.activation_id)
 history = store.history(activation.activation_id)
 ```
 
+Operator-triggered schedule/poll ticks use the same activation store and run directory. They evaluate enabled state, trigger type, max concurrency, cooldown, and package fingerprint before creating a run.
+`/workflow-activation-tick-all` performs the same checks across all persisted
+activations once. It runs due `schedule` and `poll` activations, skips manual
+and webhook activations, and reports every decision. It is not a daemon and it
+does not create background workers.
+`/workflow-activation-loop <ticks> [interval-seconds]` repeats that sweep for a
+bounded number of ticks. It is the local scheduler-runtime bridge for testing
+activation behavior, but it still runs in the foreground and stops after the
+requested tick count.
+
+Local webhook runs use a replay ledger and payload digest. The command reads the shared secret from `APPV24_WORKFLOW_WEBHOOK_SECRET`, never from a command argument.
+
+The foreground HTTP webhook bridge uses the same ingress path. It listens on
+loopback by default, accepts:
+
+```text
+POST /workflow-webhook/<activation-id>
+```
+
+Required header:
+
+```text
+x-appv24-webhook-secret: <APPV24_WORKFLOW_WEBHOOK_SECRET>
+```
+
+Optional replay header:
+
+```text
+x-appv24-replay-key: <operator-delivery-id>
+```
+
+The server command is bounded:
+
+```text
+/workflow-webhook-serve <max-requests> [host] [port]
+```
+
+It stops after `max-requests`, writes normal activation run artifacts, and does
+not create a daemon, expose live mutation, or store raw payload bodies.
+
 ## TUI And Plain CLI Commands
 
 The workflow-designer profile exposes activation commands for local managed runs in the TUI and in `--plain` mode:
@@ -99,6 +144,11 @@ The workflow-designer profile exposes activation commands for local managed runs
 /workflow-activation-enable <activation-id>
 /workflow-activation-list
 /workflow-activation-run <activation-id>
+/workflow-activation-tick <activation-id>
+/workflow-activation-tick-all
+/workflow-activation-loop <ticks> [interval-seconds]
+/workflow-activation-webhook-run <activation-id> <payload-file> [replay-key]
+/workflow-webhook-serve <max-requests> [host] [port]
 /workflow-activation-run-explain <activation-id> [run-id]
 /workflow-activation-status <activation-id>
 /workflow-activation-history <activation-id>
@@ -110,7 +160,15 @@ Activation records are stored under the current working directory:
 .appv24/workflow-activations/<activation-id>/
 ```
 
+Webhook replay keys are stored under the current working directory:
+
+```text
+.appv24/webhook-replays/
+```
+
 Activation IDs are treated as opaque IDs, not paths. TUI commands reject path-like IDs.
+
+Webhook payload files must stay inside the current working directory. The command stores only replay metadata and payload hashes, not raw payload bodies.
 
 ## Policy
 

@@ -7,6 +7,7 @@ derived from these contracts.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -93,6 +94,17 @@ class ConnectorContract:
 def builtin_connector_contract_catalog() -> dict[str, ConnectorContract]:
     contracts = (
         _contract(
+            "brave.search",
+            input_fields=("query", "q", "freshness", "count", "country", "search_lang", "extra_snippets"),
+            allowed_outputs=("items", "source_count", "query", "artifact_path"),
+            required_scopes=("brave:search",),
+            secrets=(ConnectorSecretRef("APPV24_BRAVE_SEARCH_API_KEY", "Brave Search API key"),),
+            live_modes=(WorkflowLiveMode.LIVE_READ,),
+            retry_class=RetryClass.READ_SAFE,
+            adapter="direct_api",
+            prompt_summary="brave.search(input: query, freshness, count) -> items, source_count",
+        ),
+        _contract(
             "source.fetch_document",
             allowed_outputs=("document", "title", "url", "metadata", "artifact_path"),
             required_scopes=("source:read",),
@@ -173,17 +185,6 @@ def builtin_connector_contract_catalog() -> dict[str, ConnectorContract]:
             prompt_summary="ticket.create_draft(input: title, body) -> ticket_id",
         ),
         _contract(
-            "ticketing.create_ticket",
-            allowed_outputs=("ticket_id", "artifact_path"),
-            required_scopes=("ticket:draft",),
-            side_effect_class=SideEffectClass.CREATE,
-            approval_class=ApprovalClass.PRODUCTION_MUTATION,
-            idempotency_key_fields=("customer_id", "summary"),
-            retry_class=RetryClass.IDEMPOTENT_WRITE,
-            adapter="manual",
-            prompt_summary="ticketing.create_ticket(input: customer_id, summary) -> ticket_id",
-        ),
-        _contract(
             "notification.create_draft",
             allowed_outputs=("draft_id", "channel", "recipient", "artifact_path"),
             required_scopes=("notification:draft",),
@@ -197,6 +198,7 @@ def builtin_connector_contract_catalog() -> dict[str, ConnectorContract]:
         ),
         _contract(
             "gmail.create_draft",
+            input_fields=("to", "recipient", "subject", "body", "from", "cc", "bcc", "thread_id"),
             allowed_outputs=("draft_id", "thread_id", "artifact_path"),
             required_scopes=("gmail.compose",),
             secrets=(
@@ -233,6 +235,17 @@ def builtin_connector_contract_catalog() -> dict[str, ConnectorContract]:
         ),
         _contract(
             "telegram.send_message",
+            input_fields=(
+                "chat_id",
+                "admin_chat_id",
+                "recipient",
+                "text",
+                "message_text",
+                "body",
+                "parse_mode",
+                "disable_notification",
+                "protect_content",
+            ),
             allowed_outputs=("message_id", "chat_id", "artifact_path"),
             required_scopes=("telegram:send",),
             secrets=(ConnectorSecretRef("APPV24_TELEGRAM_BOT_TOKEN", "Telegram bot token"),),
@@ -275,9 +288,34 @@ def live_mode_values(contract: ConnectorContract) -> tuple[str, ...]:
     return tuple(mode.value for mode in contract.live_modes)
 
 
+def workflow_operator_env_names(
+    contract_catalog: Mapping[str, ConnectorContract] | None = None,
+) -> tuple[str, ...]:
+    catalog = builtin_connector_contract_catalog() if contract_catalog is None else contract_catalog
+    env_names = set()
+    for contract in catalog.values():
+        if contract.target_policy.allow_env:
+            env_names.add(contract.target_policy.allow_env)
+        if contract.target_policy.allowed_chat_ids_env:
+            env_names.add(contract.target_policy.allowed_chat_ids_env)
+    return tuple(sorted(env_names))
+
+
+def workflow_operator_env_from_env(
+    env: Mapping[str, object],
+    contract_catalog: Mapping[str, ConnectorContract] | None = None,
+) -> dict[str, str]:
+    return {
+        name: str(env[name])
+        for name in workflow_operator_env_names(contract_catalog)
+        if name in env
+    }
+
+
 def _contract(
     action_ref: str,
     *,
+    input_fields: tuple[str, ...] = (),
     allowed_outputs: tuple[str, ...],
     required_scopes: tuple[str, ...] = (),
     secrets: tuple[ConnectorSecretRef, ...] = (),
@@ -298,7 +336,7 @@ def _contract(
         action_ref=action_ref,
         connector_id=connector_id,
         action_id=action_id,
-        input_schema={"type": "object", "additionalProperties": True},
+        input_schema=_input_schema(input_fields),
         output_schema={"type": "object", "additionalProperties": True},
         allowed_outputs=allowed_outputs,
         required_scopes=required_scopes,
@@ -315,3 +353,13 @@ def _contract(
         dry_run_supported=dry_run_supported,
         design_only=design_only,
     )
+
+
+def _input_schema(input_fields: tuple[str, ...]) -> dict[str, object]:
+    if not input_fields:
+        return {"type": "object", "additionalProperties": True}
+    return {
+        "type": "object",
+        "properties": {field: {} for field in input_fields},
+        "additionalProperties": False,
+    }

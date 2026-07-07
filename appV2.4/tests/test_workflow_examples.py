@@ -213,6 +213,7 @@ def test_telegram_production_alert_example_is_valid_and_live_ready(tmp_path: Pat
         run_root=run_root,
         approval_run_id=approval_report.run_id,
         connector_allowlist=("telegram.send_message",),
+        operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "123456789"},
     )
     credentials = CredentialRefResolver({"telegram": CredentialScope(available=True, scopes=("telegram:send",))})
 
