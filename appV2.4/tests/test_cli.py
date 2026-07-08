@@ -219,6 +219,90 @@ def _write_live_production_workflow_package(root: Path) -> Path:
     return package
 
 
+def _write_ai_news_subscriber_broadcast_package(root: Path) -> Path:
+    package = root / "ai-news-telegram-broadcast"
+    package.mkdir(parents=True, exist_ok=True)
+    workflow = {
+        "version": "appv24.workflow/v1",
+        "name": "ai-news-telegram-broadcast",
+        "description": "Search AI news, summarize it, and broadcast to Telegram subscribers.",
+        "design": {
+            "intent": "Send a Telegram digest of recent AI news to registered subscribers.",
+            "trigger": "Manual operator run.",
+            "inputs": ["Telegram subscriber audience"],
+            "outputs": ["Telegram broadcast result"],
+            "assumptions": ["Brave and Telegram connectors are configured."],
+            "side_effects": ["Send Telegram broadcast after approval."],
+            "approval_gates": ["approve_telegram_broadcast"],
+            "failure_modes": ["Search, summarization, subscriber listing, or broadcast fails."],
+            "rollback": ["Review Telegram broadcast manually."],
+        },
+        "triggers": [{"id": "manual", "type": "manual"}],
+        "entrypoint": "search_ai_news",
+        "steps": [
+            {"id": "search_ai_news", "uses": "brave.search", "with": {"query": "artificial intelligence news today", "count": 5}, "next": "list_subscribers"},
+            {"id": "list_subscribers", "uses": "telegram.list_subscribers", "with": {"audience": "default"}, "next": "summarize_digest"},
+            {"id": "summarize_digest", "uses": "llm.summarize", "with": {"text": "{{ steps.search_ai_news.outputs.items }}", "output_contract": "summary_v1"}, "next": "send_digest"},
+            {
+                "id": "send_digest",
+                "uses": "telegram.broadcast_message",
+                "side_effect_class": "send",
+                "approval": "approve_telegram_broadcast",
+                "with": {
+                    "recipients": "{{ steps.list_subscribers.outputs.recipients }}",
+                    "audience_hash": "{{ steps.list_subscribers.outputs.audience_hash }}",
+                    "text": "{{ steps.summarize_digest.outputs.summary }}",
+                },
+                "next": "done",
+            },
+            {"id": "done", "type": "terminal"},
+        ],
+    }
+    connectors = {
+        "version": "appv24.connectors/v1",
+        "connectors": [
+            {"id": "brave", "adapter": "direct_api", "actions": [{"id": "search", "side_effect": False, "required_scopes": ["brave:search"], "outputs": {"allowed": ["items", "source_count", "query"]}}]},
+            {"id": "llm", "adapter": "llm", "actions": [{"id": "summarize", "side_effect": False, "outputs": {"allowed": ["summary", "raw_response"]}}]},
+            {
+                "id": "telegram",
+                "adapter": "direct_api",
+                "actions": [
+                    {"id": "list_subscribers", "side_effect": False, "required_scopes": ["telegram:subscribers:read"], "outputs": {"allowed": ["recipients", "recipient_count", "audience_hash"]}},
+                    {
+                        "id": "broadcast_message",
+                        "side_effect": True,
+                        "side_effect_class": "send",
+                        "execution_mode": "brokered",
+                        "approval_required": True,
+                        "dry_run_supported": True,
+                        "required_scopes": ["telegram:send"],
+                        "idempotency": {"key_fields": ["audience_hash", "text"]},
+                        "outputs": {"allowed": ["sent_count", "message_ids", "chat_ids"]},
+                    },
+                ],
+            },
+        ],
+    }
+    permissions = {
+        "version": "appv24.permissions/v1",
+        "permissions": [
+            {"connector": "brave", "actions": ["search"], "scopes": ["brave:search"]},
+            {"connector": "llm", "actions": ["summarize"], "scopes": []},
+            {"connector": "telegram", "actions": ["list_subscribers", "broadcast_message"], "scopes": ["telegram:subscribers:read", "telegram:send"]},
+        ],
+        "approvals": [{"id": "approve_telegram_broadcast", "mode": "explicit", "required_for": ["send_digest"]}],
+    }
+    (package / "workflow.yaml").write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+    (package / "connectors.yaml").write_text(yaml.safe_dump(connectors, sort_keys=False), encoding="utf-8")
+    (package / "permissions.yaml").write_text(yaml.safe_dump(permissions, sort_keys=False), encoding="utf-8")
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text("input:\n  audience: default\n", encoding="utf-8")
+    (fixtures / "rejection_path.yaml").write_text("input:\n  audience: default\n", encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nReview Telegram broadcast manually.\n", encoding="utf-8")
+    return package
+
+
 def _valid_workflow_draft_text() -> str:
     workflow_yaml = """
 version: appv24.workflow/v1
@@ -3032,6 +3116,43 @@ def test_cli_plain_workflow_live_plan_prints_phases_without_model(monkeypatch, t
     assert "3 live-production: notify_admin: telegram.send_message" in captured.out
     assert "/workflow-run-approval" in captured.out
     assert not (package / ".workflow-runs").exists()
+
+
+def test_cli_plain_workflow_live_plan_shows_subscriber_broadcast_commands(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_ai_news_subscriber_broadcast_package(tmp_path)
+    prompts = iter([f"/workflow-live-plan {package.name} happy_path.yaml", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow live plan command: {prompt}")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "telegram.list_subscribers" in captured.out
+    assert "telegram.broadcast_message" in captured.out
+    assert "/workflow-run-live-read-to-approval" in captured.out
+    assert "--allow brave.search,telegram.list_subscribers" in captured.out
+    assert "/workflow-run-live-production" in captured.out
+    assert "--allow telegram.broadcast_message" in captured.out
 
 
 def test_cli_plain_workflow_run_approval_creates_pending_request_without_model(monkeypatch, tmp_path, capsys) -> None:
