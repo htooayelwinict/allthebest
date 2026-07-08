@@ -114,11 +114,13 @@ The generated workflow should use cataloged connector actions only:
 
 ```text
 brave.search
--> llm.summarize
 -> telegram.list_subscribers
+-> llm.summarize
 -> telegram.broadcast_message
 -> done
 ```
+
+For the MVP, live-read connector actions should form the prefix before local resume. That keeps the current phase runner simple: live-read runs Brave and Telegram subscriber listing, then local resume runs summarization until the Telegram broadcast approval gate.
 
 ### `brave.search`
 
@@ -209,17 +211,17 @@ steps:
       query: "artificial intelligence news today"
       freshness: day
       count: 10
+    next: list_subscribers
+  - id: list_subscribers
+    uses: telegram.list_subscribers
+    with:
+      audience: default
     next: summarize_digest
   - id: summarize_digest
     uses: llm.summarize
     with:
       text: "{{steps.search_ai_news.outputs.items}}"
       output_contract: summary_v1
-    next: list_subscribers
-  - id: list_subscribers
-    uses: telegram.list_subscribers
-    with:
-      audience: default
     next: send_digest
   - id: send_digest
     uses: telegram.broadcast_message
@@ -284,7 +286,7 @@ Required coverage:
 - Prompt catalog renders these actions and discourages abstract `fetch_user_list` or `format_news_digest` actions.
 - Generated AI-news Telegram draft validates with approval attached to `telegram.broadcast_message`.
 - Local dry-run can simulate subscriber listing and broadcast output.
-- Live-read-to-approval can execute `brave.search`, resume through `llm.summarize`, run `telegram.list_subscribers`, and stop at broadcast approval.
+- Live-read-to-approval can execute `brave.search` and `telegram.list_subscribers`, resume through `llm.summarize`, and stop at broadcast approval.
 - Production readiness starts at `telegram.broadcast_message`, not at the workflow entrypoint.
 - Telegram broadcast transport blocks empty recipients and recipients outside the allowed target policy.
 - Telegram broadcast transport records idempotency by audience hash and message text.
