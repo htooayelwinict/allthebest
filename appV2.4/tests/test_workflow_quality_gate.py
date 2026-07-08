@@ -205,3 +205,166 @@ def test_quality_gate_rejects_removed_ticketing_create_ticket_action() -> None:
     assert "unknown_catalog_action" in codes
     assert "unknown_connector_contract" in codes
     assert any("ticketing.create_ticket" in issue.message for issue in result.issues)
+
+
+def test_quality_gate_rejects_registered_user_broadcast_draft_and_manual_detours() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+    workflow = {
+        "version": "appv24.workflow/v1",
+        "name": "ai-news-telegram-broadcast",
+        "description": "Daily AI news summary workflow for registered telegram users.",
+        "design": {
+            "intent": "Send an AI news digest to registered telegram users.",
+            "trigger": "Daily schedule.",
+            "inputs": ["AI news search query", "telegram subscriber audience"],
+            "outputs": ["Telegram broadcast result"],
+            "assumptions": ["Subscribers are provided by telegram.list_subscribers."],
+            "side_effects": ["Send telegram broadcast after approval."],
+            "approval_gates": [
+                "approve_create_message_draft",
+                "approve_summary_content",
+                "approve_broadcast_message",
+            ],
+            "failure_modes": ["Search, subscriber listing, summarization, or broadcast fails."],
+            "rollback": ["Review the telegram broadcast manually."],
+        },
+        "triggers": [{"id": "daily_schedule", "type": "schedule", "schedule": "0 9 * * *"}],
+        "entrypoint": "fetch_ai_news",
+        "steps": [
+            {
+                "id": "fetch_ai_news",
+                "uses": "brave.search",
+                "with": {"query": "artificial intelligence news today", "freshness": "day", "count": 10},
+                "next": "summarize_news",
+            },
+            {
+                "id": "summarize_news",
+                "uses": "llm.summarize",
+                "with": {"text": "{{ steps.fetch_ai_news.outputs.items }}", "output_contract": "summary_v1"},
+                "next": "list_subscribers",
+            },
+            {
+                "id": "list_subscribers",
+                "uses": "telegram.list_subscribers",
+                "with": {"audience": "registered_users", "limit": 1000},
+                "next": "create_message_draft",
+            },
+            {
+                "id": "create_message_draft",
+                "uses": "telegram.create_message_draft",
+                "with": {
+                    "chat_id": "{{ list_subscribers.recipients[0].chat_id }}",
+                    "text": "{{ summarize_news.summary }}",
+                },
+                "side_effect_class": "create",
+                "approval": "approve_create_message_draft",
+                "next": "approve_summary",
+            },
+            {
+                "id": "approve_summary",
+                "type": "manual_approval",
+                "approval": "approve_summary_content",
+                "next": "broadcast_decision",
+            },
+            {
+                "id": "broadcast_decision",
+                "type": "decision",
+                "branches": {"approved": "broadcast_message", "rejected": "done"},
+            },
+            {
+                "id": "broadcast_message",
+                "uses": "telegram.broadcast_message",
+                "with": {
+                    "recipients": "{{ list_subscribers.recipients }}",
+                    "text": "{{ create_message_draft.text }}",
+                },
+                "side_effect_class": "send",
+                "approval": "approve_broadcast_message",
+                "next": "done",
+            },
+            {"id": "done", "type": "terminal"},
+        ],
+    }
+    connectors = {
+        "version": "appv24.connectors/v1",
+        "connectors": [
+            {
+                "id": "brave",
+                "adapter": "direct_api",
+                "actions": [{"id": "search", "side_effect": False, "required_scopes": ["brave:search"]}],
+            },
+            {
+                "id": "llm",
+                "adapter": "llm",
+                "actions": [
+                    {"id": "summarize", "side_effect": False, "outputs": {"allowed": ["summary", "raw_response"]}}
+                ],
+            },
+            {
+                "id": "telegram",
+                "adapter": "direct_api",
+                "actions": [
+                    {
+                        "id": "list_subscribers",
+                        "side_effect": False,
+                        "required_scopes": ["telegram:subscribers:read"],
+                    },
+                    {
+                        "id": "create_message_draft",
+                        "side_effect": True,
+                        "side_effect_class": "create",
+                        "execution_mode": "brokered",
+                        "approval_required": True,
+                        "dry_run_supported": True,
+                        "required_scopes": ["telegram:draft"],
+                        "idempotency": {"key_fields": ["chat_id", "message_hash"]},
+                        "outputs": {"allowed": ["draft_id", "text"]},
+                    },
+                    {
+                        "id": "broadcast_message",
+                        "side_effect": True,
+                        "side_effect_class": "send",
+                        "execution_mode": "brokered",
+                        "approval_required": True,
+                        "dry_run_supported": True,
+                        "required_scopes": ["telegram:send"],
+                        "idempotency": {"key_fields": ["audience_hash", "text"]},
+                        "outputs": {"allowed": ["sent_count", "message_ids", "chat_ids"]},
+                    },
+                ],
+            },
+        ],
+    }
+    permissions = {
+        "version": "appv24.permissions/v1",
+        "permissions": [
+            {"connector": "brave", "actions": ["search"], "scopes": ["brave:search"]},
+            {"connector": "llm", "actions": ["summarize"], "scopes": []},
+            {
+                "connector": "telegram",
+                "actions": ["list_subscribers", "create_message_draft", "broadcast_message"],
+                "scopes": ["telegram:subscribers:read", "telegram:draft", "telegram:send"],
+            },
+        ],
+        "approvals": [
+            {"id": "approve_create_message_draft", "mode": "explicit", "required_for": ["create_message_draft"]},
+            {"id": "approve_summary_content", "mode": "explicit", "required_for": ["approve_summary"]},
+            {"id": "approve_broadcast_message", "mode": "explicit", "required_for": ["broadcast_message"]},
+        ],
+    }
+    documents = replace(
+        example.documents,
+        workflow=workflow,
+        connectors=connectors,
+        permissions=permissions,
+        dry_run_fixtures={
+            "happy_path.yaml": {"decision": {"broadcast_decision": "approved"}},
+            "rejection_path.yaml": {"decision": {"broadcast_decision": "rejected"}},
+        },
+    )
+
+    result = check_workflow_quality_documents(documents)
+
+    issues = {issue.path[-1]: issue for issue in result.issues if issue.code == "registered_user_broadcast_detour"}
+    assert set(issues) == {"create_message_draft", "approve_summary", "broadcast_decision"}, result.issues
+    assert all("telegram.broadcast_message" in issue.message for issue in issues.values())

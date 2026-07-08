@@ -128,6 +128,8 @@ def test_capability_prompt_uses_slim_contract_summaries() -> None:
 
     assert "brave.search(input: query, freshness, count) -> items, source_count" in fragment
     assert "For public web/news search, prefer brave.search over placeholder source.fetch_items URLs." in fragment
+    assert "Use draft actions only when the user asks for a draft/review-only workflow:" in fragment
+    assert "Prefer draft actions for user-visible messages" not in fragment
     assert "telegram.list_subscribers(input: audience, limit) -> recipients, recipient_count, audience_hash" in fragment
     assert "telegram.broadcast_message(input: recipients, text) -> sent_count, message_ids, chat_ids" in fragment
     assert "For telegram registered-user workflows, use telegram.list_subscribers before telegram.broadcast_message." in fragment
@@ -138,6 +140,10 @@ def test_capability_prompt_uses_slim_contract_summaries() -> None:
     assert (
         "Approval for registered-user telegram delivery belongs on telegram.broadcast_message, "
         "not on a separate manual approval step."
+    ) in fragment
+    assert (
+        "Do not insert telegram.create_message_draft, manual_approval, or decision steps between "
+        "telegram.list_subscribers and telegram.broadcast_message."
     ) in fragment
     assert "fetch_user_list" not in fragment
     assert "format_news_digest" not in fragment

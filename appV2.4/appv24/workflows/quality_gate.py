@@ -10,7 +10,7 @@ from typing import Literal
 from appv24.workflows.broker import LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.connector_sandbox import ConnectorSandboxProviders
-from appv24.workflows.ir import StepKind, WorkflowIR
+from appv24.workflows.ir import StepKind, WorkflowIR, WorkflowStep
 from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.policy import evaluate_policy
 from appv24.workflows.simulator import simulate_workflow_fixture
@@ -130,7 +130,7 @@ def check_workflow_quality_documents(
             ),
         )
 
-    graph_issues = tuple(_check_graph(compiled.ir))
+    graph_issues = tuple((*_check_graph(compiled.ir), *_check_registered_user_broadcast_shape(compiled.ir)))
     if graph_issues:
         return WorkflowQualityResult(
             root=documents.root,
@@ -223,6 +223,79 @@ def _check_graph(ir: WorkflowIR) -> list[WorkflowQualityIssue]:
                 )
             )
     return issues
+
+
+def _check_registered_user_broadcast_shape(ir: WorkflowIR) -> list[WorkflowQualityIssue]:
+    subscriber_steps = _steps_using(ir, "telegram.list_subscribers")
+    broadcast_steps = _steps_using(ir, "telegram.broadcast_message")
+    if not subscriber_steps or not broadcast_steps:
+        return []
+
+    issues: dict[str, WorkflowQualityIssue] = {}
+    for subscriber_step_id in subscriber_steps:
+        for broadcast_step_id in broadcast_steps:
+            for path in _paths_between(ir, subscriber_step_id, broadcast_step_id):
+                for step_id in path[1:-1]:
+                    step = ir.steps[step_id]
+                    issue = _registered_user_broadcast_detour_issue(step)
+                    if issue is not None:
+                        issues.setdefault(step.step_id, issue)
+    return list(issues.values())
+
+
+def _steps_using(ir: WorkflowIR, action_ref: str) -> set[str]:
+    return {
+        step.step_id
+        for step in ir.steps.values()
+        if step.uses is not None and step.uses.dotted == action_ref
+    }
+
+
+def _paths_between(ir: WorkflowIR, start: str, target: str) -> list[tuple[str, ...]]:
+    paths: list[tuple[str, ...]] = []
+    stack: list[tuple[str, tuple[str, ...]]] = [(start, (start,))]
+    max_depth = len(ir.steps) + 1
+    while stack and len(paths) < 64:
+        current, path = stack.pop()
+        if len(path) > max_depth:
+            continue
+        step = ir.steps.get(current)
+        if step is None:
+            continue
+        for next_step in reversed(step.outbound):
+            if next_step in path:
+                continue
+            next_path = (*path, next_step)
+            if next_step == target:
+                paths.append(next_path)
+            else:
+                stack.append((next_step, next_path))
+    return paths
+
+
+def _registered_user_broadcast_detour_issue(step: WorkflowStep) -> WorkflowQualityIssue | None:
+    action_ref = step.uses.dotted if step.uses is not None else None
+    if action_ref in {"telegram.create_message_draft", "telegram.send_message_draft"}:
+        detail = f"{action_ref} step {step.step_id}"
+    elif step.kind is StepKind.MANUAL_APPROVAL:
+        detail = f"manual approval step {step.step_id}"
+    elif step.kind is StepKind.DECISION:
+        detail = f"decision step {step.step_id}"
+    else:
+        return None
+    return WorkflowQualityIssue(
+        code="registered_user_broadcast_detour",
+        file="workflow.yaml",
+        path=("steps", step.step_id),
+        message=(
+            "registered-user telegram delivery must use connector interfaces directly: "
+            f"remove {detail} before telegram.broadcast_message"
+        ),
+        repair_hint=(
+            "Use brave.search -> telegram.list_subscribers -> llm.summarize -> "
+            "telegram.broadcast_message -> done; put the approval on telegram.broadcast_message."
+        ),
+    )
 
 
 def _reachable_steps(ir: WorkflowIR) -> set[str]:
