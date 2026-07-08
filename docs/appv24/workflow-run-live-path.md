@@ -183,6 +183,32 @@ locally from the handoff, and prints the live-read run id, local run id,
 approval run id, phase statuses, issues, and next approval commands. It does
 not approve requests or run live-production.
 
+## Guided User Mode
+
+The lower-level operator slash-command sequence remains available for
+debugging, but the workflow profile also exposes a guided user path:
+
+```text
+/workflow-catalog
+/workflow-run-guided <package> [fixture]
+/workflow-approve <package> <approval-run-id> <approval-request-id>
+/workflow-continue-guided <package> <approval-run-id> [fixture]
+```
+
+`/workflow-catalog` renders the user-facing connector capability catalog from
+connector contracts. This is the menu of actions the user can ask workflows to
+compose; workflow code does not own connector interfaces.
+
+`/workflow-run-guided` automates the safe pre-production sequence for a valid
+package: build the live plan, run the live-read prefix, resume the local
+steps, and stop at the approval ledger. It does not approve requests or run
+live-production.
+
+After the user records approval, `/workflow-continue-guided` checks
+live-production readiness and then runs approved live-production through the
+same connector, approval, idempotency, and target-policy gates as the
+lower-level command.
+
 After an operator records an approval decision, the phase runner can continue
 from that approved local ledger into the live-production phase. This
 continuation does not bypass the live-production runner. It still requires the
