@@ -37,6 +37,12 @@ from appv24.workflows.bundle_export import (
     format_workflow_bundle_export,
     write_workflow_bundle,
 )
+from appv24.workflows.capability_catalog import (
+    WorkflowCapability,
+    WorkflowCapabilityCatalog,
+    build_workflow_capability_catalog,
+    format_workflow_capability_catalog,
+)
 from appv24.workflows.compiler import compile_workflow_documents, compile_workflow_package
 from appv24.workflows.connector_registry import (
     WorkflowConnectorRegistryAction,
@@ -188,6 +194,8 @@ __all__ = (
     "WorkflowCompileResult",
     "WorkflowBundleCheckReport",
     "WorkflowBundleExport",
+    "WorkflowCapability",
+    "WorkflowCapabilityCatalog",
     "WorkflowConnectorRegistryAction",
     "WorkflowConnectorRegistryReport",
     "WorkflowMiddlewareRegistryEntry",
@@ -255,6 +263,7 @@ __all__ = (
     "SimulationLedger",
     "StepTrace",
     "build_workflow_stage_prompt",
+    "build_workflow_capability_catalog",
     "build_workflow_enablement_report",
     "build_enablement_report",
     "build_run_preview",
@@ -269,6 +278,7 @@ __all__ = (
     "build_live_read_transports_from_env",
     "persist_run_preview",
     "format_workflow_run_report",
+    "format_workflow_capability_catalog",
     "format_workflow_approval_list",
     "format_workflow_run_explanation",
     "format_live_draft_preflight_report",
