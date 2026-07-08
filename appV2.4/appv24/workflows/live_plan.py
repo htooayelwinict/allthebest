@@ -21,10 +21,11 @@ BUILTIN_LIVE_READ_TRANSPORTS = frozenset(
         "brave.search",
         "source.fetch_document",
         "source.fetch_items",
+        "telegram.list_subscribers",
     }
 )
 BUILTIN_LIVE_DRAFT_TRANSPORTS = frozenset({"gmail.create_draft"})
-BUILTIN_LIVE_PRODUCTION_TRANSPORTS = frozenset({"telegram.send_message"})
+BUILTIN_LIVE_PRODUCTION_TRANSPORTS = frozenset({"telegram.send_message", "telegram.broadcast_message"})
 
 
 @dataclass(frozen=True)

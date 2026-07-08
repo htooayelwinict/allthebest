@@ -1214,11 +1214,20 @@ def _fixture_with_prior_run_outputs(
     merged = dict(fixture)
     if not approval_run_id:
         return merged
+    outputs: dict[str, dict[str, Any]] = {}
+    try:
+        manifest = store.read_run_manifest(approval_run_id)
+        handoff_run_id = manifest.get("handoff_run_id")
+        if isinstance(handoff_run_id, str) and handoff_run_id:
+            handoff_trace = json.loads((store.run_dir(handoff_run_id) / "trace.json").read_text(encoding="utf-8"))
+            outputs.update(_trace_outputs(handoff_trace if isinstance(handoff_trace, Mapping) else {}))
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
     try:
         trace_payload = json.loads((store.run_dir(approval_run_id) / "trace.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
-        return merged
-    outputs = _trace_outputs(trace_payload if isinstance(trace_payload, Mapping) else {})
+        trace_payload = {}
+    outputs.update(_trace_outputs(trace_payload if isinstance(trace_payload, Mapping) else {}))
     if not outputs:
         return merged
     raw_steps = merged.get("steps")

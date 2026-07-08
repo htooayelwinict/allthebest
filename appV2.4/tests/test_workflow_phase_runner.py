@@ -404,6 +404,132 @@ def test_phase_runner_runs_mixed_brave_local_and_live_production_from_approval_s
     )
 
 
+def test_phase_runner_runs_ai_news_subscriber_broadcast_from_connector_interfaces(tmp_path: Path) -> None:
+    package = _write_ai_news_subscriber_broadcast_package(tmp_path)
+    run_root = tmp_path / ".workflow-runs"
+    seen_live_read_requests: list[BrokerRequest] = []
+
+    class BraveTransport(LiveWorkflowTransport):
+        def invoke(self, request: BrokerRequest) -> BrokerResult:
+            seen_live_read_requests.append(request)
+            return BrokerResult(
+                status="live-read",
+                provider_id="fake-brave",
+                outputs={
+                    "items": [{"title": "AI model update", "url": "https://example.test/ai"}],
+                    "source_count": 1,
+                    "query": "artificial intelligence news today",
+                },
+            )
+
+    class SubscriberTransport(LiveWorkflowTransport):
+        def invoke(self, request: BrokerRequest) -> BrokerResult:
+            seen_live_read_requests.append(request)
+            return BrokerResult(
+                status="live-read",
+                provider_id="fake-telegram",
+                outputs={
+                    "recipients": ["admin-chat", "ops-chat"],
+                    "recipient_count": 2,
+                    "audience_hash": "audience:test",
+                },
+            )
+
+    def summarize(request: BrokerRequest) -> BrokerResult:
+        assert request.fixture["handoff"]["outputs"]["search_ai_news"]["items"][0]["title"] == "AI model update"
+        assert request.fixture["handoff"]["outputs"]["list_subscribers"]["recipients"] == ["admin-chat", "ops-chat"]
+        return BrokerResult(
+            status="simulated",
+            provider_id="phase-test",
+            outputs={"summary": "AI model update: https://example.test/ai", "raw_response": {"ok": True}},
+        )
+
+    approval_report = run_workflow_live_read_to_approval(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            run_root=run_root,
+            connector_allowlist=("brave.search", "telegram.list_subscribers"),
+        ),
+        live_read_broker=LiveWorkflowBroker(
+            {
+                "brave.search": BraveTransport(),
+                "telegram.list_subscribers": SubscriberTransport(),
+            },
+            mode="live-read",
+        ),
+        credential_resolver=CredentialRefResolver(
+            {
+                "brave": CredentialScope(available=True, scopes=("brave:search",)),
+                "llm": CredentialScope(available=True, scopes=()),
+                "telegram": CredentialScope(available=True, scopes=("telegram:subscribers:read", "telegram:send")),
+            }
+        ),
+        local_broker=LocalWorkflowBroker({"llm.summarize": summarize}),
+    )
+
+    assert approval_report.status == "approval-required"
+    assert [request.connector_action for request in seen_live_read_requests] == [
+        "brave.search",
+        "telegram.list_subscribers",
+    ]
+
+    store = WorkflowRunStore(run_root)
+    request = store.read_approval_requests(approval_report.local_run_id)[0]
+    assert request.step_id == "send_digest"
+    assert request.connector_action == "telegram.broadcast_message"
+    store.record_approval_decision(
+        approval_report.local_run_id,
+        request.approval_request_id,
+        ApprovalDecision(approved=True, package_fingerprint=request.package_fingerprint, decided_by="Lewis"),
+    )
+
+    class BroadcastTransport(LiveWorkflowTransport):
+        def __init__(self) -> None:
+            self.requests: list[BrokerRequest] = []
+
+        def invoke(self, request: BrokerRequest) -> BrokerResult:
+            self.requests.append(request)
+            return BrokerResult(
+                status="live-production",
+                provider_id="fake-telegram",
+                outputs={"sent_count": 2, "message_ids": ["msg-1", "msg-2"], "chat_ids": ["admin-chat", "ops-chat"]},
+            )
+
+    production_transport = BroadcastTransport()
+    production_report = run_workflow_approved_live_production(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            run_root=run_root,
+            connector_allowlist=("telegram.broadcast_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat,ops-chat"},
+        ),
+        approval_run_id=approval_report.local_run_id,
+        live_production_broker=LiveWorkflowBroker(
+            {"telegram.broadcast_message": production_transport},
+            mode="live-production",
+            production_enabled=True,
+        ),
+        credential_resolver=CredentialRefResolver(
+            {
+                "brave": CredentialScope(available=True, scopes=("brave:search",)),
+                "llm": CredentialScope(available=True, scopes=()),
+                "telegram": CredentialScope(available=True, scopes=("telegram:subscribers:read", "telegram:send")),
+            }
+        ),
+    )
+
+    assert production_report.status == "passed"
+    assert production_report.live_production_report is not None
+    assert [trace.step_id for trace in production_report.live_production_report.step_trace] == ["send_digest", "done"]
+    assert production_transport.requests[0].connector_action == "telegram.broadcast_message"
+    assert production_transport.requests[0].fixture["steps"]["list_subscribers"]["outputs"]["recipients"] == [
+        "admin-chat",
+        "ops-chat",
+    ]
+
+
 def test_workflows_package_exports_live_draft_phase_runner() -> None:
     from appv24.workflows import run_workflow_approved_live_draft as exported
 
@@ -559,4 +685,154 @@ def _write_mixed_brave_llm_telegram_package(root: Path) -> Path:
     (fixtures / "happy_path.yaml").write_text(fixture_text, encoding="utf-8")
     (fixtures / "rejection_path.yaml").write_text(fixture_text, encoding="utf-8")
     (package / "rollback.md").write_text("# Rollback\n\nDelete the Telegram message manually if needed.\n", encoding="utf-8")
+    return package
+
+
+def _write_ai_news_subscriber_broadcast_package(root: Path) -> Path:
+    package = root / "ai-news-telegram-broadcast"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "ai-news-telegram-broadcast",
+                "description": "Search AI news, summarize it, and broadcast to Telegram subscribers.",
+                "design": {
+                    "intent": "Send a Telegram digest of recent AI news to registered subscribers.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["Telegram subscriber audience"],
+                    "outputs": ["Telegram broadcast result"],
+                    "assumptions": ["Brave and Telegram connectors are configured."],
+                    "side_effects": ["Send Telegram broadcast after approval."],
+                    "approval_gates": ["approve_telegram_broadcast"],
+                    "failure_modes": ["Search, summarization, subscriber listing, or broadcast fails."],
+                    "rollback": ["Review Telegram broadcast manually."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "search_ai_news",
+                "steps": [
+                    {
+                        "id": "search_ai_news",
+                        "uses": "brave.search",
+                        "with": {"query": "artificial intelligence news today", "count": 5},
+                        "next": "list_subscribers",
+                    },
+                    {
+                        "id": "list_subscribers",
+                        "uses": "telegram.list_subscribers",
+                        "with": {"audience": "default"},
+                        "next": "summarize_digest",
+                    },
+                    {
+                        "id": "summarize_digest",
+                        "uses": "llm.summarize",
+                        "with": {
+                            "text": "{{ steps.search_ai_news.outputs.items }}",
+                            "output_contract": "summary_v1",
+                        },
+                        "next": "send_digest",
+                    },
+                    {
+                        "id": "send_digest",
+                        "uses": "telegram.broadcast_message",
+                        "side_effect_class": "send",
+                        "approval": "approve_telegram_broadcast",
+                        "with": {
+                            "recipients": "{{ steps.list_subscribers.outputs.recipients }}",
+                            "audience_hash": "{{ steps.list_subscribers.outputs.audience_hash }}",
+                            "text": "{{ steps.summarize_digest.outputs.summary }}",
+                        },
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "brave",
+                        "adapter": "direct_api",
+                        "actions": [
+                            {
+                                "id": "search",
+                                "side_effect": False,
+                                "required_scopes": ["brave:search"],
+                                "outputs": {"allowed": ["items", "source_count", "query"]},
+                            }
+                        ],
+                    },
+                    {
+                        "id": "llm",
+                        "adapter": "llm",
+                        "actions": [
+                            {
+                                "id": "summarize",
+                                "side_effect": False,
+                                "outputs": {"allowed": ["summary", "raw_response"]},
+                            }
+                        ],
+                    },
+                    {
+                        "id": "telegram",
+                        "adapter": "direct_api",
+                        "actions": [
+                            {
+                                "id": "list_subscribers",
+                                "side_effect": False,
+                                "required_scopes": ["telegram:subscribers:read"],
+                                "outputs": {"allowed": ["recipients", "recipient_count", "audience_hash"]},
+                            },
+                            {
+                                "id": "broadcast_message",
+                                "side_effect": True,
+                                "side_effect_class": "send",
+                                "execution_mode": "brokered",
+                                "approval_required": True,
+                                "dry_run_supported": True,
+                                "required_scopes": ["telegram:send"],
+                                "idempotency": {"key_fields": ["audience_hash", "text"]},
+                                "outputs": {"allowed": ["sent_count", "message_ids", "chat_ids"]},
+                            },
+                        ],
+                    },
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [
+                    {"connector": "brave", "actions": ["search"], "scopes": ["brave:search"]},
+                    {"connector": "llm", "actions": ["summarize"], "scopes": []},
+                    {
+                        "connector": "telegram",
+                        "actions": ["list_subscribers", "broadcast_message"],
+                        "scopes": ["telegram:subscribers:read", "telegram:send"],
+                    },
+                ],
+                "approvals": [
+                    {"id": "approve_telegram_broadcast", "mode": "explicit", "required_for": ["send_digest"]}
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    fixture_text = "input:\n  audience: default\n"
+    (fixtures / "happy_path.yaml").write_text(fixture_text, encoding="utf-8")
+    (fixtures / "rejection_path.yaml").write_text(fixture_text, encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nReview Telegram broadcast manually.\n", encoding="utf-8")
     return package
