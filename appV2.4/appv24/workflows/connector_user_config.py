@@ -192,7 +192,7 @@ def redact_connector_profile(profile: ConnectorConfigProfile) -> dict[str, Any]:
 
 def format_connector_config_list(profiles: tuple[ConnectorConfigProfile, ...] | list[ConnectorConfigProfile]) -> str:
     if not profiles:
-        return "No workflow connectors configured."
+        return "Configured workflow connectors:\n- none"
 
     lines = ["Configured workflow connectors:"]
     for profile in profiles:

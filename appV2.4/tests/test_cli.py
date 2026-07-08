@@ -3954,6 +3954,88 @@ def test_cli_plain_workflow_connectors_renders_safe_registry(monkeypatch, tmp_pa
     assert "telegram-secret-token" not in captured.out
 
 
+def _run_workflow_connector_cli_prompts(monkeypatch, tmp_path: Path, prompts: list[str]) -> int:
+    prompt_iter = iter(prompts)
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt: str) -> None:
+            self.messages.append(prompt)
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompt_iter))
+    return cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+
+def test_cli_workflow_connector_list_redacts_user_config(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setenv("APPV24_CODING_AGENT_DIR", str(tmp_path / "agent"))
+    from appv24.coding_agent.config import get_connectors_path
+    from appv24.workflows.connector_user_config import ConnectorConfigProfile, ConnectorConfigStore
+
+    ConnectorConfigStore(get_connectors_path()).upsert(
+        ConnectorConfigProfile(
+            connector_id="brave",
+            profile="default",
+            credential_ref="brave-local",
+            scopes=("brave:search",),
+            config={"api_key": "brave-test-key"},
+            source="user-config",
+        )
+    )
+
+    exit_code = _run_workflow_connector_cli_prompts(monkeypatch, tmp_path, ["/workflow-connector-list", "/exit"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Configured workflow connectors:" in captured.out
+    assert "brave" in captured.out
+    assert "brave:search" in captured.out
+    assert "brave-test-key" not in captured.out
+
+
+def test_cli_workflow_connector_remove_deletes_profile(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setenv("APPV24_CODING_AGENT_DIR", str(tmp_path / "agent"))
+    from appv24.coding_agent.config import get_connectors_path
+    from appv24.workflows.connector_user_config import ConnectorConfigProfile, ConnectorConfigStore
+
+    store = ConnectorConfigStore(get_connectors_path())
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="telegram",
+            profile="default",
+            credential_ref="telegram-local",
+            scopes=("telegram:send",),
+            config={"bot_token": "telegram-test-token", "allowed_chat_ids": ["chat-a"]},
+            source="user-config",
+        )
+    )
+
+    exit_code = _run_workflow_connector_cli_prompts(
+        monkeypatch,
+        tmp_path,
+        ["/workflow-connector-remove telegram", "/workflow-connector-list", "/exit"],
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Removed workflow connector config: telegram" in captured.out
+    assert "- none" in captured.out
+    assert "telegram-test-token" not in captured.out
+
+
 def test_cli_plain_workflow_export_bundle_writes_bundle_without_model(monkeypatch, tmp_path, capsys) -> None:
     package = _write_live_production_workflow_package(tmp_path)
     prompts = iter([f"/workflow-export-bundle {package.name}", "/exit"])

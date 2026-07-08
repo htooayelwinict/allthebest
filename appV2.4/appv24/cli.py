@@ -61,7 +61,12 @@ from appv24.workflows.live_transports import (
     build_live_read_transports_from_connector_config,
     build_live_read_transports_from_env,
 )
-from appv24.workflows.connector_user_config import ConnectorConfigResolver
+from appv24.workflows.connector_user_config import (
+    ConnectorConfigResolver,
+    ConnectorConfigStore,
+    format_connector_config_list,
+    normalize_connector_id,
+)
 from appv24.workflows.credential_refs import credential_resolver_for_package_connector_config
 from appv24.workflows.quality_gate import check_workflow_quality_package
 from appv24.workflows.repair import (
@@ -598,6 +603,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if _handle_workflow_connectors_command(app, prompt):
             return 0
+        if _handle_workflow_connector_list_command(app, prompt):
+            return 0
+        if _handle_workflow_connector_remove_command(app, prompt):
+            return 0
+        if _handle_workflow_connector_configure_command(app, prompt):
+            return 0
         if _handle_workflow_catalog_command(app, prompt):
             return 0
         if _handle_workflow_run_guided_command(app, prompt):
@@ -667,6 +678,12 @@ def main(argv: list[str] | None = None) -> int:
         if _handle_workflow_export_intent_command(app, prompt):
             continue
         if _handle_workflow_connectors_command(app, prompt):
+            continue
+        if _handle_workflow_connector_list_command(app, prompt):
+            continue
+        if _handle_workflow_connector_remove_command(app, prompt):
+            continue
+        if _handle_workflow_connector_configure_command(app, prompt):
             continue
         if _handle_workflow_catalog_command(app, prompt):
             continue
@@ -1131,6 +1148,40 @@ def _handle_workflow_connectors_command(app: CodingApp, prompt: str) -> bool:
     return True
 
 
+def _handle_workflow_connector_list_command(app: CodingApp, prompt: str) -> bool:
+    if prompt.strip() != "/workflow-connector-list":
+        return False
+    store = ConnectorConfigStore()
+    print(format_connector_config_list(store.list_profiles()))
+    return True
+
+
+def _handle_workflow_connector_remove_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_connector_remove_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) != 2:
+            raise ValueError("expected /workflow-connector-remove brave|telegram")
+        connector_id = normalize_connector_id(args[1])
+        removed = ConnectorConfigStore().remove(connector_id)
+        if removed:
+            print(f"Removed workflow connector config: {connector_id}")
+        else:
+            print(f"Workflow connector config not found: {connector_id}")
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow connector remove failed: {error}")
+    return True
+
+
+def _handle_workflow_connector_configure_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_connector_configure_command(prompt):
+        return False
+    print("Workflow connector configure is available in the TUI so secrets can be entered with masked prompts.")
+    return True
+
+
 def _handle_workflow_catalog_command(app: CodingApp, prompt: str) -> bool:
     if prompt.strip() != "/workflow-catalog":
         return False
@@ -1388,6 +1439,14 @@ def _is_workflow_bundle_check_command(prompt: str) -> bool:
 
 def _is_workflow_connectors_command(prompt: str) -> bool:
     return prompt == "/workflow-connectors" or prompt.startswith("/workflow-connectors ")
+
+
+def _is_workflow_connector_remove_command(prompt: str) -> bool:
+    return prompt == "/workflow-connector-remove" or prompt.startswith("/workflow-connector-remove ")
+
+
+def _is_workflow_connector_configure_command(prompt: str) -> bool:
+    return prompt == "/workflow-connector-configure" or prompt.startswith("/workflow-connector-configure ")
 
 
 def _is_workflow_run_guided_command(prompt: str) -> bool:
