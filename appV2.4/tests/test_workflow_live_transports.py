@@ -4,11 +4,17 @@ import base64
 from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from appv24.workflows.broker import BrokerRequest
+from appv24.workflows.connector_user_config import (
+    ConnectorConfigProfile,
+    ConnectorConfigResolver,
+    ConnectorConfigStore,
+)
 from appv24.workflows.live_transports import (
     BraveSearchTransport,
     GmailCreateDraftTransport,
@@ -20,7 +26,9 @@ from appv24.workflows.live_transports import (
     TelegramListSubscribersTransport,
     TelegramSendMessageTransport,
     build_live_draft_transports_from_env,
+    build_live_production_transports_from_connector_config,
     build_live_production_transports_from_env,
+    build_live_read_transports_from_connector_config,
     build_live_read_transports_from_env,
 )
 
@@ -94,6 +102,78 @@ def test_live_read_transport_registry_registers_telegram_list_subscribers() -> N
 
     assert tuple(transports) == ("telegram.list_subscribers",)
     assert isinstance(transports["telegram.list_subscribers"], TelegramListSubscribersTransport)
+
+
+def test_build_live_read_transports_from_connector_user_config(tmp_path: Path) -> None:
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="brave",
+            profile="default",
+            credential_ref="brave-local",
+            scopes=("brave:search",),
+            config={"api_key": "brave-test-key", "base_url": "https://search.test"},
+            source="user-config",
+        )
+    )
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="telegram",
+            profile="default",
+            credential_ref="telegram-local",
+            scopes=("telegram:subscribers:read",),
+            config={"allowed_chat_ids": ["chat-a"]},
+            source="user-config",
+        )
+    )
+
+    transports = build_live_read_transports_from_connector_config(
+        ConnectorConfigResolver(store=store, env={"APPV24_WORKFLOW_LIVE_READ_ENABLED": "true"})
+    )
+
+    assert sorted(transports) == ["brave.search", "telegram.list_subscribers"]
+
+
+def test_build_live_production_transports_from_connector_user_config(tmp_path: Path) -> None:
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="telegram",
+            profile="default",
+            credential_ref="telegram-local",
+            scopes=("telegram:send",),
+            config={
+                "bot_token": "telegram-test-token",
+                "allowed_chat_ids": ["chat-a"],
+                "base_url": "https://telegram.test",
+            },
+            source="user-config",
+        )
+    )
+
+    transports = build_live_production_transports_from_connector_config(
+        ConnectorConfigResolver(store=store, env={"APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED": "true"})
+    )
+
+    assert sorted(transports) == ["telegram.broadcast_message", "telegram.send_message"]
+
+
+def test_connector_user_config_transport_builder_preserves_env_gate(tmp_path: Path) -> None:
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="brave",
+            profile="default",
+            credential_ref="brave-local",
+            scopes=("brave:search",),
+            config={"api_key": "brave-test-key"},
+            source="user-config",
+        )
+    )
+
+    transports = build_live_read_transports_from_connector_config(ConnectorConfigResolver(store=store, env={}))
+
+    assert transports == {}
 
 
 def test_live_draft_transport_registry_disabled_by_default() -> None:

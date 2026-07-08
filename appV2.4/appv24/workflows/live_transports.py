@@ -14,6 +14,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from appv24.workflows.broker import BrokerRequest, BrokerResult
+from appv24.workflows.connector_user_config import ConnectorConfigResolver
 from appv24.workflows.http_safety import validate_http_fetch_url
 from appv24.workflows.live_broker import LiveWorkflowTransport
 
@@ -79,19 +80,14 @@ def build_live_read_transports_from_env(
     if not _env_enabled(env.get(LIVE_READ_ENABLED_ENV)):
         return {}
     github_token = env.get(GITHUB_TOKEN_ENV, "").strip()
-    transports: dict[str, LiveWorkflowTransport] = {}
+    transports = build_live_read_transports_from_connector_config(
+        ConnectorConfigResolver(env=env),
+        client_factory=client_factory,
+    )
     if github_token:
         base_url = env.get(GITHUB_API_BASE_URL_ENV, DEFAULT_GITHUB_API_BASE_URL).strip() or DEFAULT_GITHUB_API_BASE_URL
         transports["github.list_dependabot_alerts"] = GitHubDependabotAlertsTransport(
             token=github_token,
-            base_url=base_url,
-            client_factory=client_factory,
-        )
-    brave_key = env.get(BRAVE_SEARCH_API_KEY_ENV, "").strip()
-    if brave_key:
-        base_url = env.get(BRAVE_SEARCH_BASE_URL_ENV, DEFAULT_BRAVE_SEARCH_BASE_URL).strip() or DEFAULT_BRAVE_SEARCH_BASE_URL
-        transports["brave.search"] = BraveSearchTransport(
-            api_key=brave_key,
             base_url=base_url,
             client_factory=client_factory,
         )
@@ -114,11 +110,37 @@ def build_live_read_transports_from_env(
             follow_redirects=_env_enabled(env.get(HTTP_FETCH_FOLLOW_REDIRECTS_ENV)),
             client_factory=client_factory,
         )
-    telegram_allowed_chat_ids = _split_csv(env.get(TELEGRAM_ALLOWED_CHAT_IDS_ENV, ""))
-    if telegram_allowed_chat_ids:
-        transports["telegram.list_subscribers"] = TelegramListSubscribersTransport(
-            allowed_chat_ids=telegram_allowed_chat_ids,
-        )
+    return transports
+
+
+def build_live_read_transports_from_connector_config(
+    connector_config: ConnectorConfigResolver,
+    *,
+    client_factory: Callable[[], _HttpClient] | None = None,
+) -> dict[str, LiveWorkflowTransport]:
+    if not _env_enabled(connector_config.env.get(LIVE_READ_ENABLED_ENV)):
+        return {}
+
+    transports: dict[str, LiveWorkflowTransport] = {}
+    brave = connector_config.resolve("brave")
+    if brave is not None:
+        api_key = _config_string(brave.config, "api_key")
+        if api_key:
+            base_url = _config_string(brave.config, "base_url", DEFAULT_BRAVE_SEARCH_BASE_URL)
+            transports["brave.search"] = BraveSearchTransport(
+                api_key=api_key,
+                base_url=base_url or DEFAULT_BRAVE_SEARCH_BASE_URL,
+                client_factory=client_factory,
+            )
+
+    telegram = connector_config.resolve("telegram")
+    if telegram is not None:
+        allowed_chat_ids = _config_string_list(telegram.config, "allowed_chat_ids")
+        if allowed_chat_ids:
+            transports["telegram.list_subscribers"] = TelegramListSubscribersTransport(
+                allowed_chat_ids=allowed_chat_ids,
+            )
+
     return transports
 
 
@@ -168,25 +190,38 @@ def build_live_production_transports_from_env(
 ) -> dict[str, LiveWorkflowTransport]:
     """Build live-production transports from explicit operator environment settings."""
 
-    if not _env_enabled(env.get(LIVE_PRODUCTION_ENABLED_ENV)):
+    return build_live_production_transports_from_connector_config(
+        ConnectorConfigResolver(env=env),
+        client_factory=client_factory,
+    )
+
+
+def build_live_production_transports_from_connector_config(
+    connector_config: ConnectorConfigResolver,
+    *,
+    client_factory: Callable[[], _HttpClient] | None = None,
+) -> dict[str, LiveWorkflowTransport]:
+    if not _env_enabled(connector_config.env.get(LIVE_PRODUCTION_ENABLED_ENV)):
         return {}
-    telegram_token = env.get(TELEGRAM_BOT_TOKEN_ENV, "").strip()
-    if not telegram_token:
+
+    telegram = connector_config.resolve("telegram")
+    if telegram is None:
         return {}
-    allowed_chat_ids = _split_csv(env.get(TELEGRAM_ALLOWED_CHAT_IDS_ENV, ""))
-    if not allowed_chat_ids:
+    telegram_token = _config_string(telegram.config, "bot_token")
+    allowed_chat_ids = _config_string_list(telegram.config, "allowed_chat_ids")
+    if not telegram_token or not allowed_chat_ids:
         return {}
-    base_url = env.get(TELEGRAM_API_BASE_URL_ENV, DEFAULT_TELEGRAM_API_BASE_URL).strip() or DEFAULT_TELEGRAM_API_BASE_URL
+    base_url = _config_string(telegram.config, "base_url", DEFAULT_TELEGRAM_API_BASE_URL)
     return {
         "telegram.send_message": TelegramSendMessageTransport(
             token=telegram_token,
-            base_url=base_url,
+            base_url=base_url or DEFAULT_TELEGRAM_API_BASE_URL,
             allowed_chat_ids=allowed_chat_ids,
             client_factory=client_factory,
         ),
         "telegram.broadcast_message": TelegramBroadcastMessageTransport(
             token=telegram_token,
-            base_url=base_url,
+            base_url=base_url or DEFAULT_TELEGRAM_API_BASE_URL,
             allowed_chat_ids=allowed_chat_ids,
             client_factory=client_factory,
         ),
@@ -722,6 +757,20 @@ def _env_enabled(value: str | None) -> bool:
 
 def _split_csv(value: str | None) -> tuple[str, ...]:
     return tuple(part.strip() for part in (value or "").split(",") if part.strip())
+
+
+def _config_string(config: Mapping[str, Any], key: str, default: str = "") -> str:
+    value = config.get(key, default)
+    return str(value).strip()
+
+
+def _config_string_list(config: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    value = config.get(key)
+    if isinstance(value, list):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, str):
+        return _split_csv(value)
+    return ()
 
 
 def _int_env(value: str | None, *, default: int) -> int:
