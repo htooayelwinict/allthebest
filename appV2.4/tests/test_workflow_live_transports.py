@@ -16,6 +16,8 @@ from appv24.workflows.live_transports import (
     HttpFetchTransport,
     SourceFetchDocumentTransport,
     SourceFetchItemsTransport,
+    TelegramBroadcastMessageTransport,
+    TelegramListSubscribersTransport,
     TelegramSendMessageTransport,
     build_live_draft_transports_from_env,
     build_live_production_transports_from_env,
@@ -80,6 +82,18 @@ def test_live_read_transport_registry_registers_brave_search_when_enabled() -> N
 
     assert tuple(transports) == ("brave.search",)
     assert isinstance(transports["brave.search"], BraveSearchTransport)
+
+
+def test_live_read_transport_registry_registers_telegram_list_subscribers() -> None:
+    transports = build_live_read_transports_from_env(
+        {
+            "APPV24_WORKFLOW_LIVE_READ_ENABLED": "true",
+            "APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat,ops-chat",
+        }
+    )
+
+    assert tuple(transports) == ("telegram.list_subscribers",)
+    assert isinstance(transports["telegram.list_subscribers"], TelegramListSubscribersTransport)
 
 
 def test_live_draft_transport_registry_disabled_by_default() -> None:
@@ -149,8 +163,9 @@ def test_live_production_transport_registry_registers_telegram_when_enabled() ->
         }
     )
 
-    assert tuple(transports) == ("telegram.send_message",)
+    assert tuple(transports) == ("telegram.send_message", "telegram.broadcast_message")
     assert isinstance(transports["telegram.send_message"], TelegramSendMessageTransport)
+    assert isinstance(transports["telegram.broadcast_message"], TelegramBroadcastMessageTransport)
 
 
 def test_live_production_transport_registry_requires_telegram_allowed_chat_ids() -> None:
@@ -1098,6 +1113,100 @@ def test_telegram_send_message_transport_blocks_malformed_response() -> None:
     assert result.status == "blocked"
     assert result.outputs == {}
     assert result.issues == ("telegram.send_message returned malformed response",)
+
+
+def test_telegram_list_subscribers_transport_returns_allowed_recipients() -> None:
+    transport = TelegramListSubscribersTransport(allowed_chat_ids=("admin-chat", "ops-chat"))
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="list_subscribers",
+            connector_action="telegram.list_subscribers",
+            input_ref={"with": {"audience": "default"}},
+            fixture={"input": {}},
+            allowed_outputs=("recipients", "recipient_count", "audience_hash"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "live-read"
+    assert result.provider_id == "telegram"
+    assert result.outputs["recipients"] == ["admin-chat", "ops-chat"]
+    assert result.outputs["recipient_count"] == 2
+    assert str(result.outputs["audience_hash"]).startswith("audience:")
+
+
+def test_telegram_broadcast_message_transport_posts_to_each_allowed_recipient() -> None:
+    client = FakeClient(
+        {"ok": True, "result": {"message_id": 42, "chat": {"id": "admin-chat"}}},
+        post_responses=[
+            FakeResponse({"ok": True, "result": {"message_id": 42, "chat": {"id": "admin-chat"}}}),
+            FakeResponse({"ok": True, "result": {"message_id": 43, "chat": {"id": "ops-chat"}}}),
+        ],
+    )
+    transport = TelegramBroadcastMessageTransport(
+        token="telegram-token",
+        base_url="https://telegram.test",
+        allowed_chat_ids=("admin-chat", "ops-chat"),
+        client_factory=lambda: client,
+    )
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="send_digest",
+            connector_action="telegram.broadcast_message",
+            input_ref={
+                "with": {
+                    "recipients": "{{ steps.list_subscribers.outputs.recipients }}",
+                    "text": "{{ steps.summarize_digest.outputs.summary }}",
+                    "disable_notification": True,
+                }
+            },
+            fixture={
+                "steps": {
+                    "list_subscribers": {"outputs": {"recipients": ["admin-chat", "ops-chat"]}},
+                    "summarize_digest": {"outputs": {"summary": "Daily AI digest"}},
+                }
+            },
+            allowed_outputs=("sent_count", "message_ids", "chat_ids"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "live-production"
+    assert result.outputs == {
+        "sent_count": 2,
+        "message_ids": ["42", "43"],
+        "chat_ids": ["admin-chat", "ops-chat"],
+    }
+    assert [call["json"]["chat_id"] for call in client.post_calls] == ["admin-chat", "ops-chat"]
+    assert all(call["json"]["text"] == "Daily AI digest" for call in client.post_calls)
+    assert "telegram-token" not in repr(result.outputs)
+
+
+def test_telegram_broadcast_message_transport_blocks_unapproved_recipient_before_http() -> None:
+    client = FakeClient({"ok": True})
+    transport = TelegramBroadcastMessageTransport(
+        token="telegram-token",
+        allowed_chat_ids=("admin-chat",),
+        client_factory=lambda: client,
+    )
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="send_digest",
+            connector_action="telegram.broadcast_message",
+            input_ref={"with": {"recipients": ["admin-chat", "other-chat"], "text": "Daily AI digest"}},
+            fixture={"input": {}},
+            allowed_outputs=("sent_count", "message_ids", "chat_ids"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == ("telegram.broadcast_message chat_id is not allowlisted: other-chat",)
+    assert client.post_calls == []
 
 
 @dataclass

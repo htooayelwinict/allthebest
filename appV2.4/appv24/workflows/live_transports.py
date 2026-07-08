@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 from collections.abc import Callable, Mapping
 from email.message import EmailMessage
+import hashlib
+import json
 import re
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
@@ -110,6 +112,11 @@ def build_live_read_transports_from_env(
             follow_redirects=_env_enabled(env.get(HTTP_FETCH_FOLLOW_REDIRECTS_ENV)),
             client_factory=client_factory,
         )
+    telegram_allowed_chat_ids = _split_csv(env.get(TELEGRAM_ALLOWED_CHAT_IDS_ENV, ""))
+    if telegram_allowed_chat_ids:
+        transports["telegram.list_subscribers"] = TelegramListSubscribersTransport(
+            allowed_chat_ids=telegram_allowed_chat_ids,
+        )
     return transports
 
 
@@ -174,7 +181,13 @@ def build_live_production_transports_from_env(
             base_url=base_url,
             allowed_chat_ids=allowed_chat_ids,
             client_factory=client_factory,
-        )
+        ),
+        "telegram.broadcast_message": TelegramBroadcastMessageTransport(
+            token=telegram_token,
+            base_url=base_url,
+            allowed_chat_ids=allowed_chat_ids,
+            client_factory=client_factory,
+        ),
     }
 
 
@@ -547,6 +560,27 @@ class GmailCreateDraftTransport:
         return BrokerResult(status="live-draft", provider_id="gmail", outputs=outputs)
 
 
+class TelegramListSubscribersTransport:
+    """Read-only Telegram subscriber interface backed by configured allowed chat IDs."""
+
+    def __init__(self, *, allowed_chat_ids: tuple[str, ...]) -> None:
+        self._allowed_chat_ids = tuple(chat_id.strip() for chat_id in allowed_chat_ids if chat_id.strip())
+
+    def invoke(self, request: BrokerRequest) -> BrokerResult:
+        if not self._allowed_chat_ids:
+            return _blocked(f"telegram.list_subscribers requires {TELEGRAM_ALLOWED_CHAT_IDS_ENV}", provider_id="telegram")
+        recipients = list(self._allowed_chat_ids)
+        return BrokerResult(
+            status="live-read",
+            provider_id="telegram",
+            outputs={
+                "recipients": recipients,
+                "recipient_count": len(recipients),
+                "audience_hash": _telegram_audience_hash(recipients),
+            },
+        )
+
+
 class TelegramSendMessageTransport:
     """Production Telegram Bot API transport for approved send-message workflow runs."""
 
@@ -609,6 +643,75 @@ class TelegramSendMessageTransport:
         if chat_id is not None:
             outputs["chat_id"] = chat_id
         return BrokerResult(status="live-production", provider_id="telegram", outputs=outputs)
+
+
+class TelegramBroadcastMessageTransport:
+    """Production Telegram broadcast transport for an approved connector-owned recipient list."""
+
+    def __init__(
+        self,
+        *,
+        token: str,
+        base_url: str = DEFAULT_TELEGRAM_API_BASE_URL,
+        allowed_chat_ids: tuple[str, ...] = (),
+        client_factory: Callable[[], _HttpClient] | None = None,
+    ) -> None:
+        self._token = token
+        self._base_url = base_url.rstrip("/")
+        self._allowed_chat_ids = tuple(chat_id.strip() for chat_id in allowed_chat_ids if chat_id.strip())
+        self._client_factory = client_factory or (lambda: httpx.Client(timeout=15.0))
+
+    def invoke(self, request: BrokerRequest) -> BrokerResult:
+        fields = _telegram_broadcast_fields_for_request(request)
+        if fields is None:
+            return _blocked("telegram.broadcast_message requires recipients and text", provider_id="telegram")
+        recipients = fields["recipients"]
+        if not self._allowed_chat_ids:
+            return _blocked(f"telegram.broadcast_message requires {TELEGRAM_ALLOWED_CHAT_IDS_ENV}", provider_id="telegram")
+        for chat_id in recipients:
+            if chat_id not in self._allowed_chat_ids:
+                return _blocked(f"telegram.broadcast_message chat_id is not allowlisted: {chat_id}", provider_id="telegram")
+        if len(fields["text"]) > TELEGRAM_MAX_MESSAGE_CHARS:
+            return _blocked(
+                f"telegram.broadcast_message text exceeds {TELEGRAM_MAX_MESSAGE_CHARS} characters",
+                provider_id="telegram",
+            )
+
+        client = self._client_factory()
+        message_ids: list[str] = []
+        chat_ids: list[str] = []
+        try:
+            for chat_id in recipients:
+                payload = _telegram_send_message_payload({**fields, "chat_id": chat_id})
+                response = client.post(
+                    f"{self._base_url}/bot{self._token}/sendMessage",
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                response.raise_for_status()
+                parsed = response.json()
+                slim = _telegram_send_message_outputs(parsed)
+                if slim is None:
+                    return _blocked("telegram.broadcast_message returned malformed response", provider_id="telegram")
+                message_ids.append(str(slim["message_id"]))
+                chat_ids.append(str(slim["chat_id"]))
+        except httpx.HTTPStatusError as error:
+            status_code = error.response.status_code if error.response is not None else "unknown"
+            return _blocked(f"telegram.broadcast_message returned HTTP {status_code}", provider_id="telegram")
+        except httpx.RequestError as error:
+            return _blocked(f"telegram.broadcast_message request failed: {type(error).__name__}", provider_id="telegram")
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+        return BrokerResult(
+            status="live-production",
+            provider_id="telegram",
+            outputs={"sent_count": len(message_ids), "message_ids": message_ids, "chat_ids": chat_ids},
+        )
 
 
 def _env_enabled(value: str | None) -> bool:
@@ -1016,6 +1119,24 @@ def _telegram_message_fields_for_request(request: BrokerRequest) -> dict[str, An
     return fields
 
 
+def _telegram_broadcast_fields_for_request(request: BrokerRequest) -> dict[str, Any] | None:
+    with_map = _mapping(request.input_ref.get("with"))
+    fixture_input = _mapping(request.fixture.get("input"))
+    recipients = _first_string_list(with_map, fixture_input, "recipients", fixture=request.fixture)
+    text = _first_string(with_map, fixture_input, ("text", "message_text", "body"), fixture=request.fixture)
+    if not recipients or text is None:
+        return None
+    fields: dict[str, Any] = {"recipients": recipients, "text": text}
+    parse_mode = _first_string(with_map, fixture_input, ("parse_mode",), fixture=request.fixture)
+    if parse_mode is not None:
+        fields["parse_mode"] = parse_mode
+    for key in ("disable_notification", "protect_content"):
+        value = _first_bool(with_map, fixture_input, key, fixture=request.fixture)
+        if value is not None:
+            fields[key] = value
+    return fields
+
+
 def _telegram_send_message_payload(fields: Mapping[str, Any]) -> dict[str, Any]:
     payload = {
         "chat_id": fields["chat_id"],
@@ -1025,6 +1146,22 @@ def _telegram_send_message_payload(fields: Mapping[str, Any]) -> dict[str, Any]:
         if key in fields:
             payload[key] = fields[key]
     return payload
+
+
+def _telegram_send_message_outputs(payload: object) -> dict[str, str] | None:
+    if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+        return None
+    result = _mapping(payload.get("result"))
+    message_id = _scalar_string(result.get("message_id"))
+    chat_id = _scalar_string(_mapping(result.get("chat")).get("id"))
+    if message_id is None or chat_id is None:
+        return None
+    return {"message_id": message_id, "chat_id": chat_id}
+
+
+def _telegram_audience_hash(recipients: list[str]) -> str:
+    encoded = json.dumps(sorted(recipients), sort_keys=True, separators=(",", ":"))
+    return f"audience:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 def _first_string(
@@ -1039,6 +1176,23 @@ def _first_string(
             value = _string(_resolve_input_ref(source.get(key), fixture_input, fixture=fixture))
             if value is not None:
                 return value
+    return None
+
+
+def _first_string_list(
+    primary: Mapping[str, Any],
+    fallback: Mapping[str, Any],
+    key: str,
+    *,
+    fixture: Mapping[str, Any] | None = None,
+) -> list[str] | None:
+    for source, fixture_input in ((primary, fallback), (fallback, fallback)):
+        value = _resolve_input_ref(source.get(key), fixture_input, fixture=fixture)
+        if isinstance(value, list):
+            values = [_scalar_string(item) for item in value]
+            recipients = [item for item in values if item is not None]
+            if recipients:
+                return recipients
     return None
 
 
