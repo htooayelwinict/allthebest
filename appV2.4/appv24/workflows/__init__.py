@@ -69,6 +69,12 @@ from appv24.workflows.explain import (
 )
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import fixture_names, require_fixture
+from appv24.workflows.guided_run import (
+    GuidedWorkflowRunReport,
+    continue_guided_workflow_run,
+    format_guided_workflow_run_report,
+    prepare_guided_workflow_run,
+)
 from appv24.workflows.iac_export import (
     WorkflowDeploymentIntent,
     export_deployment_intent,
@@ -234,6 +240,7 @@ __all__ = (
     "CredentialRefResolver",
     "CredentialScope",
     "GoldenWorkflowExample",
+    "GuidedWorkflowRunReport",
     "IdempotencyStore",
     "PersistentIdempotencyStore",
     "LiveWorkflowBroker",
@@ -279,6 +286,7 @@ __all__ = (
     "persist_run_preview",
     "format_workflow_run_report",
     "format_workflow_capability_catalog",
+    "format_guided_workflow_run_report",
     "format_workflow_approval_list",
     "format_workflow_run_explanation",
     "format_live_draft_preflight_report",
@@ -299,6 +307,8 @@ __all__ = (
     "run_workflow_approved_live_draft",
     "run_workflow_approved_live_production",
     "run_workflow_live_read_to_approval",
+    "prepare_guided_workflow_run",
+    "continue_guided_workflow_run",
     "run_activation_scheduler_loop",
     "run_due_activation_sweep",
     "run_live_draft_workflow",
