@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -90,6 +91,35 @@ class LocalArtifactProviders:
             request,
             {
                 "draft_id": draft_id,
+                "artifact_path": str(path),
+            },
+        )
+
+    def telegram_list_subscribers(self, request: BrokerRequest) -> BrokerResult:
+        recipients = _fixture_recipients(request)
+        path = self._write_artifact(request, "local-telegram-subscribers")
+        return _filtered(
+            request,
+            {
+                "recipients": recipients,
+                "recipient_count": len(recipients),
+                "audience_hash": _audience_hash(recipients),
+                "artifact_path": str(path),
+            },
+        )
+
+    def telegram_broadcast_message(self, request: BrokerRequest) -> BrokerResult:
+        recipients = _fixture_recipients(request)
+        path = self._write_artifact(request, "local-telegram-broadcast")
+        return _filtered(
+            request,
+            {
+                "sent_count": len(recipients),
+                "message_ids": [
+                    f"local-message-{request.step_id}-{index}"
+                    for index, _recipient in enumerate(recipients, start=1)
+                ],
+                "chat_ids": recipients,
                 "artifact_path": str(path),
             },
         )
@@ -321,7 +351,9 @@ class LocalArtifactProviders:
             "policy.check": self.policy_check,
             "source.fetch_document": self.source_fetch_document,
             "source.fetch_items": self.source_fetch_items,
+            "telegram.broadcast_message": self.telegram_broadcast_message,
             "telegram.create_message_draft": self.telegram_create_message_draft,
+            "telegram.list_subscribers": self.telegram_list_subscribers,
             "telegram.send_message": self.telegram_send_message,
             "telegram.send_message_draft": self.telegram_send_message_draft,
         }
@@ -435,6 +467,21 @@ def _string_from_with_or_fixture(request: BrokerRequest, key: str) -> str | None
 
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _fixture_recipients(request: BrokerRequest) -> list[str]:
+    fixture_input = _mapping(request.fixture.get("input") if isinstance(request.fixture, dict) else None)
+    recipients = fixture_input.get("recipients") or fixture_input.get("chat_ids")
+    if isinstance(recipients, list):
+        values = [str(item).strip() for item in recipients if str(item).strip()]
+        if values:
+            return values
+    return ["local-telegram-subscriber"]
+
+
+def _audience_hash(recipients: list[str]) -> str:
+    encoded = json.dumps(sorted(recipients), sort_keys=True, separators=(",", ":"))
+    return f"audience:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 def _policy_outputs(approved: bool, reason: str, matched_rule: str, path: Path) -> dict[str, object]:

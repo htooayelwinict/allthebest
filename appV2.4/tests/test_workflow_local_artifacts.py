@@ -101,6 +101,46 @@ def test_telegram_create_message_draft_provider_writes_local_draft_artifact(tmp_
     assert artifact_path.is_relative_to(tmp_path)
 
 
+def test_telegram_list_subscribers_provider_uses_fixture_or_allowed_outputs(tmp_path: Path) -> None:
+    providers = LocalArtifactProviders(tmp_path)
+
+    result = providers.telegram_list_subscribers(
+        BrokerRequest(
+            step_id="list_subscribers",
+            connector_action="telegram.list_subscribers",
+            input_ref={"with": {"audience": "default"}},
+            fixture={"input": {"recipients": ["admin-chat", "ops-chat"]}},
+            allowed_outputs=("recipients", "recipient_count", "audience_hash", "artifact_path"),
+        )
+    )
+
+    assert result.status == "simulated"
+    assert result.outputs["recipients"] == ["admin-chat", "ops-chat"]
+    assert result.outputs["recipient_count"] == 2
+    assert str(result.outputs["audience_hash"]).startswith("audience:")
+    assert Path(str(result.outputs["artifact_path"])).is_relative_to(tmp_path)
+
+
+def test_telegram_broadcast_message_provider_writes_local_broadcast_artifact(tmp_path: Path) -> None:
+    providers = LocalArtifactProviders(tmp_path)
+
+    result = providers.telegram_broadcast_message(
+        BrokerRequest(
+            step_id="send_digest",
+            connector_action="telegram.broadcast_message",
+            input_ref={"with": {"text": "Daily AI digest"}},
+            fixture={"input": {"recipients": ["admin-chat", "ops-chat"]}},
+            allowed_outputs=("sent_count", "message_ids", "chat_ids", "artifact_path"),
+        )
+    )
+
+    assert result.status == "simulated"
+    assert result.outputs["sent_count"] == 2
+    assert result.outputs["chat_ids"] == ["admin-chat", "ops-chat"]
+    assert result.outputs["message_ids"] == ["local-message-send_digest-1", "local-message-send_digest-2"]
+    assert Path(str(result.outputs["artifact_path"])).is_relative_to(tmp_path)
+
+
 def test_local_artifact_provider_map_exposes_supported_actions(tmp_path: Path) -> None:
     providers = LocalArtifactProviders(tmp_path)
 
@@ -118,7 +158,9 @@ def test_local_artifact_provider_map_exposes_supported_actions(tmp_path: Path) -
         "policy.check",
         "source.fetch_document",
         "source.fetch_items",
+        "telegram.broadcast_message",
         "telegram.create_message_draft",
+        "telegram.list_subscribers",
         "telegram.send_message",
         "telegram.send_message_draft",
         "ticket.create_draft",
