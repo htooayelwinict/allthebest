@@ -44,7 +44,6 @@ from appv24.workflows.live_validation import (
 )
 from appv24.workflows.live_env_template import build_workflow_live_env_template, format_workflow_live_env_template
 from appv24.workflows.live_preflight import (
-    credential_resolver_for_package_env,
     format_live_draft_preflight_report,
     format_live_production_preflight_report,
     format_live_read_preflight_report,
@@ -57,9 +56,13 @@ from appv24.workflows.live_readiness import format_workflow_live_readiness_repor
 from appv24.workflows.live_runner import run_live_draft_workflow, run_live_production_workflow, run_live_read_workflow
 from appv24.workflows.live_transports import (
     build_live_draft_transports_from_env,
+    build_live_production_transports_from_connector_config,
     build_live_production_transports_from_env,
+    build_live_read_transports_from_connector_config,
     build_live_read_transports_from_env,
 )
+from appv24.workflows.connector_user_config import ConnectorConfigResolver
+from appv24.workflows.credential_refs import credential_resolver_for_package_connector_config
 from appv24.workflows.quality_gate import check_workflow_quality_package
 from appv24.workflows.repair import (
     WorkflowDraftRepairConfig,
@@ -865,6 +868,22 @@ def _print_workflow_validation_if_needed(
         print(format_workflow_quality_report(quality))
 
 
+def _workflow_connector_config(env=None) -> ConnectorConfigResolver:
+    return ConnectorConfigResolver(env=env or os.environ)
+
+
+def _workflow_live_read_transports(connector_config: ConnectorConfigResolver):
+    transports = dict(build_live_read_transports_from_env(connector_config.env))
+    transports.update(build_live_read_transports_from_connector_config(connector_config))
+    return transports
+
+
+def _workflow_live_production_transports(connector_config: ConnectorConfigResolver):
+    transports = dict(build_live_production_transports_from_env(connector_config.env))
+    transports.update(build_live_production_transports_from_connector_config(connector_config))
+    return transports
+
+
 def _handle_workflow_activation_command(app: CodingApp, prompt: str) -> bool:
     if not _is_workflow_activation_command(prompt):
         return False
@@ -1129,6 +1148,7 @@ def _handle_workflow_run_guided_command(app: CodingApp, prompt: str) -> bool:
             raise ValueError("expected /workflow-run-guided <path> [fixture]")
         package_path = _resolve_workflow_package_path(app.cwd, args[1])
         fixture_name = args[2] if len(args) == 3 else "happy_path.yaml"
+        connector_config = _workflow_connector_config()
         report = prepare_guided_workflow_run(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1136,8 +1156,8 @@ def _handle_workflow_run_guided_command(app: CodingApp, prompt: str) -> bool:
                 mode=WorkflowRunMode.LIVE_READ,
                 operator_env=workflow_operator_env_from_env(os.environ),
             ),
-            live_read_broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
-            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            live_read_broker=LiveWorkflowBroker(_workflow_live_read_transports(connector_config), mode="live-read"),
+            credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
         )
         print(format_guided_workflow_run_report(report))
     except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
@@ -1156,6 +1176,7 @@ def _handle_workflow_continue_guided_command(app: CodingApp, prompt: str) -> boo
         package_path = _resolve_workflow_package_path(app.cwd, args[1])
         approval_run_id = args[2]
         fixture_name = args[3] if len(args) == 4 else "happy_path.yaml"
+        connector_config = _workflow_connector_config()
         report = continue_guided_workflow_run(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1165,11 +1186,11 @@ def _handle_workflow_continue_guided_command(app: CodingApp, prompt: str) -> boo
             ),
             approval_run_id=approval_run_id,
             live_production_broker=LiveWorkflowBroker(
-                build_live_production_transports_from_env(os.environ),
+                _workflow_live_production_transports(connector_config),
                 mode="live-production",
                 production_enabled=True,
             ),
-            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
             env=os.environ,
         )
         print(format_guided_workflow_run_report(report))
@@ -1313,6 +1334,7 @@ def _handle_workflow_live_ready_command(app: CodingApp, prompt: str) -> bool:
         if parsed.error is not None:
             raise ValueError(parsed.error)
         package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        connector_config = _workflow_connector_config()
         report = inspect_workflow_live_readiness(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1322,6 +1344,7 @@ def _handle_workflow_live_ready_command(app: CodingApp, prompt: str) -> bool:
                 connector_allowlist=parsed.connector_allowlist,
             ),
             env=os.environ,
+            connector_config=connector_config,
         )
         print(format_workflow_live_readiness_report(report))
     except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
@@ -1470,6 +1493,7 @@ def _handle_workflow_live_draft_preflight_command(app: CodingApp, prompt: str) -
         if parsed.error is not None:
             raise ValueError(parsed.error)
         package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        connector_config = _workflow_connector_config()
         report = preflight_live_draft_workflow(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1479,7 +1503,7 @@ def _handle_workflow_live_draft_preflight_command(app: CodingApp, prompt: str) -
                 connector_allowlist=parsed.connector_allowlist,
                 operator_env=workflow_operator_env_from_env(os.environ),
             ),
-            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
             available_transports=build_live_draft_transports_from_env(os.environ).keys(),
         )
         print(format_live_draft_preflight_report(report))
@@ -1497,6 +1521,7 @@ def _handle_workflow_live_read_preflight_command(app: CodingApp, prompt: str) ->
         if parsed.error is not None:
             raise ValueError(parsed.error)
         package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        connector_config = _workflow_connector_config()
         report = preflight_live_read_workflow(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1505,8 +1530,8 @@ def _handle_workflow_live_read_preflight_command(app: CodingApp, prompt: str) ->
                 connector_allowlist=parsed.connector_allowlist,
                 operator_env=workflow_operator_env_from_env(os.environ),
             ),
-            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
-            available_transports=build_live_read_transports_from_env(os.environ).keys(),
+            credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
+            available_transports=_workflow_live_read_transports(connector_config).keys(),
         )
         print(format_live_read_preflight_report(report))
     except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
@@ -1523,6 +1548,7 @@ def _handle_workflow_live_production_preflight_command(app: CodingApp, prompt: s
         if parsed.error is not None:
             raise ValueError(parsed.error)
         package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        connector_config = _workflow_connector_config()
         report = preflight_live_production_workflow(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1532,8 +1558,8 @@ def _handle_workflow_live_production_preflight_command(app: CodingApp, prompt: s
                 connector_allowlist=parsed.connector_allowlist,
                 operator_env=workflow_operator_env_from_env(os.environ),
             ),
-            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
-            available_transports=build_live_production_transports_from_env(os.environ).keys(),
+            credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
+            available_transports=_workflow_live_production_transports(connector_config).keys(),
         )
         print(format_live_production_preflight_report(report))
     except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
@@ -1550,6 +1576,7 @@ def _handle_workflow_run_live_draft_command(app: CodingApp, prompt: str) -> bool
         if parsed.error is not None:
             raise ValueError(parsed.error)
         package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        connector_config = _workflow_connector_config()
         phase_report = run_workflow_approved_live_draft(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1560,7 +1587,7 @@ def _handle_workflow_run_live_draft_command(app: CodingApp, prompt: str) -> bool
             ),
             approval_run_id=parsed.approval_run_id,
             live_draft_broker=LiveWorkflowBroker(build_live_draft_transports_from_env(os.environ), mode="live-draft"),
-            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
         )
         report = phase_report.live_draft_report
         if report is None:
@@ -1580,6 +1607,7 @@ def _handle_workflow_run_live_production_command(app: CodingApp, prompt: str) ->
         if parsed.error is not None:
             raise ValueError(parsed.error)
         package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        connector_config = _workflow_connector_config()
         phase_report = run_workflow_approved_live_production(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1590,11 +1618,11 @@ def _handle_workflow_run_live_production_command(app: CodingApp, prompt: str) ->
             ),
             approval_run_id=parsed.approval_run_id,
             live_production_broker=LiveWorkflowBroker(
-                build_live_production_transports_from_env(os.environ),
+                _workflow_live_production_transports(connector_config),
                 mode="live-production",
                 production_enabled=True,
             ),
-            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
         )
         report = phase_report.live_production_report
         if report is None:
@@ -1614,6 +1642,7 @@ def _handle_workflow_run_live_read_to_approval_command(app: CodingApp, prompt: s
         if parsed.error is not None:
             raise ValueError(parsed.error)
         package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        connector_config = _workflow_connector_config()
         report = run_workflow_live_read_to_approval(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1622,8 +1651,8 @@ def _handle_workflow_run_live_read_to_approval_command(app: CodingApp, prompt: s
                 connector_allowlist=parsed.connector_allowlist,
                 operator_env=workflow_operator_env_from_env(os.environ),
             ),
-            live_read_broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
-            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            live_read_broker=LiveWorkflowBroker(_workflow_live_read_transports(connector_config), mode="live-read"),
+            credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
         )
         print(format_workflow_phase_run_report(report, title="Workflow live-read-to-approval run"))
     except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
@@ -1640,6 +1669,7 @@ def _handle_workflow_run_live_read_command(app: CodingApp, prompt: str) -> bool:
         if parsed.error is not None:
             raise ValueError(parsed.error)
         package_path = _resolve_workflow_package_path(app.cwd, parsed.package_path)
+        connector_config = _workflow_connector_config()
         report = run_live_read_workflow(
             WorkflowRunRequest(
                 package_path=package_path,
@@ -1648,8 +1678,8 @@ def _handle_workflow_run_live_read_command(app: CodingApp, prompt: str) -> bool:
                 connector_allowlist=parsed.connector_allowlist,
                 operator_env=workflow_operator_env_from_env(os.environ),
             ),
-            broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
-            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            broker=LiveWorkflowBroker(_workflow_live_read_transports(connector_config), mode="live-read"),
+            credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
         )
         print(format_workflow_run_report(report).replace("Workflow local run:", "Workflow live-read run:", 1))
     except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.

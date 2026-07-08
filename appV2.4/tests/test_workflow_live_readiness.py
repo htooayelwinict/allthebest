@@ -5,6 +5,11 @@ from pathlib import Path
 import yaml
 
 from appv24.workflows.bundle_export import write_workflow_bundle
+from appv24.workflows.connector_user_config import (
+    ConnectorConfigProfile,
+    ConnectorConfigResolver,
+    ConnectorConfigStore,
+)
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.live_readiness import format_workflow_live_readiness_report, inspect_workflow_live_readiness
 
@@ -149,6 +154,75 @@ def test_live_readiness_passes_with_configured_source_live_read_setup(tmp_path: 
     assert "- APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_SOURCE_BASE_URL" in rendered
     assert "https://source.test" not in rendered
     assert not (package / ".workflow-runs").exists()
+
+
+def test_live_readiness_uses_connector_user_config_for_brave(tmp_path: Path) -> None:
+    package = _write_live_read_workflow_package(
+        tmp_path,
+        name="brave-read",
+        connector_id="brave",
+        action_id="search",
+        scopes=("brave:search",),
+        action_ref="brave.search",
+        outputs=("items", "source_count"),
+    )
+    _bind_brave_query(package)
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="brave",
+            profile="default",
+            credential_ref="brave-user",
+            scopes=("brave:search",),
+            config={"api_key": "brave-test-key"},
+            source="user-config",
+        )
+    )
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("brave.search",),
+        ),
+        env={"APPV24_WORKFLOW_LIVE_READ_ENABLED": "true"},
+        connector_config=ConnectorConfigResolver(store=store, env={"APPV24_WORKFLOW_LIVE_READ_ENABLED": "true"}),
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "ready"
+    assert report.configured_transports == ("brave.search",)
+    assert "brave-test-key" not in rendered
+
+
+def test_live_readiness_missing_connector_config_prefers_configure_hint(tmp_path: Path) -> None:
+    package = _write_live_read_workflow_package(
+        tmp_path,
+        name="brave-read",
+        connector_id="brave",
+        action_id="search",
+        scopes=("brave:search",),
+        action_ref="brave.search",
+        outputs=("items", "source_count"),
+    )
+    _bind_brave_query(package)
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("brave.search",),
+        ),
+        env={},
+        connector_config=ConnectorConfigResolver(store=ConnectorConfigStore(tmp_path / "missing.json"), env={}),
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "blocked"
+    assert "missing connector config for brave; run /workflow-connector-configure brave" in rendered
+    assert "APPV24_BRAVE_CREDENTIAL_REF" in rendered
 
 
 def test_live_readiness_reports_middleware_env_without_leaking_values(tmp_path: Path) -> None:
@@ -490,6 +564,13 @@ def _write_live_read_then_llm_workflow_package(root: Path) -> Path:
     (fixtures / "happy_path.yaml").write_text("input: {}\n", encoding="utf-8")
     (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
     return package
+
+
+def _bind_brave_query(package: Path) -> None:
+    workflow_path = package / "workflow.yaml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    workflow["steps"][0]["with"] = {"query": "public AI news"}
+    workflow_path.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
 
 
 def _write_external_crm_read_package(root: Path) -> Path:

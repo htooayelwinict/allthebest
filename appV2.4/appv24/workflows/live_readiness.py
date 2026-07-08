@@ -8,18 +8,24 @@ from pathlib import Path
 
 from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.connector_contracts import external_connector_env_requirements
-from appv24.workflows.credential_refs import credential_env_name, preflight_credential_refs
+from appv24.workflows.connector_user_config import ConnectorConfigResolver, SUPPORTED_CONNECTORS
+from appv24.workflows.credential_refs import (
+    credential_env_name,
+    credential_resolver_for_package_connector_config,
+    preflight_credential_refs,
+)
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.live_preflight import (
     LiveDraftPreflightReport,
-    credential_resolver_for_package_env,
     preflight_live_draft_workflow,
     preflight_live_production_workflow,
     preflight_live_read_workflow,
 )
 from appv24.workflows.live_transports import (
     build_live_draft_transports_from_env,
+    build_live_production_transports_from_connector_config,
     build_live_production_transports_from_env,
+    build_live_read_transports_from_connector_config,
     build_live_read_transports_from_env,
 )
 from appv24.workflows.loader import load_package_documents
@@ -47,16 +53,18 @@ def inspect_workflow_live_readiness(
     request: WorkflowRunRequest,
     *,
     env: Mapping[str, str],
+    connector_config: ConnectorConfigResolver | None = None,
 ) -> WorkflowLiveReadinessReport:
     """Inspect readiness for a live workflow run without invoking connectors."""
 
-    available_transports = _configured_transports(request.mode, env)
-    preflight = _preflight(request, env=env, available_transports=available_transports)
+    connector_config = connector_config or ConnectorConfigResolver(env=env)
+    available_transports = _configured_transports(request.mode, env, connector_config)
+    preflight = _preflight(request, connector_config=connector_config, available_transports=available_transports)
     required_credential_env = _required_credential_env(request)
     required_transport_env = _required_transport_env(request)
     required_connector_env = _required_connector_env(request)
     required_middleware_env = _required_middleware_env(request)
-    setup_issues = _setup_issues(request, env=env)
+    setup_issues = _setup_issues(request, env=env, connector_config=connector_config)
     bundle = inspect_default_workflow_bundle(request.package_path)
     issues = _dedupe((*setup_issues, *preflight.issues, *bundle.issues))
     status = "ready" if preflight.status == "passed" and not issues else "blocked"
@@ -120,10 +128,10 @@ def format_workflow_live_readiness_report(report: WorkflowLiveReadinessReport) -
 def _preflight(
     request: WorkflowRunRequest,
     *,
-    env: Mapping[str, str],
+    connector_config: ConnectorConfigResolver,
     available_transports: tuple[str, ...],
 ) -> LiveDraftPreflightReport:
-    credential_resolver = credential_resolver_for_package_env(request.package_path, env)
+    credential_resolver = credential_resolver_for_package_connector_config(request.package_path, connector_config)
     if request.mode is WorkflowRunMode.LIVE_READ:
         return preflight_live_read_workflow(
             request,
@@ -149,13 +157,41 @@ def _preflight(
     )
 
 
-def _configured_transports(mode: WorkflowRunMode, env: Mapping[str, str]) -> tuple[str, ...]:
+def _configured_transports(
+    mode: WorkflowRunMode,
+    env: Mapping[str, str],
+    connector_config: ConnectorConfigResolver,
+) -> tuple[str, ...]:
     if mode is WorkflowRunMode.LIVE_READ:
-        return tuple(build_live_read_transports_from_env(env).keys())
+        return tuple(
+            sorted(
+                {
+                    *build_live_read_transports_from_env(env).keys(),
+                    *build_live_read_transports_from_connector_config(connector_config).keys(),
+                }
+            )
+        )
     if mode is WorkflowRunMode.LIVE_DRAFT:
-        return tuple(build_live_draft_transports_from_env(env).keys())
+        return tuple(_legacy_configured_transports(mode, env))
     if mode is WorkflowRunMode.LIVE_PRODUCTION:
-        return tuple(build_live_production_transports_from_env(env).keys())
+        return tuple(
+            sorted(
+                {
+                    *build_live_production_transports_from_env(env).keys(),
+                    *build_live_production_transports_from_connector_config(connector_config).keys(),
+                }
+            )
+        )
+    return ()
+
+
+def _legacy_configured_transports(mode: WorkflowRunMode, env: Mapping[str, str]) -> tuple[str, ...]:
+    if mode is WorkflowRunMode.LIVE_READ:
+        return tuple(sorted(build_live_read_transports_from_env(env).keys()))
+    if mode is WorkflowRunMode.LIVE_DRAFT:
+        return tuple(sorted(build_live_draft_transports_from_env(env).keys()))
+    if mode is WorkflowRunMode.LIVE_PRODUCTION:
+        return tuple(sorted(build_live_production_transports_from_env(env).keys()))
     return ()
 
 
@@ -229,15 +265,22 @@ def _transport_env_hint(mode: WorkflowRunMode, action_ref: str) -> str | None:
     return hints.get((mode, action_ref))
 
 
-def _setup_issues(request: WorkflowRunRequest, *, env: Mapping[str, str]) -> tuple[str, ...]:
+def _setup_issues(
+    request: WorkflowRunRequest,
+    *,
+    env: Mapping[str, str],
+    connector_config: ConnectorConfigResolver,
+) -> tuple[str, ...]:
     issues: list[str] = []
     if request.mode is WorkflowRunMode.LIVE_DRAFT and not request.approval_run_id:
         issues.append("live-draft requires approval_run_id")
     elif request.mode is WorkflowRunMode.LIVE_PRODUCTION and not request.approval_run_id:
         issues.append("live-production requires approval_run_id")
     documents = load_package_documents(request.package_path)
-    credential_report = preflight_credential_refs(documents, credential_resolver_for_package_env(request.package_path, env))
+    credential_resolver = credential_resolver_for_package_connector_config(request.package_path, connector_config)
+    credential_report = preflight_credential_refs(documents, credential_resolver)
     issues.extend(credential_report.issues)
+    issues.extend(_connector_config_hints(documents.permissions, connector_config))
     for middleware_id, env_ref in middleware_env_refs(documents):
         if env_ref.required and env_ref.env_name not in env:
             issues.append(f"missing middleware env for {middleware_id}; required env: {env_ref.env_name}")
@@ -245,6 +288,35 @@ def _setup_issues(request: WorkflowRunRequest, *, env: Mapping[str, str]) -> tup
         if env_name not in env:
             issues.append(f"missing connector env; required env: {env_name}")
     return tuple(issues)
+
+
+def _connector_config_hints(
+    permissions: Mapping[str, object],
+    connector_config: ConnectorConfigResolver,
+) -> tuple[str, ...]:
+    hints: list[str] = []
+    for permission in permissions.get("permissions", []):
+        if not isinstance(permission, dict) or not isinstance(permission.get("connector"), str):
+            continue
+        connector_id = str(permission["connector"])
+        if connector_id not in SUPPORTED_CONNECTORS:
+            continue
+        resolved = connector_config.resolve(connector_id)
+        if resolved is not None and resolved.available:
+            continue
+        scopes = tuple(str(scope) for scope in permission.get("scopes", []) if isinstance(scope, str))
+        hints.append(_connector_config_hint(connector_id, scopes))
+    return _dedupe(hints)
+
+
+def _connector_config_hint(connector_id: str, requested_scopes: tuple[str, ...]) -> str:
+    env_name = credential_env_name(connector_id)
+    pieces = [f"missing connector config for {connector_id}; run /workflow-connector-configure {connector_id}"]
+    env_hint = [f"APPV24_{env_name}_CREDENTIAL_REF"]
+    if requested_scopes:
+        env_hint.append(f"APPV24_{env_name}_SCOPES={','.join(requested_scopes)}")
+    pieces.append(f"env fallback: {', '.join(env_hint)}")
+    return "; ".join(pieces)
 
 
 def _next_steps(request: WorkflowRunRequest, status: str, *, bundle_status: str) -> tuple[str, ...]:

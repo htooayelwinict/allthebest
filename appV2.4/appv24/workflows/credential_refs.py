@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from typing import Mapping
 
 from appv24.workflows.connector_user_config import ConnectorConfigResolver
-from appv24.workflows.loader import PackageDocuments
+from appv24.workflows.loader import PackageDocuments, load_package_documents
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,19 @@ def credential_resolver_from_connector_config(
             scopes=tuple(resolved.scopes),
         )
     return CredentialRefResolver(credentials)
+
+
+def credential_resolver_for_package_connector_config(
+    package_path: str | Path,
+    connector_config: ConnectorConfigResolver,
+) -> CredentialRefResolver:
+    documents = load_package_documents(Path(package_path))
+    connector_ids = tuple(
+        str(permission["connector"])
+        for permission in documents.permissions.get("permissions", [])
+        if isinstance(permission, dict) and isinstance(permission.get("connector"), str)
+    )
+    return credential_resolver_from_connector_config(tuple(dict.fromkeys(connector_ids)), connector_config)
 
 
 def credential_env_name(connector_id: str) -> str:
