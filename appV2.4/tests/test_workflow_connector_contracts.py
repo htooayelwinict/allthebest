@@ -131,6 +131,14 @@ def test_capability_prompt_uses_slim_contract_summaries() -> None:
     assert "telegram.list_subscribers(input: audience, limit) -> recipients, recipient_count, audience_hash" in fragment
     assert "telegram.broadcast_message(input: recipients, text) -> sent_count, message_ids, chat_ids" in fragment
     assert "For Telegram registered-user workflows, use telegram.list_subscribers before telegram.broadcast_message." in fragment
+    assert (
+        "Registered-user delivery must be modeled as connector interfaces: "
+        "telegram.list_subscribers then telegram.broadcast_message."
+    ) in fragment
+    assert (
+        "Approval for registered-user Telegram delivery belongs on telegram.broadcast_message, "
+        "not on a separate manual approval step."
+    ) in fragment
     assert "fetch_user_list" not in fragment
     assert "format_news_digest" not in fragment
     assert "http.fetch(input: url, query) -> status_code, url, text/json" in fragment

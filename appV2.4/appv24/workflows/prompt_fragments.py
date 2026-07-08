@@ -108,6 +108,8 @@ def render_capability_catalog_fragment() -> str:
         "- If no catalog action matches, model the need as trigger metadata, fixture input, a decision branch, or a local artifact design output.",
         "- For Telegram registered-user workflows, use telegram.list_subscribers before telegram.broadcast_message.",
         "- Registered-user delivery must be modeled as connector interfaces, not workflow-local subscriber lookup or formatter actions.",
+        "- Registered-user delivery must be modeled as connector interfaces: telegram.list_subscribers then telegram.broadcast_message.",
+        "- Approval for registered-user Telegram delivery belongs on telegram.broadcast_message, not on a separate manual approval step.",
         "- Only claim live execution for cataloged actions and configured target policies.",
         "- connectors.yaml outputs.allowed must name top-level provider outputs, not nested fields inside items.",
         "- For brave.search, use top-level outputs such as items, source_count, query, or artifact_path; put title, url, description, and age inside fixture item records or downstream input refs.",

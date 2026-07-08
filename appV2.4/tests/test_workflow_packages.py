@@ -1719,6 +1719,144 @@ approvals:
     )
 
 
+def test_ai_news_telegram_registered_users_package_uses_connector_interfaces(tmp_path: Path) -> None:
+    package = tmp_path / "ai-news-telegram"
+    package.mkdir()
+    (package / "workflow.yaml").write_text(
+        """
+version: appv24.workflow/v1
+name: ai-news-telegram-digest
+description: Search recent AI news, summarize it, and broadcast to Telegram subscribers.
+design:
+  intent: Send a Telegram digest of recent AI news to registered subscribers.
+  trigger: Manual run.
+  inputs:
+    - Telegram subscriber connector audience.
+  outputs:
+    - Telegram broadcast result.
+  assumptions:
+    - Subscriber connector is configured.
+  side_effects:
+    - Send Telegram broadcast after approval.
+  approval_gates:
+    - approve_telegram_broadcast
+  failure_modes:
+    - Search or broadcast fails.
+  rollback:
+    - Review Telegram broadcast manually.
+triggers:
+  - id: manual
+    type: manual
+entrypoint: search_ai_news
+steps:
+  - id: search_ai_news
+    uses: brave.search
+    with:
+      query: artificial intelligence news today
+      freshness: day
+      count: 10
+    next: list_subscribers
+  - id: list_subscribers
+    uses: telegram.list_subscribers
+    with:
+      audience: default
+    next: summarize_digest
+  - id: summarize_digest
+    uses: llm.summarize
+    with:
+      text: "{{ steps.search_ai_news.outputs.items }}"
+      output_contract: summary_v1
+    next: send_digest
+  - id: send_digest
+    uses: telegram.broadcast_message
+    side_effect_class: send
+    approval: approve_telegram_broadcast
+    with:
+      recipients: "{{ steps.list_subscribers.outputs.recipients }}"
+      audience_hash: "{{ steps.list_subscribers.outputs.audience_hash }}"
+      text: "{{ steps.summarize_digest.outputs.summary }}"
+    next: done
+  - id: done
+    type: terminal
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        """
+version: appv24.connectors/v1
+connectors:
+  - id: brave
+    adapter: direct_api
+    actions:
+      - id: search
+        side_effect: false
+        required_scopes: [brave:search]
+        outputs:
+          allowed: [items, source_count, query]
+  - id: llm
+    adapter: llm
+    actions:
+      - id: summarize
+        side_effect: false
+        outputs:
+          allowed: [summary, raw_response]
+  - id: telegram
+    adapter: direct_api
+    actions:
+      - id: list_subscribers
+        side_effect: false
+        required_scopes: [telegram:subscribers:read]
+        outputs:
+          allowed: [recipients, recipient_count, audience_hash]
+      - id: broadcast_message
+        side_effect: true
+        side_effect_class: send
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        required_scopes: [telegram:send]
+        idempotency:
+          key_fields: [audience_hash, text]
+        outputs:
+          allowed: [sent_count, message_ids, chat_ids]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        """
+version: appv24.permissions/v1
+permissions:
+  - connector: brave
+    actions: [search]
+    scopes: [brave:search]
+  - connector: llm
+    actions: [summarize]
+    scopes: []
+  - connector: telegram
+    actions: [list_subscribers, broadcast_message]
+    scopes: [telegram:subscribers:read, telegram:send]
+approvals:
+  - id: approve_telegram_broadcast
+    mode: explicit
+    required_for: [send_digest]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    fixture = "input:\n  audience: default\n"
+    (fixtures / "happy_path.yaml").write_text(fixture, encoding="utf-8")
+    (fixtures / "rejection_path.yaml").write_text(fixture, encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nReview Telegram broadcast manually.\n", encoding="utf-8")
+
+    result = validate_workflow_package(package)
+
+    assert result.ok, result.messages()
+
+
 def test_validate_workflow_package_returns_schema_issue_for_structurally_invalid_package(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
