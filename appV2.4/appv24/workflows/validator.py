@@ -8,6 +8,7 @@ from pathlib import Path
 from appv24.workflows.drafts import WorkflowDraftBlocks, extract_workflow_draft_blocks, parse_workflow_draft_blocks
 from appv24.workflows.errors import WorkflowIssue, WorkflowPackageError, WorkflowValidationResult, sorted_issues
 from appv24.workflows.loader import PackageDocuments, load_package_documents
+from appv24.workflows.middleware_contracts import validate_middleware_contracts
 from appv24.workflows.schema import validate_schema_documents
 from appv24.workflows.semantic import validate_semantics
 
@@ -28,7 +29,10 @@ def validate_workflow_documents(documents: PackageDocuments) -> WorkflowValidati
     if schema_issues:
         return WorkflowValidationResult(root=documents.root, issues=sorted_issues(schema_issues))
 
-    return WorkflowValidationResult(root=documents.root, issues=sorted_issues(validate_semantics(documents)))
+    return WorkflowValidationResult(
+        root=documents.root,
+        issues=sorted_issues((*validate_semantics(documents), *validate_middleware_contracts(documents))),
+    )
 
 
 def validate_workflow_draft_text(text: str) -> WorkflowDraftValidationResult:

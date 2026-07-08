@@ -1,5 +1,6 @@
 input:
   telegram_user_id: blocked-customer-999
   message_text: Please create a ticket.
+  admin_chat_id: admin-chat
 decision:
   check_authorized_customer: rejected

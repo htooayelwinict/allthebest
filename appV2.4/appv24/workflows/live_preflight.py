@@ -10,7 +10,7 @@ from typing import Any, Mapping
 from appv24.workflows.approval_gate import ApprovalIndexKey, build_payload_bound_approval_index
 from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.compiler import compile_workflow_documents
-from appv24.workflows.connector_contracts import builtin_connector_contract_catalog
+from appv24.workflows.connector_contracts import ConnectorLiveMode, builtin_connector_contract_catalog, is_external_connector_action_payload
 from appv24.workflows.connector_packs import builtin_connector_catalog
 from appv24.workflows.credential_refs import (
     CredentialRefResolver,
@@ -145,6 +145,14 @@ def preflight_live_draft_workflow(
         approval_index=approval_index,
         available_transports=available_transports,
         env=request.operator_env,
+        start_step=_approved_live_start_step(
+            compiled.ir,
+            fixture,
+            package_fingerprint=package_fingerprint,
+            approval_index=approval_index,
+            connector_allowlist=set(request.connector_allowlist),
+            mode=request.mode,
+        ),
     )
     return _report(
         request,
@@ -355,6 +363,14 @@ def preflight_live_production_workflow(
         approval_index=approval_index,
         available_transports=available_transports,
         env=request.operator_env,
+        start_step=_approved_live_start_step(
+            compiled.ir,
+            fixture,
+            package_fingerprint=package_fingerprint,
+            approval_index=approval_index,
+            connector_allowlist=set(request.connector_allowlist),
+            mode=request.mode,
+        ),
     )
     return _report(
         request,
@@ -435,6 +451,8 @@ def _preflight_live_read_steps(
                 break
             continue
         action = _action_for_step(ir, step)
+        if _live_read_prefix_boundary_reached(checked_actions, step, action):
+            break
         if step.uses is not None:
             checked_actions.append(step.uses.dotted)
         issue = _live_read_gate_issue(step, action, connector_allowlist)
@@ -453,6 +471,19 @@ def _preflight_live_read_steps(
     return tuple(checked_actions), tuple(issues)
 
 
+def _live_read_prefix_boundary_reached(
+    checked_actions: list[str],
+    step: WorkflowStep,
+    action: ActionCapability | None,
+) -> bool:
+    if not checked_actions or step.uses is None or action is None:
+        return False
+    if _is_mutating_step(step, action):
+        return True
+    contract = builtin_connector_contract_catalog().get(step.uses.dotted)
+    return contract is not None and ConnectorLiveMode.LIVE_READ not in contract.live_modes
+
+
 def _preflight_steps(
     ir: WorkflowIR,
     fixture: Mapping[str, object],
@@ -462,10 +493,11 @@ def _preflight_steps(
     approval_index: Mapping[tuple[str, str, str | None], bool],
     available_transports: Collection[str] | None,
     env: Mapping[str, str],
+    start_step: str | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     checked_actions: list[str] = []
     issues: list[str] = []
-    current = ir.entrypoint
+    current = start_step or ir.entrypoint
     transitions = 0
     while current:
         transitions += 1
@@ -516,10 +548,11 @@ def _preflight_live_production_steps(
     approval_index: Mapping[tuple[str, str, str | None], bool],
     available_transports: Collection[str] | None,
     env: Mapping[str, str],
+    start_step: str | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     checked_actions: list[str] = []
     issues: list[str] = []
-    current = ir.entrypoint
+    current = start_step or ir.entrypoint
     transitions = 0
     while current:
         transitions += 1
@@ -580,7 +613,7 @@ def _live_read_gate_issue(
         return f"live-read action is not allowlisted: {step.uses.dotted}"
     metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
     if metadata is None:
-        return f"live-read action is not cataloged: {step.uses.dotted}"
+        return _external_read_gate_issue("live-read", step, action)
     if not metadata.live_read_eligible:
         return f"live-read action is not live-read eligible: {step.uses.dotted}"
     return None
@@ -604,7 +637,7 @@ def _live_production_gate_issue(
         return f"live-production action is not allowlisted: {step.uses.dotted}"
     metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
     if metadata is None:
-        return f"live-production action is not cataloged: {step.uses.dotted}"
+        return _external_read_gate_issue("live-production", step, action)
     if _is_mutating_step(step, action):
         if not metadata.live_production_enabled:
             return f"live-production action is not production-enabled: {step.uses.dotted}"
@@ -717,7 +750,7 @@ def _live_draft_gate_issue(
         return f"live-draft action is not allowlisted: {step.uses.dotted}"
     metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
     if metadata is None:
-        return f"live-draft action is not cataloged: {step.uses.dotted}"
+        return _external_read_gate_issue("live-draft", step, action)
     if _is_mutating_step(step, action):
         if not metadata.live_draft_eligible:
             return f"live-draft action is not draft-eligible: {step.uses.dotted}"
@@ -734,6 +767,17 @@ def _live_draft_gate_issue(
         return None
     if not metadata.live_read_eligible:
         return f"live-draft read action is not live-read eligible: {step.uses.dotted}"
+    return None
+
+
+def _external_read_gate_issue(mode: str, step: WorkflowStep, action: ActionCapability) -> str | None:
+    action_ref = step.uses.dotted if step.uses is not None else ""
+    if not is_external_connector_action_payload(action_ref, action.raw):
+        return f"{mode} action is not cataloged: {action_ref}"
+    if _is_mutating_step(step, action):
+        return f"{mode} external connector action is not read-only: {action_ref}"
+    if action.execution_mode != "brokered":
+        return f"{mode} external connector action must be brokered: {action_ref}"
     return None
 
 
@@ -760,6 +804,63 @@ def _approval_index(
         package_fingerprint=package_fingerprint,
         expected_payload_hashes=_expected_approval_payload_hashes(ir, fixture, package_fingerprint),
     )
+
+
+def _approved_live_start_step(
+    ir: WorkflowIR,
+    fixture: Mapping[str, Any],
+    *,
+    package_fingerprint: str,
+    approval_index: Mapping[tuple[str, str, str | None], bool],
+    connector_allowlist: set[str],
+    mode: WorkflowRunMode,
+) -> str | None:
+    current = ir.entrypoint
+    transitions = 0
+    while current:
+        transitions += 1
+        if transitions > MAX_TRANSITIONS:
+            return None
+        step = ir.steps.get(current)
+        if step is None or step.kind is StepKind.TERMINAL:
+            return None
+        if step.kind is StepKind.DECISION:
+            _, current = _select_branch(step, fixture)
+            continue
+        if step.uses is None:
+            current = step.next_step
+            continue
+        action = _action_for_step(ir, step)
+        action_ref = step.uses.dotted
+        if (
+            action is not None
+            and action_ref in connector_allowlist
+            and _approved_start_mode_matches(step, action, action_ref=action_ref, mode=mode)
+        ):
+            idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
+            if approval_index.get((step.step_id, action_ref, idempotency_key)) is True:
+                return step.step_id
+        current = step.next_step
+    return None
+
+
+def _approved_start_mode_matches(
+    step: WorkflowStep,
+    action: ActionCapability,
+    *,
+    action_ref: str,
+    mode: WorkflowRunMode,
+) -> bool:
+    if not _is_mutating_step(step, action):
+        return False
+    metadata = builtin_connector_catalog().actions.get(action_ref)
+    if metadata is None:
+        return False
+    if mode is WorkflowRunMode.LIVE_DRAFT:
+        return metadata.live_draft_eligible
+    if mode is WorkflowRunMode.LIVE_PRODUCTION:
+        return metadata.live_production_enabled
+    return False
 
 
 def _expected_approval_payload_hashes(

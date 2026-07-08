@@ -46,7 +46,9 @@ DEFAULT_GMAIL_API_BASE_URL = "https://gmail.googleapis.com/gmail/v1"
 DEFAULT_GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
 DEFAULT_BRAVE_SEARCH_BASE_URL = "https://api.search.brave.com/res/v1/web/search"
-STEP_OUTPUT_TEMPLATE_RE = re.compile(r"^\s*\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_.-]+)\s*\}\}\s*$")
+STEP_OUTPUT_TEMPLATE_RE = re.compile(
+    r"^\s*\{\{\s*(?:steps\.)?([A-Za-z0-9_-]+)\.(?:outputs\.)?([A-Za-z0-9_.-]+)\s*\}\}\s*$"
+)
 
 
 class _HttpClient(Protocol):

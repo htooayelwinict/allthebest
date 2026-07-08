@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -22,6 +22,7 @@ class PackageDocuments:
     permissions: Mapping[str, Any]
     dry_run_fixtures: Mapping[str, Mapping[str, Any]]
     rollback_text: str | None
+    middlewares: Mapping[str, Any] = field(default_factory=dict)
 
 
 def load_package_documents(path: str | Path) -> PackageDocuments:
@@ -42,6 +43,7 @@ def load_package_documents(path: str | Path) -> PackageDocuments:
         permissions=_read_mapping(root / "permissions.yaml"),
         dry_run_fixtures=_read_fixtures(root / "dry_run_fixtures"),
         rollback_text=_read_optional_text(root / "rollback.md"),
+        middlewares=_read_optional_mapping(root, ("middlewares.yaml", "middlewares.yml", "middlewares.json")),
     )
 
 
@@ -73,6 +75,14 @@ def _read_fixtures(path: Path) -> Mapping[str, Mapping[str, Any]]:
             continue
         fixtures[fixture_path.name] = _read_mapping(fixture_path)
     return fixtures
+
+
+def _read_optional_mapping(root: Path, filenames: tuple[str, ...]) -> Mapping[str, Any]:
+    for filename in filenames:
+        path = root / filename
+        if path.is_file():
+            return _read_mapping(path)
+    return {}
 
 
 def _read_optional_text(path: Path) -> str | None:

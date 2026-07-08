@@ -151,6 +151,116 @@ def test_live_readiness_passes_with_configured_source_live_read_setup(tmp_path: 
     assert not (package / ".workflow-runs").exists()
 
 
+def test_live_readiness_reports_middleware_env_without_leaking_values(tmp_path: Path) -> None:
+    package = _write_live_read_workflow_package(
+        tmp_path,
+        name="source-read-with-audit",
+        connector_id="source",
+        action_id="fetch_items",
+        scopes=("source:read",),
+        action_ref="source.fetch_items",
+        outputs=("items", "source_count"),
+    )
+    (package / "middlewares.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.middlewares/v1",
+                "middlewares": [
+                    {
+                        "id": "audit.log",
+                        "adapter": "builtin",
+                        "source": "catalog://audit.log@v1",
+                        "config": {"events": True},
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("source.fetch_items",),
+        ),
+        env={
+            "APPV24_SOURCE_CREDENTIAL_REF": "source-prod",
+            "APPV24_SOURCE_SCOPES": "source:read",
+            "APPV24_WORKFLOW_LIVE_READ_ENABLED": "true",
+            "APPV24_SOURCE_BASE_URL": "https://source.test/api/items",
+        },
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "blocked"
+    assert report.required_middleware_env == ("APPV24_WORKFLOW_AUDIT_LOG_PATH",)
+    assert "- missing middleware env for audit.log; required env: APPV24_WORKFLOW_AUDIT_LOG_PATH" in rendered
+    assert "required middleware env:" in rendered
+    assert "- APPV24_WORKFLOW_AUDIT_LOG_PATH" in rendered
+    assert "https://source.test" not in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_live_readiness_reports_external_connector_env_without_enabling_transport(tmp_path: Path) -> None:
+    package = _write_external_crm_read_package(tmp_path)
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("crm.lookup_contact",),
+        ),
+        env={
+            "APPV24_CRM_CREDENTIAL_REF": "crm-prod",
+            "APPV24_CRM_SCOPES": "crm:read",
+        },
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "blocked"
+    assert report.required_connector_env == ("APPV24_CRM_MCP_SERVER",)
+    assert "- missing connector env; required env: APPV24_CRM_MCP_SERVER" in rendered
+    assert "- live-read transport is not configured for crm.lookup_contact" in rendered
+    assert "required connector env:" in rendered
+    assert "- APPV24_CRM_MCP_SERVER" in rendered
+    assert "crm-prod" not in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
+def test_live_readiness_treats_local_transform_after_read_prefix_as_ready_boundary(tmp_path: Path) -> None:
+    package = _write_live_read_then_llm_workflow_package(tmp_path)
+    write_workflow_bundle(package)
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("source.fetch_items",),
+        ),
+        env={
+            "APPV24_SOURCE_CREDENTIAL_REF": "source-prod",
+            "APPV24_SOURCE_SCOPES": "source:read",
+            "APPV24_LLM_CREDENTIAL_REF": "llm-prod",
+            "APPV24_WORKFLOW_LIVE_READ_ENABLED": "true",
+            "APPV24_SOURCE_BASE_URL": "https://source.test/api/items",
+        },
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "ready"
+    assert report.preflight.checked_actions == ("source.fetch_items",)
+    assert report.issues == ()
+    assert "live-read action is not allowlisted: llm.summarize" not in rendered
+    assert "live-read action is not live-read eligible: llm.summarize" not in rendered
+    assert "https://source.test" not in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
 def test_live_readiness_reports_production_approval_and_transport_setup(tmp_path: Path) -> None:
     package = _write_live_production_workflow_package(tmp_path)
 
@@ -260,6 +370,191 @@ def _write_live_read_workflow_package(
     fixtures = package / "dry_run_fixtures"
     fixtures.mkdir()
     (fixtures / "happy_path.yaml").write_text("input:\n  repo: owner/project\n", encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
+    return package
+
+
+def _write_live_read_then_llm_workflow_package(root: Path) -> Path:
+    package = root / "source-read-then-llm"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "source-read-then-llm",
+                "description": "Read source items live, then summarize them locally.",
+                "design": {
+                    "intent": "Read source items and summarize them locally.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["query"],
+                    "outputs": ["summary"],
+                    "assumptions": ["Credentials are resolved outside the package."],
+                    "side_effects": [],
+                    "approval_gates": [],
+                    "failure_modes": ["Source API unavailable."],
+                    "rollback": ["No external mutation occurs."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "fetch_items",
+                "steps": [
+                    {"id": "fetch_items", "uses": "source.fetch_items", "with": {"query": "public AI news"}, "next": "summarize"},
+                    {
+                        "id": "summarize",
+                        "uses": "llm.summarize",
+                        "with": {"text": "{{ steps.fetch_items.outputs.items }}", "output_contract": "summary_v1"},
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "source",
+                        "adapter": "direct_api",
+                        "actions": [
+                            {
+                                "id": "fetch_items",
+                                "operationId": "source_fetch_items",
+                                "side_effect": False,
+                                "outputs": {"allowed": ["items", "source_count"]},
+                                "required_scopes": ["source:read"],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "llm",
+                        "adapter": "llm",
+                        "actions": [
+                            {
+                                "id": "summarize",
+                                "side_effect": False,
+                                "outputs": {"allowed": ["summary", "raw_response"]},
+                            }
+                        ],
+                    },
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [
+                    {"connector": "source", "actions": ["fetch_items"], "scopes": ["source:read"]},
+                    {"connector": "llm", "actions": ["summarize"], "scopes": []},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text("input: {}\n", encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
+    return package
+
+
+def _write_external_crm_read_package(root: Path) -> Path:
+    package = root / "external-crm-read"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "external-crm-read",
+                "description": "Read CRM contact data through an external connector interface.",
+                "design": {
+                    "intent": "Look up one CRM contact by email.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["Customer email address."],
+                    "outputs": ["CRM contact fields."],
+                    "assumptions": ["CRM MCP server is configured by the operator."],
+                    "side_effects": ["Read-only CRM lookup."],
+                    "approval_gates": ["None."],
+                    "failure_modes": ["CRM connector unavailable."],
+                    "rollback": ["No external mutation occurs."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "lookup_contact",
+                "steps": [
+                    {
+                        "id": "lookup_contact",
+                        "uses": "crm.lookup_contact",
+                        "with": {"email": {"inputRef": "email"}},
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "crm",
+                        "adapter": "mcp",
+                        "source": "mcp://crm@v1",
+                        "env": [
+                            {
+                                "name": "APPV24_CRM_MCP_SERVER",
+                                "purpose": "CRM MCP server endpoint",
+                                "required": True,
+                            }
+                        ],
+                        "actions": [
+                            {
+                                "id": "lookup_contact",
+                                "custom": True,
+                                "source": "mcp://crm.lookup_contact@v1",
+                                "tool": "crm.lookup_contact",
+                                "side_effect": False,
+                                "side_effect_class": "read",
+                                "execution_mode": "brokered",
+                                "dry_run_supported": True,
+                                "outputs": {"allowed": ["contact", "artifact_path"]},
+                                "required_scopes": ["crm:read"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [{"connector": "crm", "actions": ["lookup_contact"], "scopes": ["crm:read"]}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text(
+        yaml.safe_dump({"input": {"email": "customer@example.com"}}, sort_keys=False),
+        encoding="utf-8",
+    )
     (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
     return package
 

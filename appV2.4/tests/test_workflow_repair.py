@@ -779,10 +779,11 @@ def test_build_workflow_repair_prompt_includes_catalog_action_directive() -> Non
 
     assert "unknown_catalog_action workflow.yaml:steps.0.uses" in prompt
     assert "github.invented_read is not in the built-in workflow capability catalog" in prompt
-    assert "Use only built-in workflow capability catalog actions" in prompt
+    assert "Executable steps use built-ins or strict external interfaces" in prompt
+    assert "Strict external interface: custom: true" in prompt
     assert "github.list_dependabot_alerts" in prompt
     assert "telegram.send_message" in prompt
-    assert "If the non-catalog action represents an incoming trigger or fixture input" in prompt
+    assert "If this is trigger/input data, do not model it as a connector step" in prompt
 
 
 def test_build_workflow_repair_prompt_includes_llm_contract_directive(tmp_path: Path) -> None:

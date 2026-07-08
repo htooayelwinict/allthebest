@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from appv24.workflows.compiler import compile_workflow_documents
+from appv24.workflows.connector_contracts import external_connector_env_requirements
 from appv24.workflows.connector_registry import inspect_workflow_connector_registry
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.deployment_intent import deployment_intent_to_dict
@@ -18,6 +19,7 @@ from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.live_env_template import build_workflow_live_env_template, format_workflow_live_env_template
 from appv24.workflows.live_plan import WorkflowLivePlan, build_workflow_live_plan_from_path
 from appv24.workflows.loader import PackageDocuments, load_package_documents
+from appv24.workflows.middleware_contracts import middleware_env_requirements
 from appv24.workflows.policy import PolicyReport, evaluate_policy
 from appv24.workflows.service_export import build_local_service_export
 from appv24.workflows.validator import validate_workflow_documents
@@ -263,6 +265,8 @@ def _bundle_files(
     connector_actions = [_connector_action_payload(action) for action in registry.actions]
     required_credential_env = sorted({hint for action in registry.actions for hint in action.required_credential_env})
     required_transport_env = sorted({hint for action in registry.actions for hint in action.required_transport_env})
+    required_connector_env = list(external_connector_env_requirements(documents.connectors))
+    required_middleware_env = list(middleware_env_requirements(documents))
     files = {
         "workflow.ir.json": _json(
             {
@@ -308,6 +312,8 @@ def _bundle_files(
                 "version": "appv24.secrets-required/v1",
                 "required_credential_env": required_credential_env,
                 "required_transport_env": required_transport_env,
+                "required_connector_env": required_connector_env,
+                "required_middleware_env": required_middleware_env,
                 "secret_values_included": False,
             }
         ),

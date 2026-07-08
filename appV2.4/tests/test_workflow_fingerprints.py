@@ -29,6 +29,31 @@ def test_package_fingerprint_changes_when_workflow_changes() -> None:
     assert fingerprint_package_documents(example.documents) != fingerprint_package_documents(changed)
 
 
+def test_package_fingerprint_changes_when_middlewares_change() -> None:
+    example = golden_workflow_examples()["telegram_support_ticket"]
+    changed = PackageDocuments(
+        root=example.documents.root,
+        workflow=example.documents.workflow,
+        connectors=example.documents.connectors,
+        permissions=example.documents.permissions,
+        dry_run_fixtures=example.documents.dry_run_fixtures,
+        rollback_text=example.documents.rollback_text,
+        middlewares={
+            "version": "appv24.middlewares/v1",
+            "middlewares": [
+                {
+                    "id": "audit.log",
+                    "adapter": "builtin",
+                    "source": "catalog://audit.log@v1",
+                    "config": {"events": True},
+                }
+            ],
+        },
+    )
+
+    assert fingerprint_package_documents(example.documents) != fingerprint_package_documents(changed)
+
+
 def test_package_fingerprint_uses_sha256_prefix() -> None:
     example = golden_workflow_examples()["telegram_support_ticket"]
 

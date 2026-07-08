@@ -39,6 +39,26 @@ def _write_package(root: Path, example_name: str) -> Path:
     return package
 
 
+def _write_audit_log_middleware(package: Path) -> None:
+    (package / "middlewares.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.middlewares/v1",
+                "middlewares": [
+                    {
+                        "id": "audit.log",
+                        "adapter": "builtin",
+                        "source": "catalog://audit.log@v1",
+                        "config": {"events": True},
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_intelligence_package(root: Path) -> Path:
     from test_workflow_packages import write_intelligence_package
 
@@ -194,6 +214,70 @@ def test_local_run_happy_path_writes_report_trace_events_and_artifacts(tmp_path:
     assert saved_run["approve_all"] is True
     assert saved_run["approval_mode"] == "auto-approved"
     assert saved_run["activation_id"] is None
+
+
+def test_local_run_blocks_missing_required_middleware_env_before_execution(tmp_path: Path) -> None:
+    package = _write_package(tmp_path, "telegram_support_ticket")
+    _write_audit_log_middleware(package)
+    run_root = tmp_path / ".workflow-runs"
+
+    report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=run_root,
+            approve_all=True,
+        )
+    )
+
+    assert report.status == "blocked"
+    assert report.run_id == ""
+    assert report.issues == ("missing middleware env for audit.log; required env: APPV24_WORKFLOW_AUDIT_LOG_PATH",)
+    assert not run_root.exists()
+
+
+def test_local_run_executes_audit_log_middleware_without_mutating_connector_outputs(tmp_path: Path) -> None:
+    package = _write_package(tmp_path, "telegram_support_ticket")
+    _write_audit_log_middleware(package)
+    audit_path = tmp_path / "middleware-audit.jsonl"
+    run_root = tmp_path / ".workflow-runs"
+
+    report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=run_root,
+            approve_all=True,
+            operator_env={"APPV24_WORKFLOW_AUDIT_LOG_PATH": str(audit_path)},
+        )
+    )
+
+    assert report.status == "passed"
+    assert report.brokered_actions[0].simulated_outputs["ticket_id"] == "local-ticket-create_ticket_draft"
+    event_types = [event.event_type for event in report.events]
+    assert "middleware_runtime_configured" in event_types
+    assert "middleware_hook_failed" not in event_types
+
+    audit_records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    assert [record["hook"] for record in audit_records] == [
+        "run_started",
+        "step_started",
+        "step_completed",
+        "step_started",
+        "step_completed",
+        "step_started",
+        "step_completed",
+        "step_started",
+        "step_completed",
+        "run_completed",
+    ]
+    assert {record["middleware_id"] for record in audit_records} == {"audit.log"}
+    assert audit_records[0]["workflow_name"] == "telegram_support_ticket"
+    assert audit_records[1]["step_id"] == "check_authorized_customer"
+    assert audit_records[4]["connector_action"] == "ticket.create_draft"
+    assert str(audit_path) not in "\n".join(json.dumps(event.to_dict(), sort_keys=True) for event in report.events)
 
 
 def test_local_run_records_stable_idempotency_keys_for_brokered_actions(tmp_path: Path) -> None:

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from appv24.workflows.catalog import is_builtin_workflow_action
+from appv24.workflows.connector_contracts import is_external_connector_action_payload
 from appv24.workflows.ir import WorkflowIR, WorkflowStep
 
 
@@ -41,7 +42,11 @@ def evaluate_policy(ir: WorkflowIR) -> PolicyReport:
     issues: list[PolicyIssue] = []
     for step in ir.steps.values():
         action = _action_for_step(ir, step)
-        if action is not None and not is_builtin_workflow_action(action.dotted):
+        if (
+            action is not None
+            and not is_builtin_workflow_action(action.dotted)
+            and not is_external_connector_action_payload(action.dotted, action.raw)
+        ):
             issues.append(
                 PolicyIssue(
                     "policy_unknown_catalog_action",

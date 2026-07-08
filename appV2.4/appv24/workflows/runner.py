@@ -20,6 +20,13 @@ from appv24.workflows.idempotency import build_idempotency_key, build_idempotenc
 from appv24.workflows.ir import ActionCapability, StepKind, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import StepTrace
 from appv24.workflows.loader import load_package_documents
+from appv24.workflows.middleware_runtime import (
+    MiddlewareExecutorFactory,
+    MiddlewareRunContext,
+    MiddlewareRuntime,
+    build_middleware_runtime,
+    middleware_runtime_setup_issues,
+)
 from appv24.workflows.policy import MUTATING_SIDE_EFFECTS, evaluate_policy
 from appv24.workflows.run_preview import WorkflowApprovalPreview, WorkflowBrokeredActionPreview
 from appv24.workflows.run_store import WorkflowRunStore
@@ -35,6 +42,7 @@ def run_workflow(
     request: WorkflowRunRequest,
     *,
     broker: LocalWorkflowBroker | None = None,
+    middleware_factories: Mapping[str, MiddlewareExecutorFactory] | None = None,
 ) -> WorkflowRunReport:
     """Run a workflow package in local artifact mode.
 
@@ -79,6 +87,14 @@ def run_workflow(
             package_fingerprint=package_fingerprint,
             issues=tuple(issue.message for issue in policy.issues),
         )
+    middleware_setup_issues = middleware_runtime_setup_issues(documents, request.operator_env, middleware_factories)
+    if middleware_setup_issues:
+        return _blocked_report(
+            request,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            issues=middleware_setup_issues,
+        )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
@@ -117,17 +133,54 @@ def run_workflow(
     if local_broker is None:
         providers = ConnectorSandboxProviders(store.artifact_root(run_id))
         local_broker = LocalWorkflowBroker(providers.provider_map())
-
-    result = _execute_local(
-        compiled.ir,
-        fixture,
-        broker=local_broker,
+    middleware_runtime = build_middleware_runtime(documents, request.operator_env, middleware_factories)
+    middleware_context = MiddlewareRunContext(
         run_id=run_id,
-        run_dir=store.run_dir(run_id),
+        workflow_name=workflow_name,
         package_fingerprint=package_fingerprint,
-        approve_all=request.approve_all,
-        append_event=append_event,
+        mode=request.mode.value,
     )
+    if middleware_runtime.middleware_ids:
+        append_event(
+            "middleware_runtime_configured",
+            "configured",
+            middleware_ids=list(middleware_runtime.middleware_ids),
+        )
+    middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_started",
+        append_event,
+        status="started",
+    )
+
+    if middleware_issues:
+        result = _result("blocked", None, [], [], [], [], list(middleware_issues))
+    else:
+        result = _execute_local(
+            compiled.ir,
+            fixture,
+            broker=local_broker,
+            run_id=run_id,
+            run_dir=store.run_dir(run_id),
+            package_fingerprint=package_fingerprint,
+            approve_all=request.approve_all,
+            append_event=append_event,
+            middleware_runtime=middleware_runtime,
+            middleware_context=middleware_context,
+        )
+    completion_middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_completed",
+        append_event,
+        status=result.status,
+        terminal_step=result.terminal_step,
+        issue_count=len(result.issues),
+    )
+    if completion_middleware_issues:
+        result.issues.extend(completion_middleware_issues)
+        result.status = "blocked"
     append_event("run_completed", result.status, terminal_step=result.terminal_step, issues=list(result.issues))
 
     report = WorkflowRunReport(
@@ -154,6 +207,8 @@ def run_workflow_from_handoff(
     *,
     handoff_run_id: str,
     broker: LocalWorkflowBroker | None = None,
+    broker_wrapper: Callable[[LocalWorkflowBroker], LocalWorkflowBroker] | None = None,
+    middleware_factories: Mapping[str, MiddlewareExecutorFactory] | None = None,
 ) -> WorkflowRunReport:
     """Resume local workflow execution from a paused live-read handoff."""
 
@@ -193,6 +248,14 @@ def run_workflow_from_handoff(
             workflow_name=workflow_name,
             package_fingerprint=package_fingerprint,
             issues=tuple(issue.message for issue in policy.issues),
+        )
+    middleware_setup_issues = middleware_runtime_setup_issues(documents, request.operator_env, middleware_factories)
+    if middleware_setup_issues:
+        return _blocked_report(
+            request,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            issues=middleware_setup_issues,
         )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
@@ -253,18 +316,57 @@ def run_workflow_from_handoff(
     if local_broker is None:
         providers = ConnectorSandboxProviders(store.artifact_root(run_id))
         local_broker = LocalWorkflowBroker(providers.provider_map())
-
-    result = _execute_local(
-        compiled.ir,
-        _fixture_with_handoff(fixture, handoff),
-        broker=local_broker,
+    if broker_wrapper is not None:
+        local_broker = broker_wrapper(local_broker)
+    middleware_runtime = build_middleware_runtime(documents, request.operator_env, middleware_factories)
+    middleware_context = MiddlewareRunContext(
         run_id=run_id,
-        run_dir=store.run_dir(run_id),
+        workflow_name=workflow_name,
         package_fingerprint=package_fingerprint,
-        approve_all=request.approve_all,
-        append_event=append_event,
-        start_step=str(handoff["next_step"]),
+        mode=request.mode.value,
     )
+    if middleware_runtime.middleware_ids:
+        append_event(
+            "middleware_runtime_configured",
+            "configured",
+            middleware_ids=list(middleware_runtime.middleware_ids),
+        )
+    middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_started",
+        append_event,
+        status="started",
+    )
+
+    if middleware_issues:
+        result = _result("blocked", None, [], [], [], [], list(middleware_issues))
+    else:
+        result = _execute_local(
+            compiled.ir,
+            _fixture_with_handoff(fixture, handoff),
+            broker=local_broker,
+            run_id=run_id,
+            run_dir=store.run_dir(run_id),
+            package_fingerprint=package_fingerprint,
+            approve_all=request.approve_all,
+            append_event=append_event,
+            start_step=str(handoff["next_step"]),
+            middleware_runtime=middleware_runtime,
+            middleware_context=middleware_context,
+        )
+    completion_middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_completed",
+        append_event,
+        status=result.status,
+        terminal_step=result.terminal_step,
+        issue_count=len(result.issues),
+    )
+    if completion_middleware_issues:
+        result.issues.extend(completion_middleware_issues)
+        result.status = "blocked"
     append_event("run_completed", result.status, terminal_step=result.terminal_step, issues=list(result.issues))
 
     report = WorkflowRunReport(
@@ -363,6 +465,8 @@ def _execute_local(
     package_fingerprint: str,
     approve_all: bool,
     append_event: Callable[..., None],
+    middleware_runtime: MiddlewareRuntime,
+    middleware_context: MiddlewareRunContext,
     start_step: str | None = None,
 ) -> _ExecutionResult:
     trace: list[StepTrace] = []
@@ -385,9 +489,33 @@ def _execute_local(
             return _result("blocked", None, trace, brokered_actions, approvals, approval_requests, issues)
 
         append_event("step_started", "started", step_id=step.step_id, connector_action=_connector_action(step))
+        middleware_issues = _emit_middleware(
+            middleware_runtime,
+            middleware_context,
+            "step_started",
+            append_event,
+            step_id=step.step_id,
+            connector_action=_connector_action(step),
+            status="started",
+        )
+        if middleware_issues:
+            issues.extend(middleware_issues)
+            trace.append(_trace(step, "blocked", issues=middleware_issues))
+            return _result("blocked", None, trace, brokered_actions, approvals, approval_requests, issues)
         if step.kind is StepKind.TERMINAL:
             trace.append(_trace(step, "terminal"))
             append_event("step_completed", "terminal", step_id=step.step_id)
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                status="terminal",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, approvals, approval_requests, issues)
             return _result("passed", step.step_id, trace, brokered_actions, approvals, approval_requests, issues)
 
         if step.kind is StepKind.DECISION:
@@ -399,6 +527,17 @@ def _execute_local(
                 return _result("blocked", None, trace, brokered_actions, approvals, approval_requests, issues)
             trace.append(_trace(step, "completed", selected_branch=selected_branch))
             append_event("step_completed", "completed", step_id=step.step_id, selected_branch=selected_branch)
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                status="completed",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, approvals, approval_requests, issues)
             current = next_step
             continue
 
@@ -531,10 +670,41 @@ def _execute_local(
             connector_action=_connector_action(step),
             outputs=dict(outputs),
         )
+        middleware_issues = _emit_middleware(
+            middleware_runtime,
+            middleware_context,
+            "step_completed",
+            append_event,
+            step_id=step.step_id,
+            connector_action=_connector_action(step),
+            status="completed",
+        )
+        if middleware_issues:
+            issues.extend(middleware_issues)
+            return _result("blocked", None, trace, brokered_actions, approvals, approval_requests, issues)
         current = step.next_step
 
     issues.append("workflow stopped without terminal step")
     return _result("blocked", None, trace, brokered_actions, approvals, approval_requests, issues)
+
+
+def _emit_middleware(
+    middleware_runtime: MiddlewareRuntime,
+    middleware_context: MiddlewareRunContext,
+    hook: str,
+    append_event: Callable[..., None],
+    **details: Any,
+) -> list[str]:
+    issues = list(middleware_runtime.emit(hook, middleware_context, **details))
+    if issues:
+        append_event(
+            "middleware_hook_failed",
+            "blocked",
+            middleware_hook=hook,
+            issues=issues,
+            middleware_ids=list(middleware_runtime.middleware_ids),
+        )
+    return issues
 
 
 def _result(

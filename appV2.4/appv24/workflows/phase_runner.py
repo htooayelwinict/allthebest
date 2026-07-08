@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from appv24.workflows.approval_gate import ApprovalRequest
-from appv24.workflows.broker import LocalWorkflowBroker
-from appv24.workflows.connector_contracts import WorkflowLiveMode, builtin_connector_contract_catalog
+from appv24.workflows.broker import BrokerRequest, LocalWorkflowBroker
+from appv24.workflows.connector_contracts import ConnectorLiveMode, builtin_connector_contract_catalog
 from appv24.workflows.credential_refs import CredentialRefResolver
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
 from appv24.workflows.live_broker import LiveWorkflowBroker
@@ -105,6 +105,11 @@ def run_workflow_live_read_to_approval(
         ),
         handoff_run_id=live_report.run_id,
         broker=local_broker,
+        broker_wrapper=lambda fallback: _LiveReadResumeBroker(
+            fallback,
+            live_read_broker=live_read_broker,
+            connector_allowlist=set(request.connector_allowlist),
+        ),
     )
     approval_required = _approval_required(local_report.issues)
     status = "approval-required" if approval_required else local_report.status
@@ -129,6 +134,47 @@ def run_workflow_live_read_to_approval(
         ),
         issues=local_report.issues,
     )
+
+
+class _LiveReadResumeBroker(LocalWorkflowBroker):
+    """Local-resume broker that delegates connector-owned live-read actions."""
+
+    def __init__(
+        self,
+        fallback: LocalWorkflowBroker,
+        *,
+        live_read_broker: LiveWorkflowBroker,
+        connector_allowlist: set[str],
+    ) -> None:
+        super().__init__({})
+        self._fallback = fallback
+        self._live_read_broker = live_read_broker
+        self._connector_allowlist = set(connector_allowlist)
+        self._contracts = builtin_connector_contract_catalog()
+
+    def invoke(self, request: BrokerRequest):
+        if self._should_delegate(request.connector_action):
+            return self._live_read_broker.invoke(
+                BrokerRequest(
+                    step_id=request.step_id,
+                    connector_action=request.connector_action,
+                    input_ref=request.input_ref,
+                    fixture=request.fixture,
+                    allowed_outputs=request.allowed_outputs,
+                    dry_run=False,
+                )
+            )
+        return self._fallback.invoke(request)
+
+    def _should_delegate(self, action_ref: str) -> bool:
+        if self._live_read_broker.mode != "live-read":
+            return False
+        if action_ref not in self._connector_allowlist:
+            return False
+        if action_ref not in self._live_read_broker.configured_actions:
+            return False
+        contract = self._contracts.get(action_ref)
+        return contract is not None and ConnectorLiveMode.LIVE_READ in contract.live_modes
 
 
 def run_workflow_approved_live_draft(
@@ -247,9 +293,9 @@ def _approval_actions_by_live_mode(approval_requests: tuple[ApprovalRequest, ...
         contract = contracts.get(request.connector_action)
         if contract is None:
             continue
-        if WorkflowLiveMode.LIVE_DRAFT in contract.live_modes:
+        if ConnectorLiveMode.LIVE_DRAFT in contract.live_modes:
             _append_unique(actions_by_mode["live-draft"], request.connector_action)
-        if WorkflowLiveMode.LIVE_PRODUCTION in contract.live_modes:
+        if ConnectorLiveMode.LIVE_PRODUCTION in contract.live_modes:
             _append_unique(actions_by_mode["live-production"], request.connector_action)
     return tuple((mode, tuple(actions)) for mode, actions in actions_by_mode.items() if actions)
 

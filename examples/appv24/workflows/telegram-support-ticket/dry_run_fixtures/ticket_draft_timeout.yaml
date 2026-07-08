@@ -1,6 +1,7 @@
 input:
   telegram_user_id: authorized-customer-101
   message_text: My deployment is failing.
+  admin_chat_id: admin-chat
 decision:
   check_authorized_customer: authorized
 connector_sandbox:

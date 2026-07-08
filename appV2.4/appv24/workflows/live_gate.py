@@ -14,8 +14,9 @@ from typing import Any
 
 from appv24.workflows.connector_contracts import (
     ConnectorContract,
-    WorkflowLiveMode,
+    ConnectorLiveMode,
     builtin_connector_contract_catalog,
+    is_external_connector_action_payload,
 )
 from appv24.workflows.execution import WorkflowRunMode
 from appv24.workflows.http_safety import validate_http_fetch_url
@@ -25,7 +26,9 @@ from appv24.workflows.policy import MUTATING_SIDE_EFFECTS
 from appv24.workflows.runner import MAX_TRANSITIONS
 
 
-STEP_OUTPUT_TEMPLATE_RE = re.compile(r"^\s*\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_.-]+)\s*\}\}\s*$")
+STEP_OUTPUT_TEMPLATE_RE = re.compile(
+    r"^\s*\{\{\s*(?:steps\.)?([A-Za-z0-9_-]+)\.(?:outputs\.)?([A-Za-z0-9_.-]+)\s*\}\}\s*$"
+)
 
 
 @dataclass(frozen=True)
@@ -129,7 +132,12 @@ def gate_step_against_contract(
         return LiveGateIssue("unknown_action", step.step_id, action_ref, f"unknown action for step {step.step_id}")
     contract = contracts.get(action_ref)
     if contract is None:
-        return LiveGateIssue("uncataloged_action", step.step_id, action_ref, f"{mode.value} action is not cataloged: {action_ref}")
+        external_issue = _external_action_gate_issue(step, action, action_ref=action_ref, mode=mode)
+        if external_issue is not None:
+            return external_issue
+        if action_ref not in connector_allowlist:
+            return LiveGateIssue("missing_allowlist", step.step_id, action_ref, f"{mode.value} action is not allowlisted: {action_ref}")
+        return _transport_gate_issue(mode.value, step, available_transports)
 
     mode_issue = _mode_gate_issue(
         step,
@@ -154,6 +162,32 @@ def gate_step_against_contract(
     return _target_policy_issue(step, action_ref=action_ref, contract=contract, env=env, fixture=fixture)
 
 
+def _external_action_gate_issue(
+    step: WorkflowStep,
+    action: ActionCapability,
+    *,
+    action_ref: str,
+    mode: WorkflowRunMode,
+) -> LiveGateIssue | None:
+    if not is_external_connector_action_payload(action_ref, action.raw):
+        return LiveGateIssue("uncataloged_action", step.step_id, action_ref, f"{mode.value} action is not cataloged: {action_ref}")
+    if _is_mutating_step(step, action):
+        return LiveGateIssue(
+            "mode_mismatch",
+            step.step_id,
+            action_ref,
+            f"{mode.value} external connector action is not read-only: {action_ref}",
+        )
+    if action.execution_mode != "brokered":
+        return LiveGateIssue(
+            "mode_mismatch",
+            step.step_id,
+            action_ref,
+            f"{mode.value} external connector action must be brokered: {action_ref}",
+        )
+    return None
+
+
 def _mode_gate_issue(
     step: WorkflowStep,
     action: ActionCapability,
@@ -168,13 +202,13 @@ def _mode_gate_issue(
     if mode is WorkflowRunMode.LIVE_READ:
         if _is_mutating_step(step, action):
             return LiveGateIssue("mode_mismatch", step.step_id, action_ref, f"live-read cannot execute mutating step {step.step_id}")
-        if WorkflowLiveMode.LIVE_READ not in contract.live_modes:
+        if ConnectorLiveMode.LIVE_READ not in contract.live_modes:
             return LiveGateIssue("mode_mismatch", step.step_id, action_ref, f"live-read action is not live-read eligible: {action_ref}")
         return None
 
     if mode is WorkflowRunMode.LIVE_DRAFT:
         if _is_mutating_step(step, action):
-            if WorkflowLiveMode.LIVE_DRAFT not in contract.live_modes:
+            if ConnectorLiveMode.LIVE_DRAFT not in contract.live_modes:
                 return LiveGateIssue("mode_mismatch", step.step_id, action_ref, f"live-draft action is not draft-eligible: {action_ref}")
             return _approval_idempotency_issue(
                 step,
@@ -185,13 +219,13 @@ def _mode_gate_issue(
                 approval_index=approval_index,
                 fixture=fixture,
             )
-        if WorkflowLiveMode.LIVE_READ not in contract.live_modes:
+        if ConnectorLiveMode.LIVE_READ not in contract.live_modes:
             return LiveGateIssue("mode_mismatch", step.step_id, action_ref, f"live-draft read action is not live-read eligible: {action_ref}")
         return None
 
     if mode is WorkflowRunMode.LIVE_PRODUCTION:
         if _is_mutating_step(step, action):
-            if WorkflowLiveMode.LIVE_PRODUCTION not in contract.live_modes:
+            if ConnectorLiveMode.LIVE_PRODUCTION not in contract.live_modes:
                 return LiveGateIssue("mode_mismatch", step.step_id, action_ref, f"live-production action is not production-enabled: {action_ref}")
             return _approval_idempotency_issue(
                 step,
@@ -202,7 +236,7 @@ def _mode_gate_issue(
                 approval_index=approval_index,
                 fixture=fixture,
             )
-        if WorkflowLiveMode.LIVE_READ not in contract.live_modes:
+        if ConnectorLiveMode.LIVE_READ not in contract.live_modes:
             return LiveGateIssue("mode_mismatch", step.step_id, action_ref, f"live-production read action is not live-read eligible: {action_ref}")
         return None
 

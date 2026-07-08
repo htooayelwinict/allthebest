@@ -96,7 +96,22 @@ CONNECTORS_SCHEMA = {
                             "platform_export",
                         ]
                     },
+                    "custom": {"type": "boolean"},
+                    "source": {"type": "string", "minLength": 1},
                     "description": {"type": "string"},
+                    "env": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "purpose"],
+                            "properties": {
+                                "name": {"type": "string", "minLength": 1},
+                                "purpose": {"type": "string", "minLength": 1},
+                                "required": {"type": "boolean"},
+                            },
+                            "additionalProperties": True,
+                        },
+                    },
                     "actions": {
                         "type": "array",
                         "minItems": 1,
@@ -105,6 +120,8 @@ CONNECTORS_SCHEMA = {
                             "required": ["id"],
                             "properties": {
                                 "id": {"type": "string", "minLength": 1},
+                                "custom": {"type": "boolean"},
+                                "source": {"type": "string", "minLength": 1},
                                 "operationId": {"type": "string"},
                                 "tool": {"type": "string"},
                                 "side_effect": {"type": "boolean"},
@@ -135,6 +152,19 @@ CONNECTORS_SCHEMA = {
                                     "additionalProperties": True,
                                 },
                                 "required_scopes": {"type": "array", "items": {"type": "string"}},
+                                "env": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["name", "purpose"],
+                                        "properties": {
+                                            "name": {"type": "string", "minLength": 1},
+                                            "purpose": {"type": "string", "minLength": 1},
+                                            "required": {"type": "boolean"},
+                                        },
+                                        "additionalProperties": True,
+                                    },
+                                },
                             },
                             "additionalProperties": True,
                         },
@@ -193,11 +223,57 @@ PERMISSIONS_SCHEMA = {
     "additionalProperties": True,
 }
 
+MIDDLEWARES_SCHEMA = {
+    "$schema": SCHEMA_DIALECT,
+    "$id": "https://appv24.local/schemas/middlewares.schema.json",
+    "type": "object",
+    "required": ["version", "middlewares"],
+    "properties": {
+        "version": {"const": "appv24.middlewares/v1"},
+        "middlewares": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["id", "adapter", "source"],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "adapter": {"type": "string", "enum": ["builtin", "external", "local", "mcp"]},
+                    "source": {"type": "string", "minLength": 1},
+                    "config": {"type": "object"},
+                    "env": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["name", "purpose"],
+                            "properties": {
+                                "name": {"type": "string", "minLength": 1},
+                                "purpose": {"type": "string", "minLength": 1},
+                                "required": {"type": "boolean"},
+                            },
+                            "additionalProperties": True,
+                        },
+                    },
+                    "state": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "audit": {"type": "array", "items": {"type": "string", "minLength": 1}},
+                    "applies_to": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["local", "live-read", "live-draft", "live-production"]},
+                    },
+                },
+                "additionalProperties": True,
+            },
+        },
+    },
+    "additionalProperties": True,
+}
+
 
 def validate_schema_documents(documents: PackageDocuments) -> list[WorkflowIssue]:
     Draft202012Validator.check_schema(WORKFLOW_SCHEMA)
     Draft202012Validator.check_schema(CONNECTORS_SCHEMA)
     Draft202012Validator.check_schema(PERMISSIONS_SCHEMA)
+    Draft202012Validator.check_schema(MIDDLEWARES_SCHEMA)
 
     return list(
         sorted_issues(
@@ -205,6 +281,11 @@ def validate_schema_documents(documents: PackageDocuments) -> list[WorkflowIssue
                 *_collect_schema_issues("workflow.yaml", WORKFLOW_SCHEMA, documents.workflow),
                 *_collect_schema_issues("connectors.yaml", CONNECTORS_SCHEMA, documents.connectors),
                 *_collect_schema_issues("permissions.yaml", PERMISSIONS_SCHEMA, documents.permissions),
+                *(
+                    _collect_schema_issues("middlewares.yaml", MIDDLEWARES_SCHEMA, documents.middlewares)
+                    if documents.middlewares
+                    else []
+                ),
             ]
         )
     )

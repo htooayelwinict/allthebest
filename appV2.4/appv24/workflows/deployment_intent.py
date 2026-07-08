@@ -18,6 +18,9 @@ class WorkflowDeploymentIntent:
     scheduler_triggers: tuple[str, ...]
     connector_scopes: dict[str, tuple[str, ...]]
     connector_targets: dict[str, tuple[str, ...]]
+    connector_env_requirements: tuple[str, ...]
+    middleware_ids: tuple[str, ...]
+    middleware_env_requirements: tuple[str, ...]
     approval_ids: tuple[str, ...]
     approval_policy: tuple[str, ...]
     idempotency_required_for: tuple[str, ...]
@@ -37,6 +40,9 @@ def deployment_intent_to_dict(intent: WorkflowDeploymentIntent) -> dict[str, Any
     data["scheduler_triggers"] = list(intent.scheduler_triggers)
     data["connector_scopes"] = {connector: list(scopes) for connector, scopes in sorted(intent.connector_scopes.items())}
     data["connector_targets"] = {action: list(targets) for action, targets in sorted(intent.connector_targets.items())}
+    data["connector_env_requirements"] = list(intent.connector_env_requirements)
+    data["middleware_ids"] = list(intent.middleware_ids)
+    data["middleware_env_requirements"] = list(intent.middleware_env_requirements)
     data["approval_ids"] = list(intent.approval_ids)
     data["approval_policy"] = list(intent.approval_policy)
     data["idempotency_required_for"] = list(intent.idempotency_required_for)

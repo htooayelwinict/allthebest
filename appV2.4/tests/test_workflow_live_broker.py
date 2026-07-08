@@ -89,6 +89,45 @@ def test_live_broker_allows_read_only_fake_transport_when_allowlisted() -> None:
     assert result.outputs == {"alerts": []}
 
 
+def test_live_broker_allows_declared_external_action_transport() -> None:
+    broker = LiveWorkflowBroker(
+        {"crm.lookup_contact": FakeTransport()},
+        mode="live-read",
+        external_actions=("crm.lookup_contact",),
+    )
+    result = broker.invoke(
+        BrokerRequest(
+            step_id="lookup_contact",
+            connector_action="crm.lookup_contact",
+            input_ref={"with": {"email": {"inputRef": "email"}}},
+            fixture={"input": {"email": "customer@example.com"}},
+            allowed_outputs=("alerts",),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "live-read"
+    assert result.outputs == {"alerts": []}
+
+
+def test_live_broker_blocks_undeclared_external_action_transport() -> None:
+    broker = LiveWorkflowBroker({"crm.lookup_contact": FakeTransport()}, mode="live-read")
+    result = broker.invoke(
+        BrokerRequest(
+            step_id="lookup_contact",
+            connector_action="crm.lookup_contact",
+            input_ref={"with": {"email": {"inputRef": "email"}}},
+            fixture={"input": {"email": "customer@example.com"}},
+            allowed_outputs=("alerts",),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.outputs == {}
+    assert result.issues == ("live connector action is not cataloged: crm.lookup_contact",)
+
+
 def test_live_broker_blocks_output_mismatch() -> None:
     broker = LiveWorkflowBroker({"github.list_dependabot_alerts": FakeTransport()}, mode="live-read")
     result = broker.invoke(

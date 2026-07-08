@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from appv24.workflows.connector_catalog import ConnectorActionMetadata, ConnectorCatalog
 from appv24.workflows.connector_contracts import (
+    ConnectorLiveMode,
     SideEffectClass,
-    WorkflowLiveMode,
     builtin_connector_contract_catalog,
 )
 
@@ -26,8 +26,8 @@ def _metadata_from_contract(action_ref: str) -> ConnectorActionMetadata:
         side_effect_class=None if contract.side_effect_class is SideEffectClass.READ else contract.side_effect_class.value,
         required_scopes=contract.required_scopes,
         allowed_outputs=contract.allowed_outputs,
-        live_read_eligible=WorkflowLiveMode.LIVE_READ in contract.live_modes,
-        live_draft_eligible=WorkflowLiveMode.LIVE_DRAFT in contract.live_modes,
-        live_production_enabled=WorkflowLiveMode.LIVE_PRODUCTION in contract.live_modes,
+        live_read_eligible=ConnectorLiveMode.LIVE_READ in contract.live_modes,
+        live_draft_eligible=ConnectorLiveMode.LIVE_DRAFT in contract.live_modes,
+        live_production_enabled=ConnectorLiveMode.LIVE_PRODUCTION in contract.live_modes,
         design_only=contract.design_only,
     )

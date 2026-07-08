@@ -43,6 +43,11 @@ steps:
     uses: telegram.send_message
     side_effect_class: send
     approval: admin-approval
+    with:
+      chat_id:
+        inputRef: admin_chat_id
+      text:
+        inputRef: message_text
     next: done
   - id: rejected
     type: terminal

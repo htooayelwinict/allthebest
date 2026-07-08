@@ -1719,6 +1719,100 @@ approvals:
     )
 
 
+def test_validate_workflow_package_rejects_fixture_only_brave_search_query(tmp_path: Path) -> None:
+    package = tmp_path / "ai-news-missing-query-binding"
+    package.mkdir()
+    (package / "workflow.yaml").write_text(
+        """
+version: appv24.workflow/v1
+name: ai-news-missing-query-binding
+description: Search recent AI news.
+design:
+  intent: Search recent AI news.
+  trigger: Manual run.
+  inputs:
+    - Search query.
+  outputs:
+    - Search results.
+  assumptions:
+    - Brave Search is configured.
+  side_effects: []
+  approval_gates: []
+  failure_modes:
+    - Search fails.
+  rollback:
+    - No external mutation occurs.
+triggers:
+  - id: manual
+    type: manual
+entrypoint: search_ai_news
+steps:
+  - id: search_ai_news
+    uses: brave.search
+    next: done
+  - id: done
+    type: terminal
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        """
+version: appv24.connectors/v1
+connectors:
+  - id: brave
+    adapter: direct_api
+    actions:
+      - id: search
+        side_effect: false
+        required_scopes: [brave:search]
+        outputs:
+          allowed: [items, source_count, query]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        """
+version: appv24.permissions/v1
+permissions:
+  - connector: brave
+    actions: [search]
+    scopes: [brave:search]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text(
+        """
+version: appv24.fixture/v1
+name: happy_path
+inputs:
+  brave.search:
+    query: AI news today
+outputs:
+  brave.search:
+    items: []
+    source_count: 0
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
+
+    result = validate_workflow_package(package)
+
+    assert_has_issue(
+        result.issues,
+        file="workflow.yaml",
+        code="missing_connector_required_input",
+        location="workflow.yaml:steps.search_ai_news.with.query",
+        message_substring="brave.search requires workflow.yaml step search_ai_news to bind query",
+    )
+
+
 def test_ai_news_telegram_registered_users_package_uses_connector_interfaces(tmp_path: Path) -> None:
     package = tmp_path / "ai-news-telegram"
     package.mkdir()

@@ -14,6 +14,7 @@ def fingerprint_package_documents(documents: PackageDocuments) -> str:
         "workflow": _normalize(documents.workflow),
         "connectors": _normalize(documents.connectors),
         "permissions": _normalize(documents.permissions),
+        "middlewares": _normalize(documents.middlewares),
         "dry_run_fixtures": _normalize(documents.dry_run_fixtures),
         "rollback_text": documents.rollback_text or "",
     }

@@ -1184,6 +1184,47 @@ def test_telegram_broadcast_message_transport_posts_to_each_allowed_recipient() 
     assert "telegram-token" not in repr(result.outputs)
 
 
+def test_telegram_broadcast_message_transport_resolves_shorthand_prior_step_outputs() -> None:
+    client = FakeClient(
+        {"ok": True, "result": {"message_id": 42, "chat": {"id": "admin-chat"}}},
+        post_responses=[
+            FakeResponse({"ok": True, "result": {"message_id": 42, "chat": {"id": "admin-chat"}}}),
+            FakeResponse({"ok": True, "result": {"message_id": 43, "chat": {"id": "ops-chat"}}}),
+        ],
+    )
+    transport = TelegramBroadcastMessageTransport(
+        token="telegram-token",
+        base_url="https://telegram.test",
+        allowed_chat_ids=("admin-chat", "ops-chat"),
+        client_factory=lambda: client,
+    )
+
+    result = transport.invoke(
+        BrokerRequest(
+            step_id="send_digest",
+            connector_action="telegram.broadcast_message",
+            input_ref={
+                "with": {
+                    "recipients": "{{ list_subscribers.recipients }}",
+                    "text": "{{ summarize_digest.summary }}",
+                }
+            },
+            fixture={
+                "steps": {
+                    "list_subscribers": {"outputs": {"recipients": ["admin-chat", "ops-chat"]}},
+                    "summarize_digest": {"outputs": {"summary": "Daily AI digest"}},
+                }
+            },
+            allowed_outputs=("sent_count", "message_ids", "chat_ids"),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "live-production"
+    assert [call["json"]["chat_id"] for call in client.post_calls] == ["admin-chat", "ops-chat"]
+    assert all(call["json"]["text"] == "Daily AI digest" for call in client.post_calls)
+
+
 def test_telegram_broadcast_message_transport_blocks_unapproved_recipient_before_http() -> None:
     client = FakeClient({"ok": True})
     transport = TelegramBroadcastMessageTransport(

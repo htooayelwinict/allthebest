@@ -530,6 +530,91 @@ def test_phase_runner_runs_ai_news_subscriber_broadcast_from_connector_interface
     ]
 
 
+def test_phase_runner_delegates_live_read_connector_after_local_transform(tmp_path: Path) -> None:
+    package = _write_ai_news_subscriber_broadcast_package(tmp_path, subscriber_after_summary=True)
+    connectors_path = package / "connectors.yaml"
+    connectors = yaml.safe_load(connectors_path.read_text(encoding="utf-8"))
+    connectors["connectors"][2]["actions"][0].pop("outputs")
+    connectors_path.write_text(yaml.safe_dump(connectors, sort_keys=False), encoding="utf-8")
+    run_root = tmp_path / ".workflow-runs"
+    seen_live_read_requests: list[BrokerRequest] = []
+
+    class BraveTransport(LiveWorkflowTransport):
+        def invoke(self, request: BrokerRequest) -> BrokerResult:
+            seen_live_read_requests.append(request)
+            return BrokerResult(
+                status="live-read",
+                provider_id="fake-brave",
+                outputs={
+                    "items": [{"title": "AI agent runtime update", "url": "https://example.test/agent"}],
+                    "source_count": 1,
+                    "query": "artificial intelligence news today",
+                },
+            )
+
+    class SubscriberTransport(LiveWorkflowTransport):
+        def invoke(self, request: BrokerRequest) -> BrokerResult:
+            seen_live_read_requests.append(request)
+            return BrokerResult(
+                status="live-read",
+                provider_id="fake-telegram",
+                outputs={
+                    "recipients": ["admin-chat", "ops-chat"],
+                    "recipient_count": 2,
+                    "audience_hash": "audience:test",
+                },
+            )
+
+    def summarize(request: BrokerRequest) -> BrokerResult:
+        assert request.fixture["handoff"]["outputs"]["search_ai_news"]["items"][0]["title"] == (
+            "AI agent runtime update"
+        )
+        return BrokerResult(
+            status="simulated",
+            provider_id="phase-test",
+            outputs={"summary": "AI agent runtime update: https://example.test/agent", "raw_response": {"ok": True}},
+        )
+
+    report = run_workflow_live_read_to_approval(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            run_root=run_root,
+            connector_allowlist=("brave.search", "telegram.list_subscribers"),
+        ),
+        live_read_broker=LiveWorkflowBroker(
+            {
+                "brave.search": BraveTransport(),
+                "telegram.list_subscribers": SubscriberTransport(),
+            },
+            mode="live-read",
+        ),
+        credential_resolver=CredentialRefResolver(
+            {
+                "brave": CredentialScope(available=True, scopes=("brave:search",)),
+                "llm": CredentialScope(available=True, scopes=()),
+                "telegram": CredentialScope(available=True, scopes=("telegram:subscribers:read", "telegram:send")),
+            }
+        ),
+        local_broker=LocalWorkflowBroker({"llm.summarize": summarize}),
+    )
+
+    assert report.status == "approval-required"
+    assert [request.connector_action for request in seen_live_read_requests] == [
+        "brave.search",
+        "telegram.list_subscribers",
+    ]
+    local_report = json.loads((run_root / report.local_run_id / "report.json").read_text(encoding="utf-8"))
+    assert [step["step_id"] for step in local_report["step_trace"]] == [
+        "summarize_digest",
+        "list_subscribers",
+        "send_digest",
+    ]
+    subscriber_step = local_report["step_trace"][1]
+    assert subscriber_step["broker_status"] == "live-read"
+    assert subscriber_step["simulated_outputs"]["recipients"] == ["admin-chat", "ops-chat"]
+
+
 def test_workflows_package_exports_live_draft_phase_runner() -> None:
     from appv24.workflows import run_workflow_approved_live_draft as exported
 
@@ -584,7 +669,10 @@ def _write_mixed_brave_llm_telegram_package(root: Path) -> Path:
                     {
                         "id": "extract_news",
                         "uses": "llm.summarize",
-                        "with": {"output_contract": "summary_v1"},
+                        "with": {
+                            "text": "{{ steps.search_news.outputs.items }}",
+                            "output_contract": "summary_v1",
+                        },
                         "next": "notify_chat",
                     },
                     {
@@ -688,9 +776,74 @@ def _write_mixed_brave_llm_telegram_package(root: Path) -> Path:
     return package
 
 
-def _write_ai_news_subscriber_broadcast_package(root: Path) -> Path:
+def _write_ai_news_subscriber_broadcast_package(root: Path, *, subscriber_after_summary: bool = False) -> Path:
     package = root / "ai-news-telegram-broadcast"
     package.mkdir(parents=True, exist_ok=True)
+    if subscriber_after_summary:
+        steps = [
+            {
+                "id": "search_ai_news",
+                "uses": "brave.search",
+                "with": {"query": "artificial intelligence news today", "count": 5},
+                "next": "summarize_digest",
+            },
+            {
+                "id": "summarize_digest",
+                "uses": "llm.summarize",
+                "with": {
+                    "text": "{{ steps.search_ai_news.outputs.items }}",
+                    "output_contract": "summary_v1",
+                },
+                "next": "list_subscribers",
+            },
+            {
+                "id": "list_subscribers",
+                "uses": "telegram.list_subscribers",
+                "with": {"audience": "default"},
+                "next": "send_digest",
+            },
+        ]
+    else:
+        steps = [
+            {
+                "id": "search_ai_news",
+                "uses": "brave.search",
+                "with": {"query": "artificial intelligence news today", "count": 5},
+                "next": "list_subscribers",
+            },
+            {
+                "id": "list_subscribers",
+                "uses": "telegram.list_subscribers",
+                "with": {"audience": "default"},
+                "next": "summarize_digest",
+            },
+            {
+                "id": "summarize_digest",
+                "uses": "llm.summarize",
+                "with": {
+                    "text": "{{ steps.search_ai_news.outputs.items }}",
+                    "output_contract": "summary_v1",
+                },
+                "next": "send_digest",
+            },
+        ]
+    steps.extend(
+        [
+            {
+                "id": "send_digest",
+                "uses": "telegram.broadcast_message",
+                "side_effect_class": "send",
+                "approval": "approve_telegram_broadcast",
+                "with": {
+                    "recipients": "{{ steps.list_subscribers.outputs.recipients }}",
+                    "audience_hash": "{{ steps.list_subscribers.outputs.audience_hash }}",
+                    "text": "{{ steps.summarize_digest.outputs.summary }}",
+                },
+                "next": "done",
+            },
+            {"id": "done", "type": "terminal"},
+        ]
+    )
     (package / "workflow.yaml").write_text(
         yaml.safe_dump(
             {
@@ -705,47 +858,12 @@ def _write_ai_news_subscriber_broadcast_package(root: Path) -> Path:
                     "assumptions": ["Brave and Telegram connectors are configured."],
                     "side_effects": ["Send Telegram broadcast after approval."],
                     "approval_gates": ["approve_telegram_broadcast"],
-                    "failure_modes": ["Search, summarization, subscriber listing, or broadcast fails."],
-                    "rollback": ["Review Telegram broadcast manually."],
+                "failure_modes": ["Search, summarization, subscriber listing, or broadcast fails."],
+                "rollback": ["Review Telegram broadcast manually."],
                 },
                 "triggers": [{"id": "manual", "type": "manual"}],
                 "entrypoint": "search_ai_news",
-                "steps": [
-                    {
-                        "id": "search_ai_news",
-                        "uses": "brave.search",
-                        "with": {"query": "artificial intelligence news today", "count": 5},
-                        "next": "list_subscribers",
-                    },
-                    {
-                        "id": "list_subscribers",
-                        "uses": "telegram.list_subscribers",
-                        "with": {"audience": "default"},
-                        "next": "summarize_digest",
-                    },
-                    {
-                        "id": "summarize_digest",
-                        "uses": "llm.summarize",
-                        "with": {
-                            "text": "{{ steps.search_ai_news.outputs.items }}",
-                            "output_contract": "summary_v1",
-                        },
-                        "next": "send_digest",
-                    },
-                    {
-                        "id": "send_digest",
-                        "uses": "telegram.broadcast_message",
-                        "side_effect_class": "send",
-                        "approval": "approve_telegram_broadcast",
-                        "with": {
-                            "recipients": "{{ steps.list_subscribers.outputs.recipients }}",
-                            "audience_hash": "{{ steps.list_subscribers.outputs.audience_hash }}",
-                            "text": "{{ steps.summarize_digest.outputs.summary }}",
-                        },
-                        "next": "done",
-                    },
-                    {"id": "done", "type": "terminal"},
-                ],
+                "steps": steps,
             },
             sort_keys=False,
         ),

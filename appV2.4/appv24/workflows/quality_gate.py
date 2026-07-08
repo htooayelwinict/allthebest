@@ -18,6 +18,14 @@ from appv24.workflows.validator import validate_workflow_documents
 
 WorkflowQualitySeverity = Literal["error", "warning"]
 
+REGISTERED_USER_BROADCAST_ALLOWED_INTERMEDIATE_ACTIONS = frozenset(
+    {
+        "llm.classify",
+        "llm.extract_structured",
+        "llm.summarize",
+    }
+)
+
 
 @dataclass(frozen=True)
 class WorkflowQualityIssue:
@@ -275,14 +283,18 @@ def _paths_between(ir: WorkflowIR, start: str, target: str) -> list[tuple[str, .
 
 def _registered_user_broadcast_detour_issue(step: WorkflowStep) -> WorkflowQualityIssue | None:
     action_ref = step.uses.dotted if step.uses is not None else None
+    if action_ref in REGISTERED_USER_BROADCAST_ALLOWED_INTERMEDIATE_ACTIONS:
+        return None
     if action_ref in {"telegram.create_message_draft", "telegram.send_message_draft"}:
         detail = f"{action_ref} step {step.step_id}"
+    elif action_ref is not None:
+        detail = f"action step {step.step_id} using {action_ref}"
     elif step.kind is StepKind.MANUAL_APPROVAL:
         detail = f"manual approval step {step.step_id}"
     elif step.kind is StepKind.DECISION:
         detail = f"decision step {step.step_id}"
     else:
-        return None
+        detail = f"{step.kind.value} step {step.step_id}"
     return WorkflowQualityIssue(
         code="registered_user_broadcast_detour",
         file="workflow.yaml",
@@ -293,7 +305,9 @@ def _registered_user_broadcast_detour_issue(step: WorkflowStep) -> WorkflowQuali
         ),
         repair_hint=(
             "Use brave.search -> telegram.list_subscribers -> llm.summarize -> "
-            "telegram.broadcast_message -> done; put the approval on telegram.broadcast_message."
+            "telegram.broadcast_message -> done; only pure LLM message transforms may appear "
+            "between telegram.list_subscribers and telegram.broadcast_message, and approval belongs "
+            "on telegram.broadcast_message."
         ),
     )
 

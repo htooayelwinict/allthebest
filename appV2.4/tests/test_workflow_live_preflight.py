@@ -247,6 +247,49 @@ def test_live_read_preflight_passes_with_configured_transport(tmp_path: Path) ->
     assert report.issues == ()
 
 
+def test_live_read_preflight_accepts_external_connector_with_configured_transport(tmp_path: Path) -> None:
+    package = _write_external_crm_read_package(tmp_path)
+
+    report = preflight_live_read_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("crm.lookup_contact",),
+        ),
+        credential_resolver=CredentialRefResolver({"crm": CredentialScope(available=True, scopes=("crm:read",))}),
+        available_transports=("crm.lookup_contact",),
+    )
+
+    assert report.status == "passed"
+    assert report.checked_actions == ("crm.lookup_contact",)
+    assert report.issues == ()
+
+
+def test_live_read_preflight_treats_local_transform_after_read_prefix_as_phase_boundary(tmp_path: Path) -> None:
+    package = _write_source_then_llm_package(tmp_path)
+
+    report = preflight_live_read_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("source.fetch_items",),
+        ),
+        credential_resolver=CredentialRefResolver(
+            {
+                "source": CredentialScope(available=True, scopes=("source:read",)),
+                "llm": CredentialScope(available=True, scopes=()),
+            }
+        ),
+        available_transports=("source.fetch_items",),
+    )
+
+    assert report.status == "passed"
+    assert report.checked_actions == ("source.fetch_items",)
+    assert report.issues == ()
+
+
 def test_live_read_preflight_blocks_stale_bundle_before_transport_check(tmp_path: Path) -> None:
     package = _write_read_only_package(tmp_path)
     write_workflow_bundle(package)
@@ -334,6 +377,41 @@ def test_live_production_preflight_passes_for_approved_telegram_send(tmp_path: P
     assert report.checked_actions == ("telegram.send_message",)
     assert report.issues == ()
     assert "Live-production preflight: passed" in format_live_production_preflight_report(report)
+
+
+def test_live_production_preflight_starts_at_approved_action_after_read_prefix(tmp_path: Path) -> None:
+    package = _write_read_then_telegram_send_package(tmp_path)
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            approve_all=False,
+        )
+    )
+    _approve_all_requests(package, approval_report.run_id, package_fingerprint=approval_report.package_fingerprint)
+
+    report = preflight_live_production_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_PRODUCTION,
+            approval_run_id=approval_report.run_id,
+            connector_allowlist=("telegram.send_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
+        ),
+        credential_resolver=CredentialRefResolver(
+            {
+                "github": CredentialScope(available=True, scopes=("dependabot:read",)),
+                "telegram": CredentialScope(available=True, scopes=("telegram:send",)),
+            }
+        ),
+        available_transports=("telegram.send_message",),
+    )
+
+    assert report.status == "passed"
+    assert report.checked_actions == ("telegram.send_message",)
+    assert report.issues == ()
 
 
 def test_live_production_preflight_blocks_missing_telegram_allowed_chat_ids(tmp_path: Path) -> None:
@@ -731,6 +809,303 @@ def _write_source_read_only_package(root: Path) -> Path:
     fixtures.mkdir()
     (fixtures / "happy_path.yaml").write_text("input: {}\n", encoding="utf-8")
     (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
+    return package
+
+
+def _write_source_then_llm_package(root: Path) -> Path:
+    package = root / "source-then-llm"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "source-then-llm",
+                "description": "Read source items live, then transform them locally.",
+                "design": {
+                    "intent": "Read source items and summarize them locally.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["query"],
+                    "outputs": ["summary"],
+                    "assumptions": ["Source credentials are resolved outside the package."],
+                    "side_effects": [],
+                    "approval_gates": [],
+                    "failure_modes": ["Source API unavailable."],
+                    "rollback": ["No external mutation occurs."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "fetch_items",
+                "steps": [
+                    {"id": "fetch_items", "uses": "source.fetch_items", "with": {"query": "public catalysts"}, "next": "summarize"},
+                    {
+                        "id": "summarize",
+                        "uses": "llm.summarize",
+                        "with": {"text": "{{ steps.fetch_items.outputs.items }}", "output_contract": "summary_v1"},
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "source",
+                        "adapter": "direct_api",
+                        "actions": [
+                            {
+                                "id": "fetch_items",
+                                "operationId": "source_fetch_items",
+                                "side_effect": False,
+                                "outputs": {"allowed": ["items", "source_count"]},
+                                "required_scopes": ["source:read"],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "llm",
+                        "adapter": "llm",
+                        "actions": [
+                            {
+                                "id": "summarize",
+                                "side_effect": False,
+                                "outputs": {"allowed": ["summary", "raw_response"]},
+                            }
+                        ],
+                    },
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [
+                    {"connector": "source", "actions": ["fetch_items"], "scopes": ["source:read"]},
+                    {"connector": "llm", "actions": ["summarize"], "scopes": []},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text("input: {}\n", encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
+    return package
+
+
+def _write_external_crm_read_package(root: Path) -> Path:
+    package = root / "external-crm-read"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "external-crm-read",
+                "description": "Read CRM contact data through an external connector interface.",
+                "design": {
+                    "intent": "Look up one CRM contact by email.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["Customer email address."],
+                    "outputs": ["CRM contact fields."],
+                    "assumptions": ["CRM MCP server is configured by the operator."],
+                    "side_effects": ["Read-only CRM lookup."],
+                    "approval_gates": ["None."],
+                    "failure_modes": ["CRM connector unavailable."],
+                    "rollback": ["No external mutation occurs."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "lookup_contact",
+                "steps": [
+                    {
+                        "id": "lookup_contact",
+                        "uses": "crm.lookup_contact",
+                        "with": {"email": {"inputRef": "email"}},
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "crm",
+                        "adapter": "mcp",
+                        "source": "mcp://crm@v1",
+                        "env": [
+                            {
+                                "name": "APPV24_CRM_MCP_SERVER",
+                                "purpose": "CRM MCP server endpoint",
+                                "required": True,
+                            }
+                        ],
+                        "actions": [
+                            {
+                                "id": "lookup_contact",
+                                "custom": True,
+                                "source": "mcp://crm.lookup_contact@v1",
+                                "tool": "crm.lookup_contact",
+                                "side_effect": False,
+                                "side_effect_class": "read",
+                                "execution_mode": "brokered",
+                                "dry_run_supported": True,
+                                "outputs": {"allowed": ["contact", "artifact_path"]},
+                                "required_scopes": ["crm:read"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [{"connector": "crm", "actions": ["lookup_contact"], "scopes": ["crm:read"]}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text(
+        yaml.safe_dump({"input": {"email": "customer@example.com"}}, sort_keys=False),
+        encoding="utf-8",
+    )
+    (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
+    return package
+
+
+def _write_read_then_telegram_send_package(root: Path) -> Path:
+    package = root / "read-then-telegram-production"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "read-then-telegram-production",
+                "description": "Read live context, then send one approved Telegram message.",
+                "design": {
+                    "intent": "Read upstream context before an approved Telegram send.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["chat_id", "text"],
+                    "outputs": ["message_id"],
+                    "assumptions": ["Live-read already handled the upstream read connector."],
+                    "side_effects": ["send Telegram message"],
+                    "approval_gates": ["admin_approval"],
+                    "failure_modes": ["Telegram API unavailable."],
+                    "rollback": ["Delete the Telegram message manually if required."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "inspect_alerts",
+                "steps": [
+                    {"id": "inspect_alerts", "uses": "github.list_dependabot_alerts", "next": "notify_admin"},
+                    {
+                        "id": "notify_admin",
+                        "uses": "telegram.send_message",
+                        "side_effect_class": "send",
+                        "approval": "admin_approval",
+                        "with": {
+                            "chat_id": {"inputRef": "chat_id"},
+                            "text": {"inputRef": "text"},
+                        },
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "github",
+                        "adapter": "openapi",
+                        "actions": [
+                            {
+                                "id": "list_dependabot_alerts",
+                                "operationId": "dependabot_list_alerts",
+                                "side_effect": False,
+                                "outputs": {"allowed": ["alerts"]},
+                                "required_scopes": ["dependabot:read"],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "telegram",
+                        "adapter": "direct_api",
+                        "actions": [
+                            {
+                                "id": "send_message",
+                                "operationId": "telegram_send_message",
+                                "execution_mode": "brokered",
+                                "side_effect": True,
+                                "side_effect_class": "send",
+                                "approval_required": True,
+                                "dry_run_supported": True,
+                                "required_scopes": ["telegram:send"],
+                                "outputs": {"allowed": ["message_id", "chat_id"]},
+                                "idempotency": {"key_fields": ["chat_id", "text"]},
+                            }
+                        ],
+                    },
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [
+                    {"connector": "github", "actions": ["list_dependabot_alerts"], "scopes": ["dependabot:read"]},
+                    {"connector": "telegram", "actions": ["send_message"], "scopes": ["telegram:send"]},
+                ],
+                "approvals": [{"id": "admin_approval", "mode": "explicit", "required_for": ["notify_admin"]}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text(
+        "input:\n  chat_id: admin-chat\n  text: Production alert after read.\n",
+        encoding="utf-8",
+    )
+    (fixtures / "rejection_path.yaml").write_text(
+        "expected:\n  status: rejected\n",
+        encoding="utf-8",
+    )
+    (package / "rollback.md").write_text("# Rollback\n\nDelete the Telegram message manually if required.\n", encoding="utf-8")
     return package
 
 

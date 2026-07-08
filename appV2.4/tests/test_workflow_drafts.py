@@ -107,6 +107,16 @@ permissions:
       - issues:write
 """.lstrip()
 
+MIDDLEWARES_YAML = """
+version: appv24.middlewares/v1
+middlewares:
+  - id: audit.log
+    adapter: builtin
+    source: catalog://audit.log@v1
+    config:
+      events: true
+""".lstrip()
+
 FIXTURE_YAML = """
 input:
   repo: owner/project
@@ -127,7 +137,8 @@ def assert_has_issue(issues: tuple, *, code: str, file: str, message_substring: 
     assert matches, f"expected issue not found: code={code!r} file={file!r}"
 
 
-def valid_workflow_draft_text(*, workflow: str = WORKFLOW_YAML) -> str:
+def valid_workflow_draft_text(*, workflow: str = WORKFLOW_YAML, middlewares: str = "") -> str:
+    middleware_block = f"\n```yaml middlewares.yaml\n{middlewares}```\n" if middlewares else ""
     return f"""
 Here is the package draft.
 
@@ -139,6 +150,7 @@ Here is the package draft.
 
 ```yaml permissions.yaml
 {PERMISSIONS_YAML}```
+{middleware_block}
 
 ```yaml dry_run_fixtures/happy_path.yaml
 {FIXTURE_YAML}```
@@ -195,6 +207,13 @@ Close the drafted issue if it was created.
     assert "human-review" in extraction.blocks.permissions
     assert extraction.blocks.dry_run_fixtures == {"dry_run_fixtures/happy_path.yaml": FIXTURE_YAML}
     assert extraction.blocks.rollback_text == "# Rollback\n\nClose the drafted issue if it was created.\n"
+
+
+def test_extract_workflow_draft_blocks_reads_optional_middlewares() -> None:
+    extraction = extract_workflow_draft_blocks(valid_workflow_draft_text(middlewares=MIDDLEWARES_YAML))
+
+    assert extraction.issues == ()
+    assert extraction.blocks.middlewares == MIDDLEWARES_YAML
 
 
 def test_extract_workflow_draft_blocks_uses_heading_fallback() -> None:
@@ -255,6 +274,22 @@ def test_parse_workflow_draft_blocks_builds_package_documents() -> None:
     assert result.documents.permissions["approvals"][0]["id"] == "human-review"
     assert result.documents.dry_run_fixtures == {"happy_path.yaml": {"input": {"repo": "owner/project"}}}
     assert result.documents.rollback_text == "# Rollback\n\nClose the drafted issue if it was created.\n"
+
+
+def test_parse_workflow_draft_blocks_builds_optional_middlewares() -> None:
+    result = parse_workflow_draft_blocks(
+        WorkflowDraftBlocks(
+            workflow=WORKFLOW_YAML,
+            connectors=CONNECTORS_YAML,
+            permissions=PERMISSIONS_YAML,
+            middlewares=MIDDLEWARES_YAML,
+        )
+    )
+
+    assert result.issues == ()
+    assert result.documents is not None
+    assert result.documents.middlewares["version"] == "appv24.middlewares/v1"
+    assert result.documents.middlewares["middlewares"][0]["id"] == "audit.log"
 
 
 def test_parse_workflow_draft_blocks_reports_yaml_errors() -> None:

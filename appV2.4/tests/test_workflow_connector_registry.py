@@ -59,6 +59,32 @@ def test_connector_registry_flags_unknown_declared_action(tmp_path: Path) -> Non
     assert action.required_transport_env == ()
 
 
+def test_connector_registry_reports_external_connector_interface(tmp_path: Path) -> None:
+    package = _write_external_crm_package(tmp_path)
+
+    report = inspect_workflow_connector_registry(
+        package,
+        env={
+            "APPV24_CRM_MCP_SERVER": "mcp://crm",
+            "APPV24_CRM_CREDENTIAL_REF": "crm-prod",
+            "APPV24_CRM_SCOPES": "crm:read",
+        },
+    )
+
+    assert report.issues == ()
+    assert len(report.actions) == 1
+    action = report.actions[0]
+    assert action.action_ref == "crm.lookup_contact"
+    assert action.cataloged is True
+    assert action.external is True
+    assert action.source_ref == "mcp://crm.lookup_contact@v1"
+    assert action.execution_mode == "brokered"
+    assert action.required_connector_env == ("APPV24_CRM_MCP_SERVER",)
+    assert action.required_scopes == ("crm:read",)
+    assert action.allowed_outputs == ("contact", "artifact_path")
+    assert "crm-prod" not in report.to_text()
+
+
 def _write_telegram_package(
     root: Path,
     *,
@@ -140,4 +166,92 @@ def _write_telegram_package(
     fixtures.mkdir()
     (fixtures / "happy_path.yaml").write_text("input:\n  chat_id: admin-chat\n  text: alert\n", encoding="utf-8")
     (package / "rollback.md").write_text("# Rollback\n\nSend a corrective message manually.\n", encoding="utf-8")
+    return package
+
+
+def _write_external_crm_package(root: Path) -> Path:
+    package = root / "external-crm-read"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "external-crm-read",
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "lookup_contact",
+                "steps": [
+                    {
+                        "id": "lookup_contact",
+                        "uses": "crm.lookup_contact",
+                        "with": {"email": {"inputRef": "email"}},
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+                "design": {
+                    "intent": "Look up CRM contact data.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["email"],
+                    "outputs": ["contact"],
+                    "assumptions": ["CRM MCP server is configured externally."],
+                    "side_effects": ["Read-only CRM lookup."],
+                    "approval_gates": ["None."],
+                    "failure_modes": ["CRM connector unavailable."],
+                    "rollback": ["No external mutation occurs."],
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "crm",
+                        "adapter": "mcp",
+                        "source": "mcp://crm@v1",
+                        "env": [
+                            {
+                                "name": "APPV24_CRM_MCP_SERVER",
+                                "purpose": "CRM MCP server endpoint",
+                                "required": True,
+                            }
+                        ],
+                        "actions": [
+                            {
+                                "id": "lookup_contact",
+                                "custom": True,
+                                "source": "mcp://crm.lookup_contact@v1",
+                                "side_effect": False,
+                                "side_effect_class": "read",
+                                "execution_mode": "brokered",
+                                "dry_run_supported": True,
+                                "required_scopes": ["crm:read"],
+                                "outputs": {"allowed": ["contact", "artifact_path"]},
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [{"connector": "crm", "actions": ["lookup_contact"], "scopes": ["crm:read"]}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text("input:\n  email: customer@example.com\n", encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
     return package

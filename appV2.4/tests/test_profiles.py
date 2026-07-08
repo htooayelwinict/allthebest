@@ -150,6 +150,17 @@ def test_workflow_profile_includes_builtin_capability_catalog() -> None:
     assert "Do not invent connector action names" in prompt
 
 
+def test_workflow_profile_catalog_pins_external_connector_interface_shape_once() -> None:
+    fragment = render_capability_catalog_fragment()
+
+    assert (
+        "Non-built-in actions require a connector-owned interface: custom: true, source@version, "
+        "side_effect, side_effect_class, execution_mode, dry_run_supported, outputs.allowed, "
+        "and required_scopes; live still needs transport/preflight."
+    ) in fragment
+    assert fragment.count("Registered-user delivery must be modeled as connector interfaces") == 1
+
+
 def test_profile_lookup_normalizes_case_and_underscores() -> None:
     assert get_profile("Read_Only").id == "read-only"
     assert get_profile("SECURITY_LAB_LITE").id == "security-lab-lite"

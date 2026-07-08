@@ -83,7 +83,7 @@ def _gmail_draft_reply() -> GoldenWorkflowExample:
                         "dry_run_supported": True,
                         "required_scopes": ["gmail.compose"],
                         "outputs": {"allowed": ["draft_id"]},
-                        "idempotency": {"key_fields": ["source_message_id", "recipient"]},
+                        "idempotency": {"key_fields": ["to", "subject"]},
                     }
                 ],
             }
@@ -188,6 +188,10 @@ def _telegram_support_ticket() -> GoldenWorkflowExample:
                 "uses": "telegram.send_message",
                 "side_effect_class": "send",
                 "approval": "admin_approval",
+                "with": {
+                    "chat_id": {"inputRef": "admin_chat_id"},
+                    "text": {"inputRef": "message_text"},
+                },
                 "next": "done",
             },
             {"id": "rejected", "type": "terminal"},
@@ -231,7 +235,7 @@ def _telegram_support_ticket() -> GoldenWorkflowExample:
                         "dry_run_supported": True,
                         "required_scopes": ["telegram:send"],
                         "outputs": {"allowed": ["message_id"]},
-                        "idempotency": {"key_fields": ["ticket_id", "admin_chat_id"]},
+                        "idempotency": {"key_fields": ["chat_id", "text"]},
                     }
                 ],
             },
@@ -253,15 +257,26 @@ def _telegram_support_ticket() -> GoldenWorkflowExample:
     }
     fixtures = {
         "happy_path.yaml": {
+            "input": {
+                "telegram_user_id": "authorized-customer-101",
+                "message_text": "My deployment is failing.",
+                "admin_chat_id": "admin-chat",
+            },
             "decision": {"check_authorized_customer": "authorized"},
         },
         "rejection_path.yaml": {
+            "input": {
+                "telegram_user_id": "blocked-customer-999",
+                "message_text": "Please create a ticket.",
+                "admin_chat_id": "admin-chat",
+            },
             "decision": {"check_authorized_customer": "rejected"},
         },
         "unauthorized_user.yaml": {
             "input": {
                 "telegram_user_id": "unauthorized-customer-404",
                 "message_text": "Please create a ticket for me.",
+                "admin_chat_id": "admin-chat",
             },
             "decision": {"check_authorized_customer": "rejected"},
             "expected": {
@@ -270,6 +285,11 @@ def _telegram_support_ticket() -> GoldenWorkflowExample:
             },
         },
         "ticket_draft_timeout.yaml": {
+            "input": {
+                "telegram_user_id": "authorized-customer-101",
+                "message_text": "My deployment is failing.",
+                "admin_chat_id": "admin-chat",
+            },
             "decision": {"check_authorized_customer": "authorized"},
             "connector_sandbox": {
                 "failures": {
@@ -369,7 +389,7 @@ def _gmail_draft_triage() -> GoldenWorkflowExample:
                         "dry_run_supported": True,
                         "required_scopes": ["gmail.compose"],
                         "outputs": {"allowed": ["draft_id", "thread_id"]},
-                        "idempotency": {"key_fields": ["to", "subject", "body_hash"]},
+                        "idempotency": {"key_fields": ["to", "subject"]},
                     }
                 ],
             }

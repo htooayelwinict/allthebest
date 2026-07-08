@@ -28,6 +28,7 @@ class WorkflowDraftBlocks:
     workflow: str = ""
     connectors: str = ""
     permissions: str = ""
+    middlewares: str = ""
     dry_run_fixtures: Mapping[str, str] = field(default_factory=dict)
     rollback_text: str | None = None
 
@@ -52,6 +53,7 @@ def extract_workflow_draft_blocks(text: str) -> WorkflowDraftExtraction:
     workflow = ""
     connectors = ""
     permissions = ""
+    middlewares = ""
     dry_run_fixtures: dict[str, str] = {}
     rollback_text: str | None = None
     issues: list[WorkflowIssue] = []
@@ -96,6 +98,8 @@ def extract_workflow_draft_blocks(text: str) -> WorkflowDraftExtraction:
                     connectors = body
                 elif filename == "permissions.yaml":
                     permissions = body
+                elif filename == "middlewares.yaml":
+                    middlewares = body
                 elif filename == "rollback.md":
                     rollback_text = body
                 elif filename.startswith("dry_run_fixtures/"):
@@ -108,6 +112,7 @@ def extract_workflow_draft_blocks(text: str) -> WorkflowDraftExtraction:
             workflow=workflow,
             connectors=connectors,
             permissions=permissions,
+            middlewares=middlewares,
             dry_run_fixtures=dry_run_fixtures,
             rollback_text=rollback_text,
         ),
@@ -152,6 +157,23 @@ def parse_workflow_draft_blocks(blocks: WorkflowDraftBlocks) -> WorkflowDraftPar
             continue
         parsed_fixtures[_base_fixture_filename(normalized)] = parsed
 
+    parsed_middlewares: Mapping[str, Any] = {}
+    if blocks.middlewares.strip():
+        parsed = _parse_mapping("middlewares.yaml", blocks.middlewares)
+        if isinstance(parsed, WorkflowIssue):
+            issues.append(parsed)
+        elif parsed is None:
+            issues.append(
+                WorkflowIssue(
+                    code="invalid_document",
+                    file="middlewares.yaml",
+                    path=(),
+                    message="middlewares.yaml must contain a mapping document",
+                )
+            )
+        else:
+            parsed_middlewares = parsed
+
     if issues:
         return WorkflowDraftParseResult(documents=None, issues=tuple(issues))
 
@@ -163,6 +185,7 @@ def parse_workflow_draft_blocks(blocks: WorkflowDraftBlocks) -> WorkflowDraftPar
             permissions=parsed_required["permissions.yaml"],
             dry_run_fixtures=parsed_fixtures,
             rollback_text=blocks.rollback_text,
+            middlewares=parsed_middlewares,
         )
     )
 
@@ -196,6 +219,8 @@ def save_workflow_draft_blocks(blocks: WorkflowDraftBlocks, *, cwd: str | Path, 
     planned_paths.extend(
         target_path / "dry_run_fixtures" / Path(filename).name for filename in documents.dry_run_fixtures
     )
+    if documents.middlewares:
+        planned_paths.append(target_path / "middlewares.yaml")
     if blocks.rollback_text is not None:
         planned_paths.append(target_path / "rollback.md")
 
@@ -214,6 +239,8 @@ def save_workflow_draft_blocks(blocks: WorkflowDraftBlocks, *, cwd: str | Path, 
         (Path("connectors.yaml"), yaml.safe_dump(documents.connectors, sort_keys=False)),
         (Path("permissions.yaml"), yaml.safe_dump(documents.permissions, sort_keys=False)),
     ]
+    if documents.middlewares:
+        payloads.append((Path("middlewares.yaml"), yaml.safe_dump(documents.middlewares, sort_keys=False)))
     payloads.extend(
         (Path("dry_run_fixtures") / Path(filename).name, yaml.safe_dump(document, sort_keys=False))
         for filename, document in documents.dry_run_fixtures.items()
@@ -314,6 +341,8 @@ def _normalize_supported_filename(value: str) -> str | None:
         return "connectors.yaml"
     if candidate in {"permissions.yaml", "permissions.yml"}:
         return "permissions.yaml"
+    if candidate in {"middlewares.yaml", "middlewares.yml"}:
+        return "middlewares.yaml"
     if candidate == "rollback.md":
         return "rollback.md"
 

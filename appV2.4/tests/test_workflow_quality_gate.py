@@ -86,14 +86,15 @@ def test_quality_gate_rejects_entrypoint_path_without_reachable_terminal() -> No
             "approval": "admin_approval",
             "next": "notify_admin",
         },
-        {
-            "id": "notify_admin",
-            "type": "action",
-            "uses": "telegram.send_message",
-            "side_effect_class": "send",
-            "approval": "admin_approval",
-            "next": "create_ticket_draft",
-        },
+            {
+                "id": "notify_admin",
+                "type": "action",
+                "uses": "telegram.send_message",
+                "side_effect_class": "send",
+                "approval": "admin_approval",
+                "with": {"chat_id": {"inputRef": "admin_chat_id"}, "text": {"inputRef": "message_text"}},
+                "next": "create_ticket_draft",
+            },
         {"id": "done", "type": "terminal"},
     ]
     documents = _documents_with_workflow(workflow)
@@ -247,6 +248,16 @@ def test_quality_gate_rejects_registered_user_broadcast_draft_and_manual_detours
                 "id": "list_subscribers",
                 "uses": "telegram.list_subscribers",
                 "with": {"audience": "registered_users", "limit": 1000},
+                "next": "check_content_policy",
+            },
+            {
+                "id": "check_content_policy",
+                "uses": "policy.check",
+                "with": {
+                    "input_ref": "summarize_news.summary",
+                    "checks": {"require_source_urls": True, "disallow_unverified_claims": True},
+                },
+                "side_effect_class": "read",
                 "next": "create_message_draft",
             },
             {
@@ -271,14 +282,15 @@ def test_quality_gate_rejects_registered_user_broadcast_draft_and_manual_detours
                 "type": "decision",
                 "branches": {"approved": "broadcast_message", "rejected": "done"},
             },
-            {
-                "id": "broadcast_message",
-                "uses": "telegram.broadcast_message",
-                "with": {
-                    "recipients": "{{ list_subscribers.recipients }}",
-                    "text": "{{ create_message_draft.text }}",
-                },
-                "side_effect_class": "send",
+                {
+                    "id": "broadcast_message",
+                    "uses": "telegram.broadcast_message",
+                    "with": {
+                        "recipients": "{{ list_subscribers.recipients }}",
+                        "audience_hash": "{{ list_subscribers.audience_hash }}",
+                        "text": "{{ create_message_draft.text }}",
+                    },
+                    "side_effect_class": "send",
                 "approval": "approve_broadcast_message",
                 "next": "done",
             },
@@ -298,6 +310,20 @@ def test_quality_gate_rejects_registered_user_broadcast_draft_and_manual_detours
                 "adapter": "llm",
                 "actions": [
                     {"id": "summarize", "side_effect": False, "outputs": {"allowed": ["summary", "raw_response"]}}
+                ],
+            },
+            {
+                "id": "policy",
+                "adapter": "manual",
+                "actions": [
+                    {
+                        "id": "check",
+                        "side_effect": False,
+                        "side_effect_class": "read",
+                        "execution_mode": "brokered",
+                        "dry_run_supported": True,
+                        "outputs": {"allowed": ["approved", "reason"]},
+                    }
                 ],
             },
             {
@@ -340,6 +366,7 @@ def test_quality_gate_rejects_registered_user_broadcast_draft_and_manual_detours
         "permissions": [
             {"connector": "brave", "actions": ["search"], "scopes": ["brave:search"]},
             {"connector": "llm", "actions": ["summarize"], "scopes": []},
+            {"connector": "policy", "actions": ["check"], "scopes": []},
             {
                 "connector": "telegram",
                 "actions": ["list_subscribers", "create_message_draft", "broadcast_message"],
@@ -366,5 +393,10 @@ def test_quality_gate_rejects_registered_user_broadcast_draft_and_manual_detours
     result = check_workflow_quality_documents(documents)
 
     issues = {issue.path[-1]: issue for issue in result.issues if issue.code == "registered_user_broadcast_detour"}
-    assert set(issues) == {"create_message_draft", "approve_summary", "broadcast_decision"}, result.issues
+    assert set(issues) == {
+        "check_content_policy",
+        "create_message_draft",
+        "approve_summary",
+        "broadcast_decision",
+    }, result.issues
     assert all("telegram.broadcast_message" in issue.message for issue in issues.values())

@@ -30,5 +30,8 @@ def test_catalog_blocks_unknown_read_only_looking_action() -> None:
 def test_capability_prompt_prefers_draft_actions_and_blocks_invented_vocabulary() -> None:
     fragment = render_capability_catalog_fragment()
 
-    assert "Prefer draft actions for user-visible messages: telegram.create_message_draft, gmail.create_draft, notification.create_draft." in fragment
+    assert (
+        "Use draft actions only when the user asks for a draft/review-only workflow: "
+        "telegram.create_message_draft, gmail.create_draft, notification.create_draft."
+    ) in fragment
     assert "Do not invent receive_webhook, send_live, close_ticket, post_chat, or cloud mutation actions." in fragment

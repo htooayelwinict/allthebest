@@ -130,12 +130,13 @@ def _directive_for_issue(
         return WorkflowRepairDirective(
             code=code,
             location=location,
-            instruction="Replace this action with a built-in catalog action or make it design-only.",
+            instruction="Use a built-in action, strict external connector interface, or design-only metadata.",
             rules=(
                 message,
-                "Use only built-in workflow capability catalog actions when the workflow step calls the action.",
+                "Executable steps use built-ins or strict external interfaces declared in connectors.yaml.",
                 f"Built-in workflow capability catalog actions: {', '.join(sorted(BUILTIN_WORKFLOW_ACTIONS))}.",
-                "If the non-catalog action represents an incoming trigger or fixture input, model it as trigger/input data instead of a workflow step action.",
+                "Strict external interface: custom: true, source@version, outputs.allowed.",
+                "If this is trigger/input data, do not model it as a connector step.",
                 "For future-only custom actions, set custom: true and execution_mode: design_only, and remove workflow step calls to it.",
             ),
         )
@@ -260,12 +261,13 @@ def _directive_for_issue(
         return WorkflowRepairDirective(
             code=code,
             location=location,
-            instruction="Use only built-in workflow capability catalog actions for executable connector steps.",
+            instruction="Use built-in actions or strict external interfaces for executable connector steps.",
             rules=(
                 message,
                 f"Built-in action choices: {catalog}.",
-                "Do not invent connector action names, even for read-only actions.",
-                "If the non-catalog action represents an incoming trigger or fixture input, remove that connector step and model the data as trigger metadata, fixture input, or a decision branch.",
+                "Do not invent connector action names; declare a strict external interface for intentional new actions.",
+                "Strict external interface: custom: true, source@version, outputs.allowed.",
+                "If this is trigger or fixture input, model it as trigger metadata, fixture input, or a decision branch.",
                 "If the workflow needs a local artifact or draft, use an existing catalog action that matches the intent or represent the artifact in design.outputs and rollback.md.",
             ),
         )
@@ -539,11 +541,12 @@ def _connector_contract_directive(
         return WorkflowRepairDirective(
             code=code,
             location=location,
-            instruction=f"Replace {target} with a built-in connector contract or make it future-only design metadata.",
+            instruction=f"Replace {target} with a built-in contract, strict external interface, or future-only metadata.",
             rules=(
                 message,
                 f"Built-in workflow capability catalog actions: {', '.join(sorted(BUILTIN_WORKFLOW_ACTIONS))}.",
-                "Executable workflow steps must use built-in connector contracts.",
+                "Executable steps use built-in contracts or strict external interfaces declared in connectors.yaml.",
+                "Strict external interface: custom: true, source@version, outputs.allowed.",
                 "For future-only custom actions, set custom: true and execution_mode: design_only, then remove workflow step calls to that action.",
             ),
         )

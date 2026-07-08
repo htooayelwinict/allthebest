@@ -73,6 +73,71 @@ def test_live_read_runner_executes_allowlisted_read_action_and_writes_report(tmp
     )
 
 
+def test_live_read_runner_blocks_missing_required_middleware_env_before_execution(tmp_path: Path) -> None:
+    package = _write_read_only_package(tmp_path)
+    _write_audit_log_middleware(package)
+    transport = RecordingTransport()
+    run_root = tmp_path / ".workflow-runs"
+
+    report = run_live_read_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            run_root=run_root,
+            connector_allowlist=("github.list_dependabot_alerts",),
+        ),
+        broker=LiveWorkflowBroker({"github.list_dependabot_alerts": transport}, mode="live-read"),
+        credential_resolver=CredentialRefResolver({"github": CredentialScope(available=True, scopes=("dependabot:read",))}),
+    )
+
+    assert report.status == "blocked"
+    assert report.run_id == ""
+    assert report.issues == ("missing middleware env for audit.log; required env: APPV24_WORKFLOW_AUDIT_LOG_PATH",)
+    assert transport.requests == []
+    assert not run_root.exists()
+
+
+def test_live_read_runner_executes_audit_log_middleware_without_mutating_transport_outputs(tmp_path: Path) -> None:
+    package = _write_read_only_package(tmp_path)
+    _write_audit_log_middleware(package)
+    transport = RecordingTransport()
+    audit_path = tmp_path / "live-read-audit.jsonl"
+    run_root = tmp_path / ".workflow-runs"
+
+    report = run_live_read_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            run_root=run_root,
+            connector_allowlist=("github.list_dependabot_alerts",),
+            operator_env={"APPV24_WORKFLOW_AUDIT_LOG_PATH": str(audit_path)},
+        ),
+        broker=LiveWorkflowBroker({"github.list_dependabot_alerts": transport}, mode="live-read"),
+        credential_resolver=CredentialRefResolver({"github": CredentialScope(available=True, scopes=("dependabot:read",))}),
+    )
+
+    assert report.status == "passed"
+    assert report.brokered_actions[0].simulated_outputs == {"alerts": []}
+    event_types = [event.event_type for event in report.events]
+    assert "middleware_runtime_configured" in event_types
+    assert "middleware_hook_failed" not in event_types
+    audit_records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    assert [record["hook"] for record in audit_records] == [
+        "run_started",
+        "step_started",
+        "step_completed",
+        "step_started",
+        "step_completed",
+        "run_completed",
+    ]
+    assert audit_records[0]["mode"] == "live-read"
+    assert audit_records[1]["step_id"] == "inspect_alerts"
+    assert audit_records[2]["connector_action"] == "github.list_dependabot_alerts"
+    assert str(audit_path) not in "\n".join(json.dumps(event.to_dict(), sort_keys=True) for event in report.events)
+
+
 def test_live_read_runner_blocks_missing_configured_transport_before_broker_dispatch(tmp_path: Path) -> None:
     package = _write_read_only_package(tmp_path)
 
@@ -587,6 +652,107 @@ def test_live_production_runner_executes_approved_telegram_send_and_writes_repor
     assert any(event.event_type == "approval_preflight_passed" for event in report.events)
 
 
+def test_live_production_runner_blocks_missing_required_middleware_env_before_transport(tmp_path: Path) -> None:
+    package = _write_production_telegram_package(tmp_path)
+    _write_audit_log_middleware(package)
+    run_root = tmp_path / ".workflow-runs"
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=run_root,
+            approve_all=False,
+            operator_env={"APPV24_WORKFLOW_AUDIT_LOG_PATH": str(tmp_path / "local-audit.jsonl")},
+        )
+    )
+    _approve_first_request(run_root, approval_report.run_id, package_fingerprint=approval_report.package_fingerprint)
+    transport = RecordingTransport({"message_id": "msg-1", "chat_id": "admin-chat"}, status="live-production")
+
+    report = run_live_production_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_PRODUCTION,
+            run_root=run_root,
+            approval_run_id=approval_report.run_id,
+            connector_allowlist=("telegram.send_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
+        ),
+        broker=LiveWorkflowBroker(
+            {"telegram.send_message": transport},
+            mode="live-production",
+            production_enabled=True,
+        ),
+        credential_resolver=CredentialRefResolver({"telegram": CredentialScope(available=True, scopes=("telegram:send",))}),
+    )
+
+    assert report.status == "blocked"
+    assert report.run_id == ""
+    assert report.issues == ("missing middleware env for audit.log; required env: APPV24_WORKFLOW_AUDIT_LOG_PATH",)
+    assert transport.requests == []
+
+
+def test_live_production_runner_executes_audit_log_middleware_without_mutating_transport_outputs(tmp_path: Path) -> None:
+    package = _write_production_telegram_package(tmp_path)
+    _write_audit_log_middleware(package)
+    run_root = tmp_path / ".workflow-runs"
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=run_root,
+            approve_all=False,
+            operator_env={"APPV24_WORKFLOW_AUDIT_LOG_PATH": str(tmp_path / "local-audit.jsonl")},
+        )
+    )
+    _approve_first_request(run_root, approval_report.run_id, package_fingerprint=approval_report.package_fingerprint)
+    transport = RecordingTransport(
+        {"message_id": "msg-1", "chat_id": "admin-chat", "secret": "blocked"},
+        status="live-production",
+    )
+    audit_path = tmp_path / "production-audit.jsonl"
+
+    report = run_live_production_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_PRODUCTION,
+            run_root=run_root,
+            approval_run_id=approval_report.run_id,
+            connector_allowlist=("telegram.send_message",),
+            operator_env={
+                "APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat",
+                "APPV24_WORKFLOW_AUDIT_LOG_PATH": str(audit_path),
+            },
+        ),
+        broker=LiveWorkflowBroker(
+            {"telegram.send_message": transport},
+            mode="live-production",
+            production_enabled=True,
+        ),
+        credential_resolver=CredentialRefResolver({"telegram": CredentialScope(available=True, scopes=("telegram:send",))}),
+    )
+
+    assert report.status == "passed"
+    assert report.brokered_actions[0].simulated_outputs == {"message_id": "msg-1", "chat_id": "admin-chat"}
+    assert "middleware_runtime_configured" in [event.event_type for event in report.events]
+    audit_records = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    assert [record["hook"] for record in audit_records] == [
+        "run_started",
+        "step_started",
+        "step_completed",
+        "step_started",
+        "step_completed",
+        "run_completed",
+    ]
+    assert audit_records[0]["mode"] == "live-production"
+    assert audit_records[1]["step_id"] == "notify_admin"
+    assert audit_records[2]["connector_action"] == "telegram.send_message"
+    assert str(audit_path) not in "\n".join(json.dumps(event.to_dict(), sort_keys=True) for event in report.events)
+
+
 def test_live_production_runner_reuses_committed_idempotency_result_without_second_send(tmp_path: Path) -> None:
     package = _write_production_telegram_package(tmp_path)
     run_root = tmp_path / ".workflow-runs"
@@ -777,6 +943,49 @@ def test_live_production_gate_blocks_broadcast_recipient_outside_policy(tmp_path
     assert transport.requests == []
 
 
+def test_live_production_runner_accepts_shorthand_broadcast_prior_outputs(tmp_path: Path) -> None:
+    package = _write_telegram_broadcast_package(tmp_path, shorthand_refs=True)
+    run_root = tmp_path / ".workflow-runs"
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=run_root,
+            approve_all=False,
+        )
+    )
+    _approve_first_request(run_root, approval_report.run_id, package_fingerprint=approval_report.package_fingerprint)
+
+    transport = RecordingTransport(
+        {"sent_count": 2, "message_ids": ["1", "2"], "chat_ids": ["admin-chat", "other-chat"]},
+        status="live-production",
+    )
+    report = run_live_production_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_PRODUCTION,
+            run_root=run_root,
+            approval_run_id=approval_report.run_id,
+            connector_allowlist=("telegram.broadcast_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat,other-chat"},
+        ),
+        broker=LiveWorkflowBroker(
+            {"telegram.broadcast_message": transport},
+            mode="live-production",
+            production_enabled=True,
+        ),
+        credential_resolver=CredentialRefResolver(
+            {"telegram": CredentialScope(available=True, scopes=("telegram:subscribers:read", "telegram:send"))}
+        ),
+    )
+
+    assert report.status == "passed"
+    assert report.brokered_actions[0].connector_action == "telegram.broadcast_message"
+    assert len(transport.requests) == 1
+
+
 def test_live_production_runner_blocks_non_local_approval_run_before_transport(tmp_path: Path) -> None:
     package = _write_production_telegram_package(tmp_path)
     run_root = tmp_path / ".workflow-runs"
@@ -951,6 +1160,26 @@ def _write_read_only_package(root: Path) -> Path:
             "version": "appv24.permissions/v1",
             "permissions": [{"connector": "github", "actions": ["list_dependabot_alerts"], "scopes": ["dependabot:read"]}],
         },
+    )
+
+
+def _write_audit_log_middleware(package: Path) -> None:
+    (package / "middlewares.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.middlewares/v1",
+                "middlewares": [
+                    {
+                        "id": "audit.log",
+                        "adapter": "builtin",
+                        "source": "catalog://audit.log@v1",
+                        "config": {"events": True},
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -1172,7 +1401,7 @@ def _write_draft_package(root: Path) -> Path:
                             "execution_mode": "brokered",
                             "approval_required": True,
                             "dry_run_supported": True,
-                            "idempotency": {"key_fields": ["thread_id", "body"]},
+                            "idempotency": {"key_fields": ["to", "subject"]},
                             "outputs": {"allowed": ["draft_id", "thread_id"]},
                             "required_scopes": ["gmail.compose"],
                         }
@@ -1252,7 +1481,9 @@ def _write_production_telegram_package(root: Path) -> Path:
     return package
 
 
-def _write_telegram_broadcast_package(root: Path) -> Path:
+def _write_telegram_broadcast_package(root: Path, *, shorthand_refs: bool = False) -> Path:
+    step_ref_prefix = "" if shorthand_refs else "steps."
+    output_ref_segment = "" if shorthand_refs else ".outputs"
     package = _write_package(
         root,
         workflow={
@@ -1268,8 +1499,8 @@ def _write_telegram_broadcast_package(root: Path) -> Path:
                     "side_effect_class": "send",
                     "approval": "approve_broadcast",
                     "with": {
-                        "recipients": "{{ steps.list_subscribers.outputs.recipients }}",
-                        "audience_hash": "{{ steps.list_subscribers.outputs.audience_hash }}",
+                        "recipients": f"{{{{ {step_ref_prefix}list_subscribers{output_ref_segment}.recipients }}}}",
+                        "audience_hash": f"{{{{ {step_ref_prefix}list_subscribers{output_ref_segment}.audience_hash }}}}",
                         "text": {"inputRef": "digest_text"},
                     },
                     "next": "done",

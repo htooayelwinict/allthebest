@@ -43,6 +43,11 @@ from appv24.workflows.connector_registry import (
     WorkflowConnectorRegistryReport,
     inspect_workflow_connector_registry,
 )
+from appv24.workflows.middleware_registry import (
+    WorkflowMiddlewareRegistryEntry,
+    WorkflowMiddlewareRegistryReport,
+    inspect_workflow_middleware_registry,
+)
 from appv24.workflows.execution import WorkflowRunEvent, WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
 from appv24.workflows.enablement import (
     CapabilityPlanItem,
@@ -109,6 +114,7 @@ from appv24.workflows.phase_runner import (
     run_workflow_live_read_to_approval,
 )
 from appv24.workflows.policy import PolicyIssue, PolicyReport, PolicySeverity, evaluate_policy
+from appv24.workflows.profile_kernel import WorkflowProfileKernel, WorkflowProfileKernelPrepareReport
 from appv24.workflows.quality_gate import (
     WorkflowFixtureQualityReport,
     WorkflowQualityIssue,
@@ -184,6 +190,8 @@ __all__ = (
     "WorkflowBundleExport",
     "WorkflowConnectorRegistryAction",
     "WorkflowConnectorRegistryReport",
+    "WorkflowMiddlewareRegistryEntry",
+    "WorkflowMiddlewareRegistryReport",
     "WorkflowDeploymentIntent",
     "WorkflowEnablementReport",
     "WorkflowEnablementV1Report",
@@ -234,6 +242,8 @@ __all__ = (
     "WorkflowRunPreview",
     "WorkflowIR",
     "WorkflowPhaseRunReport",
+    "WorkflowProfileKernel",
+    "WorkflowProfileKernelPrepareReport",
     "WorkflowIssue",
     "WorkflowPackageError",
     "WorkflowStep",
@@ -288,6 +298,7 @@ __all__ = (
     "preflight_live_production_workflow",
     "preflight_live_read_workflow",
     "inspect_workflow_connector_registry",
+    "inspect_workflow_middleware_registry",
     "inspect_workflow_live_readiness",
     "check_workflow_quality_documents",
     "check_workflow_quality_package",

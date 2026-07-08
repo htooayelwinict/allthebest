@@ -5,6 +5,7 @@ Tests use injected fake transports. Real provider transports remain manual-gated
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Mapping, Protocol
 
 from appv24.workflows.broker import BrokerRequest, BrokerResult, filter_broker_outputs
@@ -19,7 +20,14 @@ class LiveWorkflowTransport(Protocol):
 
 
 class LiveWorkflowBroker:
-    def __init__(self, transports: dict[str, LiveWorkflowTransport], *, mode: str, production_enabled: bool = False):
+    def __init__(
+        self,
+        transports: dict[str, LiveWorkflowTransport],
+        *,
+        mode: str,
+        production_enabled: bool = False,
+        external_actions: Collection[str] = (),
+    ):
         if mode not in LIVE_WORKFLOW_BROKER_MODES:
             raise ValueError(f"unknown live workflow broker mode: {mode}")
         if production_enabled and mode != "live-production":
@@ -27,6 +35,7 @@ class LiveWorkflowBroker:
         self._transports = dict(transports)
         self._mode = mode
         self._production_enabled = production_enabled
+        self._external_actions = frozenset(external_actions)
 
     @property
     def mode(self) -> str:
@@ -36,6 +45,18 @@ class LiveWorkflowBroker:
     def configured_actions(self) -> tuple[str, ...]:
         return tuple(sorted(self._transports))
 
+    @property
+    def external_actions(self) -> tuple[str, ...]:
+        return tuple(sorted(self._external_actions))
+
+    def with_external_actions(self, action_refs: Collection[str]) -> "LiveWorkflowBroker":
+        return LiveWorkflowBroker(
+            self._transports,
+            mode=self._mode,
+            production_enabled=self._production_enabled,
+            external_actions=(*self._external_actions, *action_refs),
+        )
+
     def invoke(self, request: BrokerRequest) -> BrokerResult:
         if self._mode == "live-production" and not self._production_enabled:
             return BrokerResult(
@@ -44,7 +65,7 @@ class LiveWorkflowBroker:
                 outputs={},
                 issues=("live-production broker is disabled by default",),
             )
-        contract_issue = _contract_input_issue(request)
+        contract_issue = _contract_input_issue(request, external_actions=self._external_actions)
         if contract_issue is not None:
             return BrokerResult(
                 status="blocked",
@@ -81,9 +102,11 @@ class LiveWorkflowBroker:
         return filter_broker_outputs(request, result)
 
 
-def _contract_input_issue(request: BrokerRequest) -> str | None:
+def _contract_input_issue(request: BrokerRequest, *, external_actions: Collection[str]) -> str | None:
     contract = builtin_connector_contract_catalog().get(request.connector_action)
     if contract is None:
+        if request.connector_action in external_actions:
+            return None
         return f"live connector action is not cataloged: {request.connector_action}"
     if contract.input_schema.get("additionalProperties") is not False:
         return None

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
+from appv24.workflows.connector_contracts import external_connector_env_requirements
 from appv24.workflows.credential_refs import credential_env_name, preflight_credential_refs
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.live_preflight import (
@@ -22,6 +23,7 @@ from appv24.workflows.live_transports import (
     build_live_read_transports_from_env,
 )
 from appv24.workflows.loader import load_package_documents
+from appv24.workflows.middleware_contracts import middleware_env_refs, middleware_env_requirements
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,8 @@ class WorkflowLiveReadinessReport:
     configured_transports: tuple[str, ...]
     required_credential_env: tuple[str, ...]
     required_transport_env: tuple[str, ...]
+    required_connector_env: tuple[str, ...]
+    required_middleware_env: tuple[str, ...]
     bundle_status: str
     bundle_path: Path
     bundle_issues: tuple[str, ...]
@@ -50,6 +54,8 @@ def inspect_workflow_live_readiness(
     preflight = _preflight(request, env=env, available_transports=available_transports)
     required_credential_env = _required_credential_env(request)
     required_transport_env = _required_transport_env(request)
+    required_connector_env = _required_connector_env(request)
+    required_middleware_env = _required_middleware_env(request)
     setup_issues = _setup_issues(request, env=env)
     bundle = inspect_default_workflow_bundle(request.package_path)
     issues = _dedupe((*setup_issues, *preflight.issues, *bundle.issues))
@@ -61,6 +67,8 @@ def inspect_workflow_live_readiness(
         configured_transports=tuple(sorted(available_transports)),
         required_credential_env=required_credential_env,
         required_transport_env=required_transport_env,
+        required_connector_env=required_connector_env,
+        required_middleware_env=required_middleware_env,
         bundle_status=bundle.status,
         bundle_path=bundle.bundle_path,
         bundle_issues=bundle.issues,
@@ -97,6 +105,12 @@ def format_workflow_live_readiness_report(report: WorkflowLiveReadinessReport) -
     if report.required_transport_env:
         lines.append("required transport env:")
         lines.extend(f"- {hint}" for hint in report.required_transport_env)
+    if report.required_connector_env:
+        lines.append("required connector env:")
+        lines.extend(f"- {hint}" for hint in report.required_connector_env)
+    if report.required_middleware_env:
+        lines.append("required middleware env:")
+        lines.extend(f"- {hint}" for hint in report.required_middleware_env)
     if report.next_steps:
         lines.append("next steps:")
         lines.extend(f"- {step}" for step in report.next_steps)
@@ -170,6 +184,14 @@ def _required_transport_env(request: WorkflowRunRequest) -> tuple[str, ...]:
     )
 
 
+def _required_connector_env(request: WorkflowRunRequest) -> tuple[str, ...]:
+    return external_connector_env_requirements(load_package_documents(request.package_path).connectors)
+
+
+def _required_middleware_env(request: WorkflowRunRequest) -> tuple[str, ...]:
+    return middleware_env_requirements(load_package_documents(request.package_path))
+
+
 def _transport_env_hint(mode: WorkflowRunMode, action_ref: str) -> str | None:
     hints = {
         (WorkflowRunMode.LIVE_READ, "brave.search"): "APPV24_WORKFLOW_LIVE_READ_ENABLED=true, APPV24_BRAVE_SEARCH_API_KEY",
@@ -209,6 +231,12 @@ def _setup_issues(request: WorkflowRunRequest, *, env: Mapping[str, str]) -> tup
     documents = load_package_documents(request.package_path)
     credential_report = preflight_credential_refs(documents, credential_resolver_for_package_env(request.package_path, env))
     issues.extend(credential_report.issues)
+    for middleware_id, env_ref in middleware_env_refs(documents):
+        if env_ref.required and env_ref.env_name not in env:
+            issues.append(f"missing middleware env for {middleware_id}; required env: {env_ref.env_name}")
+    for env_name in external_connector_env_requirements(documents.connectors):
+        if env_name not in env:
+            issues.append(f"missing connector env; required env: {env_name}")
     return tuple(issues)
 
 

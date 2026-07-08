@@ -10,6 +10,8 @@ from appv24.workflows.catalog import BUILTIN_WORKFLOW_ACTIONS, is_builtin_workfl
 from appv24.workflows.connector_contracts import (
     SideEffectClass,
     builtin_connector_contract_catalog,
+    external_connector_action_refs,
+    validate_external_connector_contracts,
 )
 from appv24.workflows.contracts import (
     BUILTIN_LLM_OUTPUT_CONTRACTS,
@@ -73,6 +75,7 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     step_ids = [str(step.get("id", "")) for step in steps]
     known_steps = set(step_ids)
     action_entries = _connector_action_entries(documents.connectors)
+    external_action_refs = set(external_connector_action_refs(documents.connectors))
     steps_by_action = _steps_by_action_use(steps)
 
     issues.extend(_design_contract_issues(workflow))
@@ -81,12 +84,14 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     issues.extend(_decision_contract_issues(steps, documents.dry_run_fixtures))
     issues.extend(_runtime_transition_issues(steps))
     issues.extend(_transition_issues(steps, known_steps))
-    issues.extend(_connector_reference_issues(steps, connectors, permission_actions, permission_scopes))
+    issues.extend(_connector_reference_issues(steps, connectors, permission_actions, permission_scopes, external_action_refs))
+    issues.extend(_connector_required_input_issues(steps))
     issues.extend(_scalar_connector_input_issues(steps, documents.dry_run_fixtures))
     issues.extend(_intelligence_node_contract_issues(steps, connectors))
     issues.extend(_builtin_action_output_contract_issues(action_entries))
-    issues.extend(_catalog_issues(action_entries))
-    issues.extend(_connector_contract_issues(action_entries))
+    issues.extend(_catalog_issues(action_entries, external_action_refs))
+    issues.extend(_connector_contract_issues(action_entries, external_action_refs))
+    issues.extend(validate_external_connector_contracts(documents.connectors))
     issues.extend(_side_effect_contract_issues(action_entries, steps_by_action, documents.permissions))
 
     mutating_steps = _mutating_steps(steps, connectors)
@@ -241,6 +246,19 @@ def _llm_node_contract_issues(step: Mapping[str, Any], action: Mapping[str, Any]
                 )
             )
 
+    action_id = str(action.get("id", "unknown"))
+    if action_id == "summarize" and not any(_has_connector_input_binding(with_map.get(field)) for field in ("text", "items", "input_ref")):
+        issues.append(
+            WorkflowIssue(
+                "missing_llm_input",
+                "workflow.yaml",
+                ("steps", step_id, "with"),
+                f"LLM step {step_id} using llm.summarize requires one of with.text, with.items, or with.input_ref",
+                expected="with.text, with.items, or with.input_ref",
+                repair_hint="Bind llm.summarize to upstream content, for example with.text: '{{ steps.search.outputs.items }}'.",
+            )
+        )
+
     step_side_effect_class = step.get("side_effect_class")
     action_side_effect_class = action.get("side_effect_class")
     if (
@@ -372,6 +390,51 @@ def _transition_issues(steps: Iterable[Mapping[str, Any]], known_steps: set[str]
                     )
                 )
     return issues
+
+
+def _connector_required_input_issues(steps: Iterable[Mapping[str, Any]]) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    contract_catalog = builtin_connector_contract_catalog()
+    for index, step in enumerate(steps):
+        uses = step.get("uses")
+        if not isinstance(uses, str):
+            continue
+        contract = contract_catalog.get(uses)
+        if contract is None or not contract.required_input_fields:
+            continue
+        step_id = str(step.get("id", f"steps[{index}]"))
+        step_with = step.get("with")
+        with_map = step_with if isinstance(step_with, Mapping) else {}
+        for field in contract.required_input_fields:
+            if _has_connector_input_binding(with_map.get(field)):
+                continue
+            issues.append(
+                WorkflowIssue(
+                    "missing_connector_required_input",
+                    "workflow.yaml",
+                    ("steps", step_id, "with", field),
+                    f"{uses} requires workflow.yaml step {step_id} to bind {field}",
+                    expected=f"workflow.yaml steps[].with.{field}",
+                    repair_hint=(
+                        f"Add workflow.yaml step {step_id} with.{field}. Required connector inputs "
+                        "must be bound in workflow.yaml, not only in dry_run_fixtures."
+                    ),
+                )
+            )
+    return issues
+
+
+def _has_connector_input_binding(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        input_ref = value.get("inputRef")
+        return len(value) == 1 and isinstance(input_ref, str) and bool(input_ref.strip())
+    if isinstance(value, (list, tuple)):
+        return bool(value)
+    return True
 
 
 def _scalar_connector_input_issues(
@@ -617,12 +680,17 @@ def _connector_action_entries(connectors_document: Mapping[str, Any]) -> dict[tu
     return entries
 
 
-def _catalog_issues(actions: Mapping[tuple[str, str], Mapping[str, Any]]) -> list[WorkflowIssue]:
+def _catalog_issues(
+    actions: Mapping[tuple[str, str], Mapping[str, Any]],
+    external_action_refs: set[str],
+) -> list[WorkflowIssue]:
     catalog = built_in_capability_catalog()
     issues: list[WorkflowIssue] = []
     for (connector_id, action_id), action in sorted(actions.items()):
         action_ref = f"{connector_id}.{action_id}"
         if action.get("custom") is True and action.get("execution_mode") == "design_only":
+            continue
+        if action_ref in external_action_refs:
             continue
         capability = catalog.get(action_ref)
         if capability is None:
@@ -634,8 +702,9 @@ def _catalog_issues(actions: Mapping[tuple[str, str], Mapping[str, Any]]) -> lis
                         (),
                         f"{action_ref} is not in the built-in capability catalog",
                         repair_hint=(
-                            "Use a built-in catalog action or mark custom design-only actions "
-                            "with custom: true and execution_mode: design_only."
+                            "Use a built-in catalog action, declare a strict external connector "
+                            "interface with custom: true and a versioned source, or mark custom "
+                            "design-only actions with custom: true and execution_mode: design_only."
                         ),
                     )
                 )
@@ -675,12 +744,17 @@ def _catalog_issues(actions: Mapping[tuple[str, str], Mapping[str, Any]]) -> lis
     return issues
 
 
-def _connector_contract_issues(actions: Mapping[tuple[str, str], Mapping[str, Any]]) -> list[WorkflowIssue]:
+def _connector_contract_issues(
+    actions: Mapping[tuple[str, str], Mapping[str, Any]],
+    external_action_refs: set[str],
+) -> list[WorkflowIssue]:
     contracts = builtin_connector_contract_catalog()
     issues: list[WorkflowIssue] = []
     for (connector_id, action_id), action in sorted(actions.items()):
         action_ref = f"{connector_id}.{action_id}"
         if action.get("custom") is True and action.get("execution_mode") == "design_only":
+            continue
+        if action_ref in external_action_refs:
             continue
         contract = contracts.get(action_ref)
         if contract is None:
@@ -691,7 +765,11 @@ def _connector_contract_issues(actions: Mapping[tuple[str, str], Mapping[str, An
                     ("connectors", connector_id, "actions", action_id),
                     f"{action_ref} is not in the built-in connector contract catalog",
                     expected=", ".join(sorted(contracts)),
-                    repair_hint="Use a built-in action contract or make the action custom: true with execution_mode: design_only.",
+                    repair_hint=(
+                        "Use a built-in action contract, declare a strict external connector interface "
+                        "with custom: true and a versioned source, or make the action custom: true "
+                        "with execution_mode: design_only."
+                    ),
                 )
             )
             continue
@@ -756,6 +834,24 @@ def _connector_contract_issues(actions: Mapping[tuple[str, str], Mapping[str, An
                     expected=", ".join(contract.allowed_outputs),
                 )
             )
+
+        declared_idempotency = tuple(_idempotency_key_fields(action))
+        if (
+            contract.input_schema.get("additionalProperties") is False
+            and (declared_idempotency or contract.idempotency_key_fields)
+            and declared_idempotency != contract.idempotency_key_fields
+        ):
+            expected = ", ".join(contract.idempotency_key_fields) if contract.idempotency_key_fields else "no idempotency.key_fields"
+            issues.append(
+                WorkflowIssue(
+                    "connector_contract_idempotency_mismatch",
+                    "connectors.yaml",
+                    ("connectors", connector_id, "actions", action_id, "idempotency", "key_fields"),
+                    f"{action_ref} idempotency.key_fields must match connector contract: {expected}",
+                    expected=expected,
+                    repair_hint="Use the built-in connector contract idempotency fields; do not invent workflow-local checksum or alias fields.",
+                )
+            )
     return issues
 
 
@@ -775,6 +871,7 @@ def _connector_reference_issues(
     connectors: Mapping[str, Mapping[str, Mapping[str, Any]]],
     permission_actions: Mapping[str, set[str]],
     permission_scopes: Mapping[str, set[str]],
+    external_action_refs: set[str],
 ) -> list[WorkflowIssue]:
     issues: list[WorkflowIssue] = []
     wildcard_scope_reported: set[str] = set()
@@ -791,7 +888,7 @@ def _connector_reference_issues(
         if action_id not in connectors[connector_id]:
             issues.append(WorkflowIssue("unknown_action", "workflow.yaml", ("steps", index, "uses"), f"unknown action: {uses}"))
             continue
-        if not is_builtin_workflow_action(uses):
+        if not is_builtin_workflow_action(uses) and uses not in external_action_refs:
             issues.append(
                 WorkflowIssue(
                     "unknown_catalog_action",
@@ -800,8 +897,9 @@ def _connector_reference_issues(
                     f"{uses} is not in the built-in workflow capability catalog",
                     expected=", ".join(sorted(BUILTIN_WORKFLOW_ACTIONS)),
                     repair_hint=(
-                        "Use a built-in workflow capability catalog action, or model non-executed "
-                        "inputs as triggers, fixture data, decisions, or local artifacts instead of connector actions."
+                        "Use a built-in workflow capability catalog action, declare a strict external "
+                        "connector interface in connectors.yaml, or model non-executed inputs as "
+                        "triggers, fixture data, decisions, or local artifacts instead of connector actions."
                     ),
                 )
             )

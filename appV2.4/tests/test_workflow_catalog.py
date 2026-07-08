@@ -71,6 +71,7 @@ def test_catalog_repair_prompt_explains_unknown_action_fix() -> None:
 
     assert "unknown_catalog_action" in prompt
     assert "Use a built-in catalog action" in prompt
+    assert "declare a strict external connector interface" in prompt
     assert "custom: true and execution_mode: design_only" in prompt
 
 

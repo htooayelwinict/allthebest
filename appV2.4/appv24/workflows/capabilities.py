@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from appv24.workflows.connector_contracts import ConnectorContract, builtin_connector_contract_catalog
 from appv24.workflows.ir import ActionCapability, ConnectorCapability
 
 
@@ -12,6 +13,7 @@ def build_connector_capabilities(
     permissions_document: Mapping[str, Any],
 ) -> dict[str, ConnectorCapability]:
     granted_scopes = _permission_scopes(permissions_document)
+    builtin_contracts = builtin_connector_contract_catalog()
     capabilities: dict[str, ConnectorCapability] = {}
     for connector in connectors_document.get("connectors", []):
         if not isinstance(connector, dict) or not isinstance(connector.get("id"), str):
@@ -23,6 +25,8 @@ def build_connector_capabilities(
             if not isinstance(action, dict) or not isinstance(action.get("id"), str):
                 continue
             action_id = str(action["id"])
+            contract = builtin_contracts.get(f"{connector_id}.{action_id}")
+            action_raw = _action_raw_with_connector_interface(action, connector)
             actions[action_id] = ActionCapability(
                 connector_id=connector_id,
                 action_id=action_id,
@@ -33,10 +37,10 @@ def build_connector_capabilities(
                 approval_required=_optional_bool(action.get("approval_required")),
                 dry_run_supported=_optional_bool(action.get("dry_run_supported")),
                 idempotency_key_fields=tuple(_string_list(_mapping(action.get("idempotency")).get("key_fields"))),
-                allowed_outputs=tuple(_string_list(_mapping(action.get("outputs")).get("allowed"))),
+                allowed_outputs=_allowed_outputs(action, contract),
                 required_scopes=tuple(_string_list(action.get("required_scopes"))),
                 granted_scopes=tuple(sorted(granted_scopes.get(connector_id, set()))),
-                raw=action,
+                raw=action_raw,
             )
         capabilities[connector_id] = ConnectorCapability(
             connector_id=connector_id,
@@ -58,12 +62,29 @@ def _permission_scopes(permissions_document: Mapping[str, Any]) -> dict[str, set
     return scopes
 
 
+def _action_raw_with_connector_interface(action: Mapping[str, Any], connector: Mapping[str, Any]) -> Mapping[str, Any]:
+    inherited: dict[str, Any] = dict(action)
+    for key in ("custom", "source", "env"):
+        if key not in inherited and key in connector:
+            inherited[key] = connector[key]
+    return inherited
+
+
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
 def _string_list(value: object) -> list[str]:
     return [str(item) for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def _allowed_outputs(action: Mapping[str, Any], contract: ConnectorContract | None) -> tuple[str, ...]:
+    outputs = _mapping(action.get("outputs"))
+    if "allowed" in outputs:
+        return tuple(_string_list(outputs.get("allowed")))
+    if contract is None:
+        return ()
+    return contract.allowed_outputs
 
 
 def _optional_str(value: object) -> str | None:

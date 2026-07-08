@@ -5,13 +5,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from appv24.workflows.compiler import compile_workflow_documents
-from appv24.workflows.connector_contracts import builtin_connector_contract_catalog
+from appv24.workflows.connector_contracts import builtin_connector_contract_catalog, external_connector_env_requirements
 from appv24.workflows.credential_refs import credential_env_name
 from appv24.workflows.deployment_intent import WorkflowDeploymentIntent
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.ir import WorkflowIR
 from appv24.workflows.loader import PackageDocuments
 from appv24.workflows.loader import load_package_documents
+from appv24.workflows.middleware_contracts import (
+    middleware_audit_requirements,
+    middleware_env_requirements,
+    middleware_state_requirements,
+    package_middleware_ids,
+)
 from appv24.workflows.policy import evaluate_policy
 from appv24.workflows.validator import validate_workflow_documents
 
@@ -52,6 +58,10 @@ def export_deployment_intent(ir: WorkflowIR, documents: PackageDocuments) -> Wor
         if targets:
             env_requirements.extend(targets)
             connector_targets[action_ref] = targets
+    connector_env = external_connector_env_requirements(documents.connectors)
+    env_requirements.extend(connector_env)
+    middleware_env = middleware_env_requirements(documents)
+    env_requirements.extend(middleware_env)
     return WorkflowDeploymentIntent(
         workflow_name=ir.name,
         package_fingerprint=fingerprint_package_documents(documents),
@@ -62,11 +72,16 @@ def export_deployment_intent(ir: WorkflowIR, documents: PackageDocuments) -> Wor
         scheduler_triggers=tuple(trigger.trigger_id for trigger in ir.triggers if trigger.trigger_type == "schedule"),
         connector_scopes=connector_scopes,
         connector_targets=connector_targets,
+        connector_env_requirements=connector_env,
+        middleware_ids=package_middleware_ids(documents),
+        middleware_env_requirements=middleware_env,
         approval_ids=tuple(sorted(ir.approvals)),
         approval_policy=_approval_policy_lines(ir),
         idempotency_required_for=_idempotency_required_for(ir),
-        state_requirements=_state_requirements(ir),
-        audit_requirements=("events.jsonl", "report.json", "trace.json", "approvals.json"),
+        state_requirements=_unique([*_state_requirements(ir), *middleware_state_requirements(documents)]),
+        audit_requirements=_unique(
+            ["events.jsonl", "report.json", "trace.json", "approvals.json", *middleware_audit_requirements(documents)]
+        ),
         local_runtime_commands=_local_runtime_commands(ir),
         rollback_required=bool(documents.rollback_text and documents.rollback_text.strip()),
     )
@@ -107,6 +122,9 @@ def format_deployment_intent(intent: WorkflowDeploymentIntent) -> str:
         "connector targets",
         tuple(f"{action}: {', '.join(targets)}" for action, targets in sorted(intent.connector_targets.items())),
     )
+    _append_section(lines, "connector env requirements", intent.connector_env_requirements)
+    _append_section(lines, "middlewares", intent.middleware_ids)
+    _append_section(lines, "middleware env requirements", intent.middleware_env_requirements)
     _append_section(lines, "approval policy", intent.approval_policy)
     _append_section(lines, "idempotency required for", intent.idempotency_required_for)
     _append_section(lines, "state requirements", intent.state_requirements)

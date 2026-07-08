@@ -40,5 +40,5 @@ connectors:
             - artifact_path
         idempotency:
           key_fields:
-            - ticket_id
-            - admin_chat_id
+            - chat_id
+            - text

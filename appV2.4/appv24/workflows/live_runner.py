@@ -11,6 +11,7 @@ from appv24.workflows.approval_gate import ApprovalIndexKey, build_payload_bound
 from appv24.workflows.broker import BrokerRequest
 from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.compiler import compile_workflow_documents
+from appv24.workflows.connector_contracts import is_external_connector_action_payload
 from appv24.workflows.connector_packs import builtin_connector_catalog
 from appv24.workflows.credential_refs import CredentialRefResolver, preflight_credential_refs
 from appv24.workflows.execution import WorkflowRunEvent, WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
@@ -22,6 +23,13 @@ from appv24.workflows.ledger import StepTrace
 from appv24.workflows.live_broker import LiveWorkflowBroker
 from appv24.workflows.live_gate import evaluate_live_gate
 from appv24.workflows.loader import load_package_documents
+from appv24.workflows.middleware_runtime import (
+    MiddlewareExecutorFactory,
+    MiddlewareRunContext,
+    MiddlewareRuntime,
+    build_middleware_runtime,
+    middleware_runtime_setup_issues,
+)
 from appv24.workflows.policy import MUTATING_SIDE_EFFECTS, evaluate_policy
 from appv24.workflows.run_preview import WorkflowBrokeredActionPreview
 from appv24.workflows.run_store import WorkflowRunStore
@@ -34,6 +42,7 @@ def run_live_read_workflow(
     *,
     broker: LiveWorkflowBroker,
     credential_resolver: CredentialRefResolver,
+    middleware_factories: Mapping[str, MiddlewareExecutorFactory] | None = None,
 ) -> WorkflowRunReport:
     """Run a workflow package through allowlisted live read-only transports."""
 
@@ -82,6 +91,14 @@ def run_live_read_workflow(
             package_fingerprint=package_fingerprint,
             issues=bundle_issues,
         )
+    middleware_setup_issues = middleware_runtime_setup_issues(documents, request.operator_env, middleware_factories)
+    if middleware_setup_issues:
+        return _blocked_report(
+            request,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            issues=middleware_setup_issues,
+        )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
@@ -116,6 +133,41 @@ def run_live_read_workflow(
         mode=request.mode.value,
         run_dir=str(store.run_dir(run_id)),
     )
+    middleware_runtime = build_middleware_runtime(documents, request.operator_env, middleware_factories)
+    middleware_context = MiddlewareRunContext(
+        run_id=run_id,
+        workflow_name=workflow_name,
+        package_fingerprint=package_fingerprint,
+        mode=request.mode.value,
+    )
+    if middleware_runtime.middleware_ids:
+        append_event(
+            "middleware_runtime_configured",
+            "configured",
+            middleware_ids=list(middleware_runtime.middleware_ids),
+        )
+    middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_started",
+        append_event,
+        status="started",
+    )
+    if middleware_issues:
+        append_event("run_completed", "blocked", terminal_step=None, issues=list(middleware_issues))
+        return _persist_report(
+            request,
+            store=store,
+            run_id=run_id,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            status="blocked",
+            terminal_step=None,
+            trace=(),
+            brokered_actions=(),
+            events=events,
+            issues=tuple(middleware_issues),
+        )
     _append_package_gate_passed_events(append_event)
 
     credential_report = preflight_credential_refs(documents, credential_resolver)
@@ -194,7 +246,21 @@ def run_live_read_workflow(
         package_fingerprint=package_fingerprint,
         connector_allowlist=set(request.connector_allowlist),
         append_event=append_event,
+        middleware_runtime=middleware_runtime,
+        middleware_context=middleware_context,
     )
+    completion_middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_completed",
+        append_event,
+        status=result.status,
+        terminal_step=result.terminal_step,
+        issue_count=len(result.issues),
+    )
+    if completion_middleware_issues:
+        result.issues.extend(completion_middleware_issues)
+        result.status = "blocked"
     append_event("run_completed", result.status, terminal_step=result.terminal_step, issues=list(result.issues))
     return _persist_report(
         request,
@@ -216,6 +282,7 @@ def run_live_draft_workflow(
     *,
     broker: LiveWorkflowBroker,
     credential_resolver: CredentialRefResolver,
+    middleware_factories: Mapping[str, MiddlewareExecutorFactory] | None = None,
 ) -> WorkflowRunReport:
     """Run approval-gated draft-eligible workflow actions through live transports."""
 
@@ -264,6 +331,14 @@ def run_live_draft_workflow(
             package_fingerprint=package_fingerprint,
             issues=bundle_issues,
         )
+    middleware_setup_issues = middleware_runtime_setup_issues(documents, request.operator_env, middleware_factories)
+    if middleware_setup_issues:
+        return _blocked_report(
+            request,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            issues=middleware_setup_issues,
+        )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
@@ -298,6 +373,41 @@ def run_live_draft_workflow(
         mode=request.mode.value,
         run_dir=str(store.run_dir(run_id)),
     )
+    middleware_runtime = build_middleware_runtime(documents, request.operator_env, middleware_factories)
+    middleware_context = MiddlewareRunContext(
+        run_id=run_id,
+        workflow_name=workflow_name,
+        package_fingerprint=package_fingerprint,
+        mode=request.mode.value,
+    )
+    if middleware_runtime.middleware_ids:
+        append_event(
+            "middleware_runtime_configured",
+            "configured",
+            middleware_ids=list(middleware_runtime.middleware_ids),
+        )
+    middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_started",
+        append_event,
+        status="started",
+    )
+    if middleware_issues:
+        append_event("run_completed", "blocked", terminal_step=None, issues=list(middleware_issues))
+        return _persist_report(
+            request,
+            store=store,
+            run_id=run_id,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            status="blocked",
+            terminal_step=None,
+            trace=(),
+            brokered_actions=(),
+            events=events,
+            issues=tuple(middleware_issues),
+        )
     _append_package_gate_passed_events(append_event)
 
     credential_report = preflight_credential_refs(documents, credential_resolver)
@@ -412,7 +522,21 @@ def run_live_draft_workflow(
         approval_index=approval_index,
         append_event=append_event,
         start_step=start_step,
+        middleware_runtime=middleware_runtime,
+        middleware_context=middleware_context,
     )
+    completion_middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_completed",
+        append_event,
+        status=result.status,
+        terminal_step=result.terminal_step,
+        issue_count=len(result.issues),
+    )
+    if completion_middleware_issues:
+        result.issues.extend(completion_middleware_issues)
+        result.status = "blocked"
     append_event("run_completed", result.status, terminal_step=result.terminal_step, issues=list(result.issues))
     return _persist_report(
         request,
@@ -434,6 +558,7 @@ def run_live_production_workflow(
     *,
     broker: LiveWorkflowBroker,
     credential_resolver: CredentialRefResolver,
+    middleware_factories: Mapping[str, MiddlewareExecutorFactory] | None = None,
 ) -> WorkflowRunReport:
     """Run approval-gated production-enabled workflow actions through live transports."""
 
@@ -482,6 +607,14 @@ def run_live_production_workflow(
             package_fingerprint=package_fingerprint,
             issues=bundle_issues,
         )
+    middleware_setup_issues = middleware_runtime_setup_issues(documents, request.operator_env, middleware_factories)
+    if middleware_setup_issues:
+        return _blocked_report(
+            request,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            issues=middleware_setup_issues,
+        )
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
@@ -516,6 +649,41 @@ def run_live_production_workflow(
         mode=request.mode.value,
         run_dir=str(store.run_dir(run_id)),
     )
+    middleware_runtime = build_middleware_runtime(documents, request.operator_env, middleware_factories)
+    middleware_context = MiddlewareRunContext(
+        run_id=run_id,
+        workflow_name=workflow_name,
+        package_fingerprint=package_fingerprint,
+        mode=request.mode.value,
+    )
+    if middleware_runtime.middleware_ids:
+        append_event(
+            "middleware_runtime_configured",
+            "configured",
+            middleware_ids=list(middleware_runtime.middleware_ids),
+        )
+    middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_started",
+        append_event,
+        status="started",
+    )
+    if middleware_issues:
+        append_event("run_completed", "blocked", terminal_step=None, issues=list(middleware_issues))
+        return _persist_report(
+            request,
+            store=store,
+            run_id=run_id,
+            workflow_name=workflow_name,
+            package_fingerprint=package_fingerprint,
+            status="blocked",
+            terminal_step=None,
+            trace=(),
+            brokered_actions=(),
+            events=events,
+            issues=tuple(middleware_issues),
+        )
     _append_package_gate_passed_events(append_event)
 
     credential_report = preflight_credential_refs(documents, credential_resolver)
@@ -631,7 +799,21 @@ def run_live_production_workflow(
         approval_index=approval_index,
         append_event=append_event,
         start_step=start_step,
+        middleware_runtime=middleware_runtime,
+        middleware_context=middleware_context,
     )
+    completion_middleware_issues = _emit_middleware(
+        middleware_runtime,
+        middleware_context,
+        "run_completed",
+        append_event,
+        status=result.status,
+        terminal_step=result.terminal_step,
+        issue_count=len(result.issues),
+    )
+    if completion_middleware_issues:
+        result.issues.extend(completion_middleware_issues)
+        result.status = "blocked"
     append_event("run_completed", result.status, terminal_step=result.terminal_step, issues=list(result.issues))
     return _persist_report(
         request,
@@ -682,6 +864,8 @@ def _execute_live_read(
     package_fingerprint: str,
     connector_allowlist: set[str],
     append_event: Callable[..., None],
+    middleware_runtime: MiddlewareRuntime,
+    middleware_context: MiddlewareRunContext,
 ) -> _ExecutionResult:
     trace: list[StepTrace] = []
     brokered_actions: list[WorkflowBrokeredActionPreview] = []
@@ -701,9 +885,33 @@ def _execute_live_read(
             return _result("blocked", None, trace, brokered_actions, issues)
 
         append_event("step_started", "started", step_id=step.step_id, connector_action=_connector_action(step))
+        middleware_issues = _emit_middleware(
+            middleware_runtime,
+            middleware_context,
+            "step_started",
+            append_event,
+            step_id=step.step_id,
+            connector_action=_connector_action(step),
+            status="started",
+        )
+        if middleware_issues:
+            issues.extend(middleware_issues)
+            trace.append(_trace(step, "blocked", issues=middleware_issues))
+            return _result("blocked", None, trace, brokered_actions, issues)
         if step.kind is StepKind.TERMINAL:
             trace.append(_trace(step, "terminal"))
             append_event("step_completed", "terminal", step_id=step.step_id)
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                status="terminal",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, issues)
             return _result("passed", step.step_id, trace, brokered_actions, issues)
 
         if step.kind is StepKind.DECISION:
@@ -716,6 +924,17 @@ def _execute_live_read(
                 return _result("blocked", None, trace, brokered_actions, issues)
             trace.append(_trace(step, "completed", selected_branch=selected_branch))
             append_event("step_completed", "completed", step_id=step.step_id, selected_branch=selected_branch)
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                status="completed",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, issues)
             current = next_step
             continue
 
@@ -791,6 +1010,18 @@ def _execute_live_read(
             connector_action=_connector_action(step),
             outputs=dict(outputs),
         )
+        middleware_issues = _emit_middleware(
+            middleware_runtime,
+            middleware_context,
+            "step_completed",
+            append_event,
+            step_id=step.step_id,
+            connector_action=_connector_action(step),
+            status="completed",
+        )
+        if middleware_issues:
+            issues.extend(middleware_issues)
+            return _result("blocked", None, trace, brokered_actions, issues)
         current = step.next_step
 
     issues.append("workflow stopped without terminal step")
@@ -807,6 +1038,8 @@ def _execute_live_draft(
     connector_allowlist: set[str],
     approval_index: Mapping[tuple[str, str, str | None], bool],
     append_event: Callable[..., None],
+    middleware_runtime: MiddlewareRuntime,
+    middleware_context: MiddlewareRunContext,
     start_step: str | None = None,
 ) -> _ExecutionResult:
     trace: list[StepTrace] = []
@@ -827,9 +1060,33 @@ def _execute_live_draft(
             return _result("blocked", None, trace, brokered_actions, issues)
 
         append_event("step_started", "started", step_id=step.step_id, connector_action=_connector_action(step))
+        middleware_issues = _emit_middleware(
+            middleware_runtime,
+            middleware_context,
+            "step_started",
+            append_event,
+            step_id=step.step_id,
+            connector_action=_connector_action(step),
+            status="started",
+        )
+        if middleware_issues:
+            issues.extend(middleware_issues)
+            trace.append(_trace(step, "blocked", issues=middleware_issues))
+            return _result("blocked", None, trace, brokered_actions, issues)
         if step.kind is StepKind.TERMINAL:
             trace.append(_trace(step, "terminal"))
             append_event("step_completed", "terminal", step_id=step.step_id)
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                status="terminal",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, issues)
             return _result("passed", step.step_id, trace, brokered_actions, issues)
 
         if step.kind is StepKind.DECISION:
@@ -842,6 +1099,17 @@ def _execute_live_draft(
                 return _result("blocked", None, trace, brokered_actions, issues)
             trace.append(_trace(step, "completed", selected_branch=selected_branch))
             append_event("step_completed", "completed", step_id=step.step_id, selected_branch=selected_branch)
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                status="completed",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, issues)
             current = next_step
             continue
 
@@ -912,6 +1180,18 @@ def _execute_live_draft(
                 outputs=dict(reused_outputs),
                 broker_status="idempotency-reused",
             )
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                connector_action=_connector_action(step),
+                status="completed",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, issues)
             current = step.next_step
             continue
         outputs, broker_status, broker_provider_id, broker_issues = _invoke_broker(ir, step, fixture, broker, append_event)
@@ -966,6 +1246,18 @@ def _execute_live_draft(
             connector_action=_connector_action(step),
             outputs=dict(outputs),
         )
+        middleware_issues = _emit_middleware(
+            middleware_runtime,
+            middleware_context,
+            "step_completed",
+            append_event,
+            step_id=step.step_id,
+            connector_action=_connector_action(step),
+            status="completed",
+        )
+        if middleware_issues:
+            issues.extend(middleware_issues)
+            return _result("blocked", None, trace, brokered_actions, issues)
         current = step.next_step
 
     issues.append("workflow stopped without terminal step")
@@ -982,6 +1274,8 @@ def _execute_live_production(
     connector_allowlist: set[str],
     approval_index: Mapping[tuple[str, str, str | None], bool],
     append_event: Callable[..., None],
+    middleware_runtime: MiddlewareRuntime,
+    middleware_context: MiddlewareRunContext,
     start_step: str | None = None,
 ) -> _ExecutionResult:
     trace: list[StepTrace] = []
@@ -1002,9 +1296,33 @@ def _execute_live_production(
             return _result("blocked", None, trace, brokered_actions, issues)
 
         append_event("step_started", "started", step_id=step.step_id, connector_action=_connector_action(step))
+        middleware_issues = _emit_middleware(
+            middleware_runtime,
+            middleware_context,
+            "step_started",
+            append_event,
+            step_id=step.step_id,
+            connector_action=_connector_action(step),
+            status="started",
+        )
+        if middleware_issues:
+            issues.extend(middleware_issues)
+            trace.append(_trace(step, "blocked", issues=middleware_issues))
+            return _result("blocked", None, trace, brokered_actions, issues)
         if step.kind is StepKind.TERMINAL:
             trace.append(_trace(step, "terminal"))
             append_event("step_completed", "terminal", step_id=step.step_id)
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                status="terminal",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, issues)
             return _result("passed", step.step_id, trace, brokered_actions, issues)
 
         if step.kind is StepKind.DECISION:
@@ -1017,6 +1335,17 @@ def _execute_live_production(
                 return _result("blocked", None, trace, brokered_actions, issues)
             trace.append(_trace(step, "completed", selected_branch=selected_branch))
             append_event("step_completed", "completed", step_id=step.step_id, selected_branch=selected_branch)
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                status="completed",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, issues)
             current = next_step
             continue
 
@@ -1087,6 +1416,18 @@ def _execute_live_production(
                 outputs=dict(reused_outputs),
                 broker_status="idempotency-reused",
             )
+            middleware_issues = _emit_middleware(
+                middleware_runtime,
+                middleware_context,
+                "step_completed",
+                append_event,
+                step_id=step.step_id,
+                connector_action=_connector_action(step),
+                status="completed",
+            )
+            if middleware_issues:
+                issues.extend(middleware_issues)
+                return _result("blocked", None, trace, brokered_actions, issues)
             current = step.next_step
             continue
         outputs, broker_status, broker_provider_id, broker_issues = _invoke_broker(ir, step, fixture, broker, append_event)
@@ -1141,10 +1482,41 @@ def _execute_live_production(
             connector_action=_connector_action(step),
             outputs=dict(outputs),
         )
+        middleware_issues = _emit_middleware(
+            middleware_runtime,
+            middleware_context,
+            "step_completed",
+            append_event,
+            step_id=step.step_id,
+            connector_action=_connector_action(step),
+            status="completed",
+        )
+        if middleware_issues:
+            issues.extend(middleware_issues)
+            return _result("blocked", None, trace, brokered_actions, issues)
         current = step.next_step
 
     issues.append("workflow stopped without terminal step")
     return _result("blocked", None, trace, brokered_actions, issues)
+
+
+def _emit_middleware(
+    middleware_runtime: MiddlewareRuntime,
+    middleware_context: MiddlewareRunContext,
+    hook: str,
+    append_event: Callable[..., None],
+    **details: Any,
+) -> list[str]:
+    issues = list(middleware_runtime.emit(hook, middleware_context, **details))
+    if issues:
+        append_event(
+            "middleware_hook_failed",
+            "blocked",
+            middleware_hook=hook,
+            issues=issues,
+            middleware_ids=list(middleware_runtime.middleware_ids),
+        )
+    return issues
 
 
 def _result(
@@ -1457,7 +1829,7 @@ def _live_read_gate_issue(step: WorkflowStep, action: ActionCapability | None, c
         return f"live-read cannot execute mutating step {step.step_id}"
     metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
     if metadata is None:
-        return f"live-read action is not cataloged: {step.uses.dotted}"
+        return _external_read_gate_issue("live-read", step, action)
     if not metadata.live_read_eligible:
         return f"live-read action is not live-read eligible: {step.uses.dotted}"
     if step.uses.dotted not in connector_allowlist:
@@ -1496,7 +1868,7 @@ def _live_draft_gate_issue(
         return f"live-draft action is not allowlisted: {step.uses.dotted}"
     metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
     if metadata is None:
-        return f"live-draft action is not cataloged: {step.uses.dotted}"
+        return _external_read_gate_issue("live-draft", step, action)
     if _is_mutating_step(step, action):
         if not metadata.live_draft_eligible:
             return f"live-draft action is not draft-eligible: {step.uses.dotted}"
@@ -1530,7 +1902,7 @@ def _live_production_gate_issue(
         return f"live-production action is not allowlisted: {step.uses.dotted}"
     metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
     if metadata is None:
-        return f"live-production action is not cataloged: {step.uses.dotted}"
+        return _external_read_gate_issue("live-production", step, action)
     if _is_mutating_step(step, action):
         if not metadata.live_production_enabled:
             return f"live-production action is not production-enabled: {step.uses.dotted}"
@@ -1544,6 +1916,17 @@ def _live_production_gate_issue(
         return None
     if not metadata.live_read_eligible:
         return f"live-production read action is not live-read eligible: {step.uses.dotted}"
+    return None
+
+
+def _external_read_gate_issue(mode: str, step: WorkflowStep, action: ActionCapability) -> str | None:
+    action_ref = step.uses.dotted if step.uses is not None else ""
+    if not is_external_connector_action_payload(action_ref, action.raw):
+        return f"{mode} action is not cataloged: {action_ref}"
+    if _is_mutating_step(step, action):
+        return f"{mode} external connector action is not read-only: {action_ref}"
+    if action.execution_mode != "brokered":
+        return f"{mode} external connector action must be brokered: {action_ref}"
     return None
 
 
