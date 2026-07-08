@@ -82,6 +82,7 @@ from appv24.workflows.bundle_export import (
     format_workflow_bundle_export,
     write_workflow_bundle,
 )
+from appv24.workflows.capability_catalog import build_workflow_capability_catalog, format_workflow_capability_catalog
 from appv24.workflows.connector_registry import inspect_workflow_connector_registry
 from appv24.workflows.connector_contracts import workflow_operator_env_from_env
 from appv24.workflows.explain import (
@@ -90,6 +91,11 @@ from appv24.workflows.explain import (
     explain_workflow_run,
     format_workflow_package_explanation,
     format_workflow_run_explanation,
+)
+from appv24.workflows.guided_run import (
+    continue_guided_workflow_run,
+    format_guided_workflow_run_report,
+    prepare_guided_workflow_run,
 )
 from appv24.workflows.iac_export import export_deployment_intent_from_path, format_deployment_intent
 from appv24.workflows.live_plan import build_workflow_live_plan_from_path, format_workflow_live_plan
@@ -589,6 +595,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if _handle_workflow_connectors_command(app, prompt):
             return 0
+        if _handle_workflow_catalog_command(app, prompt):
+            return 0
+        if _handle_workflow_run_guided_command(app, prompt):
+            return 0
+        if _handle_workflow_continue_guided_command(app, prompt):
+            return 0
         if _handle_workflow_live_plan_command(app, prompt):
             return 0
         if _handle_workflow_run_approval_command(app, prompt):
@@ -652,6 +664,12 @@ def main(argv: list[str] | None = None) -> int:
         if _handle_workflow_export_intent_command(app, prompt):
             continue
         if _handle_workflow_connectors_command(app, prompt):
+            continue
+        if _handle_workflow_catalog_command(app, prompt):
+            continue
+        if _handle_workflow_run_guided_command(app, prompt):
+            continue
+        if _handle_workflow_continue_guided_command(app, prompt):
             continue
         if _handle_workflow_live_plan_command(app, prompt):
             continue
@@ -1094,6 +1112,72 @@ def _handle_workflow_connectors_command(app: CodingApp, prompt: str) -> bool:
     return True
 
 
+def _handle_workflow_catalog_command(app: CodingApp, prompt: str) -> bool:
+    if prompt.strip() != "/workflow-catalog":
+        return False
+    print(format_workflow_capability_catalog(build_workflow_capability_catalog()))
+    return True
+
+
+def _handle_workflow_run_guided_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_run_guided_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) not in {2, 3}:
+            raise ValueError("expected /workflow-run-guided <path> [fixture]")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        fixture_name = args[2] if len(args) == 3 else "happy_path.yaml"
+        report = prepare_guided_workflow_run(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=fixture_name,
+                mode=WorkflowRunMode.LIVE_READ,
+                operator_env=workflow_operator_env_from_env(os.environ),
+            ),
+            live_read_broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
+            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+        )
+        print(format_guided_workflow_run_report(report))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow guided run failed: {error}")
+    return True
+
+
+def _handle_workflow_continue_guided_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_continue_guided_command(prompt):
+        return False
+
+    args = prompt.split()
+    try:
+        if len(args) not in {3, 4}:
+            raise ValueError("expected /workflow-continue-guided <path> <approval-run-id> [fixture]")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        approval_run_id = args[2]
+        fixture_name = args[3] if len(args) == 4 else "happy_path.yaml"
+        report = continue_guided_workflow_run(
+            WorkflowRunRequest(
+                package_path=package_path,
+                fixture_name=fixture_name,
+                mode=WorkflowRunMode.LIVE_PRODUCTION,
+                operator_env=workflow_operator_env_from_env(os.environ),
+            ),
+            approval_run_id=approval_run_id,
+            live_production_broker=LiveWorkflowBroker(
+                build_live_production_transports_from_env(os.environ),
+                mode="live-production",
+                production_enabled=True,
+            ),
+            credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            env=os.environ,
+        )
+        print(format_guided_workflow_run_report(report))
+    except Exception as error:  # noqa: BLE001 - CLI command failures should print, not crash the loop.
+        print(f"Workflow guided continue failed: {error}")
+    return True
+
+
 def _handle_workflow_live_plan_command(app: CodingApp, prompt: str) -> bool:
     if not _is_workflow_live_plan_command(prompt):
         return False
@@ -1281,6 +1365,14 @@ def _is_workflow_bundle_check_command(prompt: str) -> bool:
 
 def _is_workflow_connectors_command(prompt: str) -> bool:
     return prompt == "/workflow-connectors" or prompt.startswith("/workflow-connectors ")
+
+
+def _is_workflow_run_guided_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-guided" or prompt.startswith("/workflow-run-guided ")
+
+
+def _is_workflow_continue_guided_command(prompt: str) -> bool:
+    return prompt == "/workflow-continue-guided" or prompt.startswith("/workflow-continue-guided ")
 
 
 def _is_workflow_live_plan_command(prompt: str) -> bool:

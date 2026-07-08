@@ -18,6 +18,7 @@ from appv24.ai.types import Model
 from appv24.ai.providers.faux import create_faux_provider, faux_model, text_response_events
 from appv24.ai.stream import register_api_provider, reset_api_providers
 from appv24.workflows import (
+    GuidedWorkflowRunReport,
     WorkflowActivationStore,
     WorkflowPhaseRunReport,
     WorkflowRunMode,
@@ -3153,6 +3154,144 @@ def test_cli_plain_workflow_live_plan_shows_subscriber_broadcast_commands(monkey
     assert "--allow brave.search,telegram.list_subscribers" in captured.out
     assert "/workflow-run-live-production" in captured.out
     assert "--allow telegram.broadcast_message" in captured.out
+
+
+def test_cli_plain_workflow_catalog_command_renders_user_catalog(monkeypatch, tmp_path, capsys) -> None:
+    prompts = iter(["/workflow-catalog", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow catalog command: {prompt}")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow capability catalog" in captured.out
+    assert "Search web/news with Brave Search" in captured.out
+    assert "telegram.broadcast_message" in captured.out
+
+
+def test_cli_plain_workflow_run_guided_command_invokes_prepare(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_ai_news_subscriber_broadcast_package(tmp_path)
+    prompts = iter([f"/workflow-run-guided {package.name} happy_path.yaml", "/exit"])
+    observed: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow guided run command: {prompt}")
+
+    def fake_prepare(request, **kwargs):
+        observed["request"] = request
+        observed["kwargs"] = kwargs
+        return GuidedWorkflowRunReport(
+            status="approval-required",
+            package_path=Path(request.package_path),
+            fixture_name=request.fixture_name or "happy_path.yaml",
+            live_read_run_id="run-read",
+            local_run_id="run-local",
+            approval_run_id="run-local",
+            approval_request_ids=("approval-1",),
+            next_action="approve external side effect",
+        )
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr(cli, "prepare_guided_workflow_run", fake_prepare, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    request = observed["request"]
+    assert exit_code == 0
+    assert request.package_path == package
+    assert request.fixture_name == "happy_path.yaml"
+    assert request.mode is WorkflowRunMode.LIVE_READ
+    assert "Workflow guided run: approval-required" in captured.out
+    assert "approval-1" in captured.out
+
+
+def test_cli_plain_workflow_continue_guided_command_invokes_continue(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_ai_news_subscriber_broadcast_package(tmp_path)
+    prompts = iter([f"/workflow-continue-guided {package.name} run-local", "/exit"])
+    observed: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow guided continue command: {prompt}")
+
+    def fake_continue(request, **kwargs):
+        observed["request"] = request
+        observed["kwargs"] = kwargs
+        return GuidedWorkflowRunReport(
+            status="passed",
+            package_path=Path(request.package_path),
+            fixture_name=request.fixture_name or "happy_path.yaml",
+            approval_run_id=kwargs["approval_run_id"],
+            readiness_status="ready",
+            live_production_run_id="run-prod",
+        )
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr(cli, "continue_guided_workflow_run", fake_continue, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    request = observed["request"]
+    assert exit_code == 0
+    assert request.package_path == package
+    assert request.fixture_name == "happy_path.yaml"
+    assert request.mode is WorkflowRunMode.LIVE_PRODUCTION
+    assert observed["kwargs"]["approval_run_id"] == "run-local"
+    assert "Workflow guided run: passed" in captured.out
+    assert "live-production run: run-prod" in captured.out
 
 
 def test_cli_plain_workflow_run_approval_creates_pending_request_without_model(monkeypatch, tmp_path, capsys) -> None:
