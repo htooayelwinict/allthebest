@@ -4,6 +4,7 @@ import base64
 import builtins
 import json
 import os
+from pathlib import Path
 import select
 import threading
 import time
@@ -123,7 +124,7 @@ from appv24.coding_agent.tools.read import create_read_tool_definition
 from appv24.coding_agent.tools.types import ToolDefinition
 from appv24.ai.event_stream import create_assistant_message_event_stream
 from appv24.ai.stream import ApiProvider
-from appv24.workflows import WorkflowActivationStore, WorkflowPhaseRunReport, WorkflowRunStore
+from appv24.workflows import GuidedWorkflowRunReport, WorkflowActivationStore, WorkflowPhaseRunReport, WorkflowRunStore
 from appv24.workflows.approval_gate import ApprovalDecision
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.examples import golden_workflow_examples
@@ -2034,6 +2035,92 @@ def test_interactive_mode_workflow_live_plan_shows_subscriber_broadcast_commands
     assert "--allow brave.search,telegram.list_subscribers" in rendered
     assert "/workflow-run-live-production" in rendered
     assert "--allow telegram.broadcast_message" in rendered
+
+
+def test_interactive_mode_workflow_catalog_command_renders_user_catalog(tmp_path) -> None:
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(["/workflow-catalog", "/exit"])
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    assert "Workflow capability catalog" in rendered
+    assert "Search web/news with Brave Search" in rendered
+    assert "telegram.broadcast_message" in rendered
+
+
+def test_interactive_mode_workflow_run_guided_command_renders_report(tmp_path, monkeypatch) -> None:
+    package = _write_ai_news_subscriber_broadcast_package(tmp_path)
+    inputs = iter([f"/workflow-run-guided {package.name} happy_path.yaml", "/exit"])
+    observed: dict[str, object] = {}
+
+    def fake_prepare(request, **kwargs):
+        observed["request"] = request
+        observed["kwargs"] = kwargs
+        return GuidedWorkflowRunReport(
+            status="approval-required",
+            package_path=Path(request.package_path),
+            fixture_name=request.fixture_name or "happy_path.yaml",
+            approval_run_id="run-local",
+            approval_request_ids=("approval-1",),
+            next_action="approve external side effect",
+        )
+
+    monkeypatch.setattr(interactive_mode, "prepare_guided_workflow_run", fake_prepare, raising=False)
+
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    request = observed["request"]
+    assert request.package_path == package
+    assert request.fixture_name == "happy_path.yaml"
+    assert request.mode is WorkflowRunMode.LIVE_READ
+    assert "Workflow guided run: approval-required" in rendered
+    assert "approval-1" in rendered
+
+
+def test_interactive_mode_workflow_continue_guided_command_renders_report(tmp_path, monkeypatch) -> None:
+    package = _write_ai_news_subscriber_broadcast_package(tmp_path)
+    inputs = iter([f"/workflow-continue-guided {package.name} run-local", "/exit"])
+    observed: dict[str, object] = {}
+
+    def fake_continue(request, **kwargs):
+        observed["request"] = request
+        observed["kwargs"] = kwargs
+        return GuidedWorkflowRunReport(
+            status="passed",
+            package_path=Path(request.package_path),
+            fixture_name=request.fixture_name or "happy_path.yaml",
+            approval_run_id=kwargs["approval_run_id"],
+            readiness_status="ready",
+            live_production_run_id="run-prod",
+        )
+
+    monkeypatch.setattr(interactive_mode, "continue_guided_workflow_run", fake_continue, raising=False)
+
+    terminal = FakeTerminal(columns=160, rows=80)
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=terminal, enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(160)))
+    request = observed["request"]
+    assert request.package_path == package
+    assert request.fixture_name == "happy_path.yaml"
+    assert request.mode is WorkflowRunMode.LIVE_PRODUCTION
+    assert observed["kwargs"]["approval_run_id"] == "run-local"
+    assert "Workflow guided run: passed" in rendered
+    assert "live-production run: run-prod" in rendered
 
 
 def test_interactive_mode_workflow_run_explain_summarizes_saved_run(tmp_path) -> None:

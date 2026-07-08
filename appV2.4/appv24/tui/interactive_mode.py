@@ -103,6 +103,7 @@ from appv24.workflows.bundle_export import (
     format_workflow_bundle_export,
     write_workflow_bundle,
 )
+from appv24.workflows.capability_catalog import build_workflow_capability_catalog, format_workflow_capability_catalog
 from appv24.workflows.connector_registry import inspect_workflow_connector_registry
 from appv24.workflows.connector_contracts import workflow_operator_env_from_env
 from appv24.workflows.explain import (
@@ -111,6 +112,11 @@ from appv24.workflows.explain import (
     explain_workflow_run,
     format_workflow_package_explanation,
     format_workflow_run_explanation,
+)
+from appv24.workflows.guided_run import (
+    continue_guided_workflow_run,
+    format_guided_workflow_run_report,
+    prepare_guided_workflow_run,
 )
 from appv24.workflows.iac_export import export_deployment_intent_from_path, format_deployment_intent
 from appv24.workflows.live_plan import build_workflow_live_plan_from_path, format_workflow_live_plan
@@ -352,6 +358,7 @@ class InteractiveMode:
             {"name": "workflow-approve", "description": "Approve a pending workflow run approval request"},
             {"name": "workflow-deny", "description": "Deny a pending workflow run approval request"},
             {"name": "workflow-bundle-check", "description": "Verify an exported workflow bundle manifest and file checksums"},
+            {"name": "workflow-catalog", "description": "Show available workflow capabilities"},
             {"name": "workflow-connectors", "description": "Inspect declared connector actions and live transport readiness"},
             {"name": "workflow-explain", "description": "Explain a saved workflow package without running it"},
             {"name": "workflow-export-bundle", "description": "Export a validated workflow package into runtime bundle artifacts"},
@@ -365,10 +372,12 @@ class InteractiveMode:
             {"name": "workflow-repair-report", "description": "Show the latest workflow repair report"},
             {"name": "workflow-run", "description": "Run a saved workflow package with explicit local flags"},
             {"name": "workflow-run-explain", "description": "Explain a saved workflow run artifact"},
+            {"name": "workflow-run-guided", "description": "Run live-read to approval as a guided user flow"},
             {"name": "workflow-run-live-draft", "description": "Run approved live-draft gates with env-gated live transports"},
             {"name": "workflow-run-live-production", "description": "Run approved live-production gates with env-gated live transports"},
             {"name": "workflow-run-live-read", "description": "Run live-read gates with disabled live transports"},
             {"name": "workflow-run-live-read-to-approval", "description": "Run live-read prefix, local resume, and stop at approval"},
+            {"name": "workflow-continue-guided", "description": "Continue an approved guided workflow into live production"},
             {"name": "workflow-run-approval", "description": "Create pending workflow approval requests locally"},
             {"name": "workflow-run-local", "description": "Run a saved workflow package in local artifact mode"},
             {"name": "workflow-run-sandbox", "description": "Run a saved workflow package with fixture-backed connector simulation"},
@@ -532,6 +541,12 @@ class InteractiveMode:
                 if self._run_workflow_export_intent_command(prompt):
                     continue
                 if self._run_workflow_connectors_command(prompt):
+                    continue
+                if self._run_workflow_catalog_command(prompt):
+                    continue
+                if self._run_workflow_run_guided_command(prompt):
+                    continue
+                if self._run_workflow_continue_guided_command(prompt):
                     continue
                 if self._run_workflow_live_plan_command(prompt):
                     continue
@@ -1030,6 +1045,9 @@ class InteractiveMode:
             "/workflow-bundle-check <bundle-dir> - Verify an exported workflow bundle manifest and checksums.",
             "/workflow-export-intent <path> - Export passive deployment intent for a saved workflow package.",
             "/workflow-connectors <path> - Inspect declared connector actions and live transport readiness.",
+            "/workflow-catalog - Show available workflow capabilities.",
+            "/workflow-run-guided <path> [fixture] - Run guided workflow phases until approval.",
+            "/workflow-continue-guided <path> <approval-run-id> [fixture] - Continue approved guided workflow production.",
             "/workflow-live-plan <path> [fixture] - Plan live/local workflow execution phases.",
             "/workflow-repair-report - Show the latest workflow repair report.",
             "/workflow-run-explain <path> [run-id] - Explain a saved workflow run artifact.",
@@ -1321,6 +1339,106 @@ class InteractiveMode:
 
     def _render_workflow_connectors_error(self, message: str) -> None:
         self.history.add(StatusLine(f"Workflow connector registry failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+
+    def _run_workflow_catalog_command(self, prompt: str) -> bool:
+        if prompt.strip() != "/workflow-catalog":
+            return False
+
+        rendered = format_workflow_capability_catalog(build_workflow_capability_catalog())
+        self.history.add(StatusLine("Workflow capability catalog", kind="info"))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_run_guided_command(self, prompt: str) -> bool:
+        if not _is_workflow_run_guided_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_guided_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) not in {2, 3}:
+            self._render_workflow_guided_error("expected /workflow-run-guided <path> [fixture]")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            fixture_name = args[2] if len(args) == 3 else "happy_path.yaml"
+            report = prepare_guided_workflow_run(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=fixture_name,
+                    mode=WorkflowRunMode.LIVE_READ,
+                    operator_env=workflow_operator_env_from_env(os.environ),
+                ),
+                live_read_broker=LiveWorkflowBroker(build_live_read_transports_from_env(os.environ), mode="live-read"),
+                credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_guided_error(str(error))
+            return True
+
+        kind = "info" if report.status in {"passed", "approval-required"} else "error"
+        self.history.add(StatusLine(f"Workflow guided run {report.status}", kind=kind))
+        self.history.add(Text(format_guided_workflow_run_report(report)))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_continue_guided_command(self, prompt: str) -> bool:
+        if not _is_workflow_continue_guided_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_guided_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        if len(args) not in {3, 4}:
+            self._render_workflow_guided_error("expected /workflow-continue-guided <path> <approval-run-id> [fixture]")
+            return True
+
+        try:
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            fixture_name = args[3] if len(args) == 4 else "happy_path.yaml"
+            report = continue_guided_workflow_run(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=fixture_name,
+                    mode=WorkflowRunMode.LIVE_PRODUCTION,
+                    operator_env=workflow_operator_env_from_env(os.environ),
+                ),
+                approval_run_id=args[2],
+                live_production_broker=LiveWorkflowBroker(
+                    build_live_production_transports_from_env(os.environ),
+                    mode="live-production",
+                    production_enabled=True,
+                ),
+                credential_resolver=credential_resolver_for_package_env(package_path, os.environ),
+                env=os.environ,
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self._render_workflow_guided_error(str(error))
+            return True
+
+        kind = "info" if report.status == "passed" else "error"
+        self.history.add(StatusLine(f"Workflow guided continue {report.status}", kind=kind))
+        self.history.add(Text(format_guided_workflow_run_report(report)))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _render_workflow_guided_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow guided run failed: {message}", kind="error"))
         self.status.set_message("Idle")
         self._refresh_footer()
         self.tui.request_render()
@@ -3141,6 +3259,14 @@ def _is_workflow_bundle_check_command(prompt: str) -> bool:
 
 def _is_workflow_connectors_command(prompt: str) -> bool:
     return prompt == "/workflow-connectors" or prompt.startswith("/workflow-connectors ")
+
+
+def _is_workflow_run_guided_command(prompt: str) -> bool:
+    return prompt == "/workflow-run-guided" or prompt.startswith("/workflow-run-guided ")
+
+
+def _is_workflow_continue_guided_command(prompt: str) -> bool:
+    return prompt == "/workflow-continue-guided" or prompt.startswith("/workflow-continue-guided ")
 
 
 def _is_workflow_live_plan_command(prompt: str) -> bool:
