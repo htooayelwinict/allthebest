@@ -287,6 +287,32 @@ def test_live_readiness_reports_production_approval_and_transport_setup(tmp_path
     assert not (package / ".workflow-runs").exists()
 
 
+def test_live_readiness_reports_telegram_broadcast_transport_env(tmp_path: Path) -> None:
+    package = _write_live_production_broadcast_workflow_package(tmp_path)
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_PRODUCTION,
+            connector_allowlist=("telegram.broadcast_message",),
+        ),
+        env={},
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "blocked"
+    assert "mode: live-production" in rendered
+    assert "- live-production requires approval_run_id" in rendered
+    assert "- missing credential ref for telegram; required env: APPV24_TELEGRAM_CREDENTIAL_REF, APPV24_TELEGRAM_SCOPES=telegram:send" in rendered
+    assert (
+        "- APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
+        "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+    ) in rendered
+    assert "telegram-token" not in rendered
+    assert not (package / ".workflow-runs").exists()
+
+
 def _write_live_read_workflow_package(
     root: Path,
     *,
@@ -641,4 +667,100 @@ def _write_live_production_workflow_package(root: Path) -> Path:
     fixtures.mkdir()
     (fixtures / "happy_path.yaml").write_text("input:\n  chat_id: admin-chat\n  text: Production alert.\n", encoding="utf-8")
     (package / "rollback.md").write_text("# Rollback\n\nDelete the Telegram message manually if required.\n", encoding="utf-8")
+    return package
+
+
+def _write_live_production_broadcast_workflow_package(root: Path) -> Path:
+    package = root / "telegram-production-broadcast"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "telegram-production-broadcast",
+                "description": "Broadcast one approved Telegram digest.",
+                "design": {
+                    "intent": "Broadcast one approved Telegram digest to registered subscribers.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["recipients", "audience_hash", "text"],
+                    "outputs": ["sent_count", "message_ids", "chat_ids"],
+                    "assumptions": ["Telegram bot token and subscriber allowlist are resolved outside the package."],
+                    "side_effects": ["send Telegram messages"],
+                    "approval_gates": ["admin_approval"],
+                    "failure_modes": ["Telegram API unavailable."],
+                    "rollback": ["Delete the Telegram messages manually if required."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "broadcast_digest",
+                "steps": [
+                    {
+                        "id": "broadcast_digest",
+                        "uses": "telegram.broadcast_message",
+                        "side_effect_class": "send",
+                        "approval": "admin_approval",
+                        "with": {
+                            "recipients": {"inputRef": "recipients"},
+                            "audience_hash": {"inputRef": "audience_hash"},
+                            "text": {"inputRef": "text"},
+                        },
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "telegram",
+                        "adapter": "direct_api",
+                        "actions": [
+                            {
+                                "id": "broadcast_message",
+                                "operationId": "telegram_broadcast_message",
+                                "execution_mode": "brokered",
+                                "side_effect": True,
+                                "side_effect_class": "send",
+                                "approval_required": True,
+                                "dry_run_supported": True,
+                                "required_scopes": ["telegram:send"],
+                                "outputs": {"allowed": ["sent_count", "message_ids", "chat_ids"]},
+                                "idempotency": {"key_fields": ["audience_hash", "text"]},
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [{"connector": "telegram", "actions": ["broadcast_message"], "scopes": ["telegram:send"]}],
+                "approvals": [{"id": "admin_approval", "mode": "explicit", "required_for": ["broadcast_digest"]}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text(
+        "input:\n"
+        "  recipients:\n"
+        "    - admin-chat\n"
+        "  audience_hash: default-audience\n"
+        "  text: Production digest.\n",
+        encoding="utf-8",
+    )
+    (package / "rollback.md").write_text("# Rollback\n\nDelete the Telegram messages manually if required.\n", encoding="utf-8")
     return package

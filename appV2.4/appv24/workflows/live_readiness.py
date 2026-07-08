@@ -218,6 +218,13 @@ def _transport_env_hint(mode: WorkflowRunMode, action_ref: str) -> str | None:
             "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
             "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
         ),
+        (
+            WorkflowRunMode.LIVE_PRODUCTION,
+            "telegram.broadcast_message",
+        ): (
+            "APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED=true, "
+            "APPV24_TELEGRAM_BOT_TOKEN, APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+        ),
     }
     return hints.get((mode, action_ref))
 
