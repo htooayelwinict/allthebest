@@ -49,6 +49,33 @@ def test_telegram_send_message_contract_requires_target_policy() -> None:
     assert WorkflowLiveMode.LIVE_PRODUCTION in contract.live_modes
 
 
+def test_telegram_subscriber_and_broadcast_contracts_are_connector_interfaces() -> None:
+    catalog = builtin_connector_contract_catalog()
+
+    subscribers = catalog["telegram.list_subscribers"]
+    assert subscribers.approval_class is ApprovalClass.NONE
+    assert subscribers.side_effect_class is SideEffectClass.READ
+    assert subscribers.required_scopes == ("telegram:subscribers:read",)
+    assert subscribers.allowed_outputs == ("recipients", "recipient_count", "audience_hash", "artifact_path")
+    assert subscribers.secrets[0].env_name == "APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+    assert WorkflowLiveMode.LIVE_READ in subscribers.live_modes
+    assert subscribers.prompt_summary == (
+        "telegram.list_subscribers(input: audience, limit) -> recipients, recipient_count, audience_hash"
+    )
+
+    broadcast = catalog["telegram.broadcast_message"]
+    assert broadcast.approval_class is ApprovalClass.EXTERNAL_SEND
+    assert broadcast.side_effect_class is SideEffectClass.SEND
+    assert broadcast.required_scopes == ("telegram:send",)
+    assert broadcast.idempotency_key_fields == ("audience_hash", "text")
+    assert broadcast.target_policy.allowed_chat_ids_env == "APPV24_TELEGRAM_ALLOWED_CHAT_IDS"
+    assert broadcast.allowed_outputs == ("sent_count", "message_ids", "chat_ids", "artifact_path")
+    assert WorkflowLiveMode.LIVE_PRODUCTION in broadcast.live_modes
+    assert broadcast.prompt_summary == (
+        "telegram.broadcast_message(input: recipients, text) -> sent_count, message_ids, chat_ids"
+    )
+
+
 def test_brave_search_contract_is_read_only_live_read() -> None:
     contract = builtin_connector_contract_catalog()["brave.search"]
 
@@ -101,7 +128,11 @@ def test_capability_prompt_uses_slim_contract_summaries() -> None:
 
     assert "brave.search(input: query, freshness, count) -> items, source_count" in fragment
     assert "For public web/news search, prefer brave.search over placeholder source.fetch_items URLs." in fragment
-    assert "dynamic subscriber capture, lookup, or broadcast must be fixture/input/future-connector design until cataloged" in fragment
+    assert "telegram.list_subscribers(input: audience, limit) -> recipients, recipient_count, audience_hash" in fragment
+    assert "telegram.broadcast_message(input: recipients, text) -> sent_count, message_ids, chat_ids" in fragment
+    assert "For Telegram registered-user workflows, use telegram.list_subscribers before telegram.broadcast_message." in fragment
+    assert "fetch_user_list" not in fragment
+    assert "format_news_digest" not in fragment
     assert "http.fetch(input: url, query) -> status_code, url, text/json" in fragment
     assert "gmail.create_draft(input: to, subject, body) -> draft_id, thread_id" in fragment
     assert "ConnectorContract(" not in fragment

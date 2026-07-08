@@ -146,7 +146,7 @@ In `appV2.4/appv24/workflows/prompt_fragments.py`, replace the existing subscrib
 
 ```python
         "- For Telegram registered-user workflows, use telegram.list_subscribers before telegram.broadcast_message.",
-        "- Do not invent fetch_user_list, get_registered_users, format_news_digest, send_broadcast, or local subscriber actions.",
+        "- Registered-user delivery must be modeled as connector interfaces, not workflow-local subscriber lookup or formatter actions.",
 ```
 
 - [ ] **Step 4: Run contract tests to verify green**

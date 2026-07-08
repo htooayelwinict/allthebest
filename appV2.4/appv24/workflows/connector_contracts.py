@@ -234,6 +234,41 @@ def builtin_connector_contract_catalog() -> dict[str, ConnectorContract]:
             prompt_summary="telegram.send_message_draft(input: chat_id, text) -> draft_id",
         ),
         _contract(
+            "telegram.list_subscribers",
+            input_fields=("audience", "limit"),
+            allowed_outputs=("recipients", "recipient_count", "audience_hash", "artifact_path"),
+            required_scopes=("telegram:subscribers:read",),
+            secrets=(ConnectorSecretRef("APPV24_TELEGRAM_ALLOWED_CHAT_IDS", "Telegram subscriber allowlist"),),
+            live_modes=(WorkflowLiveMode.LIVE_READ,),
+            retry_class=RetryClass.READ_SAFE,
+            target_policy=ConnectorTargetPolicy(allowed_chat_ids_env="APPV24_TELEGRAM_ALLOWED_CHAT_IDS"),
+            prompt_summary=(
+                "telegram.list_subscribers(input: audience, limit) -> "
+                "recipients, recipient_count, audience_hash"
+            ),
+        ),
+        _contract(
+            "telegram.broadcast_message",
+            input_fields=(
+                "recipients",
+                "audience_hash",
+                "text",
+                "parse_mode",
+                "disable_notification",
+                "protect_content",
+            ),
+            allowed_outputs=("sent_count", "message_ids", "chat_ids", "artifact_path"),
+            required_scopes=("telegram:send",),
+            secrets=(ConnectorSecretRef("APPV24_TELEGRAM_BOT_TOKEN", "Telegram bot token"),),
+            side_effect_class=SideEffectClass.SEND,
+            approval_class=ApprovalClass.EXTERNAL_SEND,
+            live_modes=(WorkflowLiveMode.LIVE_PRODUCTION,),
+            idempotency_key_fields=("audience_hash", "text"),
+            retry_class=RetryClass.IDEMPOTENT_WRITE,
+            target_policy=ConnectorTargetPolicy(allowed_chat_ids_env="APPV24_TELEGRAM_ALLOWED_CHAT_IDS"),
+            prompt_summary="telegram.broadcast_message(input: recipients, text) -> sent_count, message_ids, chat_ids",
+        ),
+        _contract(
             "telegram.send_message",
             input_fields=(
                 "chat_id",
