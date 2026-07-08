@@ -117,6 +117,10 @@ def get_auth_path() -> str:
     return str(Path(get_agent_dir()) / "auth.json")
 
 
+def get_connectors_path() -> str:
+    return str(Path(get_agent_dir()) / "connectors.json")
+
+
 def get_settings_path() -> str:
     return str(Path(get_agent_dir()) / "settings.json")
 
@@ -157,6 +161,7 @@ getAgentDir = get_agent_dir
 getCustomThemesDir = get_custom_themes_dir
 getModelsPath = get_models_path
 getAuthPath = get_auth_path
+getConnectorsPath = get_connectors_path
 getSettingsPath = get_settings_path
 getToolsDir = get_tools_dir
 getBinDir = get_bin_dir
