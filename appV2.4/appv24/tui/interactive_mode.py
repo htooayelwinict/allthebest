@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import queue
+import re
 import signal as signal_module
 import subprocess
 import threading
@@ -81,7 +82,13 @@ from appv24.workflows.live_transports import (
     build_live_read_transports_from_connector_config,
     build_live_read_transports_from_env,
 )
-from appv24.workflows.connector_user_config import ConnectorConfigResolver
+from appv24.workflows.connector_user_config import (
+    ConnectorConfigProfile,
+    ConnectorConfigResolver,
+    ConnectorConfigStore,
+    format_connector_config_list,
+    normalize_connector_id,
+)
 from appv24.workflows.credential_refs import credential_resolver_for_package_connector_config
 from appv24.workflows.quality_gate import WorkflowQualityResult, check_workflow_quality_package
 from appv24.workflows.repair import (
@@ -378,6 +385,9 @@ class InteractiveMode:
             {"name": "workflow-deny", "description": "Deny a pending workflow run approval request"},
             {"name": "workflow-bundle-check", "description": "Verify an exported workflow bundle manifest and file checksums"},
             {"name": "workflow-catalog", "description": "Show available workflow capabilities"},
+            {"name": "workflow-connector-configure", "description": "Configure workflow connector credentials"},
+            {"name": "workflow-connector-list", "description": "List configured workflow connectors"},
+            {"name": "workflow-connector-remove", "description": "Remove workflow connector configuration"},
             {"name": "workflow-connectors", "description": "Inspect declared connector actions and live transport readiness"},
             {"name": "workflow-explain", "description": "Explain a saved workflow package without running it"},
             {"name": "workflow-export-bundle", "description": "Export a validated workflow package into runtime bundle artifacts"},
@@ -560,6 +570,12 @@ class InteractiveMode:
                 if self._run_workflow_export_intent_command(prompt):
                     continue
                 if self._run_workflow_connectors_command(prompt):
+                    continue
+                if self._run_workflow_connector_list_command(prompt):
+                    continue
+                if self._run_workflow_connector_configure_command(prompt):
+                    continue
+                if self._run_workflow_connector_remove_command(prompt):
                     continue
                 if self._run_workflow_catalog_command(prompt):
                     continue
@@ -1064,6 +1080,9 @@ class InteractiveMode:
             "/workflow-bundle-check <bundle-dir> - Verify an exported workflow bundle manifest and checksums.",
             "/workflow-export-intent <path> - Export passive deployment intent for a saved workflow package.",
             "/workflow-connectors <path> - Inspect declared connector actions and live transport readiness.",
+            "/workflow-connector-list - List configured workflow connectors.",
+            "/workflow-connector-configure brave|telegram - Configure Brave or Telegram connector credentials.",
+            "/workflow-connector-remove brave|telegram - Remove workflow connector configuration.",
             "/workflow-catalog - Show available workflow capabilities.",
             "/workflow-run-guided <path> [fixture] - Run guided workflow phases until approval.",
             "/workflow-continue-guided <path> <approval-run-id> [fixture] - Continue approved guided workflow production.",
@@ -1361,6 +1380,122 @@ class InteractiveMode:
         self.status.set_message("Idle")
         self._refresh_footer()
         self.tui.request_render()
+
+    def _run_workflow_connector_list_command(self, prompt: str) -> bool:
+        if prompt.strip() != "/workflow-connector-list":
+            return False
+
+        rendered = format_connector_config_list(ConnectorConfigStore().list_profiles())
+        self.history.add(StatusLine("Workflow connector config", kind="info"))
+        self.history.add(Text(rendered))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_connector_remove_command(self, prompt: str) -> bool:
+        if not _is_workflow_connector_remove_command(prompt):
+            return False
+
+        args = prompt.split()
+        if len(args) != 2:
+            self.history.add(
+                StatusLine(
+                    "Workflow connector remove failed: expected /workflow-connector-remove brave|telegram",
+                    kind="error",
+                )
+            )
+            self.status.set_message("Idle")
+            self._refresh_footer()
+            self.tui.request_render()
+            return True
+
+        connector_id = normalize_connector_id(args[1])
+        removed = ConnectorConfigStore().remove(connector_id)
+        message = (
+            f"Removed workflow connector config: {connector_id}"
+            if removed
+            else f"Workflow connector config not found: {connector_id}"
+        )
+        self.history.add(StatusLine(message, kind="info"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_connector_configure_command(self, prompt: str) -> bool:
+        if not _is_workflow_connector_configure_command(prompt):
+            return False
+
+        args = prompt.split()
+        if len(args) != 2:
+            self.history.add(
+                StatusLine(
+                    "Workflow connector configure failed: expected /workflow-connector-configure brave|telegram",
+                    kind="error",
+                )
+            )
+            self.status.set_message("Idle")
+            self._refresh_footer()
+            self.tui.request_render()
+            return True
+
+        connector_id = normalize_connector_id(args[1])
+        try:
+            profile = self._prompt_workflow_connector_profile(connector_id)
+            ConnectorConfigStore().upsert(profile)
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI
+            self.history.add(StatusLine(f"Workflow connector configure failed: {error}", kind="error"))
+            self.status.set_message("Idle")
+            self._refresh_footer()
+            self.tui.request_render()
+            return True
+
+        self.history.add(StatusLine(f"Saved workflow connector config: {connector_id}", kind="info"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _prompt_workflow_connector_profile(self, connector_id: str) -> ConnectorConfigProfile:
+        if connector_id == "brave":
+            credential_ref = self.prompt_extension_input("Credential ref") or "brave-local"
+            scopes = _split_connector_scope_input(self.prompt_extension_input("Scopes") or "brave:search")
+            api_key = self.prompt_extension_input("Brave Search API key", options={"secret": True}) or ""
+            base_url = self.prompt_extension_input("Brave Search base URL") or ""
+            config = {"api_key": api_key}
+            if base_url.strip():
+                config["base_url"] = base_url.strip()
+            return ConnectorConfigProfile(
+                connector_id="brave",
+                profile="default",
+                credential_ref=credential_ref.strip(),
+                scopes=scopes,
+                config=config,
+                source="user-config",
+            )
+        if connector_id == "telegram":
+            credential_ref = self.prompt_extension_input("Credential ref") or "telegram-local"
+            scopes = _split_connector_scope_input(
+                self.prompt_extension_input("Scopes") or "telegram:subscribers:read,telegram:send"
+            )
+            bot_token = self.prompt_extension_input("Telegram bot token", options={"secret": True}) or ""
+            allowed_chat_ids = _split_connector_scope_input(
+                self.prompt_extension_input("Allowed chat IDs", options={"secret": True}) or ""
+            )
+            base_url = self.prompt_extension_input("Telegram API base URL") or ""
+            config = {"bot_token": bot_token, "allowed_chat_ids": list(allowed_chat_ids)}
+            if base_url.strip():
+                config["base_url"] = base_url.strip()
+            return ConnectorConfigProfile(
+                connector_id="telegram",
+                profile="default",
+                credential_ref=credential_ref.strip(),
+                scopes=scopes,
+                config=config,
+                source="user-config",
+            )
+        raise ValueError(f"unsupported workflow connector: {connector_id}")
 
     def _run_workflow_catalog_command(self, prompt: str) -> bool:
         if prompt.strip() != "/workflow-catalog":
@@ -3291,6 +3426,14 @@ def _is_workflow_connectors_command(prompt: str) -> bool:
     return prompt == "/workflow-connectors" or prompt.startswith("/workflow-connectors ")
 
 
+def _is_workflow_connector_remove_command(prompt: str) -> bool:
+    return prompt == "/workflow-connector-remove" or prompt.startswith("/workflow-connector-remove ")
+
+
+def _is_workflow_connector_configure_command(prompt: str) -> bool:
+    return prompt == "/workflow-connector-configure" or prompt.startswith("/workflow-connector-configure ")
+
+
 def _is_workflow_run_guided_command(prompt: str) -> bool:
     return prompt == "/workflow-run-guided" or prompt.startswith("/workflow-run-guided ")
 
@@ -4301,6 +4444,10 @@ def _manual_compression_options(prompt: str) -> tuple[str | None, bool]:
                 return (parts[1].strip() if len(parts) > 1 and parts[1].strip() else None), True
             return focus, False
     return None, False
+
+
+def _split_connector_scope_input(value: str) -> tuple[str, ...]:
+    return tuple(item for item in re.split(r"[\s,]+", value.strip()) if item)
 
 
 def _extension_dialog_aborted(options: dict | None) -> bool:

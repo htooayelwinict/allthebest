@@ -2776,6 +2776,86 @@ def test_interactive_mode_workflow_connectors_renders_safe_registry(tmp_path, mo
     assert "telegram-secret-token" not in rendered
 
 
+def test_tui_workflow_connector_configure_brave_masks_secret(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPV24_CODING_AGENT_DIR", str(tmp_path / "agent"))
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=FakeTerminal(columns=100, rows=20), enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            "/workflow-connector-configure brave",
+            "brave-local",
+            "brave:search",
+            "brave-test-key",
+            "",
+            "/workflow-connector-list",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(100)))
+    assert "Saved workflow connector config: brave" in rendered
+    assert "brave:search" in rendered
+    assert "brave-test-key" not in rendered
+
+
+def test_tui_workflow_connector_configure_telegram_masks_secret_and_targets(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPV24_CODING_AGENT_DIR", str(tmp_path / "agent"))
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=FakeTerminal(columns=100, rows=20), enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            "/workflow-connector-configure telegram",
+            "telegram-local",
+            "telegram:subscribers:read,telegram:send",
+            "telegram-test-token",
+            "chat-a,chat-b",
+            "",
+            "/workflow-connector-list",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(100)))
+    assert "Saved workflow connector config: telegram" in rendered
+    assert "telegram:send" in rendered
+    assert "allowed_targets: 2 configured" in rendered
+    assert "telegram-test-token" not in rendered
+    assert "chat-a" not in rendered
+    assert "chat-b" not in rendered
+
+
+def test_tui_workflow_connector_remove(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("APPV24_CODING_AGENT_DIR", str(tmp_path / "agent"))
+    app = CodingApp(cwd=str(tmp_path), model=faux_model(), terminal=FakeTerminal(columns=100, rows=20), enable_tui=True)
+    app.profile_id = "workflow-designer-lite"
+    inputs = iter(
+        [
+            "/workflow-connector-configure brave",
+            "brave-local",
+            "brave:search",
+            "brave-test-key",
+            "",
+            "/workflow-connector-remove brave",
+            "/workflow-connector-list",
+            "/exit",
+        ]
+    )
+    mode = InteractiveMode(app, input_fn=lambda prompt: next(inputs))
+
+    assert mode.run() == 0
+
+    rendered = strip_ansi("\n".join(app.tui.render(100)))
+    assert "Removed workflow connector config: brave" in rendered
+    assert "- none" in rendered
+    assert "brave-test-key" not in rendered
+
+
 def test_interactive_mode_workflow_export_bundle_writes_bundle_without_run(tmp_path, monkeypatch) -> None:
     package = _write_live_production_workflow_package(tmp_path)
     monkeypatch.setenv("APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED", "true")
