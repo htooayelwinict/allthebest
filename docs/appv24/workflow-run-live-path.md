@@ -75,6 +75,25 @@ only placeholder values for credential references, scopes, and built-in
 transport gates. It does not read current env values, create run artifacts, call
 the model, or invoke connector transports.
 
+### Connector User Config
+
+Normal local workflow use should configure supported connectors through the app:
+
+```text
+/workflow-connector-configure brave
+/workflow-connector-configure telegram
+/workflow-connector-list
+```
+
+The connector config file lives under the appv24 agent directory as
+`connectors.json`. appv24 writes the parent directory with `0700` permissions
+and the file with `0600` permissions. Readiness reports and run artifacts show
+connector ids, credential refs, scope names, and setup hints only. They must
+not show API keys, bot tokens, OAuth tokens, or raw connector target lists.
+
+The existing `APPV24_*` environment variables remain supported for CI and
+manual operator runs.
+
 Some connector contracts also define operator target-policy environment gates.
 These are separate from credential references and transport secrets. CLI/TUI
 commands copy only the target-policy variables required by the active connector
