@@ -5,10 +5,12 @@ from pathlib import Path
 
 from appv24.workflows.connector_user_config import (
     ConnectorConfigProfile,
+    ConnectorConfigResolver,
     ConnectorConfigStore,
     format_connector_config_list,
     redact_connector_profile,
 )
+from appv24.workflows.credential_refs import credential_resolver_from_connector_config
 
 
 def test_connector_config_store_writes_secure_file_and_round_trips(tmp_path: Path) -> None:
@@ -112,3 +114,100 @@ def test_redact_connector_profile_keeps_metadata_only() -> None:
         "secrets": "present",
         "allowed_targets": "1 configured",
     }
+
+
+def test_connector_config_resolver_prefers_user_config_over_env(tmp_path: Path) -> None:
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="brave",
+            profile="default",
+            credential_ref="brave-user",
+            scopes=("brave:search",),
+            config={"api_key": "brave-user-key", "base_url": "https://user.test"},
+            source="user-config",
+        )
+    )
+    resolver = ConnectorConfigResolver(
+        store=store,
+        env={
+            "APPV24_BRAVE_CREDENTIAL_REF": "brave-env",
+            "APPV24_BRAVE_SCOPES": "wrong:scope",
+            "APPV24_BRAVE_SEARCH_API_KEY": "brave-env-key",
+        },
+    )
+
+    resolved = resolver.resolve("brave")
+
+    assert resolved is not None
+    assert resolved.credential_ref == "brave-user"
+    assert resolved.scopes == ("brave:search",)
+    assert resolved.config["api_key"] == "brave-user-key"
+    assert resolved.source == "user-config"
+
+
+def test_connector_config_resolver_uses_env_fallback(tmp_path: Path) -> None:
+    resolver = ConnectorConfigResolver(
+        store=ConnectorConfigStore(tmp_path / "connectors.json"),
+        env={
+            "APPV24_BRAVE_CREDENTIAL_REF": "brave-env",
+            "APPV24_BRAVE_SCOPES": "brave:search",
+            "APPV24_BRAVE_SEARCH_API_KEY": "brave-env-key",
+            "APPV24_BRAVE_SEARCH_BASE_URL": "https://env.test",
+        },
+    )
+
+    resolved = resolver.resolve("brave")
+
+    assert resolved is not None
+    assert resolved.credential_ref == "brave-env"
+    assert resolved.scopes == ("brave:search",)
+    assert resolved.config["api_key"] == "brave-env-key"
+    assert resolved.config["base_url"] == "https://env.test"
+    assert resolved.source == "env"
+
+
+def test_connector_config_resolver_builds_telegram_env_fallback(tmp_path: Path) -> None:
+    resolver = ConnectorConfigResolver(
+        store=ConnectorConfigStore(tmp_path / "connectors.json"),
+        env={
+            "APPV24_TELEGRAM_CREDENTIAL_REF": "telegram-env",
+            "APPV24_TELEGRAM_SCOPES": "telegram:subscribers:read,telegram:send",
+            "APPV24_TELEGRAM_BOT_TOKEN": "telegram-env-token",
+            "APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "chat-a, chat-b",
+            "APPV24_TELEGRAM_API_BASE_URL": "https://telegram.test",
+        },
+    )
+
+    resolved = resolver.resolve("telegram")
+
+    assert resolved is not None
+    assert resolved.credential_ref == "telegram-env"
+    assert resolved.scopes == ("telegram:subscribers:read", "telegram:send")
+    assert resolved.config["bot_token"] == "telegram-env-token"
+    assert resolved.config["allowed_chat_ids"] == ["chat-a", "chat-b"]
+    assert resolved.config["base_url"] == "https://telegram.test"
+
+
+def test_credential_resolver_from_connector_config_uses_user_config(tmp_path: Path) -> None:
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="telegram",
+            profile="default",
+            credential_ref="telegram-user",
+            scopes=("telegram:send",),
+            config={"bot_token": "telegram-user-token", "allowed_chat_ids": ["chat-a"]},
+            source="user-config",
+        )
+    )
+
+    credential_resolver = credential_resolver_from_connector_config(
+        connector_ids=("telegram",),
+        connector_config=ConnectorConfigResolver(store=store, env={}),
+    )
+
+    credential = credential_resolver.resolve("telegram")
+    assert credential is not None
+    assert credential.available is True
+    assert credential.scopes == ("telegram:send",)

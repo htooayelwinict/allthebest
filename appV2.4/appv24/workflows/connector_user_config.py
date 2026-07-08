@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 from appv24.coding_agent.config import get_connectors_path
@@ -29,6 +30,50 @@ class ConnectorConfigProfile:
         return bool(self.credential_ref.strip())
 
 
+class ConnectorConfigResolver:
+    def __init__(
+        self,
+        *,
+        store: ConnectorConfigStore | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        self.store = store or ConnectorConfigStore()
+        self.env = dict(env or os.environ)
+
+    def resolve(self, connector_id: str) -> ConnectorConfigProfile | None:
+        normalized = normalize_connector_id(connector_id)
+        configured = self.store.get(normalized)
+        if configured is not None and configured.available:
+            return configured
+        return self._from_env(normalized)
+
+    def list_profiles(self) -> tuple[ConnectorConfigProfile, ...]:
+        configured = {profile.connector_id: profile for profile in self.store.list_profiles()}
+        for connector_id in SUPPORTED_CONNECTORS:
+            configured.setdefault(connector_id, self._from_env(connector_id))
+        return tuple(
+            profile
+            for profile in sorted(configured.values(), key=lambda item: item.connector_id if item else "")
+            if profile is not None
+        )
+
+    def _from_env(self, connector_id: str) -> ConnectorConfigProfile | None:
+        env_name = _credential_env_name(connector_id)
+        credential_ref = str(self.env.get(f"APPV24_{env_name}_CREDENTIAL_REF", "")).strip()
+        scopes = _split_scopes(str(self.env.get(f"APPV24_{env_name}_SCOPES", "")))
+        config = _connector_config_from_env(connector_id, self.env)
+        if not credential_ref and not config:
+            return None
+        return ConnectorConfigProfile(
+            connector_id=connector_id,
+            profile="default",
+            credential_ref=credential_ref,
+            scopes=scopes,
+            config=config,
+            source="env",
+        )
+
+
 class ConnectorConfigStore:
     """Persist local connector profiles outside workflow packages."""
 
@@ -41,14 +86,14 @@ class ConnectorConfigStore:
         return self._issues
 
     def get(self, connector_id: str) -> ConnectorConfigProfile | None:
-        return self._read_profiles().get(_normalize_connector_id(connector_id))
+        return self._read_profiles().get(normalize_connector_id(connector_id))
 
     def list_profiles(self) -> tuple[ConnectorConfigProfile, ...]:
         profiles = self._read_profiles()
         return tuple(profiles[key] for key in sorted(profiles))
 
     def upsert(self, profile: ConnectorConfigProfile) -> None:
-        connector_id = _normalize_connector_id(profile.connector_id)
+        connector_id = normalize_connector_id(profile.connector_id)
         profiles = self._read_profiles()
         profiles[connector_id] = ConnectorConfigProfile(
             connector_id=connector_id,
@@ -62,7 +107,7 @@ class ConnectorConfigStore:
 
     def remove(self, connector_id: str) -> bool:
         profiles = self._read_profiles()
-        removed = profiles.pop(_normalize_connector_id(connector_id), None)
+        removed = profiles.pop(normalize_connector_id(connector_id), None)
         if removed is None:
             return False
         self._write_profiles(profiles)
@@ -164,6 +209,14 @@ def format_connector_config_list(profiles: tuple[ConnectorConfigProfile, ...] | 
     return "\n".join(lines)
 
 
+def default_connector_config_resolver(env: Mapping[str, str] | None = None) -> ConnectorConfigResolver:
+    return ConnectorConfigResolver(env=env)
+
+
+def normalize_connector_id(connector_id: str) -> str:
+    return connector_id.strip().lower()
+
+
 def _profile_from_payload(connector_id: str, value: Any) -> ConnectorConfigProfile | None:
     if not isinstance(value, dict):
         return None
@@ -176,7 +229,7 @@ def _profile_from_payload(connector_id: str, value: Any) -> ConnectorConfigProfi
         return None
 
     return ConnectorConfigProfile(
-        connector_id=_normalize_connector_id(str(value.get("connector_id") or connector_id)),
+        connector_id=normalize_connector_id(str(value.get("connector_id") or connector_id)),
         profile=str(value.get("profile") or "default"),
         credential_ref=str(value.get("credential_ref") or ""),
         scopes=tuple(str(scope) for scope in raw_scopes),
@@ -196,9 +249,44 @@ def _profile_to_payload(profile: ConnectorConfigProfile) -> dict[str, Any]:
     }
 
 
-def _normalize_connector_id(connector_id: str) -> str:
-    return connector_id.strip().lower()
-
-
 def _has_secret(config: Mapping[str, Any]) -> bool:
     return any(bool(config.get(key)) for key in SECRET_KEYS)
+
+
+def _connector_config_from_env(connector_id: str, env: Mapping[str, str]) -> dict[str, Any]:
+    if connector_id == "brave":
+        config: dict[str, Any] = {}
+        api_key = str(env.get("APPV24_BRAVE_SEARCH_API_KEY", "")).strip()
+        base_url = str(env.get("APPV24_BRAVE_SEARCH_BASE_URL", "")).strip()
+        if api_key:
+            config["api_key"] = api_key
+        if base_url:
+            config["base_url"] = base_url
+        return config
+
+    if connector_id == "telegram":
+        config = {}
+        bot_token = str(env.get("APPV24_TELEGRAM_BOT_TOKEN", "")).strip()
+        allowed_chat_ids = _split_csv(str(env.get("APPV24_TELEGRAM_ALLOWED_CHAT_IDS", "")))
+        base_url = str(env.get("APPV24_TELEGRAM_API_BASE_URL", "")).strip()
+        if bot_token:
+            config["bot_token"] = bot_token
+        if allowed_chat_ids:
+            config["allowed_chat_ids"] = list(allowed_chat_ids)
+        if base_url:
+            config["base_url"] = base_url
+        return config
+
+    return {}
+
+
+def _credential_env_name(connector_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", connector_id).strip("_").upper()
+
+
+def _split_scopes(value: str) -> tuple[str, ...]:
+    return tuple(item for item in re.split(r"[\s,]+", value.strip()) if item)
+
+
+def _split_csv(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())

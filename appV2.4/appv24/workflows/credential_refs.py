@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import re
 from typing import Mapping
 
+from appv24.workflows.connector_user_config import ConnectorConfigResolver
 from appv24.workflows.loader import PackageDocuments
 
 
@@ -42,6 +43,23 @@ def credential_resolver_from_env(
         ref = str(env.get(f"APPV24_{env_name}_CREDENTIAL_REF", "")).strip()
         scopes = _split_scope_env(str(env.get(f"APPV24_{env_name}_SCOPES", "")))
         credentials[connector_id] = CredentialScope(available=bool(ref), scopes=scopes)
+    return CredentialRefResolver(credentials)
+
+
+def credential_resolver_from_connector_config(
+    connector_ids: tuple[str, ...],
+    connector_config: ConnectorConfigResolver,
+) -> CredentialRefResolver:
+    credentials: dict[str, CredentialScope] = {}
+    for connector_id in connector_ids:
+        resolved = connector_config.resolve(connector_id)
+        if resolved is None:
+            credentials[connector_id] = CredentialScope(available=False, scopes=())
+            continue
+        credentials[connector_id] = CredentialScope(
+            available=resolved.available,
+            scopes=tuple(resolved.scopes),
+        )
     return CredentialRefResolver(credentials)
 
 
