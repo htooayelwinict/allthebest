@@ -734,6 +734,49 @@ def test_live_production_runner_blocks_disallowed_telegram_target_from_operator_
     assert "other-admin" not in json.dumps(run_manifest)
 
 
+def test_live_production_gate_blocks_broadcast_recipient_outside_policy(tmp_path: Path) -> None:
+    package = _write_telegram_broadcast_package(tmp_path)
+    run_root = tmp_path / ".workflow-runs"
+    approval_report = run_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LOCAL,
+            run_root=run_root,
+            approve_all=False,
+        )
+    )
+    _approve_first_request(run_root, approval_report.run_id, package_fingerprint=approval_report.package_fingerprint)
+
+    transport = RecordingTransport(
+        {"sent_count": 2, "message_ids": ["1", "2"], "chat_ids": ["admin-chat", "other-chat"]},
+        status="live-production",
+    )
+    report = run_live_production_workflow(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_PRODUCTION,
+            run_root=run_root,
+            approval_run_id=approval_report.run_id,
+            connector_allowlist=("telegram.broadcast_message",),
+            operator_env={"APPV24_TELEGRAM_ALLOWED_CHAT_IDS": "admin-chat"},
+        ),
+        broker=LiveWorkflowBroker(
+            {"telegram.broadcast_message": transport},
+            mode="live-production",
+            production_enabled=True,
+        ),
+        credential_resolver=CredentialRefResolver(
+            {"telegram": CredentialScope(available=True, scopes=("telegram:subscribers:read", "telegram:send"))}
+        ),
+    )
+
+    assert report.status == "blocked"
+    assert report.issues == ("telegram.broadcast_message chat_id is not allowlisted: other-chat",)
+    assert transport.requests == []
+
+
 def test_live_production_runner_blocks_non_local_approval_run_before_transport(tmp_path: Path) -> None:
     package = _write_production_telegram_package(tmp_path)
     run_root = tmp_path / ".workflow-runs"
@@ -1206,6 +1249,84 @@ def _write_production_telegram_package(root: Path) -> Path:
         "input:\n  chat_id: admin-chat\n  text: Production alert.\n",
         encoding="utf-8",
     )
+    return package
+
+
+def _write_telegram_broadcast_package(root: Path) -> Path:
+    package = _write_package(
+        root,
+        workflow={
+            "version": "appv24.workflow/v1",
+            "name": "telegram-broadcast",
+            "triggers": [{"id": "manual", "type": "manual"}],
+            "entrypoint": "list_subscribers",
+            "steps": [
+                {"id": "list_subscribers", "uses": "telegram.list_subscribers", "next": "send_digest"},
+                {
+                    "id": "send_digest",
+                    "uses": "telegram.broadcast_message",
+                    "side_effect_class": "send",
+                    "approval": "approve_broadcast",
+                    "with": {
+                        "recipients": "{{ steps.list_subscribers.outputs.recipients }}",
+                        "audience_hash": "{{ steps.list_subscribers.outputs.audience_hash }}",
+                        "text": {"inputRef": "digest_text"},
+                    },
+                    "next": "done",
+                },
+                {"id": "done", "type": "terminal"},
+            ],
+            "design": _design(side_effects=["Send Telegram broadcast"], approval_gates=["approve_broadcast"]),
+        },
+        connectors={
+            "version": "appv24.connectors/v1",
+            "connectors": [
+                {
+                    "id": "telegram",
+                    "adapter": "direct_api",
+                    "actions": [
+                        {
+                            "id": "list_subscribers",
+                            "side_effect": False,
+                            "required_scopes": ["telegram:subscribers:read"],
+                            "outputs": {"allowed": ["recipients", "recipient_count", "audience_hash"]},
+                        },
+                        {
+                            "id": "broadcast_message",
+                            "side_effect": True,
+                            "side_effect_class": "send",
+                            "execution_mode": "brokered",
+                            "approval_required": True,
+                            "dry_run_supported": True,
+                            "idempotency": {"key_fields": ["audience_hash", "text"]},
+                            "outputs": {"allowed": ["sent_count", "message_ids", "chat_ids"]},
+                            "required_scopes": ["telegram:send"],
+                        },
+                    ],
+                }
+            ],
+        },
+        permissions={
+            "version": "appv24.permissions/v1",
+            "approvals": [{"id": "approve_broadcast", "mode": "explicit", "required_for": ["send_digest"]}],
+            "permissions": [
+                {
+                    "connector": "telegram",
+                    "actions": ["list_subscribers", "broadcast_message"],
+                    "scopes": ["telegram:subscribers:read", "telegram:send"],
+                }
+            ],
+        },
+    )
+    fixture_text = (
+        "input:\n"
+        "  digest_text: Daily AI digest\n"
+        "  recipients:\n"
+        "    - admin-chat\n"
+        "    - other-chat\n"
+    )
+    (package / "dry_run_fixtures" / "happy_path.yaml").write_text(fixture_text, encoding="utf-8")
+    (package / "dry_run_fixtures" / "rejection_path.yaml").write_text(fixture_text, encoding="utf-8")
     return package
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from appv24.workflows.connector_contracts import (
@@ -22,6 +23,9 @@ from appv24.workflows.idempotency import build_idempotency_key
 from appv24.workflows.ir import ActionCapability, StepKind, WorkflowIR, WorkflowStep
 from appv24.workflows.policy import MUTATING_SIDE_EFFECTS
 from appv24.workflows.runner import MAX_TRANSITIONS
+
+
+STEP_OUTPUT_TEMPLATE_RE = re.compile(r"^\s*\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_.-]+)\s*\}\}\s*$")
 
 
 @dataclass(frozen=True)
@@ -265,15 +269,28 @@ def _target_policy_issue(
             return LiveGateIssue("target_not_allowlisted", step.step_id, action_ref, issue)
         return None
 
-    if action_ref == "telegram.send_message":
+    if action_ref in {"telegram.send_message", "telegram.broadcast_message"}:
         allowed_chat_ids = _split_csv(env.get(contract.target_policy.allowed_chat_ids_env or "", ""))
         if not allowed_chat_ids:
             return LiveGateIssue(
                 "missing_target_allowlist",
                 step.step_id,
                 action_ref,
-                "telegram.send_message requires APPV24_TELEGRAM_ALLOWED_CHAT_IDS",
+                f"{action_ref} requires APPV24_TELEGRAM_ALLOWED_CHAT_IDS",
             )
+        if action_ref == "telegram.broadcast_message":
+            recipients = _field_values(step, fixture, "recipients")
+            if not recipients:
+                return LiveGateIssue("missing_target", step.step_id, action_ref, "telegram.broadcast_message requires recipients")
+            for chat_id in recipients:
+                if chat_id not in allowed_chat_ids:
+                    return LiveGateIssue(
+                        "target_not_allowlisted",
+                        step.step_id,
+                        action_ref,
+                        f"telegram.broadcast_message chat_id is not allowlisted: {chat_id}",
+                    )
+            return None
         chat_id = _field_value(step, fixture, "chat_id")
         if chat_id is None:
             return LiveGateIssue("missing_target", step.step_id, action_ref, "telegram.send_message requires chat_id")
@@ -330,9 +347,63 @@ def _field_value(step: WorkflowStep, fixture: Mapping[str, object], key: str) ->
     fixture_input = fixture.get("input")
     primary = with_map if isinstance(with_map, Mapping) else {}
     fallback = fixture_input if isinstance(fixture_input, Mapping) else {}
-    value = _resolve_input_ref(primary.get(key), fallback)
+    value = _resolve_input_ref(primary.get(key), fallback, fixture=fixture)
     if value is None:
         value = fallback.get(key)
+    return _string_value(value)
+
+
+def _field_values(step: WorkflowStep, fixture: Mapping[str, object], key: str) -> tuple[str, ...]:
+    with_map = step.raw.get("with")
+    fixture_input = fixture.get("input")
+    primary = with_map if isinstance(with_map, Mapping) else {}
+    fallback = fixture_input if isinstance(fixture_input, Mapping) else {}
+    value = _resolve_input_ref(primary.get(key), fallback, fixture=fixture)
+    if value is None:
+        value = fallback.get(key)
+    if isinstance(value, list):
+        return tuple(item for item in (_string_value(item) for item in value) if item is not None)
+    scalar = _string_value(value)
+    return (scalar,) if scalar is not None else ()
+
+
+def _resolve_input_ref(
+    value: object,
+    fixture_input: Mapping[str, object],
+    *,
+    fixture: Mapping[str, object] | None = None,
+) -> object:
+    if isinstance(value, Mapping):
+        input_ref = value.get("inputRef")
+        if isinstance(input_ref, str):
+            return fixture_input.get(input_ref)
+    if isinstance(value, str) and fixture is not None:
+        resolved = _resolve_step_output_template(value, fixture)
+        if resolved is not None:
+            return resolved
+    return value
+
+
+def _resolve_step_output_template(value: str, fixture: Mapping[str, object]) -> object | None:
+    match = STEP_OUTPUT_TEMPLATE_RE.match(value)
+    if match is None:
+        return None
+    step_id, output_path = match.groups()
+    steps = fixture.get("steps")
+    if not isinstance(steps, Mapping):
+        return None
+    step_entry = steps.get(step_id)
+    if not isinstance(step_entry, Mapping):
+        return None
+    current: object = step_entry.get("outputs")
+    for part in output_path.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _string_value(value: object) -> str | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, int):
@@ -341,14 +412,6 @@ def _field_value(step: WorkflowStep, fixture: Mapping[str, object], key: str) ->
         return None
     stripped = value.strip()
     return stripped or None
-
-
-def _resolve_input_ref(value: object, fixture_input: Mapping[str, object]) -> object:
-    if isinstance(value, Mapping):
-        input_ref = value.get("inputRef")
-        if isinstance(input_ref, str):
-            return fixture_input.get(input_ref)
-    return value
 
 
 def _split_csv(value: str | None) -> tuple[str, ...]:
