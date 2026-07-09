@@ -12,13 +12,12 @@ REQUIRED_PACKAGE_BLOCK_LABELS = (
     "```yaml connectors.yaml",
     "```yaml permissions.yaml",
     "```yaml dry_run_fixtures/happy_path.yaml",
-    "```yaml dry_run_fixtures/rejection_path.yaml",
     "```markdown rollback.md",
 )
 
 
 def render_required_package_blocks_fragment() -> str:
-    lines = ["Use these exact labeled fenced sections:"]
+    lines = ["Use only these exact labeled fenced sections:"]
     lines.extend(f"- {label}" for label in REQUIRED_PACKAGE_BLOCK_LABELS)
     return "\n".join(lines)
 
@@ -36,7 +35,16 @@ def render_passive_safety_fragment() -> str:
     )
 
 
-def render_schema_reminders_fragment() -> str:
+def render_schema_reminders_fragment(*, initial_package_generation: bool = False) -> str:
+    fixture_scope_rule = (
+        "- Initial package drafts must include only dry_run_fixtures/happy_path.yaml; "
+        "do not add extra dry_run_fixtures/*.yaml unless a later repair prompt scopes an existing fixture."
+    )
+    if not initial_package_generation:
+        fixture_scope_rule = (
+            "- Add extra dry_run_fixtures/*.yaml only when they model a real alternate input, decision branch, "
+            "or failure path."
+        )
     return "\n".join(
         [
             "- workflow.yaml top-level shape: version: appv24.workflow/v1, name:, description:, design:, triggers:, entrypoint:, steps:.",
@@ -55,6 +63,7 @@ def render_schema_reminders_fragment() -> str:
             "- Every multi-branch decision step must have matching dry-run fixture decisions.",
             "- dry_run_fixtures/*.yaml must include decision: mappings for each multi-branch decision step.",
             "- Fixture decision values must be branch names from workflow.yaml steps[].branches.",
+            fixture_scope_rule,
             "- expected_path is documentation only; it does not drive runtime simulation.",
             "- workflow.yaml steps must use approval: <approval-id> for mutating side effects.",
             "- Mutating workflow steps must use approval: <approval-id>; never use approval_gate:.",
@@ -81,6 +90,7 @@ def render_schema_reminders_fragment() -> str:
             "- permissions[].actions must be workflow connector action id strings.",
             "- permissions.yaml permissions[].scopes must grant every required_scopes value used by granted actions.",
             "- permissions[].scopes must include every required_scopes value for the granted connector actions; do not use '*' wildcard scopes.",
+            "- permissions[].scopes must not include scopes beyond connector-owned required_scopes; do not add provider-generic aliases.",
             "- For example, if github.create_issue requires issues and github.get_dependabot_alerts requires security_events, the github permission must include scopes: [issues, security_events].",
             "- permissions.yaml approvals[].required_for must be workflow step id strings.",
             "- dry_run_fixtures must use top-level decision: to choose decision branches.",
@@ -100,15 +110,23 @@ def render_capability_catalog_fragment() -> str:
         *[f"- {contract_catalog[action].prompt_summary}" for action in sorted(contract_catalog)],
         "- workflow.yaml steps[].uses values must match one built-in action or a strict external action declared in connectors.yaml.",
         "- Non-built-in actions require a connector-owned interface: custom: true, source@version, side_effect, side_effect_class, execution_mode, dry_run_supported, outputs.allowed, and required_scopes; live still needs transport/preflight.",
+        "- End users describe workflows in plain language. Do not ask the end user to provide connector schema, execution_mode, workflow_hints, outputs.allowed, idempotency fields, or reference syntax.",
+        "- If no built-in or active extension catalog action matches but the user request clearly needs a new connector or middleware, declare a connector-owned extension interface in the package and let validation create the coder-addon handoff.",
+        "- For coder-addon connector interfaces, include workflow_hints with generated_by: coding_profile and qa_required: true, plus input_fields and required_input_fields when known.",
+        "- Do not embed appv24.extension_qa/v1 returned QA evidence in generated package drafts; QA manifests are returned later by the coding profile through the handoff inbox.",
+        "- Do not use execution_mode: design_only for an action used by a workflow step; use brokered or manual according to the connector boundary so validation can block on extension QA.",
+        "- The app writes the coder-profile PRD and dispatch handoff after validation; the workflow package should only describe the connector or middleware interface it needs.",
         "- For public web/news search, prefer brave.search over placeholder source.fetch_items URLs.",
         "- Required connector inputs must be bound in workflow.yaml steps[].with, not only in dry_run_fixtures; for brave.search set with.query, and for telegram.broadcast_message set with.recipients, with.audience_hash, and with.text.",
+        '- appv24 workflow references must be quoted double-brace strings without a dollar sign: "{{ steps.<step_id>.outputs.<field> }}"; never use GitHub-style "${{ ... }}".',
+        '- For AI-news registered telegram workflows, bind exactly: items: "{{ steps.search_ai_news.outputs.items }}", recipients: "{{ steps.list_subscribers.outputs.recipients }}", audience_hash: "{{ steps.list_subscribers.outputs.audience_hash }}", text: "{{ steps.summarize_news.outputs.summary }}".',
         "- Built-in connector idempotency.key_fields must match the connector contract; telegram.broadcast_message uses audience_hash, text.",
         "- Use draft actions only when the user asks for a draft/review-only workflow: telegram.create_message_draft, gmail.create_draft, notification.create_draft.",
         "- Scalar connector inputs must stay scalar: telegram.send_message.chat_id, telegram.create_message_draft.chat_id, brave.search.query, and http.fetch.url cannot receive arrays, maps, subscriber lists, or broadcast lists.",
         "- Do not invent connector action names, even for read-only actions.",
         "- Do not invent receive_webhook, send_live, close_ticket, post_chat, or cloud mutation actions.",
         "- Incoming events, webhooks, and fixture inputs are triggers or input data, not executable connector action steps unless the action is listed above.",
-        "- If no catalog action matches, model the need as trigger metadata, fixture input, a decision branch, or a local artifact design output.",
+        "- If a missing capability is only trigger/input metadata and not an executable connector or middleware, model it as trigger metadata, fixture input, a decision branch, or a local artifact design output.",
         "- For telegram registered-user workflows, use telegram.list_subscribers before telegram.broadcast_message.",
         "- Registered-user delivery must be modeled as connector interfaces: telegram.list_subscribers then telegram.broadcast_message.",
         "- Approval for registered-user telegram delivery belongs on telegram.broadcast_message, not on a separate manual approval step.",

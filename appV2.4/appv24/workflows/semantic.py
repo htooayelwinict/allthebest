@@ -21,7 +21,9 @@ from appv24.workflows.contracts import (
 )
 from appv24.workflows.catalog import built_in_capability_catalog
 from appv24.workflows.errors import WorkflowIssue, sorted_issues
+from appv24.workflows.extension_qa import validate_extension_qa_manifest
 from appv24.workflows.loader import PackageDocuments
+from appv24.workflows.workflow_extensions import WorkflowActionExtensionSpec, build_workflow_extension_profile
 
 MUTATING_SIDE_EFFECTS = {"create", "update", "delete", "send", "publish", "provision"}
 BROKERED_IDEMPOTENCY_CLASSES = {"create", "send", "publish", "provision"}
@@ -45,6 +47,8 @@ SECRET_KEY_RE = re.compile(r"(api[_-]?key|token|secret|password|credential)", re
 SECRET_VALUE_RE = re.compile(r"(?<![A-Za-z0-9_])(sk-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9_-]+|ghp_[A-Za-z0-9_]+)")
 SECRET_REF_KEY_RE = re.compile(r"^secret[_-]?ref$", re.IGNORECASE)
 INPUT_TEMPLATE_RE = re.compile(r"^\s*\{\{\s*(?P<path>inputs?\.[A-Za-z0-9_.-]+)\s*\}\}\s*$")
+STEP_OUTPUT_REFERENCE_RE = re.compile(r"\{\{\s*steps\.([A-Za-z0-9_.-]+)\.outputs(?:\.|\s*\}\})")
+GITHUB_STYLE_REFERENCE_RE = re.compile(r"\$\{\{")
 ROLLBACK_COMMAND_RE = re.compile(
     r"^\s*(?:[-*]\s*)?(?:[`$>#]\s*)?(?:curl|gh\s+api|aws|gcloud|az|kubectl|terraform|rm\s+-rf)\b",
 )
@@ -60,6 +64,9 @@ SCALAR_ACTION_INPUT_FIELDS = {
     "telegram.create_message_draft": ("chat_id", "text"),
     "telegram.send_message": ("chat_id", "text"),
     "telegram.send_message_draft": ("chat_id", "text"),
+}
+DESIGN_DECLARED_EXTERNAL_SYSTEMS = {
+    "crm": ("crm",),
 }
 
 
@@ -77,22 +84,37 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     action_entries = _connector_action_entries(documents.connectors)
     external_action_refs = set(external_connector_action_refs(documents.connectors))
     steps_by_action = _steps_by_action_use(steps)
+    extension_profile = build_workflow_extension_profile(documents)
 
+    issues.extend(_unsupported_reference_syntax_issues("workflow.yaml", workflow))
+    issues.extend(_unsupported_reference_syntax_issues("connectors.yaml", documents.connectors))
+    issues.extend(_unsupported_reference_syntax_issues("permissions.yaml", documents.permissions))
+    for fixture_name, fixture in documents.dry_run_fixtures.items():
+        issues.extend(_unsupported_reference_syntax_issues(f"dry_run_fixtures/{fixture_name}", fixture))
+    if documents.rollback_text:
+        issues.extend(_unsupported_reference_syntax_issues("rollback.md", documents.rollback_text))
     issues.extend(_design_contract_issues(workflow))
     issues.extend(_duplicate_step_issues(step_ids))
     issues.extend(_entrypoint_issues(workflow, known_steps))
     issues.extend(_decision_contract_issues(steps, documents.dry_run_fixtures))
     issues.extend(_runtime_transition_issues(steps))
     issues.extend(_transition_issues(steps, known_steps))
+    issues.extend(_step_output_reference_order_issues(steps))
+    issues.extend(_approval_required_for_target_issues(documents.permissions, known_steps))
+    issues.extend(_generated_connector_action_use_issues(extension_profile.action_specs, steps_by_action))
+    issues.extend(_declared_external_system_modeling_issues(workflow, documents.connectors, steps))
     issues.extend(_connector_reference_issues(steps, connectors, permission_actions, permission_scopes, external_action_refs))
-    issues.extend(_connector_required_input_issues(steps))
-    issues.extend(_scalar_connector_input_issues(steps, documents.dry_run_fixtures))
+    issues.extend(_connector_required_input_issues(steps, extension_profile.action_specs))
+    issues.extend(_connector_required_any_input_issues(steps, extension_profile.action_specs))
+    issues.extend(_scalar_connector_input_issues(steps, documents.dry_run_fixtures, extension_profile.action_specs))
     issues.extend(_intelligence_node_contract_issues(steps, connectors))
     issues.extend(_builtin_action_output_contract_issues(action_entries))
     issues.extend(_catalog_issues(action_entries, external_action_refs))
     issues.extend(_connector_contract_issues(action_entries, external_action_refs))
+    issues.extend(_extension_qa_issues(action_entries))
     issues.extend(validate_external_connector_contracts(documents.connectors))
     issues.extend(_side_effect_contract_issues(action_entries, steps_by_action, documents.permissions))
+    issues.extend(_permission_scope_contract_issues(documents.permissions, connectors, external_action_refs))
 
     mutating_steps = _mutating_steps(steps, connectors)
     issues.extend(_approval_issues(mutating_steps, approval_ids, approval_required_for))
@@ -106,18 +128,58 @@ def validate_semantics(documents: PackageDocuments) -> list[WorkflowIssue]:
     if mutating_steps:
         if not documents.rollback_text or not documents.rollback_text.strip():
             issues.append(WorkflowIssue("missing_rollback", "rollback.md", (), "mutating workflows require rollback.md"))
-        for required_fixture in ("happy_path.yaml", "rejection_path.yaml"):
-            if required_fixture not in documents.dry_run_fixtures:
-                issues.append(
-                    WorkflowIssue(
-                        "missing_fixture",
-                        "dry_run_fixtures",
-                        (),
-                        f"mutating workflows require dry_run_fixtures/{required_fixture}",
-                    )
+        if "happy_path.yaml" not in documents.dry_run_fixtures:
+            issues.append(
+                WorkflowIssue(
+                    "missing_fixture",
+                    "dry_run_fixtures",
+                    (),
+                    "mutating workflows require dry_run_fixtures/happy_path.yaml",
                 )
+            )
 
     return list(sorted_issues(issues))
+
+
+def _unsupported_reference_syntax_issues(
+    filename: str,
+    value: Any,
+    path: tuple[str | int, ...] = (),
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            child_path = (*path, str(key))
+            if filename == "workflow.yaml" and key == "steps" and isinstance(child, list):
+                for index, step in enumerate(child):
+                    step_path = (*path, "steps", _workflow_step_path_id(step, index))
+                    issues.extend(_unsupported_reference_syntax_issues(filename, step, step_path))
+                continue
+            issues.extend(_unsupported_reference_syntax_issues(filename, child, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            issues.extend(_unsupported_reference_syntax_issues(filename, child, (*path, index)))
+    elif isinstance(value, str) and GITHUB_STYLE_REFERENCE_RE.search(value):
+        issues.append(
+            WorkflowIssue(
+                "unsupported_reference_syntax",
+                filename,
+                path,
+                "Use appv24 double-brace references without a dollar sign; "
+                'write "{{ steps.<step_id>.outputs.<field> }}", not "${{ ... }}".',
+                expected='quoted appv24 reference like "{{ steps.search_ai_news.outputs.items }}"',
+                repair_hint="Remove the leading dollar sign from workflow references and keep the value quoted.",
+            )
+        )
+    return issues
+
+
+def _workflow_step_path_id(step: object, index: int) -> str | int:
+    if isinstance(step, Mapping):
+        step_id = step.get("id")
+        if isinstance(step_id, str) and step_id.strip():
+            return step_id
+    return index
 
 
 def _design_contract_issues(workflow: Mapping[str, Any]) -> list[WorkflowIssue]:
@@ -392,20 +454,30 @@ def _transition_issues(steps: Iterable[Mapping[str, Any]], known_steps: set[str]
     return issues
 
 
-def _connector_required_input_issues(steps: Iterable[Mapping[str, Any]]) -> list[WorkflowIssue]:
+def _connector_required_input_issues(
+    steps: Iterable[Mapping[str, Any]],
+    extension_specs: Iterable[WorkflowActionExtensionSpec] = (),
+) -> list[WorkflowIssue]:
     issues: list[WorkflowIssue] = []
-    contract_catalog = builtin_connector_contract_catalog()
+    required_fields = {
+        action_ref: contract.required_input_fields
+        for action_ref, contract in builtin_connector_contract_catalog().items()
+        if contract.required_input_fields
+    }
+    for spec in extension_specs:
+        if spec.required_input_fields:
+            required_fields[spec.action_ref] = spec.required_input_fields
     for index, step in enumerate(steps):
         uses = step.get("uses")
         if not isinstance(uses, str):
             continue
-        contract = contract_catalog.get(uses)
-        if contract is None or not contract.required_input_fields:
+        fields = required_fields.get(uses)
+        if not fields:
             continue
         step_id = str(step.get("id", f"steps[{index}]"))
         step_with = step.get("with")
         with_map = step_with if isinstance(step_with, Mapping) else {}
-        for field in contract.required_input_fields:
+        for field in fields:
             if _has_connector_input_binding(with_map.get(field)):
                 continue
             issues.append(
@@ -437,17 +509,62 @@ def _has_connector_input_binding(value: Any) -> bool:
     return True
 
 
-def _scalar_connector_input_issues(
+def _connector_required_any_input_issues(
     steps: Iterable[Mapping[str, Any]],
-    dry_run_fixtures: Mapping[str, Mapping[str, Any]],
+    extension_specs: Iterable[WorkflowActionExtensionSpec] = (),
 ) -> list[WorkflowIssue]:
     issues: list[WorkflowIssue] = []
-    reported: set[tuple[str, str]] = set()
+    groups_by_action = {
+        spec.action_ref: spec.required_input_any_groups
+        for spec in extension_specs
+        if spec.required_input_any_groups
+    }
     for index, step in enumerate(steps):
         uses = step.get("uses")
         if not isinstance(uses, str):
             continue
-        scalar_fields = SCALAR_ACTION_INPUT_FIELDS.get(uses, ())
+        groups = groups_by_action.get(uses, ())
+        if not groups:
+            continue
+        step_id = str(step.get("id", f"steps[{index}]"))
+        step_with = step.get("with")
+        with_map = step_with if isinstance(step_with, Mapping) else {}
+        for group in groups:
+            if any(_has_connector_input_binding(with_map.get(field)) for field in group):
+                continue
+            field_list = ", ".join(group)
+            issues.append(
+                WorkflowIssue(
+                    "missing_connector_required_input_any",
+                    "workflow.yaml",
+                    ("steps", step_id, "with"),
+                    f"{uses} requires workflow.yaml step {step_id} to bind one of {field_list}",
+                    expected=f"one of {field_list}",
+                    repair_hint=(
+                        f"Add one of workflow.yaml step {step_id} fields: {field_list}. "
+                        "Required connector input alternatives must be bound in workflow.yaml."
+                    ),
+                )
+            )
+    return issues
+
+
+def _scalar_connector_input_issues(
+    steps: Iterable[Mapping[str, Any]],
+    dry_run_fixtures: Mapping[str, Mapping[str, Any]],
+    extension_specs: Iterable[WorkflowActionExtensionSpec] = (),
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    reported: set[tuple[str, str]] = set()
+    scalar_fields_by_action = dict(SCALAR_ACTION_INPUT_FIELDS)
+    for spec in extension_specs:
+        if spec.scalar_input_fields:
+            scalar_fields_by_action[spec.action_ref] = spec.scalar_input_fields
+    for index, step in enumerate(steps):
+        uses = step.get("uses")
+        if not isinstance(uses, str):
+            continue
+        scalar_fields = scalar_fields_by_action.get(uses, ())
         if not scalar_fields:
             continue
         step_id = str(step.get("id", f"steps[{index}]"))
@@ -568,6 +685,86 @@ def _runtime_transition_issues(steps: Iterable[Mapping[str, Any]]) -> list[Workf
                 )
             )
     return issues
+
+
+def _step_output_reference_order_issues(steps: Iterable[Mapping[str, Any]]) -> list[WorkflowIssue]:
+    step_list = list(steps)
+    known_steps = {str(step.get("id")) for step in step_list if isinstance(step.get("id"), str)}
+    outbound = _step_outbound_targets(step_list)
+    issues: list[WorkflowIssue] = []
+    for index, step in enumerate(step_list):
+        step_id = str(step.get("id", f"steps[{index}]"))
+        for referenced_step, path in _step_output_references(step.get("with"), ("steps", step_id, "with")):
+            if referenced_step not in known_steps:
+                issues.append(
+                    WorkflowIssue(
+                        "unknown_step_output_reference",
+                        "workflow.yaml",
+                        path,
+                        f"{step_id} references outputs from unknown step {referenced_step}",
+                        expected="existing upstream workflow step id",
+                        repair_hint="Reference outputs only from existing upstream workflow steps.",
+                    )
+                )
+                continue
+            if referenced_step == step_id or _can_reach_step(outbound, referenced_step, step_id):
+                continue
+            issues.append(
+                WorkflowIssue(
+                    "future_step_output_reference",
+                    "workflow.yaml",
+                    path,
+                    f"{step_id} references outputs from {referenced_step}, but {referenced_step} does not run before {step_id}",
+                    expected="reference only upstream step outputs",
+                    repair_hint=(
+                        f"Move {step_id} after {referenced_step} in the workflow graph, "
+                        f"or change the reference to an output from a step that runs before {step_id}."
+                    ),
+                )
+            )
+    return issues
+
+
+def _step_output_references(value: object, path: tuple[str | int, ...]) -> list[tuple[str, tuple[str | int, ...]]]:
+    references: list[tuple[str, tuple[str | int, ...]]] = []
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            references.extend(_step_output_references(child, (*path, str(key))))
+    elif isinstance(value, list | tuple):
+        for index, child in enumerate(value):
+            references.extend(_step_output_references(child, (*path, index)))
+    elif isinstance(value, str):
+        references.extend((match.group(1), path) for match in STEP_OUTPUT_REFERENCE_RE.finditer(value))
+    return references
+
+
+def _step_outbound_targets(steps: Iterable[Mapping[str, Any]]) -> dict[str, set[str]]:
+    outbound: dict[str, set[str]] = {}
+    for index, step in enumerate(steps):
+        step_id = str(step.get("id", f"steps[{index}]"))
+        targets: set[str] = set()
+        next_step = step.get("next")
+        if isinstance(next_step, str) and next_step.strip():
+            targets.add(next_step)
+        branches = step.get("branches")
+        if isinstance(branches, Mapping):
+            targets.update(str(target) for target in branches.values() if isinstance(target, str) and target.strip())
+        outbound[step_id] = targets
+    return outbound
+
+
+def _can_reach_step(outbound: Mapping[str, set[str]], source: str, target: str) -> bool:
+    seen: set[str] = set()
+    stack = [source]
+    while stack:
+        step_id = stack.pop()
+        if step_id == target:
+            return True
+        if step_id in seen:
+            continue
+        seen.add(step_id)
+        stack.extend(next_step for next_step in outbound.get(step_id, set()) if next_step not in seen)
+    return False
 
 
 def _decision_contract_issues(
@@ -744,6 +941,56 @@ def _catalog_issues(
     return issues
 
 
+def _extension_qa_issues(actions: Mapping[tuple[str, str], Mapping[str, Any]]) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    for (connector_id, action_id), action in sorted(actions.items()):
+        action_ref = f"{connector_id}.{action_id}"
+        if not _requires_extension_qa(action):
+            continue
+        path = ("connectors", connector_id, "actions", action_id, "qa")
+        qa = action.get("qa")
+        if not isinstance(qa, Mapping):
+            issues.append(
+                WorkflowIssue(
+                    "extension_qa_missing",
+                    "connectors.yaml",
+                    path,
+                    f"{action_ref} requires passed extension QA evidence",
+                    expected="qa manifest with status: passed",
+                    repair_hint="Generate the connector with the coding profile, run QA, and attach its appv24.extension_qa/v1 manifest.",
+                )
+            )
+            continue
+        report = validate_extension_qa_manifest(
+            qa,
+            expected_kind="connector",
+            expected_extension_id=action_ref,
+            expected_required_scopes=tuple(
+                scope for scope in action.get("required_scopes", []) if isinstance(scope, str) and scope
+            ),
+            expected_allowed_outputs=tuple(_allowed_outputs(action)),
+        )
+        for issue in report.issues:
+            issues.append(
+                WorkflowIssue(
+                    issue.code,
+                    "connectors.yaml",
+                    (*path, *issue.path),
+                    f"{action_ref} extension QA failed: {issue.message}",
+                    expected=issue.expected,
+                    repair_hint=issue.repair_hint,
+                )
+            )
+    return issues
+
+
+def _requires_extension_qa(action: Mapping[str, Any]) -> bool:
+    hints = action.get("workflow_hints")
+    if not isinstance(hints, Mapping):
+        return False
+    return hints.get("qa_required") is True or hints.get("generated_by") == "coding_profile"
+
+
 def _connector_contract_issues(
     actions: Mapping[tuple[str, str], Mapping[str, Any]],
     external_action_refs: set[str],
@@ -866,6 +1113,101 @@ def _steps_by_action_use(steps: Iterable[Mapping[str, Any]]) -> dict[tuple[str, 
     return used
 
 
+def _generated_connector_action_use_issues(
+    extension_specs: Iterable[WorkflowActionExtensionSpec],
+    steps_by_action: Mapping[tuple[str, str], list[Mapping[str, Any]]],
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    for spec in extension_specs:
+        if not spec.qa_required:
+            continue
+        connector_id, _, action_id = spec.action_ref.partition(".")
+        if steps_by_action.get((connector_id, action_id)):
+            continue
+        issues.append(
+            WorkflowIssue(
+                "orphan_generated_connector_action",
+                "connectors.yaml",
+                ("connectors", connector_id, "actions", action_id),
+                f"{spec.action_ref} is generated by the coding profile but no workflow step calls it",
+                expected=f"workflow.yaml steps[].uses: {spec.action_ref}",
+                repair_hint=(
+                    "Wire the generated connector action into workflow.yaml at the intended point, "
+                    "bind its required inputs, and update transitions, permissions, approvals, and fixtures. "
+                    "Do not remove a coding-profile generated connector to make validation pass."
+                ),
+            )
+        )
+    return issues
+
+
+def _declared_external_system_modeling_issues(
+    workflow: Mapping[str, Any],
+    connectors_document: Mapping[str, Any],
+    steps: Iterable[Mapping[str, Any]],
+) -> list[WorkflowIssue]:
+    design_text = _design_text(workflow.get("design"))
+    if not design_text:
+        return []
+    used_connectors = _used_connector_ids(steps)
+    declared_connectors = _declared_connector_ids(connectors_document)
+    issues: list[WorkflowIssue] = []
+    for system_id, labels in sorted(DESIGN_DECLARED_EXTERNAL_SYSTEMS.items()):
+        if not any(_mentions_design_label(design_text, label) for label in labels):
+            continue
+        if system_id in used_connectors:
+            continue
+        connector_detail = "no connector is declared" if system_id not in declared_connectors else "no workflow step uses it"
+        issues.append(
+            WorkflowIssue(
+                "declared_external_system_unmodeled",
+                "workflow.yaml",
+                ("design",),
+                f"workflow design mentions {system_id.upper()} but no {system_id} connector step models it",
+                expected=f"reachable workflow.yaml step using {system_id}.<action>",
+                repair_hint=(
+                    f"Add a reachable {system_id} connector action step for the design-declared system; {connector_detail}. "
+                    "Do not satisfy the workflow by leaving external systems only in design prose."
+                ),
+            )
+        )
+    return issues
+
+
+def _design_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        return " ".join(_design_text(child) for child in value.values())
+    if isinstance(value, list | tuple):
+        return " ".join(_design_text(child) for child in value)
+    return ""
+
+
+def _mentions_design_label(text: str, label: str) -> bool:
+    return re.search(rf"\b{re.escape(label)}\b", text, flags=re.IGNORECASE) is not None
+
+
+def _used_connector_ids(steps: Iterable[Mapping[str, Any]]) -> set[str]:
+    connector_ids: set[str] = set()
+    for step in steps:
+        uses = step.get("uses")
+        if not isinstance(uses, str):
+            continue
+        connector_id, _, _ = uses.partition(".")
+        if connector_id:
+            connector_ids.add(connector_id.lower())
+    return connector_ids
+
+
+def _declared_connector_ids(connectors_document: Mapping[str, Any]) -> set[str]:
+    connector_ids: set[str] = set()
+    for connector in connectors_document.get("connectors", []):
+        if isinstance(connector, Mapping) and isinstance(connector.get("id"), str):
+            connector_ids.add(str(connector["id"]).lower())
+    return connector_ids
+
+
 def _connector_reference_issues(
     steps: Iterable[Mapping[str, Any]],
     connectors: Mapping[str, Mapping[str, Mapping[str, Any]]],
@@ -944,6 +1286,68 @@ def _connector_reference_issues(
                     )
                 )
     return issues
+
+
+def _permission_scope_contract_issues(
+    permissions_document: Mapping[str, Any],
+    connectors: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    external_action_refs: set[str],
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    builtin_contracts = builtin_connector_contract_catalog()
+    for permission in permissions_document.get("permissions", []):
+        if not isinstance(permission, Mapping) or not isinstance(permission.get("connector"), str):
+            continue
+        connector_id = str(permission["connector"])
+        raw_actions = permission.get("actions", [])
+        action_ids = tuple(action for action in raw_actions if isinstance(action, str))
+        granted_scopes = tuple(scope for scope in permission.get("scopes", []) if isinstance(scope, str))
+        if not action_ids or not granted_scopes:
+            continue
+        allowed_scopes = _allowed_permission_scopes_for_actions(connector_id, action_ids, connectors, builtin_contracts, external_action_refs)
+        for scope in sorted(set(granted_scopes)):
+            if scope == "*":
+                continue
+            if scope not in allowed_scopes:
+                expected = ", ".join(sorted(allowed_scopes)) if allowed_scopes else "no scopes"
+                issues.append(
+                    WorkflowIssue(
+                        "permission_unsupported_scope",
+                        "permissions.yaml",
+                        ("permissions",),
+                        f"permissions for {connector_id} grant unsupported scope {scope}",
+                        expected=expected,
+                        repair_hint=(
+                            "Use only connector-owned required_scopes for the actions listed in this permission entry; "
+                            "remove invented or provider-generic scope aliases."
+                        ),
+                    )
+                )
+    return issues
+
+
+def _allowed_permission_scopes_for_actions(
+    connector_id: str,
+    action_ids: tuple[str, ...],
+    connectors: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    builtin_contracts: Mapping[str, Any],
+    external_action_refs: set[str],
+) -> set[str]:
+    connector_actions = connectors.get(connector_id, {})
+    if "*" in action_ids:
+        action_ids = tuple(connector_actions)
+    allowed: set[str] = set()
+    for action_id in action_ids:
+        action_ref = f"{connector_id}.{action_id}"
+        contract = builtin_contracts.get(action_ref)
+        if contract is not None:
+            allowed.update(contract.required_scopes)
+            continue
+        action = connector_actions.get(action_id)
+        if action is None or action_ref not in external_action_refs:
+            continue
+        allowed.update(str(scope) for scope in action.get("required_scopes", []) if isinstance(scope, str))
+    return allowed
 
 
 def _side_effect_contract_issues(
@@ -1139,6 +1543,37 @@ def _approval_required_for(permissions_document: Mapping[str, Any]) -> dict[str,
         raw_required_for = approval.get("required_for", [])
         requirements[str(approval["id"])] = {str(step_id) for step_id in raw_required_for if isinstance(step_id, str)}
     return requirements
+
+
+def _approval_required_for_target_issues(
+    permissions_document: Mapping[str, Any],
+    known_steps: set[str],
+) -> list[WorkflowIssue]:
+    issues: list[WorkflowIssue] = []
+    for approval_index, approval in enumerate(permissions_document.get("approvals", [])):
+        if not isinstance(approval, Mapping) or not isinstance(approval.get("id"), str):
+            continue
+        approval_id = str(approval["id"])
+        required_for = approval.get("required_for", [])
+        if not isinstance(required_for, list):
+            continue
+        for target_index, step_id in enumerate(required_for):
+            if not isinstance(step_id, str) or step_id in known_steps:
+                continue
+            issues.append(
+                WorkflowIssue(
+                    "unknown_approval_target",
+                    "permissions.yaml",
+                    ("approvals", approval_index, "required_for", target_index),
+                    f"approval {approval_id} targets unknown workflow step {step_id}",
+                    expected="existing workflow.yaml step id",
+                    repair_hint=(
+                        "Update approvals[].required_for to existing workflow step ids, "
+                        "or remove the approval gate if no workflow step uses it."
+                    ),
+                )
+            )
+    return issues
 
 
 def _mutating_steps(

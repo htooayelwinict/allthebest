@@ -60,7 +60,7 @@ def test_connector_registry_flags_unknown_declared_action(tmp_path: Path) -> Non
 
 
 def test_connector_registry_reports_external_connector_interface(tmp_path: Path) -> None:
-    package = _write_external_crm_package(tmp_path)
+    package = _write_external_crm_package(tmp_path, generated_by_coding_profile=False)
 
     report = inspect_workflow_connector_registry(
         package,
@@ -82,6 +82,49 @@ def test_connector_registry_reports_external_connector_interface(tmp_path: Path)
     assert action.required_connector_env == ("APPV24_CRM_MCP_SERVER",)
     assert action.required_scopes == ("crm:read",)
     assert action.allowed_outputs == ("contact", "artifact_path")
+    assert "crm-prod" not in report.to_text()
+
+
+def test_connector_registry_reports_generated_external_connector_missing_qa(tmp_path: Path) -> None:
+    package = _write_external_crm_package(tmp_path, live_modes=("live-read",), qa_passed=False)
+
+    report = inspect_workflow_connector_registry(
+        package,
+        env={
+            "APPV24_CRM_MCP_SERVER": "mcp://crm",
+            "APPV24_CRM_CREDENTIAL_REF": "crm-prod",
+            "APPV24_CRM_SCOPES": "crm:read",
+        },
+    )
+
+    assert report.issues == ("extension_qa_missing: crm.lookup_contact requires passed extension QA evidence",)
+    action = report.actions[0]
+    assert action.action_ref == "crm.lookup_contact"
+    assert action.live_modes == ()
+    assert action.configured_live_modes == ()
+    assert "extension_qa_missing" in report.to_text()
+
+
+def test_connector_registry_uses_qa_passed_extension_live_modes(tmp_path: Path) -> None:
+    package = _write_external_crm_package(tmp_path, live_modes=("live-read",), qa_passed=True)
+
+    report = inspect_workflow_connector_registry(
+        package,
+        env={
+            "APPV24_CRM_MCP_SERVER": "mcp://crm",
+            "APPV24_CRM_CREDENTIAL_REF": "crm-prod",
+            "APPV24_CRM_SCOPES": "crm:read",
+        },
+    )
+
+    assert report.issues == ()
+    action = report.actions[0]
+    assert action.action_ref == "crm.lookup_contact"
+    assert action.cataloged is True
+    assert action.external is True
+    assert action.live_modes == ("live-read",)
+    assert action.required_scopes == ("crm:read",)
+    assert "live modes: live-read" in report.to_text()
     assert "crm-prod" not in report.to_text()
 
 
@@ -169,7 +212,13 @@ def _write_telegram_package(
     return package
 
 
-def _write_external_crm_package(root: Path) -> Path:
+def _write_external_crm_package(
+    root: Path,
+    *,
+    live_modes: tuple[str, ...] = (),
+    qa_passed: bool = False,
+    generated_by_coding_profile: bool = True,
+) -> Path:
     package = root / "external-crm-read"
     package.mkdir(parents=True, exist_ok=True)
     (package / "workflow.yaml").write_text(
@@ -204,6 +253,55 @@ def _write_external_crm_package(root: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    workflow_hints: dict[str, object] = {
+        "catalog_group": "Read data",
+        "catalog_label": "Lookup CRM contact",
+        "input_fields": ["email"],
+        "qa_required": qa_passed,
+    }
+    if generated_by_coding_profile:
+        workflow_hints["generated_by"] = "coding_profile"
+
+    action: dict[str, object] = {
+        "id": "lookup_contact",
+        "custom": True,
+        "source": "mcp://crm.lookup_contact@v1",
+        "side_effect": False,
+        "side_effect_class": "read",
+        "execution_mode": "brokered",
+        "dry_run_supported": True,
+        "required_scopes": ["crm:read"],
+        "outputs": {"allowed": ["contact", "artifact_path"]},
+        "workflow_hints": workflow_hints,
+    }
+    if live_modes:
+        action["live_modes"] = list(live_modes)
+    if qa_passed:
+        action["qa"] = {
+            "version": "appv24.extension_qa/v1",
+            "kind": "connector",
+            "extension_id": "crm.lookup_contact",
+            "source": "mcp://crm.lookup_contact@v1",
+            "status": "passed",
+            "qa": {
+                "schema_validation": "passed",
+                "tests": [{"command": "pytest appV2.4/tests/test_crm_connector.py", "status": "passed"}],
+                "side_effect_policy": "passed",
+                "runtime_boundary": "passed",
+                "adapter_contract": "passed",
+            },
+            "contract": {
+                "required_scopes": ["crm:read"],
+                "allowed_outputs": ["contact", "artifact_path"],
+            },
+            "fingerprints": {
+                "spec": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "implementation": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                "tests": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                "fixtures": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            },
+        }
+
     (package / "connectors.yaml").write_text(
         yaml.safe_dump(
             {
@@ -220,19 +318,7 @@ def _write_external_crm_package(root: Path) -> Path:
                                 "required": True,
                             }
                         ],
-                        "actions": [
-                            {
-                                "id": "lookup_contact",
-                                "custom": True,
-                                "source": "mcp://crm.lookup_contact@v1",
-                                "side_effect": False,
-                                "side_effect_class": "read",
-                                "execution_mode": "brokered",
-                                "dry_run_supported": True,
-                                "required_scopes": ["crm:read"],
-                                "outputs": {"allowed": ["contact", "artifact_path"]},
-                            }
-                        ],
+                        "actions": [action],
                     }
                 ],
             },

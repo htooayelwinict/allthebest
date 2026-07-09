@@ -928,16 +928,16 @@ def test_semantic_validation_rejects_raw_secret_values(tmp_path: Path) -> None:
     assert any(issue.code == "raw_secret" and issue.file == "connectors.yaml" for issue in issues)
 
 
-def test_semantic_validation_requires_rollback_and_fixtures_for_mutation(tmp_path: Path) -> None:
+def test_semantic_validation_requires_rollback_and_happy_path_for_mutation(tmp_path: Path) -> None:
     package = tmp_path / "package"
     write_minimal_package(package)
     (package / "rollback.md").unlink()
-    (package / "dry_run_fixtures" / "rejection_path.yaml").unlink()
+    (package / "dry_run_fixtures" / "happy_path.yaml").unlink()
 
     issues = validate_semantics(load_package_documents(package))
 
     assert any(issue.code == "missing_rollback" for issue in issues)
-    assert any(issue.code == "missing_fixture" and "rejection_path.yaml" in issue.message for issue in issues)
+    assert any(issue.code == "missing_fixture" and "happy_path.yaml" in issue.message for issue in issues)
 
 
 def test_semantic_validation_requires_approval_to_cover_mutating_step(tmp_path: Path) -> None:
@@ -1813,11 +1813,14 @@ outputs:
     )
 
 
-def test_ai_news_telegram_registered_users_package_uses_connector_interfaces(tmp_path: Path) -> None:
-    package = tmp_path / "ai-news-telegram"
+def _write_ai_news_telegram_registered_users_package(
+    package: Path,
+    *,
+    github_style_templates: bool = False,
+    include_rejection_fixture: bool = True,
+) -> None:
     package.mkdir()
-    (package / "workflow.yaml").write_text(
-        """
+    workflow_text = """
 version: appv24.workflow/v1
 name: ai-news-telegram-digest
 description: Search recent AI news, summarize it, and broadcast to Telegram subscribers.
@@ -1854,8 +1857,8 @@ steps:
     uses: telegram.list_subscribers
     with:
       audience: default
-    next: summarize_digest
-  - id: summarize_digest
+    next: summarize_news
+  - id: summarize_news
     uses: llm.summarize
     with:
       text: "{{ steps.search_ai_news.outputs.items }}"
@@ -1868,14 +1871,14 @@ steps:
     with:
       recipients: "{{ steps.list_subscribers.outputs.recipients }}"
       audience_hash: "{{ steps.list_subscribers.outputs.audience_hash }}"
-      text: "{{ steps.summarize_digest.outputs.summary }}"
+      text: "{{ steps.summarize_news.outputs.summary }}"
     next: done
   - id: done
     type: terminal
 """.strip()
-        + "\n",
-        encoding="utf-8",
-    )
+    if github_style_templates:
+        workflow_text = workflow_text.replace("{{ steps.", "${{ steps.")
+    (package / "workflow.yaml").write_text(workflow_text + "\n", encoding="utf-8")
     (package / "connectors.yaml").write_text(
         """
 version: appv24.connectors/v1
@@ -1943,12 +1946,42 @@ approvals:
     fixtures.mkdir()
     fixture = "input:\n  audience: default\n"
     (fixtures / "happy_path.yaml").write_text(fixture, encoding="utf-8")
-    (fixtures / "rejection_path.yaml").write_text(fixture, encoding="utf-8")
+    if include_rejection_fixture:
+        (fixtures / "rejection_path.yaml").write_text(fixture, encoding="utf-8")
     (package / "rollback.md").write_text("# Rollback\n\nReview Telegram broadcast manually.\n", encoding="utf-8")
+
+
+def test_ai_news_telegram_registered_users_package_uses_connector_interfaces(tmp_path: Path) -> None:
+    package = tmp_path / "ai-news-telegram"
+    _write_ai_news_telegram_registered_users_package(package)
 
     result = validate_workflow_package(package)
 
     assert result.ok, result.messages()
+
+
+def test_ai_news_telegram_registered_users_package_accepts_minimal_user_file_set(tmp_path: Path) -> None:
+    package = tmp_path / "ai-news-telegram"
+    _write_ai_news_telegram_registered_users_package(package, include_rejection_fixture=False)
+
+    result = validate_workflow_package(package)
+
+    assert result.ok, result.messages()
+
+
+def test_ai_news_telegram_package_rejects_github_style_template_refs(tmp_path: Path) -> None:
+    package = tmp_path / "ai-news-telegram"
+    _write_ai_news_telegram_registered_users_package(package, github_style_templates=True)
+
+    result = validate_workflow_package(package)
+
+    assert_has_issue(
+        result.issues,
+        file="workflow.yaml",
+        code="unsupported_reference_syntax",
+        location="workflow.yaml:steps.summarize_news.with.text",
+        message_substring="Use appv24 double-brace references without a dollar sign",
+    )
 
 
 def test_validate_workflow_package_returns_schema_issue_for_structurally_invalid_package(tmp_path: Path) -> None:

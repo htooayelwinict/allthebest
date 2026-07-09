@@ -141,6 +141,62 @@ def _directive_for_issue(
             ),
         )
 
+    if code == "orphan_generated_connector_action":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Attach the generated connector action to the workflow graph.",
+            rules=(
+                message,
+                "Add a reachable workflow step that uses the connector action.",
+                "Bind required connector inputs in workflow.yaml steps[].with; do not rely only on dry-run fixtures.",
+                "Update transitions, permissions, approvals, and happy_path expected_path so the new step is reachable from entrypoint.",
+                "Do not remove coding-profile generated connectors to make validation pass.",
+                "Do not leave coding-profile generated connectors as unused package metadata.",
+            ),
+        )
+
+    if code == "declared_external_system_unmodeled":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Model the design-declared external system as a reachable connector step.",
+            rules=(
+                message,
+                "Add the connector-owned interface in connectors.yaml if it is missing.",
+                "Add a reachable workflow.yaml step that calls that connector action.",
+                "Bind required inputs in steps[].with and update permissions, approvals, and happy_path expected_path.",
+                "Do not satisfy this by deleting the external system from design prose.",
+            ),
+        )
+
+    if code == "unknown_approval_target":
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Point the approval requirement at an existing workflow step or remove the unused approval.",
+            rules=(
+                message,
+                "permissions.yaml approvals[].required_for must list workflow.yaml step ids exactly.",
+                "If the approval is for a new connector step, add that step and update workflow transitions.",
+                "If no workflow step needs this approval, remove the approval entry and related design approval-gate text.",
+            ),
+        )
+
+    if code in {"future_step_output_reference", "unknown_step_output_reference"}:
+        return WorkflowRepairDirective(
+            code=code,
+            location=location,
+            instruction="Fix the step output reference so it points to an existing upstream step.",
+            rules=(
+                message,
+                "A workflow step may reference steps.<id>.outputs only when that step runs earlier in the workflow graph.",
+                "Move the consuming step after the producing step, or change the reference to an output from an upstream step.",
+                "Update transitions and dry_run_fixtures/happy_path.yaml expected_path to match the corrected graph.",
+                "Do not leave a connector step reading outputs from a future or unreachable step.",
+            ),
+        )
+
     if code == "connector_scalar_input_collection":
         return WorkflowRepairDirective(
             code=code,
@@ -576,11 +632,15 @@ def _connector_contract_directive(
 
 def _repair_issues(result: WorkflowDraftValidationResult) -> tuple[object, ...]:
     if not result.ok:
-        return result.validation.issues
+        return tuple(issue for issue in result.validation.issues if not _is_extension_handoff_issue(issue))
     if result.documents is None:
         return ()
     quality = check_workflow_quality_documents(result.documents)
     return () if quality.ok else quality.issues
+
+
+def _is_extension_handoff_issue(issue: object) -> bool:
+    return str(getattr(issue, "code", "")).startswith("extension_qa")
 
 
 def _schema_repair_directive(

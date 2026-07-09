@@ -105,6 +105,7 @@ from appv24.workflows.approval_commands import (
     list_workflow_approval_requests,
     record_workflow_approval_command,
 )
+from appv24.workflows.automation_paths import suggest_workflow_package_relative_path
 from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.bundle_export import (
@@ -113,9 +114,33 @@ from appv24.workflows.bundle_export import (
     format_workflow_bundle_export,
     write_workflow_bundle,
 )
-from appv24.workflows.capability_catalog import build_workflow_capability_catalog, format_workflow_capability_catalog
+from appv24.workflows.capability_catalog import (
+    WorkflowCapabilityCatalog,
+    build_workflow_capability_catalog,
+    format_workflow_capability_catalog,
+)
 from appv24.workflows.connector_registry import inspect_workflow_connector_registry
 from appv24.workflows.connector_contracts import workflow_operator_env_from_env
+from appv24.workflows.extension_catalog import (
+    format_workflow_extension_catalog_authoring_context,
+    format_workflow_extension_catalog_promotion,
+    load_workflow_extension_catalog,
+    promote_package_extensions_to_catalog,
+)
+from appv24.workflows.extension_builder import (
+    build_workflow_extension_handoff,
+    format_workflow_extension_build_report,
+    normalize_workflow_extension_build_timeout,
+)
+from appv24.workflows.extension_handoff import (
+    apply_extension_handoff_result,
+    dispatch_extension_handoff,
+    format_workflow_extension_handoff_apply_report,
+    format_workflow_extension_handoff_dispatch_report,
+    format_workflow_extension_handoff,
+    validation_issues_require_extension_handoff,
+    write_extension_handoff_for_validation_issues,
+)
 from appv24.workflows.explain import (
     explain_workflow_package,
     explain_workflow_activation_run,
@@ -124,11 +149,14 @@ from appv24.workflows.explain import (
     format_workflow_run_explanation,
 )
 from appv24.workflows.guided_run import (
+    approve_and_continue_guided_workflow_run,
+    approve_or_prepare_guided_workflow_run,
     continue_guided_workflow_run,
     format_guided_workflow_run_report,
     prepare_guided_workflow_run,
 )
 from appv24.workflows.iac_export import export_deployment_intent_from_path, format_deployment_intent
+from appv24.workflows.loader import load_package_documents
 from appv24.workflows.live_plan import build_workflow_live_plan_from_path, format_workflow_live_plan
 from appv24.workflows.phase_runner import (
     format_workflow_phase_run_report,
@@ -145,7 +173,12 @@ from appv24.workflows.scheduler import (
     run_due_activation_tick,
 )
 from appv24.workflows.staging import run_workflow_draft_stages, should_stage_workflow_drafts
-from appv24.workflows.validator import WorkflowDraftValidationResult, validate_workflow_draft_text, validate_workflow_package
+from appv24.workflows.validator import (
+    WorkflowDraftValidationResult,
+    validate_workflow_documents,
+    validate_workflow_draft_text,
+    validate_workflow_package,
+)
 from appv24.workflows.webhook_ingress import WebhookReplayStore, handle_local_webhook_run
 from appv24.workflows.webhook_server import (
     WorkflowWebhookServerConfig,
@@ -161,7 +194,33 @@ OPENROUTER_MODEL_PICKER_LIMIT = 50
 LATE_ABORT_GRACE_SECONDS = 1.0
 IDLE_CTRL_C_EXIT_WINDOW_SECONDS = 1.5
 _SIGINT_HANDLER_UNCHANGED = object()
+_WORKFLOW_EXTENSION_PROMPT_CATALOG_ATTR = "_workflow_extension_prompt_catalog"
+_WORKFLOW_AUTOMATION_ATTR = "_workflow_guided_automation"
 _MAX_WORKFLOW_SERVICE_TICKS = 1_000_000
+
+
+@dataclass(frozen=True)
+class _WorkflowAutomationRequest:
+    relative_path: str | None
+    fixture_name: str = "happy_path.yaml"
+
+
+def _set_active_workflow_extension_prompt_catalog(app, catalog: WorkflowCapabilityCatalog | None) -> None:
+    setattr(app, _WORKFLOW_EXTENSION_PROMPT_CATALOG_ATTR, catalog)
+
+
+def _active_workflow_extension_prompt_catalog(app) -> WorkflowCapabilityCatalog | None:
+    catalog = getattr(app, _WORKFLOW_EXTENSION_PROMPT_CATALOG_ATTR, None)
+    return catalog if isinstance(catalog, WorkflowCapabilityCatalog) else None
+
+
+def _set_pending_workflow_automation(app, request: _WorkflowAutomationRequest | None) -> None:
+    setattr(app, _WORKFLOW_AUTOMATION_ATTR, request)
+
+
+def _pending_workflow_automation(app) -> _WorkflowAutomationRequest | None:
+    request = getattr(app, _WORKFLOW_AUTOMATION_ATTR, None)
+    return request if isinstance(request, _WorkflowAutomationRequest) else None
 
 
 def _short_status_text(text: str, *, limit: int) -> str:
@@ -381,10 +440,16 @@ class InteractiveMode:
             {"name": "workflow-activation-run-explain", "description": "Explain a local workflow activation run"},
             {"name": "workflow-activation-status", "description": "Show activation status"},
             {"name": "workflow-approvals", "description": "List workflow approval request ids"},
-            {"name": "workflow-approve", "description": "Approve a pending workflow run approval request"},
-            {"name": "workflow-deny", "description": "Deny a pending workflow run approval request"},
+            {"name": "workflow-approve", "description": "Approve the latest pending guided workflow request"},
+            {"name": "workflow-deny", "description": "Deny the latest pending guided workflow request"},
             {"name": "workflow-bundle-check", "description": "Verify an exported workflow bundle manifest and file checksums"},
             {"name": "workflow-catalog", "description": "Show available workflow capabilities"},
+            {"name": "workflow-checkin", "description": "Show available workflow capabilities and arm automation"},
+            {"name": "workflow-extension-apply", "description": "Apply returned QA for a workflow extension handoff"},
+            {"name": "workflow-extension-build", "description": "Build workflow extension artifacts and apply returned QA"},
+            {"name": "workflow-extension-dispatch", "description": "Inspect or mark coding-profile extension dispatch"},
+            {"name": "workflow-extension-promote", "description": "Promote QA-passed workflow extensions into a reusable catalog"},
+            {"name": "workflow-automate", "description": "Override catalog automation with a fixed package path"},
             {"name": "workflow-connector-configure", "description": "Configure workflow connector credentials"},
             {"name": "workflow-connector-list", "description": "List configured workflow connectors"},
             {"name": "workflow-connector-remove", "description": "Remove workflow connector configuration"},
@@ -578,6 +643,16 @@ class InteractiveMode:
                 if self._run_workflow_connector_remove_command(prompt):
                     continue
                 if self._run_workflow_catalog_command(prompt):
+                    continue
+                if self._run_workflow_extension_build_command(prompt):
+                    continue
+                if self._run_workflow_extension_dispatch_command(prompt):
+                    continue
+                if self._run_workflow_extension_apply_command(prompt):
+                    continue
+                if self._run_workflow_extension_promote_command(prompt):
+                    continue
+                if self._run_workflow_automate_command(prompt):
                     continue
                 if self._run_workflow_run_guided_command(prompt):
                     continue
@@ -901,12 +976,14 @@ class InteractiveMode:
                 on_post_response_compaction_start=self._show_post_response_compaction_status,
             ),
             on_stage=on_stage,
+            capability_catalog=_active_workflow_extension_prompt_catalog(self.app),
         )
 
     def _finish_turn_thread(self, before_compressions: int, before_tokens: int) -> None:
         self._render_auto_compaction_notice(before_compressions, before_tokens)
         repair_result = self._repair_workflow_draft_if_needed()
         self._render_workflow_validation_if_needed(repair_result)
+        self._run_pending_workflow_automation_if_ready(repair_result)
         with self._turn_lock:
             next_prompt = None if self._shutdown_requested or not self._queued_after_turn else self._queued_after_turn.pop(0)
             if next_prompt is None:
@@ -1081,17 +1158,25 @@ class InteractiveMode:
             "/workflow-export-intent <path> - Export passive deployment intent for a saved workflow package.",
             "/workflow-connectors <path> - Inspect declared connector actions and live transport readiness.",
             "/workflow-connector-list - List configured workflow connectors.",
-            "/workflow-connector-configure brave|telegram - Configure Brave or Telegram connector credentials.",
-            "/workflow-connector-remove brave|telegram - Remove workflow connector configuration.",
+            "/workflow-connector-configure <connector-id> - Configure workflow connector credentials.",
+            "/workflow-connector-remove <connector-id> - Remove workflow connector configuration.",
             "/workflow-catalog - Show available workflow capabilities.",
+            "/workflow-checkin - Show available workflow capabilities and arm automation.",
+            "/workflow-extension-apply <handoff-manifest> <qa-manifest> - Apply returned QA for an extension handoff.",
+            "/workflow-extension-build <package-or-handoff-manifest> - Build workflow extension artifacts and apply returned QA.",
+            "/workflow-extension-dispatch <handoff-manifest> [--mark-dispatched] - Inspect or mark coding-profile dispatch.",
+            "/workflow-extension-promote <path> <catalog-path> [extension-id...] - Promote QA-passed extensions into a reusable catalog.",
+            "/workflow-automate <path> [fixture] - Operator override for saving the next valid workflow draft to a fixed path.",
             "/workflow-run-guided <path> [fixture] - Run guided workflow phases until approval.",
             "/workflow-continue-guided <path> <approval-run-id> [fixture] - Continue approved guided workflow production.",
             "/workflow-live-plan <path> [fixture] - Plan live/local workflow execution phases.",
             "/workflow-repair-report - Show the latest workflow repair report.",
             "/workflow-run-explain <path> [run-id] - Explain a saved workflow run artifact.",
             "/workflow-approvals <path> <run-id> - List workflow approval request ids.",
-            "/workflow-approve <path> <run-id> <approval-request-id> - Approve a pending workflow approval request.",
-            "/workflow-deny <path> <run-id> <approval-request-id> - Deny a pending workflow approval request.",
+            "/workflow-approve <path> [fixture] - Approve the latest pending guided request and continue production.",
+            "/workflow-deny <path> [fixture] - Deny the latest pending guided request.",
+            "/workflow-approve <path> <run-id> <approval-request-id> [--guided [fixture]] - Debug form for an explicit approval request.",
+            "/workflow-deny <path> <run-id> <approval-request-id> - Debug form for an explicit approval request.",
             "/workflow-live-env-template <mode> <path> --allow <action>[,<action>] - Render safe live env placeholders.",
             "/workflow-live-read-preflight <path> <fixture> --allow <action>[,<action>] - Check live-read readiness.",
             "/workflow-live-draft-preflight <path> <fixture> <approval-run-id> --allow <action>[,<action>] - Check live-draft readiness.",
@@ -1401,7 +1486,7 @@ class InteractiveMode:
         if len(args) != 2:
             self.history.add(
                 StatusLine(
-                    "Workflow connector remove failed: expected /workflow-connector-remove brave|telegram",
+                    "Workflow connector remove failed: expected /workflow-connector-remove <connector-id>",
                     kind="error",
                 )
             )
@@ -1431,7 +1516,7 @@ class InteractiveMode:
         if len(args) != 2:
             self.history.add(
                 StatusLine(
-                    "Workflow connector configure failed: expected /workflow-connector-configure brave|telegram",
+                    "Workflow connector configure failed: expected /workflow-connector-configure <connector-id>",
                     kind="error",
                 )
             )
@@ -1495,19 +1580,344 @@ class InteractiveMode:
                 config=config,
                 source="user-config",
             )
-        raise ValueError(f"unsupported workflow connector: {connector_id}")
+        credential_ref = self.prompt_extension_input("Credential ref") or f"{connector_id}-local"
+        scopes = _split_connector_scope_input(self.prompt_extension_input("Scopes") or "")
+        raw_config = self.prompt_extension_input("Connector config JSON", options={"secret": True}) or "{}"
+        try:
+            config = json.loads(raw_config)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"connector config JSON is malformed: {error.msg}") from error
+        if not isinstance(config, dict):
+            raise ValueError("connector config JSON must be an object")
+        return ConnectorConfigProfile(
+            connector_id=connector_id,
+            profile="default",
+            credential_ref=credential_ref.strip(),
+            scopes=scopes,
+            config=config,
+            source="user-config",
+        )
 
     def _run_workflow_catalog_command(self, prompt: str) -> bool:
-        if prompt.strip() != "/workflow-catalog":
+        if not _is_workflow_catalog_command(prompt):
             return False
 
-        rendered = format_workflow_capability_catalog(build_workflow_capability_catalog())
-        self.history.add(StatusLine("Workflow capability catalog", kind="info"))
-        self.history.add(Text(rendered))
+        args = prompt.split()
+        try:
+            if len(args) == 1:
+                catalog = build_workflow_capability_catalog()
+                _set_active_workflow_extension_prompt_catalog(self.app, None)
+            elif len(args) == 2:
+                catalog_path = _resolve_workflow_catalog_path(self.app.cwd, args[1])
+                extension_catalog = load_workflow_extension_catalog(catalog_path)
+                catalog = build_workflow_capability_catalog(extension_profile=extension_catalog.extension_profile)
+                prompt_catalog = build_workflow_capability_catalog(
+                    contract_catalog={},
+                    extension_profile=extension_catalog.extension_profile,
+                    package_authoring_context=format_workflow_extension_catalog_authoring_context(extension_catalog),
+                )
+                _set_active_workflow_extension_prompt_catalog(self.app, prompt_catalog)
+            else:
+                raise ValueError("expected /workflow-catalog or /workflow-checkin [extension-catalog-path]")
+            rendered = format_workflow_capability_catalog(catalog)
+            self.history.add(StatusLine("Workflow capability catalog", kind="info"))
+            self.history.add(Text(rendered))
+            if should_validate_workflow_drafts(self._profile_id()):
+                _set_pending_workflow_automation(self.app, _WorkflowAutomationRequest(relative_path=None))
+                self.history.add(StatusLine("Workflow catalog automation armed", kind="info"))
+                self.history.add(
+                    Text(
+                        "Next valid workflow draft will be saved with a generated package name and run guided live-read until approval.\n"
+                        "Next: describe the workflow you want in plain language.\n"
+                        "Then use the printed /workflow-approve command to approve and continue."
+                    )
+                )
+        except Exception as error:  # noqa: BLE001 - command errors should render, not crash TUI mode.
+            self.history.add(StatusLine(f"Workflow catalog failed: {error}", kind="error"))
         self.status.set_message("Idle")
         self._refresh_footer()
         self.tui.request_render()
         return True
+
+    def _run_workflow_extension_promote_command(self, prompt: str) -> bool:
+        if not _is_workflow_extension_promote_command(prompt):
+            return False
+
+        args = prompt.split()
+        try:
+            if len(args) < 3:
+                raise ValueError("expected /workflow-extension-promote <path> <catalog-path> [extension-id...]")
+            package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            catalog_path = _resolve_workflow_catalog_path(self.app.cwd, args[2])
+            documents = load_package_documents(package_path)
+            promotion = promote_package_extensions_to_catalog(
+                documents,
+                catalog_path,
+                extension_ids=tuple(args[3:]) or None,
+            )
+            self.history.add(StatusLine(f"Workflow extension promotion {promotion.status}", kind="info"))
+            self.history.add(Text(format_workflow_extension_catalog_promotion(promotion)))
+        except Exception as error:  # noqa: BLE001 - command errors should render, not crash TUI mode.
+            self.history.add(StatusLine(f"Workflow extension promotion failed: {error}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_extension_apply_command(self, prompt: str) -> bool:
+        if not _is_workflow_extension_apply_command(prompt):
+            return False
+
+        args = prompt.split()
+        try:
+            if len(args) != 3:
+                raise ValueError("expected /workflow-extension-apply <handoff-manifest> <qa-manifest>")
+            manifest_path = _resolve_workflow_file_path(self.app.cwd, args[1])
+            qa_path = _resolve_workflow_file_path(self.app.cwd, args[2])
+            report = apply_extension_handoff_result(manifest_path, qa_path)
+            self.history.add(StatusLine(f"Workflow extension handoff apply {report.status}", kind="info"))
+            self.history.add(Text(format_workflow_extension_handoff_apply_report(report)))
+        except Exception as error:  # noqa: BLE001 - command errors should render, not crash TUI mode.
+            self.history.add(StatusLine(f"Workflow extension apply failed: {error}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_extension_build_command(self, prompt: str) -> bool:
+        if not _is_workflow_extension_build_command(prompt):
+            return False
+
+        args = prompt.split()
+        try:
+            if len(args) != 2:
+                raise ValueError("expected /workflow-extension-build <package-or-handoff-manifest>")
+            package_or_manifest = _resolve_workflow_file_path(self.app.cwd, args[1])
+            timeout_seconds = normalize_workflow_extension_build_timeout(None)
+            self.history.add(StatusLine("Workflow extension build started", kind="info"))
+            self.history.add(
+                Text(
+                    f"package: {package_or_manifest}\n"
+                    f"timeout: {timeout_seconds:g}s\n"
+                    "extension artifacts are build-time only; workflow runtime remains blocked until QA passes."
+                )
+            )
+            self.status.set_message("Building workflow extension")
+            self._refresh_footer()
+            self.tui.request_render()
+
+            def render_progress(event) -> None:
+                kind = "error" if event.phase in {"extension-timed-out", "extension-failed"} else "info"
+                if event.message:
+                    self.history.add(StatusLine(event.message, kind=kind))
+                if event.log_path is not None:
+                    self.history.add(Text(f"log: {event.log_path}"))
+                self.status.set_message(event.message or "Building workflow extension")
+                self._refresh_footer()
+                self.tui.request_render()
+
+            report = build_workflow_extension_handoff(
+                package_or_manifest,
+                timeout_seconds=timeout_seconds,
+                progress=render_progress,
+            )
+            self.history.add(StatusLine(f"Workflow extension build {report.status}", kind="info"))
+            self.history.add(Text(format_workflow_extension_build_report(report)))
+        except Exception as error:  # noqa: BLE001 - command errors should render, not crash TUI mode.
+            self.history.add(StatusLine(f"Workflow extension build failed: {error}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_extension_dispatch_command(self, prompt: str) -> bool:
+        if not _is_workflow_extension_dispatch_command(prompt):
+            return False
+
+        args = prompt.split()
+        try:
+            if len(args) not in {2, 3}:
+                raise ValueError("expected /workflow-extension-dispatch <handoff-manifest> [--mark-dispatched]")
+            mark_dispatched = len(args) == 3 and args[2] == "--mark-dispatched"
+            if len(args) == 3 and not mark_dispatched:
+                raise ValueError("expected /workflow-extension-dispatch <handoff-manifest> [--mark-dispatched]")
+            manifest_path = _resolve_workflow_file_path(self.app.cwd, args[1])
+            report = dispatch_extension_handoff(manifest_path, mark_dispatched=mark_dispatched)
+            self.history.add(StatusLine(f"Workflow extension dispatch {report.status}", kind="info"))
+            self.history.add(Text(format_workflow_extension_handoff_dispatch_report(report)))
+        except Exception as error:  # noqa: BLE001 - command errors should render, not crash TUI mode.
+            self.history.add(StatusLine(f"Workflow extension dispatch failed: {error}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_workflow_automate_command(self, prompt: str) -> bool:
+        if not _is_workflow_automate_command(prompt):
+            return False
+
+        if self._is_turn_active() or self.app.session.is_streaming:
+            self._render_workflow_automation_error("wait for the current turn to finish")
+            return True
+
+        args = prompt.split()
+        try:
+            if not should_validate_workflow_drafts(self._profile_id()):
+                raise ValueError("active profile is not workflow-designer-lite")
+            if len(args) not in {2, 3}:
+                raise ValueError("expected /workflow-automate <path> [fixture]")
+            request = _WorkflowAutomationRequest(
+                relative_path=args[1],
+                fixture_name=args[2] if len(args) == 3 else "happy_path.yaml",
+            )
+            _set_pending_workflow_automation(self.app, request)
+            self.history.add(StatusLine(f"Workflow automation armed: {request.relative_path}", kind="info"))
+            self.history.add(Text("Next valid workflow draft will be saved and run guided to approval."))
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI mode.
+            self.history.add(StatusLine(f"Workflow automation failed: {error}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
+        return True
+
+    def _run_pending_workflow_automation_if_ready(
+        self,
+        repair_result: WorkflowDraftRepairResult | None = None,
+    ) -> None:
+        request = _pending_workflow_automation(self.app)
+        if request is None:
+            return
+        if not should_validate_workflow_drafts(self._profile_id()):
+            _set_pending_workflow_automation(self.app, None)
+            self._render_workflow_automation_error("active profile is not workflow-designer-lite")
+            return
+
+        validation = self._workflow_validation_for_current_draft(repair_result)
+        if validation is None or not validation.ok:
+            if (
+                validation is not None
+                and validation.documents is not None
+                and validation_issues_require_extension_handoff(validation.validation.issues)
+            ):
+                self._write_pending_workflow_extension_handoff(request, validation)
+                return
+            self.history.add(StatusLine("Workflow automation waiting: last workflow draft is not valid", kind="error"))
+            return
+        quality = workflow_quality_result_for_draft(validation)
+        if quality is not None and not quality.ok:
+            self.history.add(
+                StatusLine(
+                    "Workflow automation waiting: last workflow draft does not pass quality gate",
+                    kind="error",
+                )
+            )
+            self.history.add(StatusLine(format_workflow_quality_report(quality), kind="error"))
+            return
+
+        try:
+            relative_path = request.relative_path or suggest_workflow_package_relative_path(
+                validation,
+                cwd=self.app.cwd,
+            )
+            saved_path = save_workflow_draft_blocks(
+                validation.blocks,
+                cwd=self.app.cwd,
+                relative_path=relative_path,
+            )
+        except WorkflowDraftSaveError as error:
+            _set_pending_workflow_automation(self.app, None)
+            self._render_workflow_automation_error(str(error))
+            return
+
+        _set_pending_workflow_automation(self.app, None)
+        self.history.add(StatusLine(f"Workflow draft saved: {saved_path}", kind="info"))
+        self.history.add(Text(f"Next approval command: /workflow-approve {relative_path} {request.fixture_name}"))
+        disk_validation = validate_workflow_package(saved_path)
+        disk_kind = "info" if disk_validation.ok else "error"
+        self.history.add(StatusLine(_format_workflow_package_validation_report(disk_validation), kind=disk_kind))
+        if disk_validation.ok:
+            disk_quality = check_workflow_quality_package(saved_path)
+            quality_kind = "info" if disk_quality.ok else "error"
+            self.history.add(
+                StatusLine(
+                    format_workflow_quality_report(disk_quality, label="Workflow package quality gate"),
+                    kind=quality_kind,
+                )
+            )
+
+        try:
+            connector_config = _workflow_connector_config()
+            report = prepare_guided_workflow_run(
+                WorkflowRunRequest(
+                    package_path=saved_path,
+                    fixture_name=request.fixture_name,
+                    mode=WorkflowRunMode.LIVE_READ,
+                    operator_env=workflow_operator_env_from_env(os.environ),
+                ),
+                live_read_broker=LiveWorkflowBroker(_workflow_live_read_transports(connector_config), mode="live-read"),
+                credential_resolver=credential_resolver_for_package_connector_config(saved_path, connector_config),
+            )
+        except Exception as error:  # noqa: BLE001 - command failures should render, not crash TUI mode.
+            self._render_workflow_automation_error(f"guided run failed: {error}")
+            return
+
+        kind = "info" if report.status in {"passed", "approval-required"} else "error"
+        self.history.add(StatusLine(f"Workflow guided run {report.status}", kind=kind))
+        self.history.add(Text(format_guided_workflow_run_report(report)))
+
+    def _write_pending_workflow_extension_handoff(
+        self,
+        request: _WorkflowAutomationRequest,
+        validation: WorkflowDraftValidationResult,
+    ) -> None:
+        try:
+            relative_path = request.relative_path or suggest_workflow_package_relative_path(
+                validation,
+                cwd=self.app.cwd,
+            )
+            saved_path = save_workflow_draft_blocks(
+                validation.blocks,
+                cwd=self.app.cwd,
+                relative_path=relative_path,
+            )
+        except WorkflowDraftSaveError as error:
+            _set_pending_workflow_automation(self.app, None)
+            self._render_workflow_automation_error(str(error))
+            return
+
+        _set_pending_workflow_automation(self.app, None)
+        self.history.add(StatusLine(f"Workflow draft saved: {saved_path}", kind="info"))
+        disk_validation = validate_workflow_package(saved_path)
+        disk_kind = "info" if disk_validation.ok else "error"
+        self.history.add(StatusLine(_format_workflow_package_validation_report(disk_validation), kind=disk_kind))
+        documents = load_package_documents(saved_path)
+        document_validation = validate_workflow_documents(documents)
+        handoff = write_extension_handoff_for_validation_issues(documents, document_validation.issues)
+        handoff_kind = "info" if handoff.status == "ready" else "error"
+        self.history.add(StatusLine(f"Workflow extension handoff: {handoff.status}", kind=handoff_kind))
+        self.history.add(Text(format_workflow_extension_handoff(handoff)))
+        if handoff.prompts:
+            prompt_lines: list[str] = ["extension PRD prompts:"]
+            for index, prompt in enumerate(handoff.prompts, start=1):
+                prompt_lines.append(f"--- extension PRD prompt {index} ---")
+                prompt_lines.append(prompt)
+            self.history.add(Text("\n".join(prompt_lines)))
+        self.history.add(StatusLine("next action: build extension with coding profile and attach QA manifest", kind="info"))
+
+    def _workflow_validation_for_current_draft(
+        self,
+        repair_result: WorkflowDraftRepairResult | None,
+    ) -> WorkflowDraftValidationResult | None:
+        if repair_result is not None:
+            return repair_result.validation
+        text = assistant_text_from_messages(self.app.messages)
+        return validate_workflow_draft_text(text) if text.strip() else None
+
+    def _render_workflow_automation_error(self, message: str) -> None:
+        self.history.add(StatusLine(f"Workflow automation failed: {message}", kind="error"))
+        self.status.set_message("Idle")
+        self._refresh_footer()
+        self.tui.request_render()
 
     def _run_workflow_run_guided_command(self, prompt: str) -> bool:
         if not _is_workflow_run_guided_command(prompt):
@@ -1669,12 +2079,77 @@ class InteractiveMode:
 
         args = prompt.split()
         command = args[0] if args else ""
-        if len(args) != 4:
-            self._render_workflow_approval_error(f"expected {command} <path> <run-id> <approval-request-id>")
+        latest_guided = len(args) in {2, 3}
+        guided = len(args) in {5, 6} and args[4] == "--guided"
+        if len(args) != 4 and not guided and not latest_guided:
+            self._render_workflow_approval_error(
+                f"expected {command} <path> [fixture] or "
+                f"{command} <path> <run-id> <approval-request-id> [--guided [fixture]]"
+            )
             return True
 
         try:
             package_path = _resolve_workflow_run_package_path(self.app.cwd, args[1])
+            if latest_guided:
+                fixture_name = args[2] if len(args) == 3 else "happy_path.yaml"
+                connector_config = _workflow_connector_config()
+                report = approve_or_prepare_guided_workflow_run(
+                    WorkflowRunRequest(
+                        package_path=package_path,
+                        fixture_name=fixture_name,
+                        mode=WorkflowRunMode.LIVE_PRODUCTION,
+                        operator_env=workflow_operator_env_from_env(os.environ),
+                    ),
+                    approved=command == "/workflow-approve",
+                    decided_by="tui",
+                    live_read_broker=LiveWorkflowBroker(
+                        _workflow_live_read_transports(connector_config),
+                        mode="live-read",
+                    ),
+                    live_production_broker=LiveWorkflowBroker(
+                        _workflow_live_production_transports(connector_config),
+                        mode="live-production",
+                        production_enabled=True,
+                    ),
+                    credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
+                    env=os.environ,
+                )
+                kind = "info" if report.status in {"passed", "approval-required"} else "error"
+                self.history.add(StatusLine(f"Workflow guided run {report.status}", kind=kind))
+                self.history.add(Text(format_guided_workflow_run_report(report)))
+                self.status.set_message("Idle")
+                self._refresh_footer()
+                self.tui.request_render()
+                return True
+            if guided:
+                fixture_name = args[5] if len(args) == 6 else "happy_path.yaml"
+                connector_config = _workflow_connector_config()
+                report = approve_and_continue_guided_workflow_run(
+                    WorkflowRunRequest(
+                        package_path=package_path,
+                        fixture_name=fixture_name,
+                        mode=WorkflowRunMode.LIVE_PRODUCTION,
+                        operator_env=workflow_operator_env_from_env(os.environ),
+                    ),
+                    approval_run_id=args[2],
+                    approval_request_id=args[3],
+                    approved=command == "/workflow-approve",
+                    decided_by="tui",
+                    live_production_broker=LiveWorkflowBroker(
+                        _workflow_live_production_transports(connector_config),
+                        mode="live-production",
+                        production_enabled=True,
+                    ),
+                    credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
+                    env=os.environ,
+                )
+                kind = "info" if report.status == "passed" else "error"
+                self.history.add(StatusLine(f"Workflow guided run {report.status}", kind=kind))
+                self.history.add(Text(format_guided_workflow_run_report(report)))
+                self.status.set_message("Idle")
+                self._refresh_footer()
+                self.tui.request_render()
+                return True
             result = record_workflow_approval_command(
                 package_path,
                 args[2],
@@ -2832,6 +3307,14 @@ class InteractiveMode:
     def _repair_workflow_draft_if_needed(self) -> WorkflowDraftRepairResult | None:
         if not should_validate_workflow_drafts(self._profile_id()):
             return None
+        text = assistant_text_from_messages(self.app.messages)
+        validation = validate_workflow_draft_text(text) if text.strip() else None
+        if (
+            validation is not None
+            and validation.documents is not None
+            and validation_issues_require_extension_handoff(validation.validation.issues)
+        ):
+            return None
 
         def on_attempt(attempt: int, max_attempts: int | None, _validation) -> None:
             suffix = f"{attempt}/{max_attempts}" if max_attempts is not None else str(attempt)
@@ -2847,6 +3330,7 @@ class InteractiveMode:
                 config=WorkflowDraftRepairConfig(max_issues=8, max_repeated_validation_results=4),
                 on_attempt=on_attempt,
                 should_abort=lambda: bool(getattr(self.app.session.agent.signal, "aborted", False)),
+                get_messages=lambda: self.app.messages,
             )
             self._last_workflow_repair_report = result.repair_report
             return result
@@ -3438,6 +3922,35 @@ def _is_workflow_run_guided_command(prompt: str) -> bool:
     return prompt == "/workflow-run-guided" or prompt.startswith("/workflow-run-guided ")
 
 
+def _is_workflow_catalog_command(prompt: str) -> bool:
+    return (
+        prompt == "/workflow-catalog"
+        or prompt.startswith("/workflow-catalog ")
+        or prompt == "/workflow-checkin"
+        or prompt.startswith("/workflow-checkin ")
+    )
+
+
+def _is_workflow_extension_promote_command(prompt: str) -> bool:
+    return prompt == "/workflow-extension-promote" or prompt.startswith("/workflow-extension-promote ")
+
+
+def _is_workflow_extension_apply_command(prompt: str) -> bool:
+    return prompt == "/workflow-extension-apply" or prompt.startswith("/workflow-extension-apply ")
+
+
+def _is_workflow_extension_build_command(prompt: str) -> bool:
+    return prompt == "/workflow-extension-build" or prompt.startswith("/workflow-extension-build ")
+
+
+def _is_workflow_extension_dispatch_command(prompt: str) -> bool:
+    return prompt == "/workflow-extension-dispatch" or prompt.startswith("/workflow-extension-dispatch ")
+
+
+def _is_workflow_automate_command(prompt: str) -> bool:
+    return prompt == "/workflow-automate" or prompt.startswith("/workflow-automate ")
+
+
 def _is_workflow_continue_guided_command(prompt: str) -> bool:
     return prompt == "/workflow-continue-guided" or prompt.startswith("/workflow-continue-guided ")
 
@@ -3829,6 +4342,28 @@ def _resolve_workflow_run_package_path(cwd: Path, path_text: str) -> Path:
         candidate.relative_to(base)
     except ValueError as error:
         raise ValueError("package path must stay inside the current working directory") from error
+    return candidate
+
+
+def _resolve_workflow_catalog_path(cwd: Path, path_text: str) -> Path:
+    base = Path(cwd).resolve()
+    raw_path = Path(path_text).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (base / raw_path).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as error:
+        raise ValueError("catalog path must stay inside the current working directory") from error
+    return candidate
+
+
+def _resolve_workflow_file_path(cwd: Path, path_text: str) -> Path:
+    base = Path(cwd).resolve()
+    raw_path = Path(path_text).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (base / raw_path).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as error:
+        raise ValueError("workflow file path must stay inside the current working directory") from error
     return candidate
 
 

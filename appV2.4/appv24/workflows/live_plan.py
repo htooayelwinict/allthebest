@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from appv24.workflows.compiler import compile_workflow_documents
-from appv24.workflows.connector_packs import builtin_connector_catalog
+from appv24.workflows.connector_contracts import ConnectorContract, ConnectorLiveMode, builtin_connector_contract_catalog
 from appv24.workflows.fixtures import require_fixture
 from appv24.workflows.ir import StepKind, WorkflowIR, WorkflowStep
-from appv24.workflows.loader import load_package_documents
+from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.policy import evaluate_policy
 from appv24.workflows.validator import validate_workflow_documents
+from appv24.workflows.workflow_extensions import extension_connector_contract_catalog
 
 
 BUILTIN_LIVE_READ_TRANSPORTS = frozenset(
@@ -75,7 +76,13 @@ def build_workflow_live_plan_from_path(package_path: str | Path, fixture_name: s
             tuple(issue.message for issue in policy.issues),
         )
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
-    return build_workflow_live_plan(compiled.ir, package, fixture_name, fixture=fixture)
+    return build_workflow_live_plan(
+        compiled.ir,
+        package,
+        fixture_name,
+        fixture=fixture,
+        contract_catalog=_connector_contracts_for_documents(documents),
+    )
 
 
 def build_workflow_live_plan(
@@ -84,6 +91,7 @@ def build_workflow_live_plan(
     fixture_name: str,
     *,
     fixture: Mapping[str, Any] | None = None,
+    contract_catalog: Mapping[str, ConnectorContract] | None = None,
 ) -> WorkflowLivePlan:
     package = Path(package_path).expanduser().resolve()
     live_read: list[str] = []
@@ -93,31 +101,32 @@ def build_workflow_live_plan(
     approvals: list[str] = []
     transport_gaps: list[str] = []
 
-    catalog = builtin_connector_catalog()
+    contracts = contract_catalog or builtin_connector_contract_catalog()
+    builtin_contracts = builtin_connector_contract_catalog()
     for step in ir.steps.values():
         if step.kind is not StepKind.ACTION or step.uses is None:
             continue
         action_ref = step.uses.dotted
         label = _action_label(step)
-        metadata = catalog.actions.get(action_ref)
-        if metadata is None:
+        contract = contracts.get(action_ref)
+        if contract is None:
             local_only.append(label)
         else:
             classified = False
-            if metadata.live_read_eligible:
+            if ConnectorLiveMode.LIVE_READ in contract.live_modes:
                 live_read.append(label)
                 classified = True
-                if action_ref not in BUILTIN_LIVE_READ_TRANSPORTS:
+                if _has_builtin_transport_gap(action_ref, ConnectorLiveMode.LIVE_READ, builtin_contracts):
                     transport_gaps.append(f"{action_ref}: no built-in live-read transport")
-            if metadata.live_draft_eligible:
+            if ConnectorLiveMode.LIVE_DRAFT in contract.live_modes:
                 live_draft.append(label)
                 classified = True
-                if action_ref not in BUILTIN_LIVE_DRAFT_TRANSPORTS:
+                if _has_builtin_transport_gap(action_ref, ConnectorLiveMode.LIVE_DRAFT, builtin_contracts):
                     transport_gaps.append(f"{action_ref}: no built-in live-draft transport")
-            if metadata.live_production_enabled:
+            if ConnectorLiveMode.LIVE_PRODUCTION in contract.live_modes:
                 live_production.append(label)
                 classified = True
-                if action_ref not in BUILTIN_LIVE_PRODUCTION_TRANSPORTS:
+                if _has_builtin_transport_gap(action_ref, ConnectorLiveMode.LIVE_PRODUCTION, builtin_contracts):
                     transport_gaps.append(f"{action_ref}: no built-in live-production transport")
             if not classified:
                 local_only.append(label)
@@ -127,7 +136,7 @@ def build_workflow_live_plan(
     live_read_refs = _action_refs(live_read)
     live_draft_refs = _action_refs(live_draft)
     live_production_refs = _action_refs(live_production)
-    phase_command_refs = _live_read_to_approval_refs(ir, fixture or {}) if approvals else ()
+    phase_command_refs = _live_read_to_approval_refs(ir, fixture or {}, contracts) if approvals else ()
     return WorkflowLivePlan(
         workflow_name=ir.name,
         fixture_name=fixture_name,
@@ -139,7 +148,7 @@ def build_workflow_live_plan(
         local_only_actions=tuple(local_only),
         approval_actions=tuple(approvals),
         transport_gaps=tuple(dict.fromkeys(transport_gaps)),
-        phase_sequence=_phase_sequence(ir, fixture or {}),
+        phase_sequence=_phase_sequence(ir, fixture or {}, contracts),
         next_commands=_next_commands(
             package,
             fixture_name,
@@ -147,6 +156,7 @@ def build_workflow_live_plan(
             live_read_to_approval_refs=phase_command_refs,
             live_draft_refs=live_draft_refs,
             live_production_refs=live_production_refs,
+            builtin_contracts=builtin_contracts,
         ),
     )
 
@@ -211,6 +221,38 @@ def _status(
     return "local-only"
 
 
+def _connector_contracts_for_documents(documents: PackageDocuments) -> dict[str, ConnectorContract]:
+    contracts = builtin_connector_contract_catalog()
+    contracts.update(extension_connector_contract_catalog(documents, contract_catalog=contracts))
+    return contracts
+
+
+def _has_builtin_transport_gap(
+    action_ref: str,
+    mode: ConnectorLiveMode,
+    builtin_contracts: Mapping[str, ConnectorContract],
+) -> bool:
+    return action_ref in builtin_contracts and not _has_builtin_transport(action_ref, mode)
+
+
+def _has_runnable_transport(
+    action_ref: str,
+    mode: ConnectorLiveMode,
+    builtin_contracts: Mapping[str, ConnectorContract],
+) -> bool:
+    return action_ref not in builtin_contracts or _has_builtin_transport(action_ref, mode)
+
+
+def _has_builtin_transport(action_ref: str, mode: ConnectorLiveMode) -> bool:
+    if mode is ConnectorLiveMode.LIVE_READ:
+        return action_ref in BUILTIN_LIVE_READ_TRANSPORTS
+    if mode is ConnectorLiveMode.LIVE_DRAFT:
+        return action_ref in BUILTIN_LIVE_DRAFT_TRANSPORTS
+    if mode is ConnectorLiveMode.LIVE_PRODUCTION:
+        return action_ref in BUILTIN_LIVE_PRODUCTION_TRANSPORTS
+    return False
+
+
 def _next_commands(
     package: Path,
     fixture_name: str,
@@ -219,6 +261,7 @@ def _next_commands(
     live_read_to_approval_refs: tuple[str, ...],
     live_draft_refs: tuple[str, ...],
     live_production_refs: tuple[str, ...],
+    builtin_contracts: Mapping[str, ConnectorContract],
 ) -> tuple[str, ...]:
     commands: list[str] = []
     package_arg = str(package)
@@ -237,20 +280,24 @@ def _next_commands(
     if live_draft_refs:
         allow = ",".join(live_draft_refs)
         commands.append(f"/workflow-live-ready live-draft {package_arg} {fixture_name} <approval-run-id> --allow {allow}")
-        if all(action in BUILTIN_LIVE_DRAFT_TRANSPORTS for action in live_draft_refs):
+        if all(_has_runnable_transport(action, ConnectorLiveMode.LIVE_DRAFT, builtin_contracts) for action in live_draft_refs):
             commands.append(f"/workflow-run-live-draft {package_arg} {fixture_name} <approval-run-id> --allow {allow}")
     if live_production_refs:
         allow = ",".join(live_production_refs)
         commands.append(f"/workflow-live-ready live-production {package_arg} {fixture_name} <approval-run-id> --allow {allow}")
-        if all(action in BUILTIN_LIVE_PRODUCTION_TRANSPORTS for action in live_production_refs):
+        if all(_has_runnable_transport(action, ConnectorLiveMode.LIVE_PRODUCTION, builtin_contracts) for action in live_production_refs):
             commands.append(f"/workflow-run-live-production {package_arg} {fixture_name} <approval-run-id> --allow {allow}")
     return tuple(commands)
 
 
-def _live_read_to_approval_refs(ir: WorkflowIR, fixture: Mapping[str, Any]) -> tuple[str, ...]:
-    catalog = builtin_connector_catalog()
+def _live_read_to_approval_refs(
+    ir: WorkflowIR,
+    fixture: Mapping[str, Any],
+    contracts: Mapping[str, ConnectorContract],
+) -> tuple[str, ...]:
     refs: list[str] = []
     saw_live_read = False
+    captured_initial_boundary = False
     current = ir.entrypoint
     transitions = 0
 
@@ -272,27 +319,46 @@ def _live_read_to_approval_refs(ir: WorkflowIR, fixture: Mapping[str, Any]) -> t
             continue
 
         action_ref = step.uses.dotted
-        metadata = catalog.actions.get(action_ref)
-        is_live_read = metadata is not None and metadata.live_read_eligible
+        contract = contracts.get(action_ref)
+        is_live_read = contract is not None and ConnectorLiveMode.LIVE_READ in contract.live_modes
         if is_live_read:
             refs.append(action_ref)
             saw_live_read = True
             current = step.next_step
             continue
         if saw_live_read:
-            refs.append(action_ref)
-            break
+            is_live_write_or_approval = _is_live_write_or_approval(step, contract)
+            if not captured_initial_boundary:
+                refs.append(action_ref)
+                captured_initial_boundary = True
+                if is_live_write_or_approval:
+                    break
+                current = step.next_step
+                continue
+            if is_live_write_or_approval:
+                break
         current = step.next_step
 
     return tuple(dict.fromkeys(refs)) if saw_live_read and len(refs) > 1 else ()
+
+
+def _is_live_write_or_approval(step: WorkflowStep, contract: ConnectorContract | None) -> bool:
+    if step.approval is not None:
+        return True
+    if contract is None:
+        return False
+    return ConnectorLiveMode.LIVE_DRAFT in contract.live_modes or ConnectorLiveMode.LIVE_PRODUCTION in contract.live_modes
 
 
 def _action_label(step: WorkflowStep) -> str:
     return f"{step.step_id}: {step.uses.dotted if step.uses is not None else '<manual>'}"
 
 
-def _phase_sequence(ir: WorkflowIR, fixture: Mapping[str, Any]) -> tuple[str, ...]:
-    catalog = builtin_connector_catalog()
+def _phase_sequence(
+    ir: WorkflowIR,
+    fixture: Mapping[str, Any],
+    contracts: Mapping[str, ConnectorContract],
+) -> tuple[str, ...]:
     groups: list[tuple[str, list[str]]] = []
     current = ir.entrypoint
     transitions = 0
@@ -319,32 +385,38 @@ def _phase_sequence(ir: WorkflowIR, fixture: Mapping[str, Any]) -> tuple[str, ..
             current = next_step
             continue
 
-        phase, label = _phase_for_action(step, catalog.actions)
+        phase, label = _phase_for_action(step, contracts)
         _append_phase_group(groups, phase, label)
         current = step.next_step
 
     return tuple(f"{index} {phase}: {', '.join(actions)}" for index, (phase, actions) in enumerate(groups, start=1))
 
 
-def _phase_for_action(step: WorkflowStep, catalog_actions: Mapping[str, Any]) -> tuple[str, str]:
+def _phase_for_action(step: WorkflowStep, contracts: Mapping[str, ConnectorContract]) -> tuple[str, str]:
     label = _action_label(step)
     if step.uses is None:
         return "local", label
     action_ref = step.uses.dotted
-    metadata = catalog_actions.get(action_ref)
-    if metadata is None:
+    contract = contracts.get(action_ref)
+    if contract is None:
         return "local", label
-    if metadata.live_production_enabled:
-        return "live-production", _transport_gap_label(label, action_ref, BUILTIN_LIVE_PRODUCTION_TRANSPORTS)
-    if metadata.live_draft_eligible:
-        return "live-draft", _transport_gap_label(label, action_ref, BUILTIN_LIVE_DRAFT_TRANSPORTS)
-    if metadata.live_read_eligible:
-        return "live-read", _transport_gap_label(label, action_ref, BUILTIN_LIVE_READ_TRANSPORTS)
+    builtin_contracts = builtin_connector_contract_catalog()
+    if ConnectorLiveMode.LIVE_PRODUCTION in contract.live_modes:
+        return "live-production", _transport_gap_label(label, action_ref, ConnectorLiveMode.LIVE_PRODUCTION, builtin_contracts)
+    if ConnectorLiveMode.LIVE_DRAFT in contract.live_modes:
+        return "live-draft", _transport_gap_label(label, action_ref, ConnectorLiveMode.LIVE_DRAFT, builtin_contracts)
+    if ConnectorLiveMode.LIVE_READ in contract.live_modes:
+        return "live-read", _transport_gap_label(label, action_ref, ConnectorLiveMode.LIVE_READ, builtin_contracts)
     return "local", label
 
 
-def _transport_gap_label(label: str, action_ref: str, builtins: frozenset[str]) -> str:
-    if action_ref in builtins:
+def _transport_gap_label(
+    label: str,
+    action_ref: str,
+    mode: ConnectorLiveMode,
+    builtin_contracts: Mapping[str, ConnectorContract],
+) -> str:
+    if not _has_builtin_transport_gap(action_ref, mode, builtin_contracts):
         return label
     return f"{label} (transport gap)"
 

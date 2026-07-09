@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 
 from appv24.workflows.broker import LocalWorkflowBroker
 from appv24.workflows.examples import golden_workflow_examples
+from appv24.workflows.loader import PackageDocuments
 from appv24.workflows.quality_gate import check_workflow_quality_documents
 
 
@@ -400,3 +402,130 @@ def test_quality_gate_rejects_registered_user_broadcast_draft_and_manual_detours
         "broadcast_decision",
     }, result.issues
     assert all("telegram.broadcast_message" in issue.message for issue in issues.values())
+
+
+def test_quality_gate_enforces_custom_connector_transit_constraints() -> None:
+    result = check_workflow_quality_documents(_custom_transit_constraint_documents())
+
+    assert not result.ok
+    violations = [issue for issue in result.issues if issue.code == "workflow_transit_constraint_violation"]
+    assert len(violations) == 1
+    assert violations[0].path == ("steps", "check_policy")
+    assert "crm.lookup_contact to crm.notify_account_owner" in violations[0].message
+    assert "policy.check" in violations[0].message
+
+
+def _custom_transit_constraint_documents() -> PackageDocuments:
+    return PackageDocuments(
+        root=Path("<test>"),
+        workflow={
+            "version": "appv24.workflow/v1",
+            "name": "crm_notify_owner",
+            "description": "Notify an account owner from CRM lookup.",
+            "design": {
+                "intent": "Notify an account owner after CRM lookup.",
+                "trigger": "Manual run.",
+                "inputs": ["email"],
+                "outputs": ["notification result"],
+                "assumptions": ["CRM connector is configured."],
+                "side_effects": ["Send account owner notification."],
+                "approval_gates": ["approve_notify"],
+                "failure_modes": ["CRM or notification fails."],
+                "rollback": ["Review notification manually."],
+            },
+            "triggers": [{"id": "manual", "type": "manual"}],
+            "entrypoint": "lookup_contact",
+            "steps": [
+                {"id": "lookup_contact", "uses": "crm.lookup_contact", "with": {"email": "user@example.com"}, "next": "check_policy"},
+                {
+                    "id": "check_policy",
+                    "uses": "policy.check",
+                    "with": {"input_ref": "lookup_contact.contact", "checks": {"require_owner": True}},
+                    "next": "notify_owner",
+                },
+                {
+                    "id": "notify_owner",
+                    "uses": "crm.notify_account_owner",
+                    "side_effect_class": "send",
+                    "approval": "approve_notify",
+                    "with": {"owner_id": "{{ steps.lookup_contact.outputs.contact }}", "text": "Review account."},
+                    "next": "done",
+                },
+                {"id": "done", "type": "terminal"},
+            ],
+        },
+        connectors={
+            "version": "appv24.connectors/v1",
+            "connectors": [
+                {
+                    "id": "crm",
+                    "adapter": "mcp",
+                    "custom": True,
+                    "source": "mcp://crm@v1",
+                    "env": [
+                        {"name": "APPV24_CRM_MCP_SERVER", "purpose": "CRM MCP server endpoint", "required": True}
+                    ],
+                    "actions": [
+                        {
+                            "id": "lookup_contact",
+                            "custom": True,
+                            "source": "mcp://crm.lookup_contact@v1",
+                            "side_effect": False,
+                            "side_effect_class": "read",
+                            "execution_mode": "brokered",
+                            "dry_run_supported": True,
+                            "required_scopes": ["crm:read"],
+                            "outputs": {"allowed": ["contact", "artifact_path"]},
+                        },
+                        {
+                            "id": "notify_account_owner",
+                            "custom": True,
+                            "source": "mcp://crm.notify_account_owner@v1",
+                            "side_effect": True,
+                            "side_effect_class": "send",
+                            "execution_mode": "brokered",
+                            "approval_required": True,
+                            "dry_run_supported": True,
+                            "required_scopes": ["crm:notify"],
+                            "outputs": {"allowed": ["sent", "artifact_path"]},
+                            "idempotency": {"key_fields": ["owner_id", "text"]},
+                            "workflow_hints": {
+                                "transit_constraints": [
+                                    {
+                                        "from": "crm.lookup_contact",
+                                        "to": "crm.notify_account_owner",
+                                        "allowed_intermediates": ["llm.summarize"],
+                                    }
+                                ]
+                            },
+                        },
+                    ],
+                },
+                {
+                    "id": "policy",
+                    "adapter": "manual",
+                    "actions": [
+                        {
+                            "id": "check",
+                            "side_effect": False,
+                            "side_effect_class": "read",
+                            "outputs": {"allowed": ["approved", "reason"]},
+                        }
+                    ],
+                },
+            ],
+        },
+        permissions={
+            "version": "appv24.permissions/v1",
+            "permissions": [
+                {"connector": "crm", "actions": ["lookup_contact", "notify_account_owner"], "scopes": ["crm:read", "crm:notify"]},
+                {"connector": "policy", "actions": ["check"], "scopes": []},
+            ],
+            "approvals": [{"id": "approve_notify", "mode": "explicit", "required_for": ["notify_owner"]}],
+        },
+        dry_run_fixtures={
+            "happy_path.yaml": {"input": {"email": "user@example.com"}},
+            "rejection_path.yaml": {"input": {"email": "user@example.com"}},
+        },
+        rollback_text="# Rollback\n\nReview notification manually.\n",
+    )

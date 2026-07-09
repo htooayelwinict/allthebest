@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from appv24.workflows.connector_contracts import external_connector_action_refs
+from appv24.workflows.connector_contracts import ConnectorContract, builtin_connector_contract_catalog, external_connector_action_refs
 from appv24.workflows.connector_packs import builtin_connector_catalog
 from appv24.workflows.credential_refs import credential_env_name
 from appv24.workflows.execution import WorkflowRunMode
@@ -16,6 +16,8 @@ from appv24.workflows.live_transports import (
     build_live_read_transports_from_env,
 )
 from appv24.workflows.loader import load_package_documents
+from appv24.workflows.validator import validate_workflow_documents
+from appv24.workflows.workflow_extensions import extension_connector_contract_catalog
 
 
 @dataclass(frozen=True)
@@ -92,15 +94,17 @@ def inspect_workflow_connector_registry(
 
     documents = load_package_documents(package_path)
     catalog = builtin_connector_catalog()
+    contracts = _connector_contracts_for_documents(documents)
     external_refs = set(external_connector_action_refs(documents.connectors))
     configured = _configured_modes_by_action(env)
     permissions = _permission_scopes(documents.permissions)
     actions: list[WorkflowConnectorRegistryAction] = []
-    issues: list[str] = []
+    issues: list[str] = list(_extension_qa_issue_messages(documents))
 
     for declared in _declared_actions(documents.connectors):
         action_ref = declared.action_ref
         metadata = catalog.actions.get(action_ref)
+        contract = contracts.get(action_ref)
         external = action_ref in external_refs
         cataloged = metadata is not None or external
         action_issues: tuple[str, ...] = ()
@@ -112,16 +116,20 @@ def inspect_workflow_connector_registry(
         required_scopes = declared.required_scopes or permissions.get(action_ref, ())
         if not required_scopes and metadata is not None:
             required_scopes = metadata.required_scopes
+        if not required_scopes and contract is not None:
+            required_scopes = contract.required_scopes
         allowed_outputs = declared.allowed_outputs or (metadata.allowed_outputs if metadata is not None else ())
-        live_modes = _live_modes(metadata) if metadata is not None else ()
+        if not allowed_outputs and contract is not None:
+            allowed_outputs = contract.allowed_outputs
+        live_modes = _live_modes(metadata) if metadata is not None else _contract_live_modes(contract)
         actions.append(
             WorkflowConnectorRegistryAction(
                 action_ref=action_ref,
                 connector_id=declared.connector_id,
                 action_id=declared.action_id,
                 cataloged=cataloged,
-                side_effect=metadata.side_effect if metadata is not None else declared.side_effect,
-                side_effect_class=metadata.side_effect_class if metadata is not None else declared.side_effect_class,
+                side_effect=metadata.side_effect if metadata is not None else _contract_side_effect(contract, declared.side_effect),
+                side_effect_class=metadata.side_effect_class if metadata is not None else _contract_side_effect_class(contract, declared.side_effect_class),
                 required_scopes=required_scopes,
                 allowed_outputs=allowed_outputs,
                 live_modes=live_modes,
@@ -141,6 +149,21 @@ def inspect_workflow_connector_registry(
         package_path=documents.root,
         actions=tuple(sorted(actions, key=lambda action: action.action_ref)),
         issues=tuple(issues),
+    )
+
+
+def _connector_contracts_for_documents(documents) -> dict[str, ConnectorContract]:
+    contracts = builtin_connector_contract_catalog()
+    contracts.update(extension_connector_contract_catalog(documents, contract_catalog=contracts))
+    return contracts
+
+
+def _extension_qa_issue_messages(documents) -> tuple[str, ...]:
+    validation = validate_workflow_documents(documents)
+    return tuple(
+        f"{issue.code}: {issue.message}"
+        for issue in validation.issues
+        if issue.code.startswith("extension_qa")
     )
 
 
@@ -219,6 +242,20 @@ def _live_modes(metadata) -> tuple[str, ...]:
     if metadata.live_production_enabled:
         modes.append(WorkflowRunMode.LIVE_PRODUCTION.value)
     return tuple(modes)
+
+
+def _contract_live_modes(contract: ConnectorContract | None) -> tuple[str, ...]:
+    if contract is None:
+        return ()
+    return tuple(mode.value for mode in contract.live_modes)
+
+
+def _contract_side_effect(contract: ConnectorContract | None, fallback: bool) -> bool:
+    return contract.side_effect if contract is not None else fallback
+
+
+def _contract_side_effect_class(contract: ConnectorContract | None, fallback: str | None) -> str | None:
+    return contract.side_effect_class.value if contract is not None else fallback
 
 
 def _credential_env_hints(connector_id: str, scopes: tuple[str, ...]) -> tuple[str, ...]:

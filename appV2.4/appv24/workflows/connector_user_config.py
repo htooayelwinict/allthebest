@@ -13,7 +13,20 @@ from appv24.coding_agent.config import get_connectors_path
 
 CONFIG_VERSION = 1
 SUPPORTED_CONNECTORS = frozenset({"brave", "telegram"})
-SECRET_KEYS = frozenset({"access_token", "api_key", "bot_token", "client_secret", "refresh_token"})
+SECRET_KEYS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "authorization",
+        "bot_token",
+        "client_secret",
+        "password",
+        "refresh_token",
+        "secret",
+        "token",
+        "x-api-key",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -250,7 +263,17 @@ def _profile_to_payload(profile: ConnectorConfigProfile) -> dict[str, Any]:
 
 
 def _has_secret(config: Mapping[str, Any]) -> bool:
-    return any(bool(config.get(key)) for key in SECRET_KEYS)
+    return _value_has_secret(config)
+
+
+def _value_has_secret(value: object, *, key: str = "") -> bool:
+    if key.lower() in SECRET_KEYS and bool(value):
+        return True
+    if isinstance(value, Mapping):
+        return any(_value_has_secret(item, key=str(item_key)) for item_key, item in value.items())
+    if isinstance(value, list | tuple):
+        return any(_value_has_secret(item) for item in value)
+    return False
 
 
 def _connector_config_from_env(connector_id: str, env: Mapping[str, str]) -> dict[str, Any]:

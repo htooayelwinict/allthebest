@@ -116,6 +116,33 @@ def test_redact_connector_profile_keeps_metadata_only() -> None:
     }
 
 
+def test_redact_connector_profile_detects_nested_custom_action_secrets() -> None:
+    rendered = format_connector_config_list(
+        [
+            ConnectorConfigProfile(
+                connector_id="crm",
+                profile="default",
+                credential_ref="crm-local",
+                scopes=("crm:read",),
+                config={
+                    "actions": {
+                        "lookup_contact": {
+                            "url": "https://crm.test/lookup",
+                            "headers": {"Authorization": "Bearer crm-token"},
+                        }
+                    }
+                },
+                source="user-config",
+            )
+        ]
+    )
+
+    assert "crm" in rendered
+    assert "secrets: present" in rendered
+    assert "crm-token" not in rendered
+    assert "Authorization" not in rendered
+
+
 def test_connector_config_resolver_prefers_user_config_over_env(tmp_path: Path) -> None:
     store = ConnectorConfigStore(tmp_path / "connectors.json")
     store.upsert(

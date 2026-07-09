@@ -141,6 +141,17 @@ def build_live_read_transports_from_connector_config(
                 allowed_chat_ids=allowed_chat_ids,
             )
 
+    transports.update(
+        {
+            action_ref: transport
+            for action_ref, transport in _configured_http_action_transports(
+                connector_config,
+                mode="live-read",
+                client_factory=client_factory,
+            ).items()
+            if action_ref not in transports
+        }
+    )
     return transports
 
 
@@ -204,28 +215,118 @@ def build_live_production_transports_from_connector_config(
     if not _env_enabled(connector_config.env.get(LIVE_PRODUCTION_ENABLED_ENV)):
         return {}
 
+    transports: dict[str, LiveWorkflowTransport] = {}
     telegram = connector_config.resolve("telegram")
-    if telegram is None:
-        return {}
-    telegram_token = _config_string(telegram.config, "bot_token")
-    allowed_chat_ids = _config_string_list(telegram.config, "allowed_chat_ids")
-    if not telegram_token or not allowed_chat_ids:
-        return {}
-    base_url = _config_string(telegram.config, "base_url", DEFAULT_TELEGRAM_API_BASE_URL)
-    return {
-        "telegram.send_message": TelegramSendMessageTransport(
-            token=telegram_token,
-            base_url=base_url or DEFAULT_TELEGRAM_API_BASE_URL,
-            allowed_chat_ids=allowed_chat_ids,
-            client_factory=client_factory,
-        ),
-        "telegram.broadcast_message": TelegramBroadcastMessageTransport(
-            token=telegram_token,
-            base_url=base_url or DEFAULT_TELEGRAM_API_BASE_URL,
-            allowed_chat_ids=allowed_chat_ids,
-            client_factory=client_factory,
-        ),
-    }
+    if telegram is not None:
+        telegram_token = _config_string(telegram.config, "bot_token")
+        allowed_chat_ids = _config_string_list(telegram.config, "allowed_chat_ids")
+        if telegram_token and allowed_chat_ids:
+            base_url = _config_string(telegram.config, "base_url", DEFAULT_TELEGRAM_API_BASE_URL)
+            transports.update(
+                {
+                    "telegram.send_message": TelegramSendMessageTransport(
+                        token=telegram_token,
+                        base_url=base_url or DEFAULT_TELEGRAM_API_BASE_URL,
+                        allowed_chat_ids=allowed_chat_ids,
+                        client_factory=client_factory,
+                    ),
+                    "telegram.broadcast_message": TelegramBroadcastMessageTransport(
+                        token=telegram_token,
+                        base_url=base_url or DEFAULT_TELEGRAM_API_BASE_URL,
+                        allowed_chat_ids=allowed_chat_ids,
+                        client_factory=client_factory,
+                    ),
+                }
+            )
+
+    transports.update(
+        {
+            action_ref: transport
+            for action_ref, transport in _configured_http_action_transports(
+                connector_config,
+                mode="live-production",
+                client_factory=client_factory,
+            ).items()
+            if action_ref not in transports
+        }
+    )
+    return transports
+
+
+class ConfiguredHttpActionTransport:
+    """Operator-configured HTTP adapter for QA-passed custom connector actions."""
+
+    def __init__(
+        self,
+        *,
+        action_ref: str,
+        mode: str,
+        url: str,
+        method: str = "POST",
+        headers: Mapping[str, Any] | None = None,
+        provider_id: str = "configured-http",
+        client_factory: Callable[[], _HttpClient] | None = None,
+    ) -> None:
+        self._action_ref = action_ref
+        self._mode = mode
+        self._url = url.strip()
+        self._method = method.strip().upper() or "POST"
+        self._headers = _configured_http_headers(headers or {})
+        self._provider_id = provider_id.strip() or action_ref.split(".", 1)[0]
+        self._client_factory = client_factory or (lambda: httpx.Client(timeout=15.0, trust_env=False))
+
+    def invoke(self, request: BrokerRequest) -> BrokerResult:
+        if not _valid_https_url(self._url):
+            return _blocked(
+                f"{request.connector_action} configured HTTP transport requires an https URL",
+                provider_id=self._provider_id,
+            )
+        if self._method not in {"GET", "POST"}:
+            return _blocked(
+                f"{request.connector_action} configured HTTP transport method must be GET or POST",
+                provider_id=self._provider_id,
+            )
+
+        inputs = _configured_http_inputs(request)
+        client = self._client_factory()
+        try:
+            if self._method == "GET":
+                response = client.get(
+                    self._url,
+                    headers={"Accept": "application/json", **self._headers},
+                    params=_configured_http_query_params(inputs),
+                )
+            else:
+                response = client.post(
+                    self._url,
+                    headers={
+                        "Accept": "application/json",
+                        **self._headers,
+                        "Content-Type": "application/json",
+                    },
+                    json=inputs,
+                )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as error:
+            status_code = error.response.status_code if error.response is not None else "unknown"
+            return _blocked(f"{request.connector_action} returned HTTP {status_code}", provider_id=self._provider_id)
+        except (ValueError, TypeError):
+            return _blocked(f"{request.connector_action} returned malformed JSON", provider_id=self._provider_id)
+        except httpx.RequestError as error:
+            return _blocked(
+                f"{request.connector_action} request failed: {type(error).__name__}",
+                provider_id=self._provider_id,
+            )
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+        outputs = _configured_http_outputs(payload)
+        if outputs is None:
+            return _blocked(f"{request.connector_action} returned malformed response", provider_id=self._provider_id)
+        return BrokerResult(status=self._mode, provider_id=self._provider_id, outputs=outputs)
 
 
 class GitHubDependabotAlertsTransport:
@@ -771,6 +872,86 @@ def _config_string_list(config: Mapping[str, Any], key: str) -> tuple[str, ...]:
     if isinstance(value, str):
         return _split_csv(value)
     return ()
+
+
+def _configured_http_action_transports(
+    connector_config: ConnectorConfigResolver,
+    *,
+    mode: str,
+    client_factory: Callable[[], _HttpClient] | None,
+) -> dict[str, LiveWorkflowTransport]:
+    transports: dict[str, LiveWorkflowTransport] = {}
+    for profile in connector_config.list_profiles():
+        connector_id = profile.connector_id
+        actions = profile.config.get("actions")
+        if not isinstance(actions, Mapping):
+            continue
+        for action_id, action_config in actions.items():
+            if not isinstance(action_id, str) or not isinstance(action_config, Mapping):
+                continue
+            if _config_string(action_config, "mode") != mode:
+                continue
+            url = _config_string(action_config, "url")
+            if not url:
+                continue
+            action_ref = f"{connector_id}.{action_id}"
+            transports[action_ref] = ConfiguredHttpActionTransport(
+                action_ref=action_ref,
+                mode=mode,
+                url=url,
+                method=_config_string(action_config, "method", "POST"),
+                headers=_mapping(action_config.get("headers")),
+                provider_id=_config_string(action_config, "provider_id", connector_id),
+                client_factory=client_factory,
+            )
+    return transports
+
+
+def _configured_http_headers(headers: Mapping[str, Any]) -> dict[str, str]:
+    rendered: dict[str, str] = {}
+    for key, value in headers.items():
+        if not isinstance(key, str):
+            continue
+        if not isinstance(value, str | int | float) or isinstance(value, bool):
+            continue
+        stripped_key = key.strip()
+        stripped_value = str(value).strip()
+        if stripped_key and stripped_value:
+            rendered[stripped_key] = stripped_value
+    return rendered
+
+
+def _configured_http_inputs(request: BrokerRequest) -> dict[str, Any]:
+    with_map = _mapping(request.input_ref.get("with"))
+    fixture_input = _mapping(request.fixture.get("input"))
+    return {
+        str(key): _resolve_input_ref(value, fixture_input, fixture=request.fixture)
+        for key, value in with_map.items()
+        if isinstance(key, str)
+    }
+
+
+def _configured_http_query_params(inputs: Mapping[str, Any]) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for key, value in sorted(inputs.items()):
+        rendered = _query_param_value(value)
+        if rendered is not None:
+            params[key] = rendered
+    return params
+
+
+def _configured_http_outputs(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    outputs = payload.get("outputs")
+    if isinstance(outputs, Mapping):
+        return dict(outputs)
+    return dict(payload)
+
+
+def _valid_https_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme == "https" and bool(parsed.netloc)
 
 
 def _int_env(value: str | None, *, default: int) -> int:

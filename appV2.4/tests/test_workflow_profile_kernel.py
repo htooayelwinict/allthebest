@@ -5,8 +5,10 @@ from pathlib import Path
 
 import yaml
 
+from appv24.workflows import profile_kernel
 from appv24.workflows.broker import BrokerRequest, BrokerResult
 from appv24.workflows.bundle_export import write_workflow_bundle
+from appv24.workflows.connector_user_config import ConnectorConfigProfile, ConnectorConfigResolver, ConnectorConfigStore
 from appv24.workflows.credential_refs import CredentialRefResolver, CredentialScope
 from appv24.workflows.drafts import save_workflow_draft_blocks
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
@@ -36,6 +38,19 @@ class _RecordingCrmTransport(LiveWorkflowTransport):
             status="live-read",
             provider_id="crm-test",
             outputs={"contact": {"email": "customer@example.com", "tier": "enterprise"}, "artifact_path": "crm.json"},
+        )
+
+
+class _RecordingSearchTransport(LiveWorkflowTransport):
+    def __init__(self) -> None:
+        self.requests: list[BrokerRequest] = []
+
+    def invoke(self, request: BrokerRequest) -> BrokerResult:
+        self.requests.append(request)
+        return BrokerResult(
+            status="live-read",
+            provider_id="brave-test",
+            outputs={"items": [{"title": "Kernel config route"}], "source_count": 1, "query": "kernel"},
         )
 
 
@@ -109,6 +124,45 @@ def test_profile_kernel_run_live_read_dispatches_external_connector_extension(tm
     assert [step.connector_action for step in report.step_trace if step.connector_action] == ["crm.lookup_contact"]
     assert transport.requests[0].connector_action == "crm.lookup_contact"
     assert transport.requests[0].allowed_outputs == ("contact", "artifact_path")
+
+
+def test_profile_kernel_default_live_read_uses_connector_user_config(monkeypatch, tmp_path: Path) -> None:
+    package = _write_brave_search_package(tmp_path)
+    write_workflow_bundle(package, env={})
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="brave",
+            profile="default",
+            credential_ref="brave-user",
+            scopes=("brave:search",),
+            config={"api_key": "brave-test-key"},
+            source="user-config",
+        )
+    )
+    transport = _RecordingSearchTransport()
+    resolver = ConnectorConfigResolver(store=store, env={"APPV24_WORKFLOW_LIVE_READ_ENABLED": "true"})
+    monkeypatch.setattr(
+        profile_kernel,
+        "build_live_read_transports_from_connector_config",
+        lambda connector_config: {"brave.search": transport},
+    )
+
+    report = WorkflowProfileKernel(
+        operator_env={"APPV24_WORKFLOW_LIVE_READ_ENABLED": "true"},
+        connector_config=resolver,
+    ).run(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("brave.search",),
+            run_root=tmp_path / ".workflow-runs",
+        )
+    )
+
+    assert report.status == "passed"
+    assert transport.requests[0].connector_action == "brave.search"
 
 
 def test_profile_kernel_run_local_uses_configured_middleware_runtime(tmp_path: Path) -> None:
@@ -413,6 +467,78 @@ def _write_source_read_package(root: Path) -> Path:
             {
                 "version": "appv24.permissions/v1",
                 "permissions": [{"connector": "source", "actions": ["fetch_items"], "scopes": ["source:read"]}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    fixtures = package / "dry_run_fixtures"
+    fixtures.mkdir()
+    (fixtures / "happy_path.yaml").write_text("input:\n  query: kernel\n", encoding="utf-8")
+    (package / "rollback.md").write_text("# Rollback\n\nNo external mutation occurs.\n", encoding="utf-8")
+    return package
+
+
+def _write_brave_search_package(root: Path) -> Path:
+    package = root / "brave-search"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "brave-search",
+                "description": "Read public search results through Brave.",
+                "design": {
+                    "intent": "Search public news.",
+                    "trigger": "Manual operator run.",
+                    "inputs": ["query"],
+                    "outputs": ["items"],
+                    "assumptions": ["Brave Search is configured outside the package."],
+                    "side_effects": ["Read-only public search."],
+                    "approval_gates": ["None."],
+                    "failure_modes": ["Search API unavailable."],
+                    "rollback": ["No external mutation occurs."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "search",
+                "steps": [
+                    {"id": "search", "uses": "brave.search", "with": {"query": "kernel"}, "next": "done"},
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "brave",
+                        "adapter": "direct_api",
+                        "actions": [
+                            {
+                                "id": "search",
+                                "operationId": "brave_search",
+                                "side_effect": False,
+                                "outputs": {"allowed": ["items", "source_count", "query"]},
+                                "required_scopes": ["brave:search"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [{"connector": "brave", "actions": ["search"], "scopes": ["brave:search"]}],
             },
             sort_keys=False,
         ),

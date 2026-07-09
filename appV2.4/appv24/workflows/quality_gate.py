@@ -15,16 +15,12 @@ from appv24.workflows.loader import PackageDocuments, load_package_documents
 from appv24.workflows.policy import evaluate_policy
 from appv24.workflows.simulator import simulate_workflow_fixture
 from appv24.workflows.validator import validate_workflow_documents
+from appv24.workflows.workflow_extensions import (
+    WorkflowTransitConstraint,
+    build_workflow_extension_profile,
+)
 
 WorkflowQualitySeverity = Literal["error", "warning"]
-
-REGISTERED_USER_BROADCAST_ALLOWED_INTERMEDIATE_ACTIONS = frozenset(
-    {
-        "llm.classify",
-        "llm.extract_structured",
-        "llm.summarize",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -138,7 +134,13 @@ def check_workflow_quality_documents(
             ),
         )
 
-    graph_issues = tuple((*_check_graph(compiled.ir), *_check_registered_user_broadcast_shape(compiled.ir)))
+    extension_profile = build_workflow_extension_profile(documents)
+    graph_issues = tuple(
+        (
+            *_check_graph(compiled.ir),
+            *_check_transit_constraints(compiled.ir, extension_profile.transit_constraints),
+        )
+    )
     if graph_issues:
         return WorkflowQualityResult(
             root=documents.root,
@@ -233,21 +235,29 @@ def _check_graph(ir: WorkflowIR) -> list[WorkflowQualityIssue]:
     return issues
 
 
-def _check_registered_user_broadcast_shape(ir: WorkflowIR) -> list[WorkflowQualityIssue]:
-    subscriber_steps = _steps_using(ir, "telegram.list_subscribers")
-    broadcast_steps = _steps_using(ir, "telegram.broadcast_message")
-    if not subscriber_steps or not broadcast_steps:
-        return []
-
-    issues: dict[str, WorkflowQualityIssue] = {}
-    for subscriber_step_id in subscriber_steps:
-        for broadcast_step_id in broadcast_steps:
-            for path in _paths_between(ir, subscriber_step_id, broadcast_step_id):
-                for step_id in path[1:-1]:
-                    step = ir.steps[step_id]
-                    issue = _registered_user_broadcast_detour_issue(step)
-                    if issue is not None:
-                        issues.setdefault(step.step_id, issue)
+def _check_transit_constraints(
+    ir: WorkflowIR,
+    constraints: tuple[WorkflowTransitConstraint, ...],
+) -> list[WorkflowQualityIssue]:
+    issues: dict[tuple[str, str, str], WorkflowQualityIssue] = {}
+    for constraint in constraints:
+        source_steps = _steps_using(ir, constraint.source_action)
+        target_steps = _steps_using(ir, constraint.target_action)
+        if not source_steps or not target_steps:
+            continue
+        allowed = set(constraint.allowed_intermediates)
+        for source_step_id in source_steps:
+            for target_step_id in target_steps:
+                for path in _paths_between(ir, source_step_id, target_step_id):
+                    for step_id in path[1:-1]:
+                        step = ir.steps[step_id]
+                        action_ref = step.uses.dotted if step.uses is not None else None
+                        if action_ref in allowed:
+                            continue
+                        issues.setdefault(
+                            (constraint.source_action, constraint.target_action, step.step_id),
+                            _transit_constraint_issue(step, constraint),
+                        )
     return list(issues.values())
 
 
@@ -281,10 +291,8 @@ def _paths_between(ir: WorkflowIR, start: str, target: str) -> list[tuple[str, .
     return paths
 
 
-def _registered_user_broadcast_detour_issue(step: WorkflowStep) -> WorkflowQualityIssue | None:
+def _transit_constraint_issue(step: WorkflowStep, constraint: WorkflowTransitConstraint) -> WorkflowQualityIssue:
     action_ref = step.uses.dotted if step.uses is not None else None
-    if action_ref in REGISTERED_USER_BROADCAST_ALLOWED_INTERMEDIATE_ACTIONS:
-        return None
     if action_ref in {"telegram.create_message_draft", "telegram.send_message_draft"}:
         detail = f"{action_ref} step {step.step_id}"
     elif action_ref is not None:
@@ -296,19 +304,15 @@ def _registered_user_broadcast_detour_issue(step: WorkflowStep) -> WorkflowQuali
     else:
         detail = f"{step.kind.value} step {step.step_id}"
     return WorkflowQualityIssue(
-        code="registered_user_broadcast_detour",
+        code=constraint.issue_code,
         file="workflow.yaml",
         path=("steps", step.step_id),
         message=(
-            "registered-user telegram delivery must use connector interfaces directly: "
-            f"remove {detail} before telegram.broadcast_message"
+            f"{constraint.message_prefix} from {constraint.source_action} to "
+            f"{constraint.target_action} contains disallowed intermediate {detail}"
         ),
-        repair_hint=(
-            "Use brave.search -> telegram.list_subscribers -> llm.summarize -> "
-            "telegram.broadcast_message -> done; only pure LLM message transforms may appear "
-            "between telegram.list_subscribers and telegram.broadcast_message, and approval belongs "
-            "on telegram.broadcast_message."
-        ),
+        repair_hint=constraint.repair_hint
+        or "Remove the disallowed intermediate step or add a connector-owned transit constraint that allows it.",
     )
 
 

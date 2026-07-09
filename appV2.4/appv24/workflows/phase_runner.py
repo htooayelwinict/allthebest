@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from appv24.workflows.credential_refs import CredentialRefResolver
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
 from appv24.workflows.live_broker import LiveWorkflowBroker
 from appv24.workflows.live_runner import run_live_draft_workflow, run_live_production_workflow, run_live_read_workflow
+from appv24.workflows.middleware_runtime import MiddlewareExecutorFactory
 from appv24.workflows.run_store import WorkflowRunStore
 from appv24.workflows.runner import DEFAULT_FIXTURE_NAME, run_workflow_from_handoff
 
@@ -65,6 +67,7 @@ def run_workflow_live_read_to_approval(
     live_read_broker: LiveWorkflowBroker,
     credential_resolver: CredentialRefResolver,
     local_broker: LocalWorkflowBroker | None = None,
+    middleware_factories: Mapping[str, MiddlewareExecutorFactory] | None = None,
 ) -> WorkflowPhaseRunReport:
     """Run live-read, then resume locally until an approval gate or terminal state."""
 
@@ -81,6 +84,7 @@ def run_workflow_live_read_to_approval(
         ),
         broker=live_read_broker,
         credential_resolver=credential_resolver,
+        middleware_factories=middleware_factories,
     )
     if live_report.status != "paused":
         return WorkflowPhaseRunReport(
@@ -102,6 +106,7 @@ def run_workflow_live_read_to_approval(
             approve_all=False,
             activation_id=request.activation_id,
             activation_trigger_type=request.activation_trigger_type,
+            operator_env=request.operator_env,
         ),
         handoff_run_id=live_report.run_id,
         broker=local_broker,
@@ -110,6 +115,7 @@ def run_workflow_live_read_to_approval(
             live_read_broker=live_read_broker,
             connector_allowlist=set(request.connector_allowlist),
         ),
+        middleware_factories=middleware_factories,
     )
     approval_required = _approval_required(local_report.issues)
     status = "approval-required" if approval_required else local_report.status
@@ -183,6 +189,7 @@ def run_workflow_approved_live_draft(
     approval_run_id: str,
     live_draft_broker: LiveWorkflowBroker,
     credential_resolver: CredentialRefResolver,
+    middleware_factories: Mapping[str, MiddlewareExecutorFactory] | None = None,
 ) -> WorkflowPhaseRunReport:
     """Run an approved workflow package through the live-draft phase."""
 
@@ -200,6 +207,7 @@ def run_workflow_approved_live_draft(
         ),
         broker=live_draft_broker,
         credential_resolver=credential_resolver,
+        middleware_factories=middleware_factories,
     )
     return WorkflowPhaseRunReport(
         status=live_report.status,
@@ -221,6 +229,7 @@ def run_workflow_approved_live_production(
     approval_run_id: str,
     live_production_broker: LiveWorkflowBroker,
     credential_resolver: CredentialRefResolver,
+    middleware_factories: Mapping[str, MiddlewareExecutorFactory] | None = None,
 ) -> WorkflowPhaseRunReport:
     """Run an approved workflow package through the live-production phase."""
 
@@ -238,6 +247,7 @@ def run_workflow_approved_live_production(
         ),
         broker=live_production_broker,
         credential_resolver=credential_resolver,
+        middleware_factories=middleware_factories,
     )
     return WorkflowPhaseRunReport(
         status=live_report.status,

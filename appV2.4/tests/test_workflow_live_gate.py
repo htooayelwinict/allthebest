@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from appv24.workflows.connector_contracts import (
+    ApprovalClass,
+    ConnectorContract,
+    ConnectorLiveMode,
+    ConnectorTargetPolicy,
+    RetryClass,
+    SideEffectClass,
+)
 from appv24.workflows.execution import WorkflowRunMode
 from appv24.workflows.idempotency import build_idempotency_key
 from appv24.workflows.ir import (
@@ -364,6 +372,78 @@ def test_live_gate_passes_approved_production_send() -> None:
     assert decision.ok is True
     assert decision.checked_actions == ("telegram.send_message",)
     assert decision.issues == ()
+
+
+def test_live_gate_requires_extension_declared_target_fields() -> None:
+    fixture = {"input": {"text": "Customer update."}}
+    step_raw = {"with": {"text": {"inputRef": "text"}}}
+    idempotency_key = build_idempotency_key(
+        package_fingerprint="sha256:test",
+        step_id="send_customer_update",
+        connector_action="crm.send_customer_update",
+        key_fields=("text",),
+        input_ref=step_raw,
+        fixture=fixture,
+    )
+    contract = ConnectorContract(
+        action_ref="crm.send_customer_update",
+        connector_id="crm",
+        action_id="send_customer_update",
+        input_schema={"type": "object", "additionalProperties": True},
+        required_input_fields=("customer_id", "text"),
+        output_schema={"type": "object", "additionalProperties": True},
+        allowed_outputs=("message_id", "artifact_path"),
+        required_scopes=("crm:send",),
+        secrets=(),
+        side_effect_class=SideEffectClass.SEND,
+        approval_class=ApprovalClass.EXTERNAL_SEND,
+        live_modes=(ConnectorLiveMode.LIVE_PRODUCTION,),
+        idempotency_key_fields=("text",),
+        retry_class=RetryClass.IDEMPOTENT_WRITE,
+        target_policy=ConnectorTargetPolicy(required_target_fields=("customer_id",)),
+        prompt_summary="crm.send_customer_update(input: customer_id, text) -> message_id",
+    )
+
+    decision = evaluate_live_gate(
+        _ir(
+            [
+                _step(
+                    "send_customer_update",
+                    "crm.send_customer_update",
+                    with_=step_raw["with"],
+                    side_effect_class="send",
+                    approval="approve_crm_send",
+                    next_step="done",
+                ),
+                _terminal("done"),
+            ],
+            [
+                _action(
+                    "crm",
+                    "send_customer_update",
+                    side_effect=True,
+                    side_effect_class="send",
+                    approval_required=True,
+                    idempotency=("text",),
+                    scopes=("crm:send",),
+                    allowed_outputs=("message_id", "artifact_path"),
+                )
+            ],
+        ),
+        fixture,
+        mode=WorkflowRunMode.LIVE_PRODUCTION,
+        package_fingerprint="sha256:test",
+        connector_allowlist={"crm.send_customer_update"},
+        approval_index={("send_customer_update", "crm.send_customer_update", idempotency_key): True},
+        available_transports={"crm.send_customer_update"},
+        env={},
+        contracts={"crm.send_customer_update": contract},
+    )
+
+    assert decision.ok is False
+    assert decision.checked_actions == ("crm.send_customer_update",)
+    assert decision.issues[0].code == "missing_target"
+    assert decision.issues[0].message == "crm.send_customer_update requires customer_id"
 
 
 def _ir(steps: list[WorkflowStep], actions: list[ActionCapability]) -> WorkflowIR:

@@ -97,8 +97,8 @@ def test_workflow_designer_lite_profile_is_passive_and_read_only() -> None:
     assert "```yaml connectors.yaml" in prompt
     assert "```yaml permissions.yaml" in prompt
     assert "```yaml dry_run_fixtures/happy_path.yaml" in prompt
-    assert "```yaml dry_run_fixtures/rejection_path.yaml" in prompt
     assert "```markdown rollback.md" in prompt
+    assert "```yaml dry_run_fixtures/rejection_path.yaml" not in render_required_package_blocks_fragment()
 
 
 def test_workflow_designer_lite_prompt_pins_schema_shapes() -> None:
@@ -134,11 +134,11 @@ def test_workflow_profile_uses_shared_required_block_fragment() -> None:
         "```yaml connectors.yaml",
         "```yaml permissions.yaml",
         "```yaml dry_run_fixtures/happy_path.yaml",
-        "```yaml dry_run_fixtures/rejection_path.yaml",
         "```markdown rollback.md",
     ):
         assert label in fragment
         assert label in prompt
+    assert "```yaml dry_run_fixtures/rejection_path.yaml" not in fragment
 
 
 def test_workflow_profile_includes_builtin_capability_catalog() -> None:

@@ -27,6 +27,41 @@ from appv24.workflows.drafts import (
 )
 from appv24.workflows.deployment_intent import deployment_intent_to_dict, deployment_intent_to_json
 from appv24.workflows.errors import WorkflowIssue, WorkflowPackageError, WorkflowValidationResult
+from appv24.workflows.extension_catalog import (
+    WorkflowExtensionCatalog,
+    WorkflowExtensionCatalogPromotion,
+    format_workflow_extension_catalog_authoring_context,
+    format_workflow_extension_catalog_promotion,
+    load_workflow_extension_catalog,
+    promote_package_extensions_to_catalog,
+)
+from appv24.workflows.extension_handoff import (
+    WorkflowExtensionHandoffApplyReport,
+    WorkflowExtensionHandoffDispatchReport,
+    WorkflowExtensionDispatchRecord,
+    WorkflowExtensionHandoff,
+    WorkflowExtensionReturnedQaApplyReport,
+    apply_extension_handoff_result,
+    apply_returned_extension_handoff_results,
+    dispatch_extension_handoff,
+    format_workflow_extension_handoff,
+    format_workflow_extension_handoff_apply_report,
+    format_workflow_extension_handoff_dispatch_report,
+    format_workflow_extension_returned_qa_apply_report,
+    write_extension_handoff_for_validation_issues,
+)
+from appv24.workflows.extension_planner import (
+    WorkflowExtensionBuildRequest,
+    build_connector_extension_request,
+    build_extension_requests_for_validation_issues,
+    build_middleware_extension_request,
+    render_extension_prd_prompt,
+)
+from appv24.workflows.extension_qa import (
+    WorkflowExtensionQAIssue,
+    WorkflowExtensionQAReport,
+    validate_extension_qa_manifest,
+)
 from appv24.workflows.broker import BrokerRequest, BrokerResult, LocalWorkflowBroker
 from appv24.workflows.bundle_export import (
     WorkflowBundleCheckReport,
@@ -71,6 +106,9 @@ from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import fixture_names, require_fixture
 from appv24.workflows.guided_run import (
     GuidedWorkflowRunReport,
+    approve_latest_guided_workflow_run,
+    approve_and_continue_guided_workflow_run,
+    approve_or_prepare_guided_workflow_run,
     continue_guided_workflow_run,
     format_guided_workflow_run_report,
     prepare_guided_workflow_run,
@@ -174,6 +212,14 @@ from appv24.workflows.validator import (
     validate_workflow_draft_text,
     validate_workflow_package,
 )
+from appv24.workflows.workflow_extensions import (
+    WorkflowActionExtensionSpec,
+    WorkflowExtensionProfile,
+    WorkflowMiddlewareExtensionSpec,
+    WorkflowTransitConstraint,
+    build_workflow_extension_profile,
+    extension_connector_contract_catalog,
+)
 from appv24.workflows.webhook_ingress import WebhookIngressDecision, WebhookReplayStore, WebhookRunDecision, handle_local_webhook, handle_local_webhook_run
 from appv24.workflows.webhook_server import (
     WorkflowWebhookServerConfig,
@@ -209,6 +255,16 @@ __all__ = (
     "WorkflowDeploymentIntent",
     "WorkflowEnablementReport",
     "WorkflowEnablementV1Report",
+    "WorkflowExtensionBuildRequest",
+    "WorkflowExtensionCatalog",
+    "WorkflowExtensionCatalogPromotion",
+    "WorkflowExtensionHandoff",
+    "WorkflowExtensionQAIssue",
+    "WorkflowExtensionQAReport",
+    "WorkflowExtensionProfile",
+    "WorkflowActionExtensionSpec",
+    "WorkflowMiddlewareExtensionSpec",
+    "WorkflowTransitConstraint",
     "WorkflowFixtureQualityReport",
     "WorkflowQualityIssue",
     "WorkflowQualityResult",
@@ -272,6 +328,11 @@ __all__ = (
     "build_workflow_stage_prompt",
     "build_workflow_capability_catalog",
     "build_workflow_enablement_report",
+    "build_connector_extension_request",
+    "build_extension_requests_for_validation_issues",
+    "build_middleware_extension_request",
+    "build_workflow_extension_profile",
+    "extension_connector_contract_catalog",
     "build_enablement_report",
     "build_run_preview",
     "build_run_preview_from_path",
@@ -289,6 +350,9 @@ __all__ = (
     "format_guided_workflow_run_report",
     "format_workflow_approval_list",
     "format_workflow_run_explanation",
+    "format_workflow_extension_handoff",
+    "format_workflow_extension_catalog_authoring_context",
+    "format_workflow_extension_catalog_promotion",
     "format_live_draft_preflight_report",
     "format_live_production_preflight_report",
     "format_live_read_preflight_report",
@@ -308,6 +372,9 @@ __all__ = (
     "run_workflow_approved_live_production",
     "run_workflow_live_read_to_approval",
     "prepare_guided_workflow_run",
+    "approve_latest_guided_workflow_run",
+    "approve_and_continue_guided_workflow_run",
+    "approve_or_prepare_guided_workflow_run",
     "continue_guided_workflow_run",
     "run_activation_scheduler_loop",
     "run_due_activation_sweep",
@@ -343,8 +410,11 @@ __all__ = (
     "credential_resolver_for_package_env",
     "golden_workflow_examples",
     "require_fixture",
+    "render_extension_prd_prompt",
     "resume_approval",
     "handle_local_webhook",
+    "load_workflow_extension_catalog",
+    "promote_package_extensions_to_catalog",
     "serve_workflow_webhooks",
     "run_workflow_draft_stages",
     "save_workflow_draft_blocks",
@@ -353,7 +423,19 @@ __all__ = (
     "run_due_activation_tick",
     "handle_local_webhook_run",
     "validate_workflow_documents",
+    "validate_extension_qa_manifest",
     "validate_workflow_draft_text",
     "validate_workflow_package",
     "write_workflow_bundle",
+    "write_extension_handoff_for_validation_issues",
+    "WorkflowExtensionHandoffApplyReport",
+    "WorkflowExtensionHandoffDispatchReport",
+    "WorkflowExtensionDispatchRecord",
+    "WorkflowExtensionReturnedQaApplyReport",
+    "apply_extension_handoff_result",
+    "apply_returned_extension_handoff_results",
+    "dispatch_extension_handoff",
+    "format_workflow_extension_handoff_apply_report",
+    "format_workflow_extension_handoff_dispatch_report",
+    "format_workflow_extension_returned_qa_apply_report",
 )

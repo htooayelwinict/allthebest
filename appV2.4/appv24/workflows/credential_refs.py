@@ -91,6 +91,8 @@ def preflight_credential_refs(
             continue
         connector_id = str(permission["connector"])
         requested = tuple(str(scope) for scope in permission.get("scopes", []) if isinstance(scope, str))
+        if not requested:
+            continue
         credential = resolver.resolve(connector_id)
         if credential is None or not credential.available:
             issues.append(_missing_credential_issue(connector_id, requested))

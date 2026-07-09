@@ -305,6 +305,62 @@ def test_live_readiness_reports_external_connector_env_without_enabling_transpor
     assert not (package / ".workflow-runs").exists()
 
 
+def test_live_readiness_reports_missing_custom_connector_config_hint(tmp_path: Path) -> None:
+    package = _write_external_crm_read_package(tmp_path)
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("crm.lookup_contact",),
+        ),
+        env={},
+        connector_config=ConnectorConfigResolver(store=ConnectorConfigStore(tmp_path / "missing.json"), env={}),
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "blocked"
+    assert "missing connector config for crm; run /workflow-connector-configure crm" in rendered
+    assert "APPV24_CRM_CREDENTIAL_REF" in rendered
+
+
+def test_live_readiness_uses_user_config_for_custom_connector_credentials(tmp_path: Path) -> None:
+    package = _write_external_crm_read_package(tmp_path)
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="crm",
+            profile="default",
+            credential_ref="crm-user",
+            scopes=("crm:read",),
+            config={"mcp_server": "https://crm-mcp.test"},
+            source="user-config",
+        )
+    )
+
+    report = inspect_workflow_live_readiness(
+        WorkflowRunRequest(
+            package_path=package,
+            fixture_name="happy_path.yaml",
+            mode=WorkflowRunMode.LIVE_READ,
+            connector_allowlist=("crm.lookup_contact",),
+        ),
+        env={"APPV24_WORKFLOW_LIVE_READ_ENABLED": "true", "APPV24_CRM_MCP_SERVER": "https://crm-mcp.test"},
+        connector_config=ConnectorConfigResolver(
+            store=store,
+            env={"APPV24_WORKFLOW_LIVE_READ_ENABLED": "true", "APPV24_CRM_MCP_SERVER": "https://crm-mcp.test"},
+        ),
+    )
+
+    rendered = format_workflow_live_readiness_report(report)
+    assert report.status == "blocked"
+    assert "missing credential ref for crm" not in rendered
+    assert "missing connector config for crm" not in rendered
+    assert "crm-user" not in rendered
+    assert "https://crm-mcp.test" not in rendered
+
+
 def test_live_readiness_treats_local_transform_after_read_prefix_as_ready_boundary(tmp_path: Path) -> None:
     package = _write_live_read_then_llm_workflow_package(tmp_path)
     write_workflow_bundle(package)

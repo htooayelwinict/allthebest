@@ -97,6 +97,79 @@ def test_custom_middleware_requires_appv24_env_namespace(tmp_path: Path) -> None
     assert any(issue.code == "middleware_env_namespace" for issue in issues)
 
 
+def test_custom_middleware_generated_by_coding_profile_requires_qa(tmp_path: Path) -> None:
+    package = _write_read_only_package(tmp_path)
+    _write_middlewares_yaml(
+        package,
+        {
+            "version": "appv24.middlewares/v1",
+            "middlewares": [
+                {
+                    "id": "team.redactor",
+                    "adapter": "local",
+                    "source": "local://middlewares/team/redactor@sha256:abc123",
+                    "workflow_hints": {"generated_by": "coding_profile", "qa_required": True},
+                }
+            ],
+        },
+    )
+    documents = load_package_documents(package)
+
+    issues = validate_middleware_contracts(documents)
+
+    assert any(issue.code == "extension_qa_missing" for issue in issues)
+    messages = "\n".join(issue.message for issue in issues)
+    assert "team.redactor requires passed extension QA evidence" in messages
+
+
+def test_custom_middleware_generated_by_coding_profile_accepts_passed_qa(tmp_path: Path) -> None:
+    package = _write_read_only_package(tmp_path)
+    _write_middlewares_yaml(
+        package,
+        {
+            "version": "appv24.middlewares/v1",
+            "middlewares": [
+                {
+                    "id": "team.redactor",
+                    "adapter": "local",
+                    "source": "local://middlewares/team/redactor@sha256:abc123",
+                    "workflow_hints": {"generated_by": "coding_profile", "qa_required": True},
+                    "qa": {
+                        "version": "appv24.extension_qa/v1",
+                        "kind": "middleware",
+                        "extension_id": "team.redactor",
+                        "source": "local://middlewares/team/redactor@sha256:abc123",
+                        "status": "passed",
+                        "qa": {
+                            "schema_validation": "passed",
+                            "tests": [
+                                {
+                                    "command": "pytest appV2.4/tests/test_team_redactor.py",
+                                    "status": "passed",
+                                }
+                            ],
+                            "side_effect_policy": "passed",
+                            "runtime_boundary": "passed",
+                            "adapter_contract": "passed",
+                        },
+                        "fingerprints": {
+                            "spec": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                            "implementation": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                            "tests": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                            "fixtures": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+                        },
+                    },
+                }
+            ],
+        },
+    )
+    documents = load_package_documents(package)
+
+    issues = validate_middleware_contracts(documents)
+
+    assert not any(issue.code.startswith("extension_qa") for issue in issues)
+
+
 def test_middleware_runtime_uses_middleware_executor_interface() -> None:
     class _Recorder(MiddlewareExecutor):
         middleware_id = "team.recorder"

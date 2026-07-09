@@ -13,9 +13,12 @@ connectors.yaml
 permissions.yaml
 dry_run_fixtures/
   happy_path.yaml
-  rejection_path.yaml
 rollback.md
 ```
+
+Additional fixture files such as `rejection_path.yaml` are optional and should
+only be added when they model a real alternate input, decision branch, or
+failure path.
 
 ## Validation Layers
 
@@ -31,7 +34,7 @@ rollback.md
 10. Brokered mutating connector actions require explicit side-effect contract metadata.
 11. Design-only mutating connector actions may be described, but workflow steps must not call them.
 12. Inline secret-looking values are rejected. Use `secretRef` instead.
-13. Mutating workflows require `dry_run_fixtures/happy_path.yaml`, `dry_run_fixtures/rejection_path.yaml`, and `rollback.md`.
+13. Mutating workflows require `dry_run_fixtures/happy_path.yaml` and `rollback.md`.
 14. `rollback.md` must be manual and non-executable. API, CLI, shell, token, destructive HTTP method, and broad destructive-scope examples are rejected.
 
 ## Workflow Design Contract
@@ -187,9 +190,12 @@ workflow.yaml
 connectors.yaml
 permissions.yaml
 dry_run_fixtures/happy_path.yaml
-dry_run_fixtures/rejection_path.yaml
 rollback.md
 ```
+
+Extra fixtures such as `dry_run_fixtures/rejection_path.yaml` are accepted when
+the workflow needs explicit branch or failure-path coverage, but they are not
+part of the minimal user-facing package.
 
 Validation is in-memory and passive. It does not write files, run workflows, call APIs, send messages, provision resources, or read secrets.
 

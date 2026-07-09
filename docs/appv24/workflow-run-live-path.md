@@ -77,13 +77,53 @@ the model, or invoke connector transports.
 
 ### Connector User Config
 
-Normal local workflow use should configure supported connectors through the app:
+Normal local workflow use should configure connector credentials through the app:
 
 ```text
 /workflow-connector-configure brave
 /workflow-connector-configure telegram
+/workflow-connector-configure crm
 /workflow-connector-list
 ```
+
+Built-in connectors use guided fields. Custom or extension connectors use a
+generic credential ref, scopes, and connector config JSON prompt, so package or
+catalog-owned connector interfaces can carry their own config shape without
+adding workflow-specific branches.
+
+For QA-passed custom connector actions, the generic config can expose HTTP
+adapter actions without adding appv24 workflow branches:
+
+```json
+{
+  "actions": {
+    "lookup_contact": {
+      "mode": "live-read",
+      "method": "POST",
+      "url": "https://crm.example.test/lookup",
+      "headers": {
+        "Authorization": "Bearer <stored locally>"
+      },
+      "provider_id": "crm"
+    },
+    "send_customer_update": {
+      "mode": "live-production",
+      "method": "POST",
+      "url": "https://crm.example.test/messages",
+      "headers": {
+        "Authorization": "Bearer <stored locally>"
+      },
+      "provider_id": "crm"
+    }
+  }
+}
+```
+
+The configured action id becomes `<connector-id>.<action-id>`, for example
+`crm.lookup_contact`. The transport sends resolved `workflow.yaml` `with` fields
+as JSON, requires `https`, returns only JSON object fields, and still runs
+behind live mode gates, connector allowlists, approval/idempotency for
+production, and workflow output filtering.
 
 The connector config file lives under the appv24 agent directory as
 `connectors.json`. appv24 writes the parent directory with `0700` permissions
@@ -126,6 +166,11 @@ intentionally conservative. It does not imply that a source + LLM + policy +
 notification workflow can run as one live transaction; it shows the live-read
 source phase, the local/simulated intelligence phase, and the later
 approval-gated mutation phase separately.
+
+`/workflow-connectors <package>` uses the same merged built-in plus extension
+connector contracts. QA-passed package or catalog extension connectors can show
+their declared live modes in this report, while actual live execution still
+requires a configured transport/adapter for that action.
 
 Before live-draft or live-production, operators can create pending approval
 requests with a local approval-prep run:

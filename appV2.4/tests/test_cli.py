@@ -25,10 +25,14 @@ from appv24.workflows import (
     WorkflowRunRequest,
     WorkflowRunStore,
     run_workflow,
+    write_extension_handoff_for_validation_issues,
 )
 from appv24.workflows.approval_gate import ApprovalDecision
 from appv24.workflows.broker import BrokerResult
 from appv24.workflows.examples import golden_workflow_examples
+from appv24.workflows.loader import load_package_documents
+from appv24.workflows.extension_builder import WorkflowExtensionBuildReport
+from appv24.workflows.validator import validate_workflow_documents
 
 
 def setup_function() -> None:
@@ -54,6 +58,193 @@ def _write_golden_workflow_package(root: Path, example_name: str) -> Path:
     if example.documents.rollback_text is not None:
         (package / "rollback.md").write_text(example.documents.rollback_text, encoding="utf-8")
     return package
+
+
+def _write_reusable_crm_extension_catalog(root: Path) -> Path:
+    catalog = root / "workflow-extension-catalog.yaml"
+    catalog.write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow-extension-catalog/v1",
+                "package_fingerprint": "sha256:test",
+                "connectors": [
+                    {
+                        "id": "crm",
+                        "adapter": "mcp",
+                        "custom": True,
+                        "source": "mcp://crm@v1",
+                        "env": [
+                            {
+                                "name": "APPV24_CRM_MCP_SERVER",
+                                "purpose": "CRM MCP server endpoint",
+                                "required": True,
+                            }
+                        ],
+                        "actions": [
+                            {
+                                "id": "lookup_contact",
+                                "custom": True,
+                                "source": "mcp://crm.lookup_contact@v1",
+                                "side_effect": False,
+                                "side_effect_class": "read",
+                                "execution_mode": "brokered",
+                                "dry_run_supported": True,
+                                "required_scopes": ["crm:read"],
+                                "outputs": {"allowed": ["contact", "artifact_path"]},
+                                "workflow_hints": {
+                                    "catalog_group": "Read data",
+                                    "catalog_label": "Lookup CRM contact",
+                                    "input_fields": ["email"],
+                                    "required_input_fields": ["email"],
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "middlewares": [],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return catalog
+
+
+def _write_generated_crm_extension_package(root: Path) -> Path:
+    package = root / "generated-crm-extension"
+    (package / "dry_run_fixtures").mkdir(parents=True, exist_ok=True)
+    (package / "workflow.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.workflow/v1",
+                "name": "generated_crm_extension",
+                "description": "Look up CRM contacts through a generated connector.",
+                "design": {
+                    "intent": "Look up CRM contacts by email.",
+                    "trigger": "Manual support workflow.",
+                    "inputs": ["Customer email address."],
+                    "outputs": ["CRM contact record."],
+                    "assumptions": ["The CRM connector implementation has passed extension QA."],
+                    "side_effects": ["Read-only CRM lookup."],
+                    "approval_gates": ["None."],
+                    "failure_modes": ["CRM connector unavailable."],
+                    "rollback": ["No external mutation occurs."],
+                },
+                "triggers": [{"id": "manual", "type": "manual"}],
+                "entrypoint": "lookup_contact",
+                "steps": [
+                    {
+                        "id": "lookup_contact",
+                        "uses": "crm.lookup_contact",
+                        "with": {"email": "{{ inputs.email }}"},
+                        "next": "done",
+                    },
+                    {"id": "done", "type": "terminal"},
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "connectors.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.connectors/v1",
+                "connectors": [
+                    {
+                        "id": "crm",
+                        "adapter": "mcp",
+                        "custom": True,
+                        "source": "mcp://crm@v1",
+                        "env": [
+                            {
+                                "name": "APPV24_CRM_MCP_SERVER",
+                                "purpose": "CRM MCP server endpoint",
+                                "required": True,
+                            }
+                        ],
+                        "actions": [
+                            {
+                                "id": "lookup_contact",
+                                "custom": True,
+                                "source": "mcp://crm.lookup_contact@v1",
+                                "tool": "crm.lookup_contact",
+                                "side_effect": False,
+                                "side_effect_class": "read",
+                                "execution_mode": "brokered",
+                                "dry_run_supported": True,
+                                "required_scopes": ["crm:read"],
+                                "outputs": {"allowed": ["contact", "artifact_path"]},
+                                "workflow_hints": {
+                                    "catalog_group": "Read data",
+                                    "catalog_label": "Lookup CRM contact",
+                                    "generated_by": "coding_profile",
+                                    "input_fields": ["email"],
+                                    "qa_required": True,
+                                    "required_input_fields": ["email"],
+                                },
+                                "qa": _passed_crm_extension_qa(),
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "permissions.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "appv24.permissions/v1",
+                "permissions": [{"connector": "crm", "actions": ["lookup_contact"], "scopes": ["crm:read"]}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (package / "dry_run_fixtures" / "happy_path.yaml").write_text(
+        yaml.safe_dump({"input": {"email": "customer@example.com"}}, sort_keys=False),
+        encoding="utf-8",
+    )
+    (package / "rollback.md").write_text("No external mutation occurs.\n", encoding="utf-8")
+    return package
+
+
+def _write_generated_crm_extension_package_without_qa(root: Path) -> Path:
+    package = _write_generated_crm_extension_package(root)
+    connectors_path = package / "connectors.yaml"
+    connectors = yaml.safe_load(connectors_path.read_text(encoding="utf-8"))
+    connectors["connectors"][0]["actions"][0].pop("qa", None)
+    connectors_path.write_text(yaml.safe_dump(connectors, sort_keys=False), encoding="utf-8")
+    return package
+
+
+def _passed_crm_extension_qa() -> dict[str, object]:
+    return {
+        "version": "appv24.extension_qa/v1",
+        "kind": "connector",
+        "extension_id": "crm.lookup_contact",
+        "source": "mcp://crm.lookup_contact@v1",
+        "status": "passed",
+        "qa": {
+            "schema_validation": "passed",
+            "tests": [{"command": "pytest appV2.4/tests/test_crm_connector.py", "status": "passed"}],
+            "side_effect_policy": "passed",
+            "runtime_boundary": "passed",
+            "adapter_contract": "passed",
+        },
+        "contract": {
+            "required_scopes": ["crm:read"],
+            "allowed_outputs": ["contact", "artifact_path"],
+        },
+        "fingerprints": {
+            "spec": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "implementation": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "tests": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "fixtures": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        },
+    }
 
 
 def _write_live_read_workflow_package(root: Path) -> Path:
@@ -242,8 +433,8 @@ def _write_ai_news_subscriber_broadcast_package(root: Path) -> Path:
         "entrypoint": "search_ai_news",
         "steps": [
             {"id": "search_ai_news", "uses": "brave.search", "with": {"query": "artificial intelligence news today", "count": 5}, "next": "list_subscribers"},
-            {"id": "list_subscribers", "uses": "telegram.list_subscribers", "with": {"audience": "default"}, "next": "summarize_digest"},
-            {"id": "summarize_digest", "uses": "llm.summarize", "with": {"text": "{{ steps.search_ai_news.outputs.items }}", "output_contract": "summary_v1"}, "next": "send_digest"},
+            {"id": "list_subscribers", "uses": "telegram.list_subscribers", "with": {"audience": "default"}, "next": "summarize_news"},
+            {"id": "summarize_news", "uses": "llm.summarize", "with": {"text": "{{ steps.search_ai_news.outputs.items }}", "output_contract": "summary_v1"}, "next": "send_digest"},
             {
                 "id": "send_digest",
                 "uses": "telegram.broadcast_message",
@@ -252,7 +443,7 @@ def _write_ai_news_subscriber_broadcast_package(root: Path) -> Path:
                 "with": {
                     "recipients": "{{ steps.list_subscribers.outputs.recipients }}",
                     "audience_hash": "{{ steps.list_subscribers.outputs.audience_hash }}",
-                    "text": "{{ steps.summarize_digest.outputs.summary }}",
+                    "text": "{{ steps.summarize_news.outputs.summary }}",
                 },
                 "next": "done",
             },
@@ -423,6 +614,95 @@ Close the drafted issue if it was created.
 
 def _invalid_workflow_draft_text() -> str:
     return _valid_workflow_draft_text().replace("side_effect: true", "side_effect: send")
+
+
+def _generated_crm_extension_draft_text() -> str:
+    return """
+Here is the package draft.
+
+```yaml workflow.yaml
+version: appv24.workflow/v1
+name: generated-crm-lookup
+description: Look up a CRM contact through a generated connector.
+design:
+  intent: Look up a CRM contact for support workflow users.
+  trigger: Manual support workflow.
+  inputs:
+    - Customer email address.
+  outputs:
+    - CRM contact record.
+  assumptions:
+    - The CRM connector will be built by the coding profile.
+  side_effects:
+    - Read-only CRM lookup.
+  approval_gates:
+    - None.
+  failure_modes:
+    - CRM connector unavailable.
+  rollback:
+    - No external mutation occurs.
+triggers:
+  - id: manual
+    type: manual
+entrypoint: lookup_contact
+steps:
+  - id: lookup_contact
+    uses: crm.lookup_contact
+    with:
+      email: "{{ inputs.email }}"
+    next: done
+  - id: done
+    type: terminal
+```
+
+```yaml connectors.yaml
+version: appv24.connectors/v1
+connectors:
+  - id: crm
+    adapter: mcp
+    custom: true
+    source: mcp://crm@v1
+    env:
+      - name: APPV24_CRM_MCP_SERVER
+        purpose: CRM MCP server endpoint
+        required: true
+    actions:
+      - id: lookup_contact
+        custom: true
+        source: mcp://crm.lookup_contact@v1
+        tool: crm.lookup_contact
+        side_effect: false
+        side_effect_class: read
+        execution_mode: brokered
+        dry_run_supported: true
+        required_scopes: [crm:read]
+        outputs:
+          allowed: [contact, artifact_path]
+        workflow_hints:
+          business_goal: Look up CRM contacts for support workflow users.
+          generated_by: coding_profile
+          input_fields: [email]
+          qa_required: true
+          required_input_fields: [email]
+```
+
+```yaml permissions.yaml
+version: appv24.permissions/v1
+permissions:
+  - connector: crm
+    actions: [lookup_contact]
+    scopes: [crm:read]
+```
+
+```yaml dry_run_fixtures/happy_path.yaml
+input:
+  email: customer@example.com
+```
+
+```markdown rollback.md
+No external mutation occurs.
+```
+"""
 
 
 def _quality_failing_workflow_draft_text() -> str:
@@ -2511,6 +2791,256 @@ def test_cli_plain_workflow_save_writes_last_valid_draft(monkeypatch, tmp_path, 
     assert app.cwd == tmp_path.resolve()
 
 
+def test_cli_plain_workflow_automate_saves_next_valid_draft_and_runs_guided(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    created: dict[str, object] = {}
+    observed: dict[str, object] = {}
+    assistant_text = _valid_workflow_draft_text()
+    prompts = iter(["/workflow-automate automated-workflow happy_path.yaml", "design workflow", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["kwargs"] = kwargs
+            created["app"] = self
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+            self.run_prompts: list[str] = []
+
+        def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
+            text = assistant_text if "staging 3/3: package" in prompt else "stage note"
+            self.messages.append(_assistant_message(text))
+
+    def fake_prepare(request, **kwargs):
+        observed["request"] = request
+        observed["kwargs"] = kwargs
+        return GuidedWorkflowRunReport(
+            status="approval-required",
+            package_path=Path(request.package_path),
+            fixture_name=request.fixture_name or "happy_path.yaml",
+            approval_run_id="run-local",
+            approval_request_ids=("approval-1",),
+            next_action="approve external side effect",
+        )
+
+    monkeypatch.setattr(cli, "prepare_guided_workflow_run", fake_prepare, raising=False)
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    saved_path = tmp_path / "automated-workflow"
+    captured = capsys.readouterr()
+    app = created["app"]
+    request = observed["request"]
+    assert exit_code == 0
+    assert len(app.run_prompts) == 3
+    assert saved_path.joinpath("workflow.yaml").is_file()
+    assert request.package_path == saved_path.resolve()
+    assert request.fixture_name == "happy_path.yaml"
+    assert request.mode is WorkflowRunMode.LIVE_READ
+    assert "Workflow automation armed: automated-workflow" in captured.out
+    assert "Workflow draft saved:" in captured.out
+    assert "Workflow guided run: approval-required" in captured.out
+    assert "approval-1" in captured.out
+
+
+def test_cli_plain_workflow_catalog_arms_generated_path_automation(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    created: dict[str, object] = {}
+    observed: dict[str, object] = {}
+    assistant_text = _valid_workflow_draft_text()
+    prompts = iter(["/workflow-catalog", "design workflow", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["app"] = self
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+            self.run_prompts: list[str] = []
+
+        def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
+            text = assistant_text if "staging 3/3: package" in prompt else "stage note"
+            self.messages.append(_assistant_message(text))
+
+    def fake_prepare(request, **kwargs):
+        observed["request"] = request
+        observed["kwargs"] = kwargs
+        return GuidedWorkflowRunReport(
+            status="approval-required",
+            package_path=Path(request.package_path),
+            fixture_name=request.fixture_name or "happy_path.yaml",
+            approval_run_id="run-local",
+            approval_request_ids=("approval-1",),
+            next_action="approve external side effect",
+        )
+
+    monkeypatch.setattr(cli, "prepare_guided_workflow_run", fake_prepare, raising=False)
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    saved_path = tmp_path / "dependency-security-review"
+    captured = capsys.readouterr()
+    app = created["app"]
+    request = observed["request"]
+    assert exit_code == 0
+    assert len(app.run_prompts) == 3
+    assert saved_path.joinpath("workflow.yaml").is_file()
+    assert request.package_path == saved_path.resolve()
+    assert request.fixture_name == "happy_path.yaml"
+    assert request.mode is WorkflowRunMode.LIVE_READ
+    assert "Workflow catalog automation armed" in captured.out
+    assert "Workflow draft saved:" in captured.out
+    assert f"/workflow-approve {saved_path.name} happy_path.yaml" in captured.out
+    assert "Workflow guided run: approval-required" in captured.out
+
+
+def test_cli_plain_workflow_catalog_generated_path_avoids_existing_package(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    (tmp_path / "dependency-security-review").mkdir()
+    observed: dict[str, object] = {}
+    assistant_text = _valid_workflow_draft_text()
+    prompts = iter(["/workflow-catalog", "design workflow", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            text = assistant_text if "staging 3/3: package" in prompt else "stage note"
+            self.messages.append(_assistant_message(text))
+
+    def fake_prepare(request, **kwargs):
+        observed["request"] = request
+        return GuidedWorkflowRunReport(
+            status="approval-required",
+            package_path=Path(request.package_path),
+            fixture_name=request.fixture_name or "happy_path.yaml",
+            approval_run_id="run-local",
+            approval_request_ids=("approval-1",),
+            next_action="approve external side effect",
+        )
+
+    monkeypatch.setattr(cli, "prepare_guided_workflow_run", fake_prepare, raising=False)
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    saved_path = tmp_path / "dependency-security-review-2"
+    captured = capsys.readouterr()
+    request = observed["request"]
+    assert exit_code == 0
+    assert saved_path.joinpath("workflow.yaml").is_file()
+    assert request.package_path == saved_path.resolve()
+    assert f"/workflow-approve {saved_path.name} happy_path.yaml" in captured.out
+
+
+def test_cli_plain_workflow_catalog_writes_extension_handoff_for_generated_connector(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    created: dict[str, object] = {}
+    assistant_text = _generated_crm_extension_draft_text()
+    prompts = iter(["/workflow-catalog", "design crm lookup workflow", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["app"] = self
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+            self.run_prompts: list[str] = []
+
+        def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
+            text = assistant_text if "staging 3/3: package" in prompt else "stage note"
+            self.messages.append(_assistant_message(text))
+
+    monkeypatch.setattr(
+        cli,
+        "prepare_guided_workflow_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("guided run should wait for extension QA")),
+        raising=False,
+    )
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    saved_path = tmp_path / "generated-crm-lookup"
+    handoff_path = saved_path / ".workflow-extension-handoff" / "extension-handoff.manifest.json"
+    captured = capsys.readouterr()
+    app = created["app"]
+    assert exit_code == 0
+    assert len(app.run_prompts) == 3
+    assert saved_path.joinpath("workflow.yaml").is_file()
+    assert handoff_path.is_file()
+    manifest = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert manifest["target_profile"] == "coding"
+    assert manifest["requests"][0]["extension_id"] == "crm.lookup_contact"
+    assert "Workflow package validation: failed" in captured.out
+    assert "extension_qa_missing" in captured.out
+    assert "Workflow extension handoff: ready" in captured.out
+    assert "# appv24 connector extension PRD: crm.lookup_contact" in captured.out
+    assert "Runtime must not call the coding profile" in captured.out
+    assert "next action: build extension with coding profile and attach QA manifest" in captured.out
+    assert "Workflow guided run:" not in captured.out
+
+
 def test_cli_plain_workflow_save_rejects_quality_gate_failure(monkeypatch, tmp_path, capsys) -> None:
     prompts = iter(["/workflow-save saved-workflow", "/exit"])
 
@@ -3187,6 +3717,302 @@ def test_cli_plain_workflow_catalog_command_renders_user_catalog(monkeypatch, tm
     assert "Workflow capability catalog" in captured.out
     assert "Search web/news with Brave Search" in captured.out
     assert "telegram.broadcast_message" in captured.out
+    assert "Middleware" in captured.out
+    assert "Audit log (audit.log)" in captured.out
+
+
+def test_cli_plain_workflow_checkin_alias_renders_user_catalog(monkeypatch, tmp_path, capsys) -> None:
+    prompts = iter(["/workflow-checkin", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow checkin command: {prompt}")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow capability catalog" in captured.out
+    assert "Search web/news with Brave Search" in captured.out
+    assert "telegram.broadcast_message" in captured.out
+    assert "Workflow catalog automation armed" in captured.out
+    assert "Next: describe the workflow you want in plain language." in captured.out
+    assert "Then use the printed /workflow-approve command to approve and continue." in captured.out
+    assert "Middleware" in captured.out
+    assert "Audit log (audit.log)" in captured.out
+
+
+def test_cli_plain_workflow_catalog_command_loads_reusable_extension_catalog(monkeypatch, tmp_path, capsys) -> None:
+    catalog_path = _write_reusable_crm_extension_catalog(tmp_path)
+    prompts = iter([f"/workflow-catalog {catalog_path.name}", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow catalog command: {prompt}")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow capability catalog" in captured.out
+    assert "Lookup CRM contact" in captured.out
+    assert "crm.lookup_contact" in captured.out
+    assert "APPV24_CRM_MCP_SERVER" in captured.out
+
+
+def test_cli_plain_workflow_generation_uses_active_reusable_extension_catalog(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    catalog_path = _write_reusable_crm_extension_catalog(tmp_path)
+    prompts = iter([f"/workflow-checkin {catalog_path.name}", "Design a CRM lookup workflow", "/exit"])
+    created: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            created["app"] = self
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+            self.run_prompts: list[str] = []
+
+        def run_turn(self, prompt):
+            self.run_prompts.append(prompt)
+            text = _valid_workflow_draft_text() if "staging 3/3: package" in prompt else "stage note"
+            self.messages.append(_assistant_message(text))
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    capsys.readouterr()
+    app = created["app"]
+    assert exit_code == 0
+    assert len(app.run_prompts) == 3
+    assert "Workflow draft staging 3/3: package" in app.run_prompts[2]
+    assert "Active reusable workflow extension catalog:" in app.run_prompts[2]
+    assert "Lookup CRM contact (crm.lookup_contact)" in app.run_prompts[2]
+    assert "APPV24_CRM_MCP_SERVER" in app.run_prompts[2]
+    assert "connectors.yaml entries to copy:" in app.run_prompts[2]
+    assert "permissions.yaml entries to copy:" in app.run_prompts[2]
+    assert "custom: true" in app.run_prompts[2]
+    assert "source: mcp://crm.lookup_contact@v1" in app.run_prompts[2]
+    assert "crm:read" in app.run_prompts[2]
+
+
+def test_cli_plain_workflow_extension_promote_command_writes_reusable_catalog(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_generated_crm_extension_package(tmp_path)
+    catalog_path = tmp_path / "promoted-catalog.yaml"
+    prompts = iter([f"/workflow-extension-promote {package.name} {catalog_path.name} crm.lookup_contact", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow extension promotion command: {prompt}")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Workflow extension promotion: promoted" in captured.out
+    assert "crm.lookup_contact" in captured.out
+    assert catalog_path.exists()
+    assert "appv24.workflow-extension-catalog/v1" in catalog_path.read_text(encoding="utf-8")
+
+
+def test_cli_plain_workflow_extension_apply_command_attaches_returned_qa(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_generated_crm_extension_package_without_qa(tmp_path)
+    documents = load_package_documents(package)
+    validation = validate_workflow_documents(documents)
+    handoff = write_extension_handoff_for_validation_issues(documents, validation.issues)
+    qa_path = tmp_path / "crm-lookup.qa.yaml"
+    qa_path.write_text(yaml.safe_dump(_passed_crm_extension_qa(), sort_keys=False), encoding="utf-8")
+    prompts = iter([f"/workflow-extension-apply {handoff.manifest_path} {qa_path}", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow extension apply command: {prompt}")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    connectors = yaml.safe_load((package / "connectors.yaml").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert "Workflow extension handoff apply: applied" in captured.out
+    assert "extension: crm.lookup_contact" in captured.out
+    assert connectors["connectors"][0]["actions"][0]["qa"]["status"] == "passed"
+
+
+def test_cli_plain_workflow_extension_dispatch_command_marks_outbox(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_generated_crm_extension_package_without_qa(tmp_path)
+    documents = load_package_documents(package)
+    validation = validate_workflow_documents(documents)
+    handoff = write_extension_handoff_for_validation_issues(documents, validation.issues)
+    prompts = iter([f"/workflow-extension-dispatch {handoff.manifest_path} --mark-dispatched", "/exit"])
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow extension dispatch command: {prompt}")
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    manifest = json.loads(handoff.manifest_path.read_text(encoding="utf-8"))
+    outbox_records = [json.loads(line) for line in handoff.dispatch_path.read_text(encoding="utf-8").splitlines()]
+    assert exit_code == 0
+    assert "Workflow extension dispatch: dispatched" in captured.out
+    assert "crm.lookup_contact" in captured.out
+    assert "dispatched_to_coding_profile" in captured.out
+    assert manifest["dispatch_status"] == "dispatched_to_coding_profile"
+    assert {record["status"] for record in outbox_records} == {"dispatched_to_coding_profile"}
+
+
+def test_cli_plain_workflow_extension_build_command_invokes_builder(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_generated_crm_extension_package_without_qa(tmp_path)
+    prompts = iter([f"/workflow-extension-build {package.name}", "/exit"])
+    observed: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow extension build command: {prompt}")
+
+    def fake_builder(path, *, timeout_seconds=None, progress=None):
+        observed["path"] = path
+        observed["timeout_seconds"] = timeout_seconds
+        observed["progress"] = progress
+        return WorkflowExtensionBuildReport(
+            status="applied",
+            package_path=Path(path).resolve(),
+            validation_ok=True,
+            built_extensions=("crm.lookup_contact",),
+            applied_extensions=("crm.lookup_contact",),
+            next_commands=(f"/workflow-approve {package.resolve()} happy_path.yaml",),
+        )
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr(cli, "build_workflow_extension_handoff", fake_builder, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert observed["path"] == package
+    assert observed["timeout_seconds"] is not None
+    assert callable(observed["progress"])
+    assert "Workflow extension build started" in captured.out
+    assert "Workflow extension build: applied" in captured.out
+    assert "validation: passed" in captured.out
+    assert "/workflow-approve" in captured.out
 
 
 def test_cli_plain_workflow_run_guided_command_invokes_prepare(monkeypatch, tmp_path, capsys) -> None:
@@ -3292,6 +4118,116 @@ def test_cli_plain_workflow_continue_guided_command_invokes_continue(monkeypatch
     assert observed["kwargs"]["approval_run_id"] == "run-local"
     assert "Workflow guided run: passed" in captured.out
     assert "live-production run: run-prod" in captured.out
+
+
+def test_cli_plain_workflow_approve_guided_flag_records_and_continues(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_ai_news_subscriber_broadcast_package(tmp_path)
+    prompts = iter([f"/workflow-approve {package.name} run-local approval-1 --guided", "/exit"])
+    observed: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow guided approval command: {prompt}")
+
+    def fake_approve_and_continue(request, **kwargs):
+        observed["request"] = request
+        observed["kwargs"] = kwargs
+        return GuidedWorkflowRunReport(
+            status="passed",
+            package_path=Path(request.package_path),
+            fixture_name=request.fixture_name or "happy_path.yaml",
+            approval_run_id=kwargs["approval_run_id"],
+            readiness_status="ready",
+            live_production_run_id="run-prod",
+        )
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr(cli, "approve_and_continue_guided_workflow_run", fake_approve_and_continue, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    request = observed["request"]
+    assert exit_code == 0
+    assert request.package_path == package
+    assert request.fixture_name == "happy_path.yaml"
+    assert request.mode is WorkflowRunMode.LIVE_PRODUCTION
+    assert observed["kwargs"]["approval_run_id"] == "run-local"
+    assert observed["kwargs"]["approval_request_id"] == "approval-1"
+    assert observed["kwargs"]["decided_by"] == "cli"
+    assert "Workflow guided run: passed" in captured.out
+    assert "live-production run: run-prod" in captured.out
+
+
+def test_cli_plain_workflow_approve_uses_prepare_or_latest_guided_request(monkeypatch, tmp_path, capsys) -> None:
+    package = _write_ai_news_subscriber_broadcast_package(tmp_path)
+    prompts = iter([f"/workflow-approve {package.name}", "/exit"])
+    observed: dict[str, object] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs):
+            self.cwd = Path(kwargs["cwd"])
+            self.messages = []
+
+        def run_turn(self, prompt):
+            raise AssertionError(f"model should not run for workflow latest guided approval command: {prompt}")
+
+    def fake_approve_or_prepare(request, **kwargs):
+        observed["request"] = request
+        observed["kwargs"] = kwargs
+        return GuidedWorkflowRunReport(
+            status="approval-required",
+            package_path=Path(request.package_path),
+            fixture_name=request.fixture_name or "happy_path.yaml",
+            approval_run_id="run-prepared",
+            approval_request_ids=("approval-1",),
+            next_action="approve external side effect",
+        )
+
+    monkeypatch.setattr(cli, "register_builtin_providers", lambda dotenv_path, config=None: None)
+    monkeypatch.setattr(
+        cli,
+        "_startup_model_from_env",
+        lambda *args, **kwargs: cli._StartupModelSelection(
+            model=Model(id="m", name="m", api="faux", provider="faux", base_url=""),
+            thinking_level=kwargs.get("cli_thinking"),
+            scoped_models=[],
+        ),
+    )
+    monkeypatch.setattr(cli, "CodingApp", FakeApp)
+    monkeypatch.setattr(cli, "approve_or_prepare_guided_workflow_run", fake_approve_or_prepare, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+
+    exit_code = cli.main(["--cwd", str(tmp_path), "--profile", "workflow-designer-lite", "--plain"])
+
+    captured = capsys.readouterr()
+    request = observed["request"]
+    assert exit_code == 0
+    assert request.package_path == package
+    assert request.fixture_name == "happy_path.yaml"
+    assert request.mode is WorkflowRunMode.LIVE_PRODUCTION
+    assert observed["kwargs"]["approved"] is True
+    assert observed["kwargs"]["decided_by"] == "cli"
+    assert "live_read_broker" in observed["kwargs"]
+    assert "live_production_broker" in observed["kwargs"]
+    assert "Workflow guided run: approval-required" in captured.out
+    assert "approval run: run-prepared" in captured.out
+    assert "next action: approve external side effect" in captured.out
 
 
 def test_cli_plain_workflow_run_approval_creates_pending_request_without_model(monkeypatch, tmp_path, capsys) -> None:

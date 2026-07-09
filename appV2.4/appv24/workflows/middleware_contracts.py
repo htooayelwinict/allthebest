@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from appv24.workflows.errors import WorkflowIssue, sorted_issues
+from appv24.workflows.extension_qa import validate_extension_qa_manifest
 from appv24.workflows.loader import PackageDocuments
 
 
@@ -211,7 +212,56 @@ def validate_middleware_contracts(documents: PackageDocuments) -> list[WorkflowI
                         repair_hint="Declare middleware runtime config using APPV24_ env names so readiness/export can report it safely.",
                     )
                 )
+        issues.extend(_extension_qa_issues(entry, middleware_id, path))
     return list(sorted_issues(issues))
+
+
+def _extension_qa_issues(
+    entry: Mapping[str, Any],
+    middleware_id: str,
+    path: tuple[str | int, ...],
+) -> list[WorkflowIssue]:
+    if not _requires_extension_qa(entry):
+        return []
+    qa = entry.get("qa")
+    qa_path = (*path, "qa")
+    if not isinstance(qa, Mapping):
+        return [
+            WorkflowIssue(
+                "extension_qa_missing",
+                "middlewares.yaml",
+                qa_path,
+                f"{middleware_id} requires passed extension QA evidence",
+                expected="qa manifest with status: passed",
+                repair_hint=(
+                    "Generate the middleware with the coding profile, run QA, "
+                    "and attach its appv24.extension_qa/v1 manifest."
+                ),
+            )
+        ]
+    report = validate_extension_qa_manifest(
+        qa,
+        expected_kind="middleware",
+        expected_extension_id=middleware_id,
+    )
+    return [
+        WorkflowIssue(
+            issue.code,
+            "middlewares.yaml",
+            (*qa_path, *issue.path),
+            f"{middleware_id} extension QA failed: {issue.message}",
+            expected=issue.expected,
+            repair_hint=issue.repair_hint,
+        )
+        for issue in report.issues
+    ]
+
+
+def _requires_extension_qa(entry: Mapping[str, Any]) -> bool:
+    hints = entry.get("workflow_hints")
+    if not isinstance(hints, Mapping):
+        return False
+    return hints.get("qa_required") is True or hints.get("generated_by") == "coding_profile"
 
 
 def _middleware_entries(documents: PackageDocuments) -> tuple[Mapping[str, Any], ...]:

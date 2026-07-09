@@ -30,9 +30,11 @@ def assistant_text_from_messages(messages: list[object]) -> str:
 
         content = _field(message, "content")
         if isinstance(content, str):
+            if _is_non_draft_assistant_text(content):
+                continue
             return content
         if not isinstance(content, list):
-            return ""
+            continue
 
         text_blocks: list[str] = []
         for block in content:
@@ -41,8 +43,16 @@ def assistant_text_from_messages(messages: list[object]) -> str:
             text = _field(block, "text")
             if isinstance(text, str):
                 text_blocks.append(text)
-        return "".join(text_blocks)
+        text = "".join(text_blocks)
+        if _is_non_draft_assistant_text(text):
+            continue
+        return text
     return ""
+
+
+def _is_non_draft_assistant_text(text: str) -> bool:
+    stripped = text.strip()
+    return not stripped or stripped.startswith("[CONTEXT COMPACTION")
 
 
 def format_workflow_validation_report(result: WorkflowDraftValidationResult, max_issues: int = 12) -> str:

@@ -15,7 +15,8 @@ from appv24.workflows.broker import LocalWorkflowBroker
 from appv24.workflows.compiler import compile_workflow_documents
 from appv24.workflows.connector_contracts import external_connector_action_refs, external_connector_env_requirements
 from appv24.workflows.connector_registry import WorkflowConnectorRegistryAction, inspect_workflow_connector_registry
-from appv24.workflows.credential_refs import CredentialRefResolver
+from appv24.workflows.connector_user_config import ConnectorConfigResolver
+from appv24.workflows.credential_refs import CredentialRefResolver, credential_resolver_for_package_connector_config
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.iac_export import export_deployment_intent
@@ -24,7 +25,9 @@ from appv24.workflows.live_preflight import credential_resolver_for_package_env
 from appv24.workflows.live_runner import run_live_draft_workflow, run_live_production_workflow, run_live_read_workflow
 from appv24.workflows.live_transports import (
     build_live_draft_transports_from_env,
+    build_live_production_transports_from_connector_config,
     build_live_production_transports_from_env,
+    build_live_read_transports_from_connector_config,
     build_live_read_transports_from_env,
 )
 from appv24.workflows.loader import load_package_documents
@@ -65,6 +68,7 @@ class WorkflowProfileKernel:
     live_draft_broker: LiveWorkflowBroker | None = None
     live_production_broker: LiveWorkflowBroker | None = None
     credential_resolver: CredentialRefResolver | None = None
+    connector_config: ConnectorConfigResolver | None = None
     middleware_factories: Mapping[str, MiddlewareExecutorFactory] = field(default_factory=dict)
 
     def prepare(self, package_path: str | Path) -> WorkflowProfileKernelPrepareReport:
@@ -175,10 +179,7 @@ class WorkflowProfileKernel:
                 request,
                 broker=self._with_package_external_actions(
                     request,
-                    self.live_read_broker or LiveWorkflowBroker(
-                        build_live_read_transports_from_env(request.operator_env),
-                        mode="live-read",
-                    ),
+                    self.live_read_broker or LiveWorkflowBroker(self._live_read_transports(request), mode="live-read"),
                 ),
                 credential_resolver=self._credential_resolver(request),
                 middleware_factories=self.middleware_factories,
@@ -202,7 +203,7 @@ class WorkflowProfileKernel:
                 broker=self._with_package_external_actions(
                     request,
                     self.live_production_broker or LiveWorkflowBroker(
-                        build_live_production_transports_from_env(request.operator_env),
+                        self._live_production_transports(request),
                         mode="live-production",
                         production_enabled=True,
                     ),
@@ -219,7 +220,24 @@ class WorkflowProfileKernel:
     def _credential_resolver(self, request: WorkflowRunRequest) -> CredentialRefResolver:
         if self.credential_resolver is not None:
             return self.credential_resolver
+        if self.connector_config is not None:
+            return credential_resolver_for_package_connector_config(request.package_path, self._connector_config(request))
         return credential_resolver_for_package_env(request.package_path, request.operator_env)
+
+    def _connector_config(self, request: WorkflowRunRequest) -> ConnectorConfigResolver:
+        if self.connector_config is not None:
+            return self.connector_config
+        return ConnectorConfigResolver(env=request.operator_env)
+
+    def _live_read_transports(self, request: WorkflowRunRequest):
+        transports = dict(build_live_read_transports_from_env(request.operator_env))
+        transports.update(build_live_read_transports_from_connector_config(self._connector_config(request)))
+        return transports
+
+    def _live_production_transports(self, request: WorkflowRunRequest):
+        transports = dict(build_live_production_transports_from_env(request.operator_env))
+        transports.update(build_live_production_transports_from_connector_config(self._connector_config(request)))
+        return transports
 
     def _with_package_external_actions(
         self,

@@ -606,7 +606,7 @@ def test_phase_runner_delegates_live_read_connector_after_local_transform(tmp_pa
     ]
     local_report = json.loads((run_root / report.local_run_id / "report.json").read_text(encoding="utf-8"))
     assert [step["step_id"] for step in local_report["step_trace"]] == [
-        "summarize_digest",
+        "summarize_news",
         "list_subscribers",
         "send_digest",
     ]
@@ -785,10 +785,10 @@ def _write_ai_news_subscriber_broadcast_package(root: Path, *, subscriber_after_
                 "id": "search_ai_news",
                 "uses": "brave.search",
                 "with": {"query": "artificial intelligence news today", "count": 5},
-                "next": "summarize_digest",
+                "next": "summarize_news",
             },
             {
-                "id": "summarize_digest",
+                "id": "summarize_news",
                 "uses": "llm.summarize",
                 "with": {
                     "text": "{{ steps.search_ai_news.outputs.items }}",
@@ -815,10 +815,10 @@ def _write_ai_news_subscriber_broadcast_package(root: Path, *, subscriber_after_
                 "id": "list_subscribers",
                 "uses": "telegram.list_subscribers",
                 "with": {"audience": "default"},
-                "next": "summarize_digest",
+                "next": "summarize_news",
             },
             {
-                "id": "summarize_digest",
+                "id": "summarize_news",
                 "uses": "llm.summarize",
                 "with": {
                     "text": "{{ steps.search_ai_news.outputs.items }}",
@@ -837,7 +837,7 @@ def _write_ai_news_subscriber_broadcast_package(root: Path, *, subscriber_after_
                 "with": {
                     "recipients": "{{ steps.list_subscribers.outputs.recipients }}",
                     "audience_hash": "{{ steps.list_subscribers.outputs.audience_hash }}",
-                    "text": "{{ steps.summarize_digest.outputs.summary }}",
+                    "text": "{{ steps.summarize_news.outputs.summary }}",
                 },
                 "next": "done",
             },

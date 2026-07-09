@@ -64,6 +64,8 @@ def format_workflow_repair_stop_report(result: WorkflowDraftRepairResult) -> str
         return ""
     if not result.stop_reason:
         return ""
+    if result.stop_reason == "extension_handoff":
+        return ""
     if result.stop_reason == "aborted":
         return "Workflow draft repair stopped: aborted"
     return f"Workflow draft repair stopped: {result.stop_reason} after {result.attempts} attempt(s)"
@@ -228,12 +230,7 @@ def build_workflow_repair_prompt(
             failed_scope,
             "",
             "Return a complete corrected workflow package draft with these labeled fenced sections:",
-            "- workflow.yaml",
-            "- connectors.yaml",
-            "- permissions.yaml",
-            "- dry_run_fixtures/happy_path.yaml",
-            "- dry_run_fixtures/rejection_path.yaml",
-            "- rollback.md",
+            *_repair_package_block_labels(result),
             "",
             "Rules:",
             "- Preserve the user's intended workflow.",
@@ -248,6 +245,21 @@ def build_workflow_repair_prompt(
         ]
     )
     return "\n".join(lines)
+
+
+def _repair_package_block_labels(result: WorkflowDraftValidationResult) -> list[str]:
+    labels = [
+        "- workflow.yaml",
+        "- connectors.yaml",
+        "- permissions.yaml",
+        "- dry_run_fixtures/happy_path.yaml",
+    ]
+    for fixture_name in sorted(result.blocks.dry_run_fixtures):
+        if fixture_name == "dry_run_fixtures/happy_path.yaml":
+            continue
+        labels.append(f"- {fixture_name}")
+    labels.append("- rollback.md")
+    return labels
 
 
 def _workflow_steps_by_id(workflow: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
@@ -307,11 +319,41 @@ def _workflow_draft_ready(result: WorkflowDraftValidationResult) -> bool:
 
 def _repair_issues(result: WorkflowDraftValidationResult) -> tuple[object, ...]:
     if not result.ok:
-        return result.validation.issues
+        return tuple(issue for issue in result.validation.issues if not _is_extension_handoff_issue(issue))
     quality = _workflow_quality_result(result)
     if quality is None:
         return ()
     return quality.issues
+
+
+def _is_extension_handoff_issue(issue: object) -> bool:
+    return str(getattr(issue, "code", "")).startswith("extension_qa")
+
+
+def _workflow_draft_waiting_on_extension_handoff(result: WorkflowDraftValidationResult) -> bool:
+    if result.ok or result.documents is None:
+        return False
+    issues = tuple(result.validation.issues)
+    return bool(issues) and all(_is_extension_handoff_issue(issue) for issue in issues)
+
+
+def _extension_handoff_repair_result(
+    validation: WorkflowDraftValidationResult,
+    *,
+    attempts: int,
+    repaired: bool,
+    feedback_prompts: tuple[str, ...] = (),
+    repair_report: WorkflowRepairReport | None = None,
+) -> WorkflowDraftRepairResult:
+    return WorkflowDraftRepairResult(
+        validation=validation,
+        attempts=attempts,
+        repaired=repaired,
+        exhausted=False,
+        feedback_prompts=feedback_prompts,
+        stop_reason="extension_handoff",
+        repair_report=repair_report,
+    )
 
 
 def repair_workflow_draft_messages(
@@ -321,8 +363,12 @@ def repair_workflow_draft_messages(
     config: WorkflowDraftRepairConfig = WorkflowDraftRepairConfig(),
     on_attempt: Callable[[int, int | None, WorkflowDraftValidationResult], None] | None = None,
     should_abort: Callable[[], bool] | None = None,
+    get_messages: Callable[[], list[object]] | None = None,
 ) -> WorkflowDraftRepairResult:
-    validation = validate_latest_workflow_draft(messages)
+    def current_messages() -> list[object]:
+        return get_messages() if get_messages is not None else messages
+
+    validation = validate_latest_workflow_draft(current_messages())
     max_attempts = None if config.max_attempts is None else max(0, config.max_attempts)
     max_issues = max(0, config.max_issues)
     max_repeated_validation_results = (
@@ -338,11 +384,14 @@ def repair_workflow_draft_messages(
             attempts=0,
             repaired=False,
             exhausted=False,
-            stop_reason="aborted" if _repair_aborted(messages, should_abort) else None,
+            stop_reason="aborted" if _repair_aborted(current_messages(), should_abort) else None,
         )
 
-    if _repair_aborted(messages, should_abort):
+    if _repair_aborted(current_messages(), should_abort):
         return _aborted_repair_result(validation, attempts=0)
+
+    if _workflow_draft_waiting_on_extension_handoff(validation):
+        return _extension_handoff_repair_result(validation, attempts=0, repaired=False)
 
     if _workflow_draft_ready(validation):
         return WorkflowDraftRepairResult(
@@ -359,7 +408,7 @@ def repair_workflow_draft_messages(
         _validation_fingerprint(validation): 1
     }
     while max_attempts is None or attempts < max_attempts:
-        deterministic_validation = _apply_deterministic_workflow_repair(messages, validation)
+        deterministic_validation = _apply_deterministic_workflow_repair(current_messages(), validation)
         if deterministic_validation is not None:
             validation = deterministic_validation
             fingerprint = _validation_fingerprint(validation)
@@ -374,8 +423,16 @@ def repair_workflow_draft_messages(
                     feedback_prompts=tuple(feedback_prompts),
                     repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
                 )
+            if _workflow_draft_waiting_on_extension_handoff(validation):
+                return _extension_handoff_repair_result(
+                    validation,
+                    attempts=attempts,
+                    repaired=True,
+                    feedback_prompts=tuple(feedback_prompts),
+                    repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
+                )
 
-        if _repair_aborted(messages, should_abort):
+        if _repair_aborted(current_messages(), should_abort):
             return _aborted_repair_result(
                 validation,
                 attempts=attempts,
@@ -416,8 +473,9 @@ def repair_workflow_draft_messages(
             on_attempt(attempt, max_attempts, validation)
         run_turn(prompt)
         attempts = attempt
-        next_validation = validate_latest_workflow_draft(messages)
-        if _repair_aborted(messages, should_abort):
+        messages_after_turn = current_messages()
+        next_validation = validate_latest_workflow_draft(messages_after_turn)
+        if _repair_aborted(messages_after_turn, should_abort):
             return _aborted_repair_result(
                 next_validation or validation,
                 attempts=attempts,
@@ -442,6 +500,14 @@ def repair_workflow_draft_messages(
                 attempts=attempts,
                 repaired=True,
                 exhausted=False,
+                feedback_prompts=tuple(feedback_prompts),
+                repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
+            )
+        if _workflow_draft_waiting_on_extension_handoff(validation):
+            return _extension_handoff_repair_result(
+                validation,
+                attempts=attempts,
+                repaired=True,
                 feedback_prompts=tuple(feedback_prompts),
                 repair_report=WorkflowRepairReport(attempts=tuple(repair_attempts)),
             )

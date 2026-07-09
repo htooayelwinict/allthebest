@@ -140,6 +140,11 @@ The workflow generator must:
   Telegram delivery.
 - Attach approval to the mutating connector step.
 - Bind required connector inputs in `workflow.yaml` step `with` blocks.
+- For the AI-news registered Telegram path, use quoted appv24 double-brace
+  references with no dollar sign: `items: "{{ steps.search_ai_news.outputs.items }}"`,
+  `recipients: "{{ steps.list_subscribers.outputs.recipients }}"`,
+  `audience_hash: "{{ steps.list_subscribers.outputs.audience_hash }}"`, and
+  `text: "{{ steps.summarize_news.outputs.summary }}"`.
 - Include top-level `outputs.allowed` values from connector contracts.
 - Reject or explain missing capabilities instead of inventing executable action
   names.
@@ -229,12 +234,18 @@ Recommended command names:
 
 ```text
 /workflow-catalog
-/workflow-run-guided <path> [fixture]
-/workflow-continue-guided <path> <approval-run-id>
+/workflow-automate <path> [fixture]
+<natural-language workflow prompt>
+/workflow-approve <path> [fixture]
 ```
 
-If implementation can safely infer the latest pending approval from the package
-run store, the continue command may omit `<approval-run-id>` in a later slice.
+`/workflow-automate` arms a one-shot post-generation automation path: save the
+next valid draft, run guided live-read/local phases, and stop at the approval
+checkpoint. `/workflow-approve <path> [fixture]` infers the latest pending
+approval for the same package fingerprint, records the decision, checks
+production readiness, and continues approved live-production. `/workflow-save`,
+`/workflow-run-guided`, `/workflow-continue-guided`, and explicit run-id
+approval commands remain developer/debug commands.
 
 ### CLI Parity
 

@@ -134,6 +134,63 @@ def test_build_live_read_transports_from_connector_user_config(tmp_path: Path) -
     assert sorted(transports) == ["brave.search", "telegram.list_subscribers"]
 
 
+def test_build_live_read_transports_registers_custom_configured_http_action(tmp_path: Path) -> None:
+    client = FakeClient({"contact": {"id": "customer-1", "email": "customer@example.com"}, "secret": "blocked"})
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="crm",
+            profile="default",
+            credential_ref="crm-local",
+            scopes=("crm:read",),
+            config={
+                "actions": {
+                    "lookup_contact": {
+                        "mode": "live-read",
+                        "method": "POST",
+                        "url": "https://crm.test/lookup",
+                        "headers": {"Authorization": "Bearer crm-token"},
+                        "provider_id": "crm",
+                    }
+                }
+            },
+            source="user-config",
+        )
+    )
+
+    transports = build_live_read_transports_from_connector_config(
+        ConnectorConfigResolver(store=store, env={"APPV24_WORKFLOW_LIVE_READ_ENABLED": "true"}),
+        client_factory=lambda: client,
+    )
+    result = transports["crm.lookup_contact"].invoke(
+        BrokerRequest(
+            step_id="lookup_contact",
+            connector_action="crm.lookup_contact",
+            input_ref={"with": {"email": {"inputRef": "email"}}},
+            fixture={"input": {"email": "customer@example.com"}},
+            allowed_outputs=("contact",),
+            dry_run=False,
+        )
+    )
+
+    assert sorted(transports) == ["crm.lookup_contact"]
+    assert result.status == "live-read"
+    assert result.provider_id == "crm"
+    assert result.outputs["contact"] == {"id": "customer-1", "email": "customer@example.com"}
+    assert client.post_calls == [
+        {
+            "url": "https://crm.test/lookup",
+            "headers": {
+                "Accept": "application/json",
+                "Authorization": "Bearer crm-token",
+                "Content-Type": "application/json",
+            },
+            "json": {"email": "customer@example.com"},
+            "data": {},
+        }
+    ]
+
+
 def test_build_live_production_transports_from_connector_user_config(tmp_path: Path) -> None:
     store = ConnectorConfigStore(tmp_path / "connectors.json")
     store.upsert(
@@ -156,6 +213,98 @@ def test_build_live_production_transports_from_connector_user_config(tmp_path: P
     )
 
     assert sorted(transports) == ["telegram.broadcast_message", "telegram.send_message"]
+
+
+def test_build_live_production_transports_registers_custom_configured_http_action(tmp_path: Path) -> None:
+    client = FakeClient({"message_id": "crm-message-1", "customer_id": "customer-1"})
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="crm",
+            profile="default",
+            credential_ref="crm-local",
+            scopes=("crm:send",),
+            config={
+                "actions": {
+                    "send_customer_update": {
+                        "mode": "live-production",
+                        "method": "POST",
+                        "url": "https://crm.test/messages",
+                        "headers": {"Authorization": "Bearer crm-token"},
+                        "provider_id": "crm",
+                    }
+                }
+            },
+            source="user-config",
+        )
+    )
+
+    transports = build_live_production_transports_from_connector_config(
+        ConnectorConfigResolver(store=store, env={"APPV24_WORKFLOW_LIVE_PRODUCTION_ENABLED": "true"}),
+        client_factory=lambda: client,
+    )
+    result = transports["crm.send_customer_update"].invoke(
+        BrokerRequest(
+            step_id="send_customer_update",
+            connector_action="crm.send_customer_update",
+            input_ref={
+                "with": {
+                    "customer_id": "{{ steps.lookup_contact.outputs.contact.id }}",
+                    "text": "Welcome",
+                }
+            },
+            fixture={"input": {}, "steps": {"lookup_contact": {"outputs": {"contact": {"id": "customer-1"}}}}},
+            allowed_outputs=("message_id", "customer_id"),
+            dry_run=False,
+        )
+    )
+
+    assert sorted(transports) == ["crm.send_customer_update"]
+    assert result.status == "live-production"
+    assert result.provider_id == "crm"
+    assert result.outputs == {"message_id": "crm-message-1", "customer_id": "customer-1"}
+    assert client.post_calls[0]["json"] == {"customer_id": "customer-1", "text": "Welcome"}
+
+
+def test_configured_http_transport_blocks_non_https_url_before_http(tmp_path: Path) -> None:
+    client = FakeClient({"contact": {"id": "customer-1"}})
+    store = ConnectorConfigStore(tmp_path / "connectors.json")
+    store.upsert(
+        ConnectorConfigProfile(
+            connector_id="crm",
+            profile="default",
+            credential_ref="crm-local",
+            scopes=("crm:read",),
+            config={
+                "actions": {
+                    "lookup_contact": {
+                        "mode": "live-read",
+                        "url": "http://crm.test/lookup",
+                    }
+                }
+            },
+            source="user-config",
+        )
+    )
+
+    transports = build_live_read_transports_from_connector_config(
+        ConnectorConfigResolver(store=store, env={"APPV24_WORKFLOW_LIVE_READ_ENABLED": "true"}),
+        client_factory=lambda: client,
+    )
+    result = transports["crm.lookup_contact"].invoke(
+        BrokerRequest(
+            step_id="lookup_contact",
+            connector_action="crm.lookup_contact",
+            input_ref={"with": {"email": "customer@example.com"}},
+            fixture={"input": {}},
+            allowed_outputs=("contact",),
+            dry_run=False,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.issues == ("crm.lookup_contact configured HTTP transport requires an https URL",)
+    assert client.post_calls == []
 
 
 def test_connector_user_config_transport_builder_preserves_env_gate(tmp_path: Path) -> None:

@@ -155,6 +155,20 @@ def _invalid_draft() -> str:
     return _valid_draft().replace("side_effect: true", "side_effect: send")
 
 
+def _invalid_minimal_fixture_draft() -> str:
+    return _invalid_draft().replace(
+        """
+```yaml dry_run_fixtures/rejection_path.yaml
+approval:
+  human-review: rejected
+```
+
+""",
+        "",
+        1,
+    )
+
+
 def _missing_design_rollback_draft() -> str:
     return _valid_draft().replace(
         "  rollback:\n    - Close the drafted issue manually if it was created.\n",
@@ -478,6 +492,165 @@ def _schema_drift_draft() -> str:
     )
 
 
+def _crm_extension_with_missing_artifacts_draft() -> str:
+    return _crm_extension_ready_for_handoff_draft().replace(
+        """
+```yaml dry_run_fixtures/happy_path.yaml
+input:
+  email: customer@example.com
+  chat_id: 1000000001
+approval:
+  approve-send: approved
+outputs:
+  lookup_contact:
+    contact:
+      name: Ada Lovelace
+      segment: ai_news
+```
+
+```markdown rollback.md
+# Rollback
+
+Pause the Telegram send workflow and review delivered messages manually.
+```
+""",
+        "",
+    )
+
+
+def _crm_extension_ready_for_handoff_draft() -> str:
+    return """
+Here is the workflow package draft.
+
+```yaml workflow.yaml
+version: appv24.workflow/v1
+name: generated-crm-telegram
+description: Look up a CRM contact before sending a Telegram message.
+design:
+  intent: Look up a CRM contact and send a Telegram message.
+  trigger: Manual support workflow.
+  inputs:
+    - Customer email address.
+    - Approved Telegram chat id.
+  outputs:
+    - CRM contact record.
+    - Telegram delivery receipt.
+  assumptions:
+    - The CRM connector will be built by the coding profile.
+  side_effects:
+    - Read-only CRM lookup.
+    - Telegram message send after approval.
+  approval_gates:
+    - approve-send
+  failure_modes:
+    - CRM connector unavailable.
+    - Telegram delivery fails.
+  rollback:
+    - Pause the workflow and review delivered messages manually.
+triggers:
+  - id: manual
+    type: manual
+entrypoint: lookup_contact
+steps:
+  - id: lookup_contact
+    uses: crm.lookup_contact
+    with:
+      email: "{{ inputs.email }}"
+    next: send_message
+  - id: send_message
+    uses: telegram.send_message
+    with:
+      chat_id: "{{ inputs.chat_id }}"
+      text: "{{ steps.lookup_contact.outputs.contact }}"
+    side_effect_class: send
+    approval: approve-send
+    next: done
+  - id: done
+    type: terminal
+```
+
+```yaml connectors.yaml
+version: appv24.connectors/v1
+connectors:
+  - id: crm
+    adapter: mcp
+    custom: true
+    source: mcp://crm@v1
+    actions:
+      - id: lookup_contact
+        custom: true
+        source: mcp://crm.lookup_contact@v1
+        tool: crm.lookup_contact
+        side_effect: false
+        side_effect_class: read
+        execution_mode: brokered
+        dry_run_supported: true
+        required_scopes: [crm:read]
+        outputs:
+          allowed: [contact, artifact_path]
+        workflow_hints:
+          generated_by: coding_profile
+          input_fields: [email]
+          qa_required: true
+          required_input_fields: [email]
+  - id: telegram
+    adapter: direct_api
+    actions:
+      - id: send_message
+        side_effect: true
+        side_effect_class: send
+        execution_mode: brokered
+        approval_required: true
+        dry_run_supported: true
+        idempotency:
+          key_fields:
+            - chat_id
+            - text
+        outputs:
+          allowed:
+            - message_id
+            - chat_id
+        required_scopes:
+          - telegram:send
+```
+
+```yaml permissions.yaml
+version: appv24.permissions/v1
+permissions:
+  - connector: crm
+    actions: [lookup_contact]
+    scopes: [crm:read]
+  - connector: telegram
+    actions: [send_message]
+    scopes: [telegram:send]
+approvals:
+  - id: approve-send
+    mode: explicit
+    required_for:
+      - send_message
+```
+
+```yaml dry_run_fixtures/happy_path.yaml
+input:
+  email: customer@example.com
+  chat_id: 1000000001
+approval:
+  approve-send: approved
+outputs:
+  lookup_contact:
+    contact:
+      name: Ada Lovelace
+      segment: ai_news
+```
+
+```markdown rollback.md
+# Rollback
+
+Pause the Telegram send workflow and review delivered messages manually.
+```
+"""
+
+
 def _unsupported_decision_syntax_draft() -> str:
     return _valid_draft().replace(
         "entrypoint: inspect_alerts\nsteps:\n  - id: inspect_alerts\n    uses: github.list_dependabot_alerts\n    next: draft_issue",
@@ -526,6 +699,19 @@ def test_validate_latest_workflow_draft_returns_none_without_assistant_text() ->
     assert validate_latest_workflow_draft([]) is None
 
 
+def test_validate_latest_workflow_draft_skips_compaction_and_empty_assistant_messages() -> None:
+    result = validate_latest_workflow_draft(
+        [
+            _assistant_message(_valid_draft()),
+            _assistant_message("[CONTEXT COMPACTION - REFERENCE ONLY] Previous turns were summarized."),
+            _assistant_message(""),
+        ]
+    )
+
+    assert result is not None
+    assert result.ok
+
+
 def test_compact_workflow_validation_issues_caps_issue_count() -> None:
     result = validate_workflow_draft_text(_invalid_draft())
 
@@ -568,6 +754,16 @@ def test_build_workflow_repair_prompt_is_bounded_and_schema_specific() -> None:
     assert "permissions[].scopes must grant every required_scopes value" in prompt
     assert "approvals[].required_for must include the exact mutating workflow step id" in prompt
     assert "Telegram" not in prompt
+
+
+def test_build_workflow_repair_prompt_does_not_require_optional_rejection_fixture() -> None:
+    result = validate_workflow_draft_text(_invalid_minimal_fixture_draft())
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=2, max_issues=4)
+
+    assert "dry_run_fixtures/happy_path.yaml" in prompt
+    assert "dry_run_fixtures/rejection_path.yaml" not in prompt
+    assert "rollback.md" in prompt
 
 
 def test_build_workflow_repair_prompt_scopes_the_fix_to_failed_paths() -> None:
@@ -948,6 +1144,19 @@ def test_build_workflow_repair_prompt_includes_connector_contract_scope_directiv
     assert "Add required_scopes entry `issues:write`" in prompt
 
 
+def test_build_workflow_repair_prompt_hides_extension_qa_when_other_repairs_remain() -> None:
+    result = validate_workflow_draft_text(_crm_extension_with_missing_artifacts_draft())
+    codes = {issue.code for issue in result.validation.issues}
+    assert {"extension_qa_missing", "missing_fixture", "missing_rollback"} <= codes
+
+    prompt = build_workflow_repair_prompt(result, attempt=1, max_attempts=None, max_issues=8)
+
+    assert "missing_fixture" in prompt
+    assert "missing_rollback" in prompt
+    assert "extension_qa_missing" not in prompt
+    assert "Generate the connector with the coding profile" not in prompt
+
+
 def test_build_workflow_repair_prompt_includes_scalar_connector_input_directive() -> None:
     result = validate_workflow_draft_text(_collection_scalar_input_draft())
     assert not result.ok
@@ -997,6 +1206,31 @@ def test_repair_runs_when_latest_draft_fails_validation() -> None:
     assert "missing_step_transition" in prompts[0]
 
 
+def test_repair_stops_for_extension_handoff_after_repairable_errors_are_fixed() -> None:
+    messages = [_assistant_message(_crm_extension_with_missing_artifacts_draft())]
+    prompts: list[str] = []
+
+    def run_turn(prompt: str) -> None:
+        prompts.append(prompt)
+        messages.append(_assistant_message(_crm_extension_ready_for_handoff_draft()))
+
+    result = repair_workflow_draft_messages(
+        messages,
+        run_turn,
+        config=WorkflowDraftRepairConfig(max_attempts=3, max_issues=8),
+    )
+
+    assert result.validation is not None
+    assert not result.validation.ok
+    assert {issue.code for issue in result.validation.validation.issues} == {"extension_qa_missing"}
+    assert result.attempts == 1
+    assert result.repaired
+    assert not result.exhausted
+    assert result.stop_reason == "extension_handoff"
+    assert len(prompts) == 1
+    assert "extension_qa_missing" not in prompts[0]
+
+
 def test_repair_runs_once_when_second_draft_is_valid() -> None:
     messages = [_assistant_message(_invalid_draft())]
     prompts: list[str] = []
@@ -1018,6 +1252,36 @@ def test_repair_runs_once_when_second_draft_is_valid() -> None:
     assert not result.exhausted
     assert len(prompts) == 1
     assert prompts == list(result.feedback_prompts)
+
+
+def test_repair_refreshes_active_messages_after_transcript_replacement() -> None:
+    active_messages = [_assistant_message(_invalid_draft())]
+    stale_messages = active_messages
+    prompts: list[str] = []
+
+    def run_turn(prompt: str) -> None:
+        nonlocal active_messages
+        prompts.append(prompt)
+        active_messages = [
+            *active_messages,
+            _assistant_message("[CONTEXT COMPACTION - REFERENCE ONLY] Previous turns were summarized."),
+            _assistant_message(_valid_draft()),
+        ]
+
+    result = repair_workflow_draft_messages(
+        stale_messages,
+        run_turn,
+        config=WorkflowDraftRepairConfig(max_attempts=2, max_issues=6),
+        get_messages=lambda: active_messages,
+    )
+
+    assert result.validation is not None
+    assert result.validation.ok
+    assert result.attempts == 1
+    assert result.repaired
+    assert not result.exhausted
+    assert len(prompts) == 1
+    assert stale_messages[-1] is not active_messages[-1]
 
 
 def test_repair_result_carries_attempt_report_data() -> None:

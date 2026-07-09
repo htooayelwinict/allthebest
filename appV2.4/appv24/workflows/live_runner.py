@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -11,12 +10,19 @@ from appv24.workflows.approval_gate import ApprovalIndexKey, build_payload_bound
 from appv24.workflows.broker import BrokerRequest
 from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.compiler import compile_workflow_documents
-from appv24.workflows.connector_contracts import is_external_connector_action_payload
+from appv24.workflows.connector_contracts import (
+    ConnectorContract,
+    ConnectorLiveMode,
+    builtin_connector_contract_catalog,
+    is_external_connector_action_payload,
+)
 from appv24.workflows.connector_packs import builtin_connector_catalog
 from appv24.workflows.credential_refs import CredentialRefResolver, preflight_credential_refs
 from appv24.workflows.execution import WorkflowRunEvent, WorkflowRunMode, WorkflowRunReport, WorkflowRunRequest
 from appv24.workflows.fingerprints import fingerprint_package_documents
 from appv24.workflows.fixtures import require_fixture
+from appv24.workflows.loader import PackageDocuments
+from appv24.workflows.workflow_extensions import extension_connector_contract_catalog
 from appv24.workflows.idempotency import PersistentIdempotencyStore, build_idempotency_key, build_idempotency_payload_hash
 from appv24.workflows.ir import ActionCapability, StepKind, WorkflowIR, WorkflowStep
 from appv24.workflows.ledger import StepTrace
@@ -31,6 +37,7 @@ from appv24.workflows.middleware_runtime import (
     middleware_runtime_setup_issues,
 )
 from appv24.workflows.policy import MUTATING_SIDE_EFFECTS, evaluate_policy
+from appv24.workflows.prior_outputs import fixture_with_prior_run_outputs
 from appv24.workflows.run_preview import WorkflowBrokeredActionPreview
 from appv24.workflows.run_store import WorkflowRunStore
 from appv24.workflows.runner import DEFAULT_FIXTURE_NAME, MAX_TRANSITIONS, build_workflow_run_metadata
@@ -99,11 +106,13 @@ def run_live_read_workflow(
             package_fingerprint=package_fingerprint,
             issues=middleware_setup_issues,
         )
+    contracts = _connector_contracts_for_documents(documents)
+    broker = broker.with_external_actions(_external_action_refs(contracts))
 
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
     store = WorkflowRunStore(request.run_root or (Path(request.package_path) / ".workflow-runs"))
-    fixture = _fixture_with_prior_run_outputs(fixture, store, request.approval_run_id)
+    fixture = fixture_with_prior_run_outputs(fixture, store, request.approval_run_id)
     run_id = store.create_run(
         workflow_name,
         package_fingerprint,
@@ -197,6 +206,7 @@ def run_live_read_workflow(
         approval_index={},
         available_transports=broker.configured_actions,
         env=request.operator_env,
+        contracts=contracts,
     )
     if not live_gate.ok:
         gate_issues = _live_gate_issue_messages(live_gate)
@@ -248,6 +258,7 @@ def run_live_read_workflow(
         append_event=append_event,
         middleware_runtime=middleware_runtime,
         middleware_context=middleware_context,
+        contracts=contracts,
     )
     completion_middleware_issues = _emit_middleware(
         middleware_runtime,
@@ -343,7 +354,7 @@ def run_live_draft_workflow(
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
     store = WorkflowRunStore(request.run_root or (Path(request.package_path) / ".workflow-runs"))
-    fixture = _fixture_with_prior_run_outputs(fixture, store, request.approval_run_id)
+    fixture = fixture_with_prior_run_outputs(fixture, store, request.approval_run_id)
     run_id = store.create_run(
         workflow_name,
         package_fingerprint,
@@ -428,6 +439,8 @@ def run_live_draft_workflow(
         )
     append_event("credential_preflight_passed", "passed")
 
+    contracts = _connector_contracts_for_documents(documents)
+    broker = broker.with_external_actions(_external_action_refs(contracts))
     approval_index, approval_issues = _live_draft_approval_index(
         store,
         request.approval_run_id,
@@ -457,6 +470,7 @@ def run_live_draft_workflow(
         approval_index=approval_index,
         connector_allowlist=set(request.connector_allowlist),
         mode=request.mode,
+        contracts=contracts,
     )
     append_event("approval_preflight_passed", "passed", approval_run_id=request.approval_run_id, start_step=start_step)
 
@@ -470,6 +484,7 @@ def run_live_draft_workflow(
         available_transports=broker.configured_actions,
         env=request.operator_env,
         start_step=start_step,
+        contracts=contracts,
     )
     if not live_gate.ok:
         gate_issues = _live_gate_issue_messages(live_gate)
@@ -524,6 +539,7 @@ def run_live_draft_workflow(
         start_step=start_step,
         middleware_runtime=middleware_runtime,
         middleware_context=middleware_context,
+        contracts=contracts,
     )
     completion_middleware_issues = _emit_middleware(
         middleware_runtime,
@@ -619,7 +635,7 @@ def run_live_production_workflow(
     fixture_name = request.fixture_name or DEFAULT_FIXTURE_NAME
     fixture = require_fixture(documents.dry_run_fixtures, fixture_name)
     store = WorkflowRunStore(request.run_root or (Path(request.package_path) / ".workflow-runs"))
-    fixture = _fixture_with_prior_run_outputs(fixture, store, request.approval_run_id)
+    fixture = fixture_with_prior_run_outputs(fixture, store, request.approval_run_id)
     run_id = store.create_run(
         workflow_name,
         package_fingerprint,
@@ -704,6 +720,8 @@ def run_live_production_workflow(
         )
     append_event("credential_preflight_passed", "passed")
 
+    contracts = _connector_contracts_for_documents(documents)
+    broker = broker.with_external_actions(_external_action_refs(contracts))
     approval_index, approval_issues = _live_draft_approval_index(
         store,
         request.approval_run_id,
@@ -734,6 +752,7 @@ def run_live_production_workflow(
         approval_index=approval_index,
         connector_allowlist=set(request.connector_allowlist),
         mode=request.mode,
+        contracts=contracts,
     )
     append_event("approval_preflight_passed", "passed", approval_run_id=request.approval_run_id, start_step=start_step)
 
@@ -747,6 +766,7 @@ def run_live_production_workflow(
         available_transports=broker.configured_actions,
         env=request.operator_env,
         start_step=start_step,
+        contracts=contracts,
     )
     if not live_gate.ok:
         gate_issues = _live_gate_issue_messages(live_gate)
@@ -801,6 +821,7 @@ def run_live_production_workflow(
         start_step=start_step,
         middleware_runtime=middleware_runtime,
         middleware_context=middleware_context,
+        contracts=contracts,
     )
     completion_middleware_issues = _emit_middleware(
         middleware_runtime,
@@ -828,6 +849,17 @@ def run_live_production_workflow(
         events=events,
         issues=tuple(result.issues),
     )
+
+
+def _connector_contracts_for_documents(documents: PackageDocuments) -> dict[str, ConnectorContract]:
+    contracts = builtin_connector_contract_catalog()
+    contracts.update(extension_connector_contract_catalog(documents, contract_catalog=contracts))
+    return contracts
+
+
+def _external_action_refs(contracts: Mapping[str, ConnectorContract]) -> tuple[str, ...]:
+    builtins = builtin_connector_contract_catalog()
+    return tuple(sorted(action_ref for action_ref in contracts if action_ref not in builtins))
 
 
 class _EventCounter:
@@ -866,6 +898,7 @@ def _execute_live_read(
     append_event: Callable[..., None],
     middleware_runtime: MiddlewareRuntime,
     middleware_context: MiddlewareRunContext,
+    contracts: Mapping[str, ConnectorContract],
 ) -> _ExecutionResult:
     trace: list[StepTrace] = []
     brokered_actions: list[WorkflowBrokeredActionPreview] = []
@@ -939,7 +972,7 @@ def _execute_live_read(
             continue
 
         action = _action_for_step(ir, step)
-        gate_issue = _live_read_gate_issue(step, action, connector_allowlist)
+        gate_issue = _live_read_gate_issue(step, action, connector_allowlist, contracts)
         if gate_issue is not None:
             pause_issue = _live_read_prefix_pause_issue(step, gate_issue, brokered_actions)
             if pause_issue is not None:
@@ -1041,7 +1074,9 @@ def _execute_live_draft(
     middleware_runtime: MiddlewareRuntime,
     middleware_context: MiddlewareRunContext,
     start_step: str | None = None,
+    contracts: Mapping[str, ConnectorContract] | None = None,
 ) -> _ExecutionResult:
+    contract_catalog = contracts or builtin_connector_contract_catalog()
     trace: list[StepTrace] = []
     brokered_actions: list[WorkflowBrokeredActionPreview] = []
     issues: list[str] = []
@@ -1121,6 +1156,7 @@ def _execute_live_draft(
             package_fingerprint=package_fingerprint,
             approval_index=approval_index,
             fixture=fixture,
+            contracts=contract_catalog,
         )
         if gate_issue is not None:
             issues.append(gate_issue)
@@ -1277,7 +1313,9 @@ def _execute_live_production(
     middleware_runtime: MiddlewareRuntime,
     middleware_context: MiddlewareRunContext,
     start_step: str | None = None,
+    contracts: Mapping[str, ConnectorContract] | None = None,
 ) -> _ExecutionResult:
+    contract_catalog = contracts or builtin_connector_contract_catalog()
     trace: list[StepTrace] = []
     brokered_actions: list[WorkflowBrokeredActionPreview] = []
     issues: list[str] = []
@@ -1357,6 +1395,7 @@ def _execute_live_production(
             package_fingerprint=package_fingerprint,
             approval_index=approval_index,
             fixture=fixture,
+            contracts=contract_catalog,
         )
         if gate_issue is not None:
             issues.append(gate_issue)
@@ -1547,7 +1586,9 @@ def _approved_live_start_step(
     approval_index: Mapping[tuple[str, str, str | None], bool],
     connector_allowlist: set[str],
     mode: WorkflowRunMode,
+    contracts: Mapping[str, ConnectorContract] | None = None,
 ) -> str | None:
+    contract_catalog = contracts or builtin_connector_contract_catalog()
     current = ir.entrypoint
     transitions = 0
 
@@ -1569,7 +1610,7 @@ def _approved_live_start_step(
         if (
             action is not None
             and action_ref in connector_allowlist
-            and _approved_start_mode_matches(step, action, action_ref=action_ref, mode=mode)
+            and _approved_start_mode_matches(step, action, action_ref=action_ref, mode=mode, contracts=contract_catalog)
         ):
             idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
             if approval_index.get((step.step_id, action_ref, idempotency_key)) is True:
@@ -1578,75 +1619,23 @@ def _approved_live_start_step(
     return None
 
 
-def _fixture_with_prior_run_outputs(
-    fixture: Mapping[str, Any],
-    store: WorkflowRunStore,
-    approval_run_id: str | None,
-) -> dict[str, Any]:
-    merged = dict(fixture)
-    if not approval_run_id:
-        return merged
-    outputs: dict[str, dict[str, Any]] = {}
-    try:
-        manifest = store.read_run_manifest(approval_run_id)
-        handoff_run_id = manifest.get("handoff_run_id")
-        if isinstance(handoff_run_id, str) and handoff_run_id:
-            handoff_trace = json.loads((store.run_dir(handoff_run_id) / "trace.json").read_text(encoding="utf-8"))
-            outputs.update(_trace_outputs(handoff_trace if isinstance(handoff_trace, Mapping) else {}))
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
-    try:
-        trace_payload = json.loads((store.run_dir(approval_run_id) / "trace.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError):
-        trace_payload = {}
-    outputs.update(_trace_outputs(trace_payload if isinstance(trace_payload, Mapping) else {}))
-    if not outputs:
-        return merged
-    raw_steps = merged.get("steps")
-    steps: dict[str, dict[str, Any]] = {}
-    if isinstance(raw_steps, Mapping):
-        for step_id, value in raw_steps.items():
-            if isinstance(step_id, str) and isinstance(value, Mapping):
-                steps[step_id] = {str(key): item for key, item in value.items()}
-    for step_id, step_outputs in outputs.items():
-        step_entry = dict(steps.get(step_id, {}))
-        step_entry["outputs"] = step_outputs
-        steps[step_id] = step_entry
-    merged["steps"] = steps
-    return merged
-
-
-def _trace_outputs(trace_payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    outputs: dict[str, dict[str, Any]] = {}
-    trace = trace_payload.get("trace")
-    if not isinstance(trace, list):
-        return outputs
-    for item in trace:
-        if not isinstance(item, Mapping) or item.get("status") != "completed":
-            continue
-        step_id = item.get("step_id")
-        simulated_outputs = item.get("simulated_outputs")
-        if isinstance(step_id, str) and isinstance(simulated_outputs, Mapping) and simulated_outputs:
-            outputs[step_id] = {str(key): value for key, value in simulated_outputs.items()}
-    return outputs
-
-
 def _approved_start_mode_matches(
     step: WorkflowStep,
     action: ActionCapability,
     *,
     action_ref: str,
     mode: WorkflowRunMode,
+    contracts: Mapping[str, ConnectorContract],
 ) -> bool:
     if not _is_mutating_step(step, action):
         return False
-    metadata = builtin_connector_catalog().actions.get(action_ref)
-    if metadata is None:
+    contract = contracts.get(action_ref)
+    if contract is None:
         return False
     if mode is WorkflowRunMode.LIVE_DRAFT:
-        return metadata.live_draft_eligible
+        return ConnectorLiveMode.LIVE_DRAFT in contract.live_modes
     if mode is WorkflowRunMode.LIVE_PRODUCTION:
-        return metadata.live_production_enabled
+        return ConnectorLiveMode.LIVE_PRODUCTION in contract.live_modes
     return False
 
 
@@ -1820,17 +1809,22 @@ def _invoke_broker(
     return result.outputs, result.status, result.provider_id, result.issues
 
 
-def _live_read_gate_issue(step: WorkflowStep, action: ActionCapability | None, connector_allowlist: set[str]) -> str | None:
+def _live_read_gate_issue(
+    step: WorkflowStep,
+    action: ActionCapability | None,
+    connector_allowlist: set[str],
+    contracts: Mapping[str, ConnectorContract],
+) -> str | None:
     if step.uses is None:
         return f"missing connector action for step {step.step_id}"
     if action is None:
         return f"unknown action for step {step.step_id}"
     if _is_mutating_step(step, action):
         return f"live-read cannot execute mutating step {step.step_id}"
-    metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
-    if metadata is None:
+    contract = contracts.get(step.uses.dotted)
+    if contract is None:
         return _external_read_gate_issue("live-read", step, action)
-    if not metadata.live_read_eligible:
+    if ConnectorLiveMode.LIVE_READ not in contract.live_modes:
         return f"live-read action is not live-read eligible: {step.uses.dotted}"
     if step.uses.dotted not in connector_allowlist:
         return f"live-read action is not allowlisted: {step.uses.dotted}"
@@ -1859,6 +1853,7 @@ def _live_draft_gate_issue(
     package_fingerprint: str,
     approval_index: Mapping[tuple[str, str, str | None], bool],
     fixture: Mapping[str, Any],
+    contracts: Mapping[str, ConnectorContract],
 ) -> str | None:
     if step.uses is None:
         return f"missing connector action for step {step.step_id}"
@@ -1866,11 +1861,11 @@ def _live_draft_gate_issue(
         return f"unknown action for step {step.step_id}"
     if step.uses.dotted not in connector_allowlist:
         return f"live-draft action is not allowlisted: {step.uses.dotted}"
-    metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
-    if metadata is None:
+    contract = contracts.get(step.uses.dotted)
+    if contract is None:
         return _external_read_gate_issue("live-draft", step, action)
     if _is_mutating_step(step, action):
-        if not metadata.live_draft_eligible:
+        if ConnectorLiveMode.LIVE_DRAFT not in contract.live_modes:
             return f"live-draft action is not draft-eligible: {step.uses.dotted}"
         idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
         if idempotency_key is None:
@@ -1880,7 +1875,7 @@ def _live_draft_gate_issue(
         if approval_index.get((step.step_id, step.uses.dotted, idempotency_key)) is not True:
             return f"approval not granted for {step.step_id}"
         return None
-    if not metadata.live_read_eligible:
+    if ConnectorLiveMode.LIVE_READ not in contract.live_modes:
         return f"live-draft read action is not live-read eligible: {step.uses.dotted}"
     return None
 
@@ -1893,6 +1888,7 @@ def _live_production_gate_issue(
     package_fingerprint: str,
     approval_index: Mapping[tuple[str, str, str | None], bool],
     fixture: Mapping[str, Any],
+    contracts: Mapping[str, ConnectorContract],
 ) -> str | None:
     if step.uses is None:
         return f"missing connector action for step {step.step_id}"
@@ -1900,11 +1896,11 @@ def _live_production_gate_issue(
         return f"unknown action for step {step.step_id}"
     if step.uses.dotted not in connector_allowlist:
         return f"live-production action is not allowlisted: {step.uses.dotted}"
-    metadata = builtin_connector_catalog().actions.get(step.uses.dotted)
-    if metadata is None:
+    contract = contracts.get(step.uses.dotted)
+    if contract is None:
         return _external_read_gate_issue("live-production", step, action)
     if _is_mutating_step(step, action):
-        if not metadata.live_production_enabled:
+        if ConnectorLiveMode.LIVE_PRODUCTION not in contract.live_modes:
             return f"live-production action is not production-enabled: {step.uses.dotted}"
         idempotency_key = _idempotency_key(package_fingerprint, step, action, fixture)
         if idempotency_key is None:
@@ -1914,7 +1910,7 @@ def _live_production_gate_issue(
         if approval_index.get((step.step_id, step.uses.dotted, idempotency_key)) is not True:
             return f"approval not granted for {step.step_id}"
         return None
-    if not metadata.live_read_eligible:
+    if ConnectorLiveMode.LIVE_READ not in contract.live_modes:
         return f"live-production read action is not live-read eligible: {step.uses.dotted}"
     return None
 

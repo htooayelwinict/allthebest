@@ -58,6 +58,7 @@ def evaluate_live_gate(
     available_transports: Collection[str] | None,
     env: Mapping[str, str],
     start_step: str | None = None,
+    contracts: Mapping[str, ConnectorContract] | None = None,
 ) -> LiveGateDecision:
     """Evaluate the executable path for the selected live mode."""
 
@@ -65,7 +66,7 @@ def evaluate_live_gate(
     issues: list[LiveGateIssue] = []
     current = start_step or ir.entrypoint
     transitions = 0
-    contracts = builtin_connector_contract_catalog()
+    contract_catalog = contracts or builtin_connector_contract_catalog()
 
     while current:
         transitions += 1
@@ -98,7 +99,7 @@ def evaluate_live_gate(
             available_transports=available_transports,
             env=env,
             fixture=fixture,
-            contracts=contracts,
+            contracts=contract_catalog,
         )
         if issue is not None and _live_read_prefix_can_pause(mode, checked_actions, issue):
             break
@@ -291,6 +292,10 @@ def _target_policy_issue(
     env: Mapping[str, str],
     fixture: Mapping[str, object],
 ) -> LiveGateIssue | None:
+    target_field_issue = _required_target_field_issue(step, action_ref=action_ref, contract=contract, fixture=fixture)
+    if target_field_issue is not None:
+        return target_field_issue
+
     if action_ref == "http.fetch":
         allowed_hosts = _split_csv(env.get(contract.target_policy.allow_env or "", ""))
         if not allowed_hosts:
@@ -335,6 +340,20 @@ def _target_policy_issue(
                 action_ref,
                 f"telegram.send_message chat_id is not allowlisted: {chat_id}",
             )
+    return None
+
+
+def _required_target_field_issue(
+    step: WorkflowStep,
+    *,
+    action_ref: str,
+    contract: ConnectorContract,
+    fixture: Mapping[str, object],
+) -> LiveGateIssue | None:
+    for field in contract.target_policy.required_target_fields:
+        value = _field_object_value(step, fixture, field)
+        if not _has_target_value(value):
+            return LiveGateIssue("missing_target", step.step_id, action_ref, f"{action_ref} requires {field}")
     return None
 
 
@@ -401,6 +420,20 @@ def _field_values(step: WorkflowStep, fixture: Mapping[str, object], key: str) -
     return (scalar,) if scalar is not None else ()
 
 
+def _field_object_value(step: WorkflowStep, fixture: Mapping[str, object], key: str) -> object | None:
+    with_map = step.raw.get("with")
+    fixture_input = fixture.get("input")
+    primary = with_map if isinstance(with_map, Mapping) else {}
+    fallback = fixture_input if isinstance(fixture_input, Mapping) else {}
+    raw_value = primary.get(key)
+    if raw_value is None:
+        return fallback.get(key)
+    resolved = _resolve_input_ref(raw_value, fallback, fixture=fixture)
+    if isinstance(raw_value, str) and STEP_OUTPUT_TEMPLATE_RE.match(raw_value) and resolved == raw_value:
+        return None
+    return resolved
+
+
 def _resolve_input_ref(
     value: object,
     fixture_input: Mapping[str, object],
@@ -446,6 +479,20 @@ def _string_value(value: object) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _has_target_value(value: object) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, int | float):
+        return True
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, list | tuple | set):
+        return bool(value) and all(_has_target_value(item) for item in value)
+    return True
 
 
 def _split_csv(value: str | None) -> tuple[str, ...]:

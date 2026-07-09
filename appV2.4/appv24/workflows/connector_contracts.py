@@ -66,6 +66,7 @@ class ConnectorTargetPolicy:
     allowed_hosts: tuple[str, ...] = ()
     allowed_path_prefixes: tuple[str, ...] = ()
     allowed_chat_ids_env: str | None = None
+    required_target_fields: tuple[str, ...] = ()
     max_response_bytes: int | None = None
     follow_redirects: bool = False
 

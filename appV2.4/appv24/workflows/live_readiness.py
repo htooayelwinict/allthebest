@@ -8,7 +8,7 @@ from pathlib import Path
 
 from appv24.workflows.bundle_guard import inspect_default_workflow_bundle
 from appv24.workflows.connector_contracts import external_connector_env_requirements
-from appv24.workflows.connector_user_config import ConnectorConfigResolver, SUPPORTED_CONNECTORS
+from appv24.workflows.connector_user_config import ConnectorConfigResolver
 from appv24.workflows.credential_refs import (
     credential_env_name,
     credential_resolver_for_package_connector_config,
@@ -299,8 +299,6 @@ def _connector_config_hints(
         if not isinstance(permission, dict) or not isinstance(permission.get("connector"), str):
             continue
         connector_id = str(permission["connector"])
-        if connector_id not in SUPPORTED_CONNECTORS:
-            continue
         resolved = connector_config.resolve(connector_id)
         if resolved is not None and resolved.available:
             continue

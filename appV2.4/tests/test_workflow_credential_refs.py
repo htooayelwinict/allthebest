@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from appv24.workflows.credential_refs import (
     CredentialRefResolver,
     CredentialScope,
@@ -7,6 +9,7 @@ from appv24.workflows.credential_refs import (
     preflight_credential_refs,
 )
 from appv24.workflows.examples import golden_workflow_examples
+from appv24.workflows.loader import PackageDocuments
 
 
 def test_credential_preflight_accepts_available_scopes() -> None:
@@ -67,6 +70,43 @@ def test_credential_preflight_blocks_wildcard_scope() -> None:
 
     assert report.ok is False
     assert report.issues == ("wildcard credential scope is not allowed for ticket; configure APPV24_TICKET_SCOPES without *",)
+
+
+def test_credential_preflight_ignores_empty_scope_permissions() -> None:
+    documents = PackageDocuments(
+        root=Path("<test>"),
+        workflow={
+            "version": "appv24.workflow/v1",
+            "name": "local_summary",
+            "triggers": [{"id": "manual", "type": "manual"}],
+            "entrypoint": "summarize",
+            "steps": [
+                {"id": "summarize", "uses": "llm.summarize", "with": {"text": "hello"}, "next": "done"},
+                {"id": "done", "type": "terminal"},
+            ],
+        },
+        connectors={
+            "version": "appv24.connectors/v1",
+            "connectors": [
+                {
+                    "id": "llm",
+                    "adapter": "llm",
+                    "actions": [{"id": "summarize", "side_effect": False}],
+                }
+            ],
+        },
+        permissions={
+            "version": "appv24.permissions/v1",
+            "permissions": [{"connector": "llm", "actions": ["summarize"], "scopes": []}],
+        },
+        dry_run_fixtures={"happy_path.yaml": {}},
+        rollback_text=None,
+    )
+
+    report = preflight_credential_refs(documents, CredentialRefResolver({}))
+
+    assert report.ok is True
+    assert report.issues == ()
 
 
 def test_credential_resolver_from_env_uses_refs_and_scopes_without_secret_values() -> None:

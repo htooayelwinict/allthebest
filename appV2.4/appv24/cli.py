@@ -82,6 +82,7 @@ from appv24.workflows.approval_commands import (
     list_workflow_approval_requests,
     record_workflow_approval_command,
 )
+from appv24.workflows.automation_paths import suggest_workflow_package_relative_path
 from appv24.workflows.drafts import WorkflowDraftSaveError, save_workflow_draft_blocks
 from appv24.workflows.execution import WorkflowRunMode, WorkflowRunRequest
 from appv24.workflows.bundle_export import (
@@ -90,9 +91,33 @@ from appv24.workflows.bundle_export import (
     format_workflow_bundle_export,
     write_workflow_bundle,
 )
-from appv24.workflows.capability_catalog import build_workflow_capability_catalog, format_workflow_capability_catalog
+from appv24.workflows.capability_catalog import (
+    WorkflowCapabilityCatalog,
+    build_workflow_capability_catalog,
+    format_workflow_capability_catalog,
+)
 from appv24.workflows.connector_registry import inspect_workflow_connector_registry
 from appv24.workflows.connector_contracts import workflow_operator_env_from_env
+from appv24.workflows.extension_catalog import (
+    format_workflow_extension_catalog_authoring_context,
+    format_workflow_extension_catalog_promotion,
+    load_workflow_extension_catalog,
+    promote_package_extensions_to_catalog,
+)
+from appv24.workflows.extension_builder import (
+    build_workflow_extension_handoff,
+    format_workflow_extension_build_report,
+    normalize_workflow_extension_build_timeout,
+)
+from appv24.workflows.extension_handoff import (
+    apply_extension_handoff_result,
+    dispatch_extension_handoff,
+    format_workflow_extension_handoff_apply_report,
+    format_workflow_extension_handoff_dispatch_report,
+    format_workflow_extension_handoff,
+    validation_issues_require_extension_handoff,
+    write_extension_handoff_for_validation_issues,
+)
 from appv24.workflows.explain import (
     explain_workflow_activation_run,
     explain_workflow_package,
@@ -101,11 +126,14 @@ from appv24.workflows.explain import (
     format_workflow_run_explanation,
 )
 from appv24.workflows.guided_run import (
+    approve_and_continue_guided_workflow_run,
+    approve_or_prepare_guided_workflow_run,
     continue_guided_workflow_run,
     format_guided_workflow_run_report,
     prepare_guided_workflow_run,
 )
 from appv24.workflows.iac_export import export_deployment_intent_from_path, format_deployment_intent
+from appv24.workflows.loader import load_package_documents
 from appv24.workflows.live_plan import build_workflow_live_plan_from_path, format_workflow_live_plan
 from appv24.workflows.phase_runner import (
     format_workflow_phase_run_report,
@@ -122,7 +150,7 @@ from appv24.workflows.scheduler import (
     run_due_activation_tick,
 )
 from appv24.workflows.staging import run_workflow_draft_stages, should_stage_workflow_drafts
-from appv24.workflows.validator import validate_workflow_draft_text, validate_workflow_package
+from appv24.workflows.validator import validate_workflow_documents, validate_workflow_draft_text, validate_workflow_package
 from appv24.workflows.webhook_ingress import WebhookReplayStore, handle_local_webhook_run
 from appv24.workflows.webhook_server import (
     WorkflowWebhookServerConfig,
@@ -133,6 +161,16 @@ from appv24.workflows.webhook_server import (
 
 
 logger = logging.getLogger(__name__)
+
+
+_WORKFLOW_EXTENSION_PROMPT_CATALOG_ATTR = "_workflow_extension_prompt_catalog"
+_WORKFLOW_AUTOMATION_ATTR = "_workflow_guided_automation"
+
+
+@dataclass(frozen=True)
+class _WorkflowAutomationRequest:
+    relative_path: str | None
+    fixture_name: str = "happy_path.yaml"
 
 
 class _CliModelRegistry:
@@ -609,7 +647,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if _handle_workflow_connector_configure_command(app, prompt):
             return 0
-        if _handle_workflow_catalog_command(app, prompt):
+        if _handle_workflow_catalog_command(app, selected_profile.id, prompt):
+            return 0
+        if _handle_workflow_extension_build_command(app, prompt):
+            return 0
+        if _handle_workflow_extension_dispatch_command(app, prompt):
+            return 0
+        if _handle_workflow_extension_apply_command(app, prompt):
+            return 0
+        if _handle_workflow_extension_promote_command(app, prompt):
+            return 0
+        if _handle_workflow_automate_command(app, selected_profile.id, prompt):
             return 0
         if _handle_workflow_run_guided_command(app, prompt):
             return 0
@@ -651,6 +699,7 @@ def main(argv: list[str] | None = None) -> int:
         repair_result = _repair_workflow_draft_if_needed(app, selected_profile.id)
         _print_last_assistant(app)
         _print_workflow_validation_if_needed(app, selected_profile.id, repair_result)
+        _run_pending_workflow_automation_if_ready(app, selected_profile.id, repair_result)
         return 0
 
     if not args.plain:
@@ -685,7 +734,17 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if _handle_workflow_connector_configure_command(app, prompt):
             continue
-        if _handle_workflow_catalog_command(app, prompt):
+        if _handle_workflow_catalog_command(app, selected_profile.id, prompt):
+            continue
+        if _handle_workflow_extension_build_command(app, prompt):
+            continue
+        if _handle_workflow_extension_dispatch_command(app, prompt):
+            continue
+        if _handle_workflow_extension_apply_command(app, prompt):
+            continue
+        if _handle_workflow_extension_promote_command(app, prompt):
+            continue
+        if _handle_workflow_automate_command(app, selected_profile.id, prompt):
             continue
         if _handle_workflow_run_guided_command(app, prompt):
             continue
@@ -729,6 +788,7 @@ def main(argv: list[str] | None = None) -> int:
         repair_result = _repair_workflow_draft_if_needed(app, selected_profile.id)
         _print_last_assistant(app)
         _print_workflow_validation_if_needed(app, selected_profile.id, repair_result)
+        _run_pending_workflow_automation_if_ready(app, selected_profile.id, repair_result)
 
 
 def _split_models_arg(value: str | None) -> list[str] | None:
@@ -826,6 +886,27 @@ def _print_last_assistant(app: CodingApp) -> None:
         return
 
 
+def _set_active_workflow_extension_prompt_catalog(
+    app: CodingApp,
+    catalog: WorkflowCapabilityCatalog | None,
+) -> None:
+    setattr(app, _WORKFLOW_EXTENSION_PROMPT_CATALOG_ATTR, catalog)
+
+
+def _active_workflow_extension_prompt_catalog(app: CodingApp) -> WorkflowCapabilityCatalog | None:
+    catalog = getattr(app, _WORKFLOW_EXTENSION_PROMPT_CATALOG_ATTR, None)
+    return catalog if isinstance(catalog, WorkflowCapabilityCatalog) else None
+
+
+def _set_pending_workflow_automation(app: CodingApp, request: _WorkflowAutomationRequest | None) -> None:
+    setattr(app, _WORKFLOW_AUTOMATION_ATTR, request)
+
+
+def _pending_workflow_automation(app: CodingApp) -> _WorkflowAutomationRequest | None:
+    request = getattr(app, _WORKFLOW_AUTOMATION_ATTR, None)
+    return request if isinstance(request, _WorkflowAutomationRequest) else None
+
+
 def _run_prompt_for_profile(app: CodingApp, profile_id: str, prompt: str) -> None:
     if not should_stage_workflow_drafts(profile_id):
         app.run_turn(prompt)
@@ -834,11 +915,24 @@ def _run_prompt_for_profile(app: CodingApp, profile_id: str, prompt: str) -> Non
     def on_stage(index: int, total: int, stage_id: str) -> None:
         print(f"Workflow draft stage: {stage_id} {index}/{total}")
 
-    run_workflow_draft_stages(prompt, app.run_turn, on_stage=on_stage)
+    run_workflow_draft_stages(
+        prompt,
+        app.run_turn,
+        on_stage=on_stage,
+        capability_catalog=_active_workflow_extension_prompt_catalog(app),
+    )
 
 
 def _repair_workflow_draft_if_needed(app: CodingApp, profile_id: str) -> WorkflowDraftRepairResult | None:
     if not should_validate_workflow_drafts(profile_id):
+        return None
+    text = assistant_text_from_messages(app.messages)
+    validation = validate_workflow_draft_text(text) if text.strip() else None
+    if (
+        validation is not None
+        and validation.documents is not None
+        and validation_issues_require_extension_handoff(validation.validation.issues)
+    ):
         return None
 
     def on_attempt(attempt: int, max_attempts: int | None, _validation) -> None:
@@ -1163,7 +1257,7 @@ def _handle_workflow_connector_remove_command(app: CodingApp, prompt: str) -> bo
     args = prompt.split()
     try:
         if len(args) != 2:
-            raise ValueError("expected /workflow-connector-remove brave|telegram")
+            raise ValueError("expected /workflow-connector-remove <connector-id>")
         connector_id = normalize_connector_id(args[1])
         removed = ConnectorConfigStore().remove(connector_id)
         if removed:
@@ -1182,11 +1276,245 @@ def _handle_workflow_connector_configure_command(app: CodingApp, prompt: str) ->
     return True
 
 
-def _handle_workflow_catalog_command(app: CodingApp, prompt: str) -> bool:
-    if prompt.strip() != "/workflow-catalog":
+def _handle_workflow_catalog_command(app: CodingApp, profile_id: str, prompt: str) -> bool:
+    if not _is_workflow_catalog_command(prompt):
         return False
-    print(format_workflow_capability_catalog(build_workflow_capability_catalog()))
+    args = prompt.split()
+    try:
+        if len(args) == 1:
+            catalog = build_workflow_capability_catalog()
+            _set_active_workflow_extension_prompt_catalog(app, None)
+        elif len(args) == 2:
+            catalog_path = _resolve_workflow_catalog_path(app.cwd, args[1])
+            extension_catalog = load_workflow_extension_catalog(catalog_path)
+            catalog = build_workflow_capability_catalog(extension_profile=extension_catalog.extension_profile)
+            prompt_catalog = build_workflow_capability_catalog(
+                contract_catalog={},
+                extension_profile=extension_catalog.extension_profile,
+                package_authoring_context=format_workflow_extension_catalog_authoring_context(extension_catalog),
+            )
+            _set_active_workflow_extension_prompt_catalog(app, prompt_catalog)
+        else:
+            raise ValueError("expected /workflow-catalog or /workflow-checkin [extension-catalog-path]")
+        print(format_workflow_capability_catalog(catalog))
+        if should_validate_workflow_drafts(profile_id):
+            _set_pending_workflow_automation(app, _WorkflowAutomationRequest(relative_path=None))
+            print("Workflow catalog automation armed: next valid workflow draft will be saved with a generated package name.")
+            print("It will run guided live-read automatically until approval is required.")
+            print("Next: describe the workflow you want in plain language.")
+            print("Then use the printed /workflow-approve command to approve and continue.")
+    except Exception as error:  # noqa: BLE001 - command errors should print, not crash plain mode.
+        print(f"Workflow catalog failed: {error}")
     return True
+
+
+def _handle_workflow_extension_promote_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_extension_promote_command(prompt):
+        return False
+    args = prompt.split()
+    try:
+        if len(args) < 3:
+            raise ValueError("expected /workflow-extension-promote <package> <catalog-path> [extension-id...]")
+        package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        catalog_path = _resolve_workflow_catalog_path(app.cwd, args[2])
+        documents = load_package_documents(package_path)
+        promotion = promote_package_extensions_to_catalog(
+            documents,
+            catalog_path,
+            extension_ids=tuple(args[3:]) or None,
+        )
+        print(format_workflow_extension_catalog_promotion(promotion))
+    except Exception as error:  # noqa: BLE001 - command errors should print, not crash plain mode.
+        print(f"Workflow extension promotion failed: {error}")
+    return True
+
+
+def _handle_workflow_extension_apply_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_extension_apply_command(prompt):
+        return False
+    args = prompt.split()
+    try:
+        if len(args) != 3:
+            raise ValueError("expected /workflow-extension-apply <handoff-manifest> <qa-manifest>")
+        manifest_path = _resolve_workflow_file_path(app.cwd, args[1])
+        qa_path = _resolve_workflow_file_path(app.cwd, args[2])
+        report = apply_extension_handoff_result(manifest_path, qa_path)
+        print(format_workflow_extension_handoff_apply_report(report))
+    except Exception as error:  # noqa: BLE001 - command errors should print, not crash plain mode.
+        print(f"Workflow extension apply failed: {error}")
+    return True
+
+
+def _handle_workflow_extension_build_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_extension_build_command(prompt):
+        return False
+    args = prompt.split()
+    try:
+        if len(args) != 2:
+            raise ValueError("expected /workflow-extension-build <package-or-handoff-manifest>")
+        package_or_manifest = _resolve_workflow_file_path(app.cwd, args[1])
+        timeout_seconds = normalize_workflow_extension_build_timeout(None)
+        print(f"Workflow extension build started: {package_or_manifest}")
+        print(f"timeout: {timeout_seconds:g}s")
+
+        def print_progress(event) -> None:
+            if event.message:
+                print(f"Workflow extension build {event.phase}: {event.message}")
+            if event.log_path is not None:
+                print(f"log: {event.log_path}")
+
+        report = build_workflow_extension_handoff(
+            package_or_manifest,
+            timeout_seconds=timeout_seconds,
+            progress=print_progress,
+        )
+        print(format_workflow_extension_build_report(report))
+    except Exception as error:  # noqa: BLE001 - command errors should print, not crash plain mode.
+        print(f"Workflow extension build failed: {error}")
+    return True
+
+
+def _handle_workflow_extension_dispatch_command(app: CodingApp, prompt: str) -> bool:
+    if not _is_workflow_extension_dispatch_command(prompt):
+        return False
+    args = prompt.split()
+    try:
+        if len(args) not in {2, 3}:
+            raise ValueError("expected /workflow-extension-dispatch <handoff-manifest> [--mark-dispatched]")
+        mark_dispatched = len(args) == 3 and args[2] == "--mark-dispatched"
+        if len(args) == 3 and not mark_dispatched:
+            raise ValueError("expected /workflow-extension-dispatch <handoff-manifest> [--mark-dispatched]")
+        manifest_path = _resolve_workflow_file_path(app.cwd, args[1])
+        report = dispatch_extension_handoff(manifest_path, mark_dispatched=mark_dispatched)
+        print(format_workflow_extension_handoff_dispatch_report(report))
+    except Exception as error:  # noqa: BLE001 - command errors should print, not crash plain mode.
+        print(f"Workflow extension dispatch failed: {error}")
+    return True
+
+
+def _handle_workflow_automate_command(app: CodingApp, profile_id: str, prompt: str) -> bool:
+    if not _is_workflow_automate_command(prompt):
+        return False
+    args = prompt.split()
+    try:
+        if not should_validate_workflow_drafts(profile_id):
+            raise ValueError("active profile is not workflow-designer-lite")
+        if len(args) not in {2, 3}:
+            raise ValueError("expected /workflow-automate <path> [fixture]")
+        request = _WorkflowAutomationRequest(
+            relative_path=args[1],
+            fixture_name=args[2] if len(args) == 3 else "happy_path.yaml",
+        )
+        _set_pending_workflow_automation(app, request)
+        print(f"Workflow automation armed: {request.relative_path}")
+        print("Next valid workflow draft will be saved and run guided to approval.")
+    except Exception as error:  # noqa: BLE001 - command errors should print, not crash plain mode.
+        print(f"Workflow automation failed: {error}")
+    return True
+
+
+def _run_pending_workflow_automation_if_ready(
+    app: CodingApp,
+    profile_id: str,
+    repair_result: WorkflowDraftRepairResult | None = None,
+) -> None:
+    request = _pending_workflow_automation(app)
+    if request is None:
+        return
+    if not should_validate_workflow_drafts(profile_id):
+        _set_pending_workflow_automation(app, None)
+        print("Workflow automation failed: active profile is not workflow-designer-lite")
+        return
+
+    validation = _workflow_validation_for_current_draft(app, repair_result)
+    if validation is None or not validation.ok:
+        if (
+            validation is not None
+            and validation.documents is not None
+            and validation_issues_require_extension_handoff(validation.validation.issues)
+        ):
+            _write_pending_workflow_extension_handoff(app, request, validation)
+            return
+        print("Workflow automation waiting: last workflow draft is not valid")
+        return
+    quality = workflow_quality_result_for_draft(validation)
+    if quality is not None and not quality.ok:
+        print("Workflow automation waiting: last workflow draft does not pass quality gate")
+        print(format_workflow_quality_report(quality))
+        return
+
+    try:
+        relative_path = request.relative_path or suggest_workflow_package_relative_path(validation, cwd=app.cwd)
+        saved_path = save_workflow_draft_blocks(validation.blocks, cwd=app.cwd, relative_path=relative_path)
+    except WorkflowDraftSaveError as error:
+        _set_pending_workflow_automation(app, None)
+        print(f"Workflow automation failed: {error}")
+        return
+
+    _set_pending_workflow_automation(app, None)
+    print(f"Workflow draft saved: {saved_path}")
+    print(f"Next approval command: /workflow-approve {relative_path} {request.fixture_name}")
+    disk_validation = validate_workflow_package(saved_path)
+    print(_format_workflow_package_validation_report(disk_validation))
+    if disk_validation.ok:
+        disk_quality = check_workflow_quality_package(saved_path)
+        print(format_workflow_quality_report(disk_quality, label="Workflow package quality gate"))
+
+    try:
+        connector_config = _workflow_connector_config()
+        report = prepare_guided_workflow_run(
+            WorkflowRunRequest(
+                package_path=saved_path,
+                fixture_name=request.fixture_name,
+                mode=WorkflowRunMode.LIVE_READ,
+                operator_env=workflow_operator_env_from_env(os.environ),
+            ),
+            live_read_broker=LiveWorkflowBroker(_workflow_live_read_transports(connector_config), mode="live-read"),
+            credential_resolver=credential_resolver_for_package_connector_config(saved_path, connector_config),
+        )
+    except Exception as error:  # noqa: BLE001 - command errors should print, not crash plain mode.
+        print(f"Workflow automation guided run failed: {error}")
+        return
+    print(format_guided_workflow_run_report(report))
+
+
+def _write_pending_workflow_extension_handoff(
+    app: CodingApp,
+    request: _WorkflowAutomationRequest,
+    validation,
+) -> None:
+    try:
+        relative_path = request.relative_path or suggest_workflow_package_relative_path(validation, cwd=app.cwd)
+        saved_path = save_workflow_draft_blocks(validation.blocks, cwd=app.cwd, relative_path=relative_path)
+    except WorkflowDraftSaveError as error:
+        _set_pending_workflow_automation(app, None)
+        print(f"Workflow automation failed: {error}")
+        return
+
+    _set_pending_workflow_automation(app, None)
+    print(f"Workflow draft saved: {saved_path}")
+    disk_validation = validate_workflow_package(saved_path)
+    print(_format_workflow_package_validation_report(disk_validation))
+    documents = load_package_documents(saved_path)
+    document_validation = validate_workflow_documents(documents)
+    handoff = write_extension_handoff_for_validation_issues(documents, document_validation.issues)
+    print(format_workflow_extension_handoff(handoff))
+    if handoff.prompts:
+        print("extension PRD prompts:")
+        for index, prompt in enumerate(handoff.prompts, start=1):
+            print(f"--- extension PRD prompt {index} ---")
+            print(prompt)
+    print("next action: build extension with coding profile and attach QA manifest")
+
+
+def _workflow_validation_for_current_draft(
+    app: CodingApp,
+    repair_result: WorkflowDraftRepairResult | None,
+):
+    if repair_result is not None:
+        return repair_result.validation
+    text = assistant_text_from_messages(app.messages)
+    return validate_workflow_draft_text(text) if text.strip() else None
 
 
 def _handle_workflow_run_guided_command(app: CodingApp, prompt: str) -> bool:
@@ -1344,9 +1672,61 @@ def _handle_workflow_approval_command(app: CodingApp, prompt: str) -> bool:
     args = prompt.split()
     command = args[0] if args else ""
     try:
-        if len(args) != 4:
-            raise ValueError(f"expected {command} <path> <run-id> <approval-request-id>")
+        latest_guided = len(args) in {2, 3}
+        guided = len(args) in {5, 6} and args[4] == "--guided"
+        if len(args) != 4 and not guided and not latest_guided:
+            raise ValueError(
+                f"expected {command} <path> [fixture] or "
+                f"{command} <path> <run-id> <approval-request-id> [--guided [fixture]]"
+            )
         package_path = _resolve_workflow_package_path(app.cwd, args[1])
+        if latest_guided:
+            fixture_name = args[2] if len(args) == 3 else "happy_path.yaml"
+            connector_config = _workflow_connector_config()
+            report = approve_or_prepare_guided_workflow_run(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=fixture_name,
+                    mode=WorkflowRunMode.LIVE_PRODUCTION,
+                    operator_env=workflow_operator_env_from_env(os.environ),
+                ),
+                approved=command == "/workflow-approve",
+                decided_by="cli",
+                live_read_broker=LiveWorkflowBroker(_workflow_live_read_transports(connector_config), mode="live-read"),
+                live_production_broker=LiveWorkflowBroker(
+                    _workflow_live_production_transports(connector_config),
+                    mode="live-production",
+                    production_enabled=True,
+                ),
+                credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
+                env=os.environ,
+            )
+            print(format_guided_workflow_run_report(report))
+            return True
+        if guided:
+            fixture_name = args[5] if len(args) == 6 else "happy_path.yaml"
+            connector_config = _workflow_connector_config()
+            report = approve_and_continue_guided_workflow_run(
+                WorkflowRunRequest(
+                    package_path=package_path,
+                    fixture_name=fixture_name,
+                    mode=WorkflowRunMode.LIVE_PRODUCTION,
+                    operator_env=workflow_operator_env_from_env(os.environ),
+                ),
+                approval_run_id=args[2],
+                approval_request_id=args[3],
+                approved=command == "/workflow-approve",
+                decided_by="cli",
+                live_production_broker=LiveWorkflowBroker(
+                    _workflow_live_production_transports(connector_config),
+                    mode="live-production",
+                    production_enabled=True,
+                ),
+                credential_resolver=credential_resolver_for_package_connector_config(package_path, connector_config),
+                env=os.environ,
+            )
+            print(format_guided_workflow_run_report(report))
+            return True
         result = record_workflow_approval_command(
             package_path,
             args[2],
@@ -1447,6 +1827,35 @@ def _is_workflow_connector_remove_command(prompt: str) -> bool:
 
 def _is_workflow_connector_configure_command(prompt: str) -> bool:
     return prompt == "/workflow-connector-configure" or prompt.startswith("/workflow-connector-configure ")
+
+
+def _is_workflow_catalog_command(prompt: str) -> bool:
+    return (
+        prompt == "/workflow-catalog"
+        or prompt.startswith("/workflow-catalog ")
+        or prompt == "/workflow-checkin"
+        or prompt.startswith("/workflow-checkin ")
+    )
+
+
+def _is_workflow_extension_promote_command(prompt: str) -> bool:
+    return prompt == "/workflow-extension-promote" or prompt.startswith("/workflow-extension-promote ")
+
+
+def _is_workflow_extension_apply_command(prompt: str) -> bool:
+    return prompt == "/workflow-extension-apply" or prompt.startswith("/workflow-extension-apply ")
+
+
+def _is_workflow_extension_build_command(prompt: str) -> bool:
+    return prompt == "/workflow-extension-build" or prompt.startswith("/workflow-extension-build ")
+
+
+def _is_workflow_extension_dispatch_command(prompt: str) -> bool:
+    return prompt == "/workflow-extension-dispatch" or prompt.startswith("/workflow-extension-dispatch ")
+
+
+def _is_workflow_automate_command(prompt: str) -> bool:
+    return prompt == "/workflow-automate" or prompt.startswith("/workflow-automate ")
 
 
 def _is_workflow_run_guided_command(prompt: str) -> bool:
@@ -2055,6 +2464,28 @@ def _resolve_workflow_package_path(cwd: str | Path, path_text: str) -> Path:
         candidate.relative_to(base)
     except ValueError as error:
         raise ValueError("package path must stay inside the current working directory") from error
+    return candidate
+
+
+def _resolve_workflow_catalog_path(cwd: str | Path, path_text: str) -> Path:
+    base = Path(cwd).resolve()
+    raw_path = Path(path_text).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (base / raw_path).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as error:
+        raise ValueError("catalog path must stay inside the current working directory") from error
+    return candidate
+
+
+def _resolve_workflow_file_path(cwd: str | Path, path_text: str) -> Path:
+    base = Path(cwd).resolve()
+    raw_path = Path(path_text).expanduser()
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (base / raw_path).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as error:
+        raise ValueError("workflow file path must stay inside the current working directory") from error
     return candidate
 
 

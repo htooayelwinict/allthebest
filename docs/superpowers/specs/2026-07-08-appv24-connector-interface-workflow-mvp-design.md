@@ -216,11 +216,11 @@ steps:
     uses: telegram.list_subscribers
     with:
       audience: default
-    next: summarize_digest
-  - id: summarize_digest
+    next: summarize_news
+  - id: summarize_news
     uses: llm.summarize
     with:
-      text: "{{steps.search_ai_news.outputs.items}}"
+      text: "{{ steps.search_ai_news.outputs.items }}"
       output_contract: summary_v1
     next: send_digest
   - id: send_digest
@@ -228,9 +228,9 @@ steps:
     side_effect_class: send
     approval: approve_telegram_broadcast
     with:
-      recipients: "{{steps.list_subscribers.outputs.recipients}}"
-      audience_hash: "{{steps.list_subscribers.outputs.audience_hash}}"
-      text: "{{steps.summarize_digest.outputs.summary}}"
+      recipients: "{{ steps.list_subscribers.outputs.recipients }}"
+      audience_hash: "{{ steps.list_subscribers.outputs.audience_hash }}"
+      text: "{{ steps.summarize_news.outputs.summary }}"
     next: done
   - id: done
     type: terminal

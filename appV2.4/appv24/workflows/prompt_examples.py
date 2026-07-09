@@ -89,6 +89,41 @@ steps:
 decision:
   decide_path: approved
 ```
+
+Missing connector coder-addon shape:
+```yaml
+steps:
+  - id: lookup_contact
+    uses: crm.lookup_contact
+    with:
+      email: "{{ inputs.email }}"
+    next: done
+```
+
+```yaml
+connectors:
+  - id: crm
+    adapter: mcp
+    custom: true
+    source: mcp://crm@v1
+    actions:
+      - id: lookup_contact
+        custom: true
+        source: mcp://crm.lookup_contact@v1
+        tool: crm.lookup_contact
+        side_effect: false
+        side_effect_class: read
+        execution_mode: brokered
+        dry_run_supported: true
+        required_scopes: [crm:read]
+        outputs:
+          allowed: [contact, artifact_path]
+        workflow_hints:
+          generated_by: coding_profile
+          qa_required: true
+          input_fields: [email]
+          required_input_fields: [email]
+```
 """.strip()
 
 

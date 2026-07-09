@@ -5,6 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from appv24.workflows.capability_catalog import (
+    WorkflowCapabilityCatalog,
+    format_workflow_extension_capability_context,
+)
 from appv24.workflows.live_validation import should_validate_workflow_drafts
 from appv24.workflows.prompt_examples import PACKAGE_STAGE_MICRO_EXAMPLES
 from appv24.workflows.prompt_fragments import (
@@ -45,6 +49,7 @@ def build_workflow_stage_prompt(
     stage_id: str,
     stage_index: int,
     total_stages: int,
+    capability_catalog: WorkflowCapabilityCatalog | None = None,
 ) -> str:
     normalized_stage = stage_id.strip().lower().replace("_", "-")
     header = [
@@ -58,6 +63,12 @@ def build_workflow_stage_prompt(
         "- Use secret references, redacted markers, or checksums for secrets; never raw secret values.",
         "",
     ]
+    extension_catalog_context = format_workflow_extension_capability_context(
+        capability_catalog,
+        include_package_authoring_context=normalized_stage == "package",
+    )
+    if extension_catalog_context:
+        header.extend([extension_catalog_context, ""])
 
     if normalized_stage == "intent":
         body = [
@@ -96,11 +107,13 @@ def build_workflow_stage_prompt(
             "Return the complete workflow package draft.",
             "",
             render_required_package_blocks_fragment(),
+            "Include only workflow.yaml, connectors.yaml, permissions.yaml, dry_run_fixtures/happy_path.yaml, and rollback.md.",
+            "Do not include GitHub-style ${{ }} references anywhere.",
             "",
             "Every non-terminal action step must include next, every decision step must include branches, and every dry-run fixture must traverse from entrypoint to a terminal step.",
             "",
             "Schema reminders:",
-            render_schema_reminders_fragment(),
+            render_schema_reminders_fragment(initial_package_generation=True),
             render_capability_catalog_fragment(),
             render_side_effect_contract_fragment(),
             render_secret_reference_fragment(),
@@ -124,6 +137,7 @@ def run_workflow_draft_stages(
     *,
     config: WorkflowDraftStageConfig = WorkflowDraftStageConfig(),
     on_stage: Callable[[int, int, str], None] | None = None,
+    capability_catalog: WorkflowCapabilityCatalog | None = None,
 ) -> WorkflowDraftStageResult:
     if not config.enabled:
         return WorkflowDraftStageResult(staged=False)
@@ -140,6 +154,7 @@ def run_workflow_draft_stages(
             stage_id=stage_id,
             stage_index=index,
             total_stages=total,
+            capability_catalog=capability_catalog,
         )
         prompts.append(prompt)
         if on_stage is not None:
